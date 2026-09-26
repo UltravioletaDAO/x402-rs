@@ -156,6 +156,24 @@ and the `/feedback/*` submits) are also limited per network per UTC day. Past
 that limit they answer `429` with code `erc8004_daily_write_limit` and a
 `retry-after` that runs to 00:00 UTC; other networks are not affected.
 
+Separately from any bucket, admission to each task is checked before any
+route runs, and a refusal means nothing was done; resend the same request:
+
+| Status | `code` | When |
+|---|---|---|
+| `429` | `too_many_concurrent_requests` | this client IP already has its maximum of requests in flight |
+| `408` | `request_timeout` | the whole body did not arrive within the deadline after the headers |
+| `503` | `overloaded` | the task is at its ceiling of concurrent requests, whoever sent this one |
+
+The `429` and `503` carry `retry-after: 1`. A request counts against the
+task's ceiling only once its body is in. `/health` is never refused.
+
+Ultravioleta DAO's own services present an `X-UVD-Stack-Key` and are not
+charged to their address by any bucket or by the per-address ceiling (the
+response carries `x-ratelimit-exempt`); the body deadline, the task's ceiling
+and the daily write limit still apply to them. Every value in force is
+published at `GET /config`.
+
 ## Content negotiation
 
 `GET /` answers `text/html` by default and `text/markdown` -- the bytes of
@@ -253,6 +271,7 @@ constraint rather than as grounds for a `406`.
         // Health
         path_health,
         path_health_ready,
+        path_config,
         // Agentic discovery surfaces
         path_llms_txt,
         path_llms_full_txt,
@@ -2908,6 +2927,72 @@ warning and keeps the default.",
     )
 )]
 async fn path_health_ready() {}
+
+#[utoipa::path(
+    get,
+    path = "/config",
+    tag = "Health",
+    summary = "The rate policy in force",
+    description = "What this task enforces, as it was configured at startup: every per-IP \
+budget (`rateLimits.budgets`: its routes, the period of one token, the burst, the defaults and \
+the two variables that override them), the stack identities that skip those budgets (by service \
+name, with how many credentials each holds -- never a key or a digest), admission (the per-address \
+ceiling behind `429 too_many_concurrent_requests`, the body deadline behind `408 request_timeout`, \
+the task's ceiling behind `503 overloaded`), and the ERC-8004 daily write limit per network.
+
+**What skips what.** A request carrying a recognized `X-UVD-Stack-Key` is not charged to its \
+address by any budget nor by the per-address ceiling, and is answered with \
+`x-ratelimit-exempt: <service>`; an absent, malformed, unknown or revoked key is charged like any \
+other caller. Neither the body deadline, nor the task's ceiling of concurrent requests (`503`, every \
+caller), nor the daily write limit (`429 erc8004_daily_write_limit`, it protects the gas the \
+facilitator pays) is skipped.
+
+Rate limited per IP like the other cheap reads.",
+    responses(
+        (status = 200, description = "The effective policy", body = Object,
+            example = json!({
+                "rateLimits": {
+                    "keyedOn": "client IP: the last X-Forwarded-For entry, else the TCP peer",
+                    "refusal": { "status": 429, "code": "rate_limited" },
+                    "budgets": [{
+                        "name": "verify_settle",
+                        "routes": "/verify, /settle, /receipts/*, /.well-known/receipt-keys.json, POST /mcp",
+                        "periodMs": 2000, "burst": 30,
+                        "default": { "periodMs": 2000, "burst": 30 },
+                        "env": ["VERIFY_SETTLE_RATE_PER_MS", "VERIFY_SETTLE_RATE_BURST"]
+                    }]
+                },
+                "stackIdentities": {
+                    "header": "X-UVD-Stack-Key", "active": 1,
+                    "services": [
+                        { "name": "execution-market", "active": true, "credentials": 1 },
+                        { "name": "karmakadabra", "active": false, "credentials": 0 }
+                    ],
+                    "exemptFrom": ["every budget under rateLimits", "overload.perClient"],
+                    "notExemptFrom": ["overload (the global ceiling)", "overload.bodyDeadlineMs", "erc8004DailyWriteCap", "the RPC provider throttle"]
+                },
+                "overload": {
+                    "maxInflightRequests": 512, "env": "MAX_INFLIGHT_REQUESTS",
+                    "refusal": { "status": 503, "code": "overloaded", "retryAfterSecs": 1 },
+                    "slotTakenAfterTheBody": true,
+                    "neverShed": ["/health"],
+                    "perClient": {
+                        "maxInflightRequests": 32, "env": "MAX_INFLIGHT_PER_CLIENT",
+                        "refusal": { "status": 429, "code": "too_many_concurrent_requests", "retryAfterSecs": 1 }
+                    },
+                    "bodyDeadlineMs": 5000, "bodyDeadlineEnv": "REQUEST_BODY_DEADLINE_MS",
+                    "bodyRefusal": { "status": 408, "code": "request_timeout" }
+                },
+                "erc8004DailyWriteCap": {
+                    "mounted": true, "defaultPerNetwork": 1000,
+                    "perNetwork": { "ethereum": 100, "solana": 150 }
+                }
+            })
+        ),
+        (status = 429, description = "Rate limited: same per-IP governor as the other cheap reads")
+    )
+)]
+async fn path_config() {}
 
 // ============================================================================
 // Agentic Discovery Surfaces

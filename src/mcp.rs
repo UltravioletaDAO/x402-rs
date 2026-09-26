@@ -579,9 +579,14 @@ impl FacilitatorMcp {
         // would. Every line of it, not the first: the holder keys on the
         // shape of the header, and several lines are keyed differently from
         // one.
+        //
+        // `X-UVD-Stack-Key` for the same reason: the outer `/mcp` governor
+        // already let a recognized stack identity through, and without its key
+        // the holder would charge that caller as a third party.
         for name in [
             header::HeaderName::from_static("x-forwarded-for"),
             header::HeaderName::from_static("x-uvd-purchase"),
+            header::HeaderName::from_static(crate::rate_policy::STACK_KEY_HEADER),
         ] {
             for value in outer.into_iter().flat_map(|h| h.get_all(&name)) {
                 builder = builder.header(&name, value.clone());
@@ -994,14 +999,24 @@ mod tests {
         body: Value,
         xff: &[&str],
     ) -> (StatusCode, String, Value) {
+        let lines: Vec<(&str, &str)> = xff.iter().map(|line| ("x-forwarded-for", *line)).collect();
+        rpc_with_headers(mcp, body, &lines).await
+    }
+
+    /// Same, with one header line per `(name, value)` of `extra`.
+    async fn rpc_with_headers(
+        mcp: &Router,
+        body: Value,
+        extra: &[(&str, &str)],
+    ) -> (StatusCode, String, Value) {
         let mut builder = HttpRequest::builder()
             .method(Method::POST)
             .uri("/mcp")
             .header(header::HOST, "127.0.0.1")
             .header(header::CONTENT_TYPE, "application/json")
             .header(header::ACCEPT, "application/json, text/event-stream");
-        for line in xff {
-            builder = builder.header("x-forwarded-for", *line);
+        for (name, value) in extra {
+            builder = builder.header(*name, *value);
         }
         let request = builder
             .body(Body::from(serde_json::to_vec(&body).unwrap()))
@@ -1771,11 +1786,46 @@ mod tests {
         assert_eq!(seen, lines);
     }
 
+    /// A stack identity's key reaches the lease holder too. The outer `/mcp`
+    /// governor let the caller through on it; without it the holder's `/settle`
+    /// governor would charge the same caller as a third party.
+    #[tokio::test]
+    async fn a_forwarded_settle_carries_the_stack_key_to_the_lease_holder() {
+        let key = "uvdsk_mcpForwardedKeyAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+        let (path, headers, _) = settle_through_a_recording_holder_with(&[
+            ("x-forwarded-for", "203.0.113.42"),
+            (crate::rate_policy::STACK_KEY_HEADER, key),
+        ])
+        .await;
+        assert_eq!(path, "/settle");
+        let seen: Vec<&str> = headers
+            .get_all(crate::rate_policy::STACK_KEY_HEADER)
+            .iter()
+            .map(|v| v.to_str().unwrap())
+            .collect();
+        assert_eq!(seen, [key], "the stack key did not reach the lease holder");
+    }
+
     /// Runs an `x402_settle` whose outer request carries `xff`, on a task that
     /// does not hold the writer lease, against a local stand-in for the holder,
     /// and returns the path and headers the holder received plus the answer.
     async fn settle_through_a_recording_holder(xff: &[&str]) -> (String, HeaderMap, Value) {
+        let lines: Vec<(&str, &str)> = xff.iter().map(|line| ("x-forwarded-for", *line)).collect();
+        settle_through_a_recording_holder_with(&lines).await
+    }
+
+    /// Same, with arbitrary header lines on the outer request.
+    ///
+    /// Serialised: the writer lease and its holder endpoint are process-wide,
+    /// so two of these running at once point each other's settle at the wrong
+    /// holder. CI runs single-threaded; this keeps a local parallel run honest.
+    async fn settle_through_a_recording_holder_with(
+        outer: &[(&str, &str)],
+    ) -> (String, HeaderMap, Value) {
         use std::sync::Mutex;
+
+        static HOLDER_TESTS: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+        let _serial = HOLDER_TESTS.lock().await;
 
         // A stand-in for the task that holds the lease: records what it got.
         let seen: Arc<Mutex<Option<(String, HeaderMap)>>> = Arc::new(Mutex::new(None));
@@ -1799,7 +1849,7 @@ mod tests {
         crate::writer_lease::set_writer_for_test(false);
         crate::writer_lease::set_holder_endpoint_for_test(Some(&format!("http://{addr}")));
 
-        let (_, _, answer) = rpc_from_lines(
+        let (_, _, answer) = rpc_with_headers(
             &mcp,
             json!({
                 "jsonrpc": "2.0", "id": 9, "method": "tools/call",
@@ -1809,7 +1859,7 @@ mod tests {
                     "paymentRequirements": { "network": "base" }
                 }}
             }),
-            xff,
+            outer,
         )
         .await;
 

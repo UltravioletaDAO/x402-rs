@@ -41,8 +41,18 @@
 //!    recipients or be poisoned by a token an attacker transfers into the
 //!    facilitator wallet.
 //!
-//! The store is process-local (single ECS task) and intentionally simple: an
-//! in-memory map swept lazily on access. Terminal jobs (`Done`/`Failed`) live
+//! 4. **Solana: who a half-minted identity was minted for.** A Solana mint
+//!    that stops after `register` leaves the asset in the fee payer's name.
+//!    [`record_stranded_solana`] remembers, per asset, the `recipient` of the
+//!    request that minted it, and a later `/register` resumes that asset only
+//!    for that same recipient ([`crate::erc8004::solana_mint::decide_mint`]).
+//!    Without a record naming the recipient the asset is not resumed at all:
+//!    it waits for the operator.
+//!
+//! The store is process-local and intentionally simple: an in-memory map swept
+//! lazily on access. `/register` runs only on the task holding the writer lease,
+//! so every record is written and read by that one task; a lease move (every
+//! deploy) or a restart drops them. Terminal jobs (`Done`/`Failed`) live
 //! for [`REGISTER_JOB_TTL_SECONDS`] so a slow poller can still read the result.
 
 use std::collections::HashMap;
@@ -52,6 +62,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use once_cell::sync::Lazy;
 use serde::Serialize;
+use solana_sdk::pubkey::Pubkey;
 
 use crate::erc8004::RegisterAgentResponse;
 use crate::network::Network;
@@ -132,6 +143,12 @@ pub struct Stranded {
     pub mint_tx: Option<TransactionHash>,
 }
 
+/// The recipient a half-minted Solana identity was minted for.
+struct SolanaStrandedRecord {
+    recipient: Pubkey,
+    updated_at: u64,
+}
+
 struct Inner {
     /// job_id -> job
     jobs: HashMap<String, RegisterJob>,
@@ -139,6 +156,9 @@ struct Inner {
     inflight: HashMap<String, String>,
     /// in-flight key -> stranded NFT record (mint landed, transfer did not)
     stranded: HashMap<String, StrandedRecord>,
+    /// `network|asset` -> the recipient a half-minted Solana identity was
+    /// minted for
+    solana_stranded: HashMap<String, SolanaStrandedRecord>,
 }
 
 static STORE: Lazy<Mutex<Inner>> = Lazy::new(|| {
@@ -146,6 +166,7 @@ static STORE: Lazy<Mutex<Inner>> = Lazy::new(|| {
         jobs: HashMap::new(),
         inflight: HashMap::new(),
         stranded: HashMap::new(),
+        solana_stranded: HashMap::new(),
     })
 });
 
@@ -170,6 +191,9 @@ fn sweep(inner: &mut Inner) {
     });
     inner
         .stranded
+        .retain(|_, r| t.saturating_sub(r.updated_at) < STRANDED_RECORD_TTL_SECONDS);
+    inner
+        .solana_stranded
         .retain(|_, r| t.saturating_sub(r.updated_at) < STRANDED_RECORD_TTL_SECONDS);
 }
 
@@ -328,6 +352,51 @@ pub fn clear_stranded(key: &str) {
     g.stranded.remove(key);
 }
 
+fn solana_key(network: Network, asset: &Pubkey) -> String {
+    format!("{network}|{asset}")
+}
+
+/// Remember that the Solana identity `asset` was minted for `recipient` and is
+/// still held by the fee payer because its mint stopped short. Written by the
+/// register handler whenever a mint or a resume ends `pending_stats` or
+/// `pending_transfer`; a repeat refreshes the TTL. This is the only thing a
+/// later `/register` accepts as proof of whom the asset is for.
+pub fn record_stranded_solana(network: Network, asset: Pubkey, recipient: Pubkey) {
+    let mut g = STORE.lock().unwrap();
+    g.solana_stranded.insert(
+        solana_key(network, &asset),
+        SolanaStrandedRecord {
+            recipient,
+            updated_at: now(),
+        },
+    );
+}
+
+/// The recipient the half-minted Solana identity `asset` was minted for, if
+/// this process recorded one in the last [`STRANDED_RECORD_TTL_SECONDS`].
+pub fn stranded_solana(network: Network, asset: &Pubkey) -> Option<Pubkey> {
+    let mut g = STORE.lock().unwrap();
+    sweep(&mut g);
+    g.solana_stranded
+        .get(&solana_key(network, asset))
+        .map(|r| r.recipient)
+}
+
+/// Drop the record for `asset`, once it has been delivered.
+pub fn clear_stranded_solana(network: Network, asset: &Pubkey) {
+    let mut g = STORE.lock().unwrap();
+    g.solana_stranded.remove(&solana_key(network, asset));
+}
+
+/// Make the record for `asset` look `secs` older, for tests of its expiry.
+#[cfg(test)]
+pub(crate) fn age_stranded_solana(network: Network, asset: &Pubkey, secs: u64) {
+    let mut g = STORE.lock().unwrap();
+    if let Some(r) = g.solana_stranded.get_mut(&solana_key(network, asset)) {
+        r.updated_at = r.updated_at.saturating_sub(secs);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -420,6 +489,34 @@ mod tests {
         record_stranded(key.clone(), 9, None);
         assert_eq!(get_stranded(&key).unwrap().agent_id, 9);
         clear_stranded(&key);
+    }
+
+    #[test]
+    fn a_solana_record_names_its_recipient_per_network_and_asset() {
+        let asset = Pubkey::new_unique();
+        let recipient = Pubkey::new_unique();
+        assert_eq!(stranded_solana(Network::Solana, &asset), None);
+        record_stranded_solana(Network::Solana, asset, recipient);
+        assert_eq!(stranded_solana(Network::Solana, &asset), Some(recipient));
+        // The same asset id on the other cluster is a different asset.
+        assert_eq!(stranded_solana(Network::SolanaDevnet, &asset), None);
+        // A repeat for another recipient replaces it; it never accumulates.
+        let other = Pubkey::new_unique();
+        record_stranded_solana(Network::Solana, asset, other);
+        assert_eq!(stranded_solana(Network::Solana, &asset), Some(other));
+        clear_stranded_solana(Network::Solana, &asset);
+        assert_eq!(stranded_solana(Network::Solana, &asset), None);
+    }
+
+    #[test]
+    fn a_solana_record_expires_after_its_ttl() {
+        let asset = Pubkey::new_unique();
+        let recipient = Pubkey::new_unique();
+        record_stranded_solana(Network::Solana, asset, recipient);
+        age_stranded_solana(Network::Solana, &asset, STRANDED_RECORD_TTL_SECONDS - 60);
+        assert_eq!(stranded_solana(Network::Solana, &asset), Some(recipient));
+        age_stranded_solana(Network::Solana, &asset, 120);
+        assert_eq!(stranded_solana(Network::Solana, &asset), None);
     }
 
     #[test]

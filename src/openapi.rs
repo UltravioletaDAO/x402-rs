@@ -1355,8 +1355,19 @@ each with its own `errorCode`, before anything is sent:
 | `recipient_cannot_receive` | 400 | EVM: a contract that does not answer `onERC721Received`; the transfer would revert and leave the identity with the facilitator |
 | `recipient_blocked` | 403 | The recipient is on a compliance list; nothing is minted or handed over |
 | `recipient_screening_unavailable`, `recipient_check_unavailable` | 503 | The lists, or the recipient's code, could not be read; retryable |
+| `mint_not_atomic` (in `mint.errorCode`) | 400 | Solana: the mint would not fit one transaction: more than 4 `metadata` entries, or over 1232 bytes with long values |
+| `metadata_duplicate_key` (in `mint.errorCode`) | 400 | Solana: a `metadata` key appears twice |
+| `held_identity_not_resumable` (in `mint.errorCode`) | 409 | Solana: an identity with this `agentUri` is held by the facilitator and this is not a retry of the request that minted it (see below); nothing is sent |
 
 The domain lists are `config/erc8004_agent_uri_rules.json` in the repository.
+
+**EVM: a transfer that fails after the mint (v2.45.0).** The identity is minted to the
+facilitator and then transferred. If the delivery fails (the transfer reverts, or `ownerOf` is
+not the recipient afterwards), the identity is retired on the spot (its `agentURI` is set to
+`https://facilitator.ultravioletadao.xyz/erc8004/retired`) and the response is a `500` whose
+`error` says so. Repeating the same request (same `agentUri` and
+`recipient`) within 24 hours puts the `agentURI` back and retries the delivery of that same
+identity.
 
 **Supported networks:** 23 networks (EVM + Solana). EVM chains use ERC-721 NFTs, Solana uses Metaplex Core NFTs.
 
@@ -1391,7 +1402,9 @@ Without that account the ATOM Engine records feedback but scores none of it.
 the same as on EVM.
 
 **Solana mints are atomic (v2.17.0).** All three instructions ride in a single
-transaction, so no prefix of the mint can land on its own. The three used to be
+transaction, so no prefix of the mint can land on its own. A mint that would not fit one
+transaction is refused before the chain (`400 mint_not_atomic`, v2.45.0): at most 4
+`metadata` entries, each key once. The three used to be
 three transactions, and a fee payer that ran dry mid-batch left identities created
 but never transferred, reported as a plain success.
 
@@ -1406,9 +1419,12 @@ Solana responses therefore carry a `mint` object. **Read `mint.status`, not
 | `not_minted` | No identity exists and nothing was left behind. Safe to retry. |
 
 `mint.resumed` is true when the call finished an identity an earlier call had left
-half minted, rather than creating a new one. Repeating a request with the same
-`agentUri` is the documented way to recover a stranded identity: the facilitator
-matches it among the agents it still holds and runs only the missing steps.
+half minted, rather than creating a new one. A half-minted identity is resumed only by
+a retry of the request that minted it (same `agentUri` and `recipient`, within 24
+hours): the facilitator finds it among the agents it still holds and runs only the
+missing steps. Any other match is `409`, `mint.errorCode =
+"held_identity_not_resumable"`, `mint.status = "not_minted"`, nothing sent; it is left
+for manual recovery.
 
 `mint.atomic` is true when one transaction carried every step, in which case
 `transaction`, `mint.statsTransaction` and `transferTransaction` are the same
@@ -1465,7 +1481,7 @@ re-minted — the async path returns the existing job, the sync path returns
         (status = 202, description = "Async registration accepted; poll /register/status/{jobId}", body = Object),
         (status = 400, description = "Registration failed, or refused before the chain: `errorCode` says which rule (`agent_uri_*`, `recipient_required`, `recipient_is_facilitator`, `recipient_invalid`, `recipient_cannot_receive`)", body = Object),
         (status = 403, description = "`recipient_blocked`: the recipient is on a compliance list", body = Object),
-        (status = 409, description = "A registration for this agent is already in progress", body = Object),
+        (status = 409, description = "A registration for this agent is already in progress, or on Solana `held_identity_not_resumable`: an identity with this `agentUri` is held by the facilitator and this is not a retry of the request that minted it; nothing is sent", body = Object),
         (status = 500, description = "Solana: the identity exists but is still held by the facilitator (`mint.status` is `pending_stats` or `pending_transfer`). Repeat the request to finish it", body = Object),
         (status = 503, description = "Refused before minting: the recipient could not be screened (`recipient_screening_unavailable`), its code or its balance could not be read (`recipient_check_unavailable`), or on Solana the fee payer cannot cover the mint, or the facilitator could not tell whether this agent already has a half-minted identity", body = Object)
     )

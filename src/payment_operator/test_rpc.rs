@@ -63,6 +63,12 @@ struct NodeState {
     reads_fail: bool,
     /// While set, every receipt reports a reverted transaction.
     receipts_revert: bool,
+    /// Selectors whose `eth_estimateGas` answers `execution reverted`.
+    estimate_reverts: Vec<[u8; 4]>,
+    /// Reads answered in turn, before `calls`; the last answer repeats.
+    call_sequences: HashMap<(Address, [u8; 4]), Vec<CallAnswer>>,
+    /// Logs every receipt carries.
+    receipt_logs: Vec<Value>,
     sent: Vec<SentTx>,
 }
 
@@ -108,6 +114,27 @@ impl MockNode {
         self.state.lock().unwrap().code.insert(address, code);
     }
 
+    /// Script `eth_call(to, selector ...)` to answer `answers` in turn, the last
+    /// one from then on: a read whose answer changes as the flow moves on.
+    pub(crate) fn on_call_sequence(
+        &self,
+        to: Address,
+        selector: [u8; 4],
+        answers: Vec<CallAnswer>,
+    ) {
+        assert!(!answers.is_empty());
+        self.state
+            .lock()
+            .unwrap()
+            .call_sequences
+            .insert((to, selector), answers);
+    }
+
+    /// Make every receipt carry `logs` (JSON-RPC log objects).
+    pub(crate) fn set_receipt_logs(&self, logs: Vec<Value>) {
+        self.state.lock().unwrap().receipt_logs = logs;
+    }
+
     /// Make every contract read fail (or succeed again).
     pub(crate) fn fail_reads(&self, fail: bool) {
         self.state.lock().unwrap().reads_fail = fail;
@@ -116,6 +143,14 @@ impl MockNode {
     /// Make every receipt report a revert (or a success again).
     pub(crate) fn revert_receipts(&self, revert: bool) {
         self.state.lock().unwrap().receipts_revert = revert;
+    }
+
+    /// Make `eth_estimateGas` of every call whose data starts with `selector`
+    /// answer `execution reverted`, as a node does for a call the chain would
+    /// refuse: the send path then sends nothing for it. Other calls still go
+    /// through, so one step of a flow can fail while the rest land.
+    pub(crate) fn revert_estimates(&self, selector: [u8; 4]) {
+        self.state.lock().unwrap().estimate_reverts.push(selector);
     }
 
     /// Every transaction handed to the node, in order.
@@ -199,7 +234,7 @@ fn hex_quantity(n: u128) -> Value {
     json!(format!("{n:#x}"))
 }
 
-fn receipt_json(hash: &str, reverted: bool) -> Value {
+fn receipt_json(hash: &str, reverted: bool, logs: &[Value]) -> Value {
     let zero32 = format!("0x{}", hex::encode([0u8; 32]));
     json!({
         "transactionHash": hash,
@@ -215,7 +250,16 @@ fn receipt_json(hash: &str, reverted: bool) -> Value {
         "status": if reverted { "0x0" } else { "0x1" },
         "type": "0x0",
         "effectiveGasPrice": "0x3b9aca00",
-        "logs": []
+        "logs": logs.iter().enumerate().map(|(i, log)| {
+            let mut log = log.clone();
+            log["transactionHash"] = json!(hash);
+            log["transactionIndex"] = json!("0x0");
+            log["blockHash"] = json!(zero32);
+            log["blockNumber"] = hex_quantity(TIP as u128);
+            log["logIndex"] = hex_quantity(i as u128);
+            log["removed"] = json!(false);
+            log
+        }).collect::<Vec<_>>()
     })
 }
 
@@ -283,7 +327,22 @@ fn answer(state: &Mutex<NodeState>, req: &Value) -> Value {
             "baseFeePerGas": ["0x3b9aca00", "0x3b9aca00"],
             "gasUsedRatio": [0.5]
         }),
-        "eth_estimateGas" => json!("0x30000"),
+        "eth_estimateGas" => {
+            let input = params[0]
+                .get("input")
+                .or_else(|| params[0].get("data"))
+                .and_then(Value::as_str)
+                .and_then(|i| hex::decode(i.trim_start_matches("0x")).ok())
+                .unwrap_or_default();
+            if state
+                .estimate_reverts
+                .iter()
+                .any(|selector| input.starts_with(selector))
+            {
+                return rpc_error(id, 3, "execution reverted");
+            }
+            json!("0x30000")
+        }
         "eth_blockNumber" => hex_quantity(TIP as u128),
         "eth_getBlockByNumber" => {
             let number = params[0]
@@ -295,6 +354,7 @@ fn answer(state: &Mutex<NodeState>, req: &Value) -> Value {
         "eth_getTransactionReceipt" => receipt_json(
             params[0].as_str().unwrap_or_default(),
             state.receipts_revert,
+            &state.receipt_logs,
         ),
         "eth_sendRawTransaction" => {
             let raw = params[0].as_str().unwrap_or_default();
@@ -338,7 +398,17 @@ fn answer(state: &Mutex<NodeState>, req: &Value) -> Value {
             let mut selector = [0u8; 4];
             selector.copy_from_slice(&input[..4]);
             state.reads.push((to, selector));
-            match state.calls.get(&(to, selector)).cloned() {
+            let sequenced = state
+                .call_sequences
+                .get_mut(&(to, selector))
+                .map(|answers| {
+                    if answers.len() > 1 {
+                        answers.remove(0)
+                    } else {
+                        answers[0].clone()
+                    }
+                });
+            match sequenced.or_else(|| state.calls.get(&(to, selector)).cloned()) {
                 Some(CallAnswer::Return(data)) => json!(format!("0x{}", hex::encode(data))),
                 Some(CallAnswer::Error { code, message }) => {
                     return rpc_error(id, code, &message);

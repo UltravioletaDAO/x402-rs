@@ -1,5 +1,17 @@
 # Changelog
 
+## [2.45.0] - 2026-09-27
+
+### `POST /register`
+
+- Solana: a half-minted identity is resumed only by a retry of the request that minted it (same `agentUri` and `recipient`, within 24 hours; the record lives in memory, like the EVM recovery record); any other match is `409` with `mint.errorCode = "held_identity_not_resumable"` and `mint.status = "not_minted"`, and nothing is sent.
+- Solana: a new mint goes out as one transaction or not at all. One that would not fit (more than 4 `metadata` entries, or over 1232 bytes with long values) is refused with `400` and `mint.errorCode = "mint_not_atomic"`, and a `metadata` key given twice with `400 metadata_duplicate_key`, both before anything is read or sent.
+- EVM: when the delivery after a mint fails (the transfer reverts, or its receipt is fine but `ownerOf` is not the recipient afterwards), the identity is retired on the spot (its `agentURI` is set to `https://facilitator.ultravioletadao.xyz/erc8004/retired`, from the wallet that minted it) before the recovery record is written; not when the agent id came from the `totalSupply` fallback instead of the mint's `Registered` event. Repeating the same request within 24 hours puts the URI back and retries the delivery of that same identity: if the URI cannot be put back it is not delivered, and if the delivery fails again it is retired again. The response's `error` says whether the retire went through.
+
+### `scripts/erc8004_custodied_identities.py`
+
+- Sends its own `User-Agent` (public nodes answer `403` to urllib's), retries a call that got no answer (a dropped connection, a timeout, `429`, `5xx`) up to three times with a growing wait, halves an `eth_getLogs` range that times out as it already did one the node refuses, and when the node cannot answer `eth_getCode` at old blocks, including with an HTTP `400`, says to pass `--from-block`. A read that never got an answer stops the run rather than being read as a burned token.
+
 ## [2.44.0] - 2026-09-26
 
 ### `POST /register` no longer mints what it should not

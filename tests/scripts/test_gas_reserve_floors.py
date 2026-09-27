@@ -63,5 +63,21 @@ class RenderHcl(unittest.TestCase):
             floors.render_hcl(self.ROWS, "t", ["polygon-mainnet"])
 
 
+class AlarmWarnSettles(unittest.TestCase):
+    """Each chain's floor is priced at its own warning, read from alerts.tf."""
+
+    def test_reads_the_map_alerts_tf_declares(self):
+        alerts = (floors.REPO / "terraform" / "environments" / "production" / "alerts.tf").read_text(
+            encoding="utf-8")
+        warn = floors.alarm_warn_settles(alerts)
+        self.assertEqual(warn["ethereum-mainnet"], 20)
+        self.assertEqual(warn["base-mainnet"], 100)
+        self.assertEqual(set(warn) - {"hedera-mainnet"}, {chain for chain, _, _ in floors.CHAINS})
+
+    def test_a_missing_map_is_an_error(self):
+        with self.assertRaises(SystemExit):
+            floors.alarm_warn_settles("locals {\n  settle_gas_budget = 130000\n}\n")
+
+
 if __name__ == "__main__":
     unittest.main()

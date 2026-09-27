@@ -1,19 +1,25 @@
 #!/usr/bin/env python3
 """Measure the fee cap each alarmed EVM mainnet reserves per settle, and the
-low-balance floor that buys `warnSettles` settles at it.
+low-balance floor that buys that chain's `warnSettles` settles at it.
 
-`GET /health/ready` calls a signer `degraded` below DEFAULT_WARN_SETTLES
-settles, each reserving SETTLE_GAS_BUDGET gas at the fee cap the send path
-would set (`quote_fee_cap` in src/chain/evm.rs). The CloudWatch alarm
+`GET /health/ready` calls a signer `degraded` at its chain's `warnSettles`
+settles or fewer, each reserving SETTLE_GAS_BUDGET gas at the fee cap the send
+path would set (`quote_fee_cap` in src/chain/evm.rs). The CloudWatch alarm
 `chain_balance_low` (terraform/environments/production/alerts.tf) is meant to
 fire at the same point, so its floor is
 
-    min_native = SETTLE_GAS_BUDGET * fee_cap * warnSettles
+    min_native = SETTLE_GAS_BUDGET * fee_cap * warnSettles(chain)
 
-This script reads both constants out of src/readiness.rs, prices the fee cap
+This script reads SETTLE_GAS_BUDGET out of src/readiness.rs and each chain's
+`warnSettles` out of `warn_settles_by_chain` in alerts.tf, prices the fee cap
 the way src/chain/evm.rs does, and prints the `evm_fee_cap_gwei` map that
 alerts.tf derives the floors from. The fee cap moves with the chain; the map is
 a dated reading, and /health/ready stays the live figure.
+
+A chain's `warnSettles` depends on its fee cap (`warn_settles_for` in
+src/readiness.rs). After pasting a new map, run
+`cargo test readiness::tests::the_low_balance_alarm_is_derived_from_these_thresholds`:
+it fails if `warn_settles_by_chain` no longer matches, and prints the one to paste.
 
 Read-only: eth_chainId, eth_feeHistory and eth_maxPriorityFeePerGas against
 public RPCs. No key, no transaction.
@@ -75,6 +81,14 @@ def readiness_constants() -> tuple[int, int]:
         return int(match.group(1).replace("_", ""))
 
     return const("SETTLE_GAS_BUDGET"), const("DEFAULT_WARN_SETTLES")
+
+
+def alarm_warn_settles(alerts: str) -> dict[str, int]:
+    """`warn_settles_by_chain` from the text of alerts.tf: each chain's warning."""
+    block = re.search(r"warn_settles_by_chain = \{(.*?)\n\s*\}", alerts, re.S)
+    if not block:
+        sys.exit("warn_settles_by_chain not found in alerts.tf")
+    return {key: int(value) for key, value in re.findall(r'"([a-z0-9-]+)"\s*=\s*(\d+)', block.group(1))}
 
 
 def fee_cap(base_fee: int, rpc_priority: int | None, floor: tuple[int, int, int]) -> int:
@@ -149,7 +163,9 @@ def main() -> int:
     out.add_argument("--json", action="store_true", help="print JSON")
     args = parser.parse_args()
 
-    budget, warn = readiness_constants()
+    budget, ceiling = readiness_constants()
+    alerts = (REPO / "terraform" / "environments" / "production" / "alerts.tf").read_text(encoding="utf-8")
+    warn_by_chain = alarm_warn_settles(alerts)
     measured_at = time.strftime("%Y-%m-%dT%H:%MZ", time.gmtime())
     rows, failed = [], []
     for key, chain_id, url in CHAINS:
@@ -165,14 +181,15 @@ def main() -> int:
             continue
         per_settle = Decimal(budget) * Decimal(row["fee_cap_wei"]) / Decimal(10**18)
         row["per_settle_native"] = float(per_settle)
-        row["floor_native"] = float(per_settle * warn)
+        # A chain alerts.tf does not list yet is shown at the ceiling.
+        row["warn_settles"] = warn_by_chain.get(key, ceiling)
+        row["floor_native"] = float(per_settle * row["warn_settles"])
         rows.append(row)
         time.sleep(0.3)
 
     if args.json:
         print(json.dumps({"measured_at": measured_at, "settle_gas_budget": budget,
-                          "warn_settles": warn, "chains": rows,
-                          "unreadable": [k for k, _ in failed]}, indent=2))
+                          "chains": rows, "unreadable": [k for k, _ in failed]}, indent=2))
     elif args.hcl:
         try:
             print(render_hcl(rows, measured_at, [k for k, _ in failed]))
@@ -180,11 +197,11 @@ def main() -> int:
             print(f"[FAIL] {error}", file=sys.stderr)
             return 1
     else:
-        print(f"measured {measured_at}; SETTLE_GAS_BUDGET={budget}, warnSettles={warn}")
-        print(f"{'chain':<20} {'base gwei':>12} {'fee cap gwei':>13} {'per settle':>14} {'floor':>12}")
+        print(f"measured {measured_at}; SETTLE_GAS_BUDGET={budget}, warnSettles per chain from alerts.tf")
+        print(f"{'chain':<20} {'base gwei':>12} {'fee cap gwei':>13} {'per settle':>14} {'warn':>5} {'floor':>12}")
         for r in rows:
             print(f"{r['chain']:<20} {r['base_fee_wei'] / GWEI:>12.6g} {r['fee_cap_gwei']:>13g} "
-                  f"{r['per_settle_native']:>14.6g} {r['floor_native']:>12.6g}")
+                  f"{r['per_settle_native']:>14.6g} {r['warn_settles']:>5} {r['floor_native']:>12.6g}")
     for key, reason in failed:
         print(f"[WARN] {key}: not measured ({reason})", file=sys.stderr)
     return 1 if failed else 0

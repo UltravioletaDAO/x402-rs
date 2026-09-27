@@ -126,8 +126,11 @@ locals {
   #
   #   min_native = max(SETTLE_GAS_BUDGET * fee_cap * warnSettles(chain), declared floor)
   #
-  # At the derived floor /health/ready already calls the signer `degraded`, so
-  # this alarm pages no later than that moment. Until 2.39.2 each floor was typed
+  # /health/ready calls the signer `degraded` at warnSettles settles or fewer,
+  # that is from a balance under (warnSettles + 1) settles; this alarm
+  # (LessThanThreshold on the derived floor) fires under warnSettles settles:
+  # one settle after that moment, plus the evaluation periods below, where the
+  # derived floor is the threshold. Until 2.39.2 each floor was typed
   # by hand, and the description promised "roughly 100 settles" that the numbers
   # did not always buy: Arc's 0.1 USDC default bought about 19, Ethereum's 0.0035
   # ETH about 5, Hedera's 10 HBAR 10.

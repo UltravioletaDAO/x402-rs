@@ -250,7 +250,21 @@ impl ReadinessConfig {
             };
             match raw.trim().parse::<u64>() {
                 Ok(settles) => {
-                    warn_overrides.insert(network, settles.max(min_settles));
+                    let settles = settles.max(min_settles);
+                    // Two spellings of one network (`_BASE` and `_BASE_MAINNET`,
+                    // `_BSC` and `_BNB`): the smaller, whatever order the
+                    // variables come in, and said out loud.
+                    if let Some(held) = warn_overrides.get(&network) {
+                        tracing::warn!(
+                            %network,
+                            variable = %name,
+                            "[WARN] readiness: two overrides name the same network; the smaller applies"
+                        );
+                        if *held <= settles {
+                            continue;
+                        }
+                    }
+                    warn_overrides.insert(network, settles);
                 }
                 Err(_) => tracing::warn!(
                     variable = %name,
@@ -1050,6 +1064,10 @@ mod tests {
             .iter()
             .map(|cap| evm_warn_settles(Network::Base, *cap, &config))
             .collect();
+        // $20 over 130k gas at each cap and ETH at the table's price, rounded
+        // down: 5200+ and 572 clamp to 100, 56.6, 28.6, then 5.7 and 0.57
+        // clamp to 20. Pinned, so a different budget or rounding shows.
+        assert_eq!(warned, [100, 100, 56, 28, 20, 20]);
         assert_eq!(warned.first(), Some(&DEFAULT_WARN_SETTLES), "{warned:?}");
         assert_eq!(
             warned.last(),
@@ -1091,6 +1109,11 @@ mod tests {
             config.warn_overrides
         );
         assert_eq!(
+            config.warn_overrides[&Network::Base],
+            DEFAULT_MIN_SETTLES,
+            "raised where it is read, not only where it is applied"
+        );
+        assert_eq!(
             evm_warn_settles(Network::Ethereum, ETHEREUM_FEE_CAP, &config),
             50
         );
@@ -1116,6 +1139,31 @@ mod tests {
             evm_warn_settles(Network::Arbitrum, 41_100_000, &config),
             100
         );
+    }
+
+    /// Two variables that name one network (`_BASE` and `_BASE_MAINNET`,
+    /// `_BSC` and `_BNB`): the smaller applies, whatever order they arrive in.
+    /// `from_vars` walks a `HashMap`, whose order changes from one instance to
+    /// the next, so it is built many times: a winner picked by that order
+    /// would not come out the same every time.
+    #[test]
+    fn two_spellings_of_one_network_apply_the_smaller() {
+        for _ in 0..64 {
+            let config = vars(&[
+                ("HEALTH_READY_WARN_SETTLES_BASE", "70"),
+                ("HEALTH_READY_WARN_SETTLES_BASE_MAINNET", "30"),
+                ("HEALTH_READY_WARN_SETTLES_BSC", "25"),
+                ("HEALTH_READY_WARN_SETTLES_BNB", "60"),
+            ]);
+            assert_eq!(
+                config.warn_overrides.len(),
+                2,
+                "{:?}",
+                config.warn_overrides
+            );
+            assert_eq!(config.warn_overrides[&Network::Base], 30);
+            assert_eq!(config.warn_overrides[&Network::Bsc], 25);
+        }
     }
 
     /// The global `HEALTH_READY_WARN_SETTLES` is still the ceiling, and the
@@ -1664,6 +1712,10 @@ mod tests {
             Some(DEFAULT_WARN_SETTLES)
         );
         assert_eq!(key.warn_settles, None, "no warning without a reading");
+        // Priced at the max fee it is given, not at the default: 10 HBAR at
+        // $0.094 is $0.94 a settle, and $20 buys 21 of them.
+        let dear = hedera_report(network, Some(Ok(500)), 1_000_000_000, &config());
+        assert_eq!(dear.warn_settles, Some(21));
     }
 
     /// A native Hedera ledger whose health check fails is listed with its
@@ -1945,6 +1997,20 @@ mod tests {
                 && min_native.contains("local.declared_floors"),
             "min_native must be max(derived at the chain's own warning, declared): {min_native}"
         );
+        // Exact, spacing aside: a `contains` let `* 5` after the warning, a
+        // literal 100 in `settles` or in the description's `warn_settles`
+        // through (refutation of 2.46.0).
+        let squeeze = |s: &str| s.split_whitespace().collect::<String>();
+        for expected in [
+            "min_native = max(price.cost * local.warn_settles_by_chain[chain], lookup(local.declared_floors, chain, 0))",
+            "settles = max(local.warn_settles_by_chain[chain], floor(lookup(local.declared_floors, chain, 0) / max(price.cost, 1e-18)))",
+            "warn_settles = local.warn_settles_by_chain[chain]",
+        ] {
+            assert!(
+                alerts.lines().any(|line| squeeze(line) == squeeze(expected)),
+                "alerts.tf no longer reads `{expected}`"
+            );
+        }
 
         let tfvars = std::fs::read_to_string(format!("{dir}/production.auto.tfvars"))
             .expect("production.auto.tfvars");

@@ -11216,9 +11216,11 @@ fn register_refusal(
 /// Four things changed, in the order the request meets them:
 ///
 /// 1. **A retry is recognised as one.** Before minting, the agents the fee payer
-///    still holds are scanned for this `agentUri`. A match is resumed, not
-///    duplicated. An inconclusive scan is a 503 -- minting past it is precisely
-///    how a retry became a second orphan.
+///    still holds are scanned for this `agentUri`. A match the stranded record
+///    ties to this `recipient` is resumed, not duplicated; any other match is a
+///    `409 held_identity_not_resumable` with nothing sent. An inconclusive scan
+///    is a 503 -- minting past it is precisely how a retry became a second
+///    orphan.
 /// 2. **The fee payer's balance is checked against what this mint costs**, rent
 ///    included, so an underfunded wallet is `fee_payer_insufficient_balance`
 ///    with both numbers rather than an RPC `-32002 Transaction simulation
@@ -11258,6 +11260,29 @@ async fn run_solana_registration(
         None => None,
     };
 
+    let metadata: Vec<(String, Vec<u8>)> = request
+        .metadata
+        .as_deref()
+        .unwrap_or_default()
+        .iter()
+        .map(|entry| (entry.key.clone(), entry.value.as_bytes().to_vec()))
+        .collect();
+
+    // Each entry is an account derived from its key: the second of two equal
+    // keys would fail the mint after the identity exists.
+    if let Some(key) = mint::duplicate_metadata_key(&metadata) {
+        return solana_mint_response(
+            network,
+            StatusCode::BAD_REQUEST,
+            mint::refusal(
+                fee_payer_pubkey,
+                mint::ERROR_METADATA_DUPLICATE_KEY,
+                format!("metadata key {key:?} appears more than once; each key may appear once"),
+                None,
+            ),
+        );
+    }
+
     let programs = match solana_erc8004::get_program_ids(&network) {
         Some(prog) => prog,
         None => {
@@ -11294,20 +11319,14 @@ async fn run_solana_registration(
             }
         };
 
-    let metadata: Vec<(String, Vec<u8>)> = request
-        .metadata
-        .as_deref()
-        .unwrap_or_default()
-        .iter()
-        .map(|entry| (entry.key.clone(), entry.value.as_bytes().to_vec()))
-        .collect();
-
-    // ── Mint a new identity, or finish one this facilitator already holds? ──
+    // ── Mint a new identity, finish one this facilitator already holds, or neither? ──
     //
     // The stranded assets are owned by the fee payer, so they are invisible to a
     // lookup by the agent's own address -- that is why `GET /identity/solana/
     // owner/<agent>` correctly answered 404 while an identity for that agent sat
-    // in the registry. The link back to the request is the `agentUri`.
+    // in the registry. The `agentUri` finds the candidates; the stranded record
+    // (`register_jobs::stranded_solana`) says whom each was minted for, and only
+    // that recipient resumes it.
     let decision = if request.agent_uri.is_empty() {
         mint::MintDecision::Fresh
     } else {
@@ -11318,7 +11337,13 @@ async fn run_solana_registration(
         )
         .await
         {
-            Ok(held) => mint::decide_mint(&request.agent_uri, &fee_payer_pubkey, &held),
+            Ok(held) => mint::decide_mint(
+                &request.agent_uri,
+                recipient.as_ref(),
+                &fee_payer_pubkey,
+                &held,
+                |asset| register_jobs::stranded_solana(network, asset),
+            ),
             Err(e) => {
                 // No verdict is not "nothing there". Minting on an inconclusive
                 // scan is exactly what turned a retry into a second orphan, and
@@ -11350,12 +11375,41 @@ async fn run_solana_registration(
     let asset_keypair = match decision {
         mint::MintDecision::Fresh => Some(solana_sdk::signature::Keypair::new()),
         mint::MintDecision::Resume { .. } => None,
+        mint::MintDecision::Refuse { asset } => {
+            // Nothing is sent, and nothing is minted in its place: a fresh mint
+            // would give this agentUri a second identity. The asset stays in
+            // the fee payer's name for the operator.
+            warn!(
+                network = %network,
+                agent_id = %asset,
+                recorded_for_another_recipient =
+                    register_jobs::stranded_solana(network, &asset).is_some(),
+                "The facilitator holds an identity with this agentUri that no record ties to \
+                 this recipient; not resuming it and not minting another"
+            );
+            return solana_mint_response(
+                network,
+                StatusCode::CONFLICT,
+                mint::refusal(
+                    fee_payer_pubkey,
+                    mint::ERROR_HELD_IDENTITY_NOT_RESUMABLE,
+                    format!(
+                        "The facilitator already holds an identity with this agentUri on {}, and \
+                         has no record of minting it for this recipient, so it was not resumed \
+                         and no other identity was minted. Nothing was sent. It is left for \
+                         manual recovery; repeating the request gets the same answer.",
+                        network
+                    ),
+                    None,
+                ),
+            );
+        }
     };
     let resumed = asset_keypair.is_none();
     let asset_pubkey = match (&asset_keypair, decision) {
         (Some(kp), _) => kp.pubkey(),
         (None, mint::MintDecision::Resume { asset }) => asset,
-        (None, mint::MintDecision::Fresh) => unreachable!("Fresh always mints a keypair"),
+        (None, _) => unreachable!("Fresh always mints a keypair and Refuse has returned"),
     };
 
     // A resumed identity may already have its ATOM stats: the first attempt can
@@ -11411,6 +11465,28 @@ async fn run_solana_registration(
     };
     let metadata_skipped = resumed && !metadata.is_empty();
 
+    // A new mint goes out as one transaction or not at all. Sent in stages, a
+    // step the program refuses would leave the identity half minted in the fee
+    // payer's name, and what makes a mint too big is the request's own metadata.
+    if let (false, Some(reason)) = (resumed, plan.not_atomic) {
+        return solana_mint_response(
+            network,
+            StatusCode::BAD_REQUEST,
+            mint::refusal(
+                fee_payer_pubkey,
+                mint::ERROR_MINT_NOT_ATOMIC,
+                format!(
+                    "This mint does not fit one Solana transaction ({reason}), so it is not sent: \
+                     at most {} metadata entries, and the whole mint within {} bytes. Nothing \
+                     was sent.",
+                    mint::MAX_METADATA_ENTRIES,
+                    mint::PACKET_DATA_SIZE,
+                ),
+                None,
+            ),
+        );
+    }
+
     info!(
         network = %network,
         agent_id = %asset_pubkey,
@@ -11425,7 +11501,7 @@ async fn run_solana_registration(
         warn!(
             network = %network, agent_id = %asset_pubkey, %reason,
             "Mint does not fit one transaction; sending it in stages, which can leave it \
-             half finished. A retry with the same agentUri resumes it."
+             half finished. A retry of the same request, same recipient, resumes it."
         );
     }
 
@@ -11541,6 +11617,7 @@ async fn run_solana_registration(
             network = %network, agent_id = %asset_pubkey,
             "Identity already complete; nothing to send"
         );
+        remember_whom_it_is_for(network, &outcome);
         return solana_mint_response(network, StatusCode::OK, outcome);
     }
 
@@ -11549,6 +11626,7 @@ async fn run_solana_registration(
     } else {
         send_solana_mint_in_stages(p, network, &plan, &asset_keypair, &mut outcome).await;
     }
+    remember_whom_it_is_for(network, &outcome);
 
     let status = match outcome.status() {
         mint::MintStatus::Complete => StatusCode::OK,
@@ -11560,6 +11638,27 @@ async fn run_solana_registration(
         mint::MintStatus::NotMinted => StatusCode::INTERNAL_SERVER_ERROR,
     };
     solana_mint_response(network, status, outcome)
+}
+
+/// Keep the stranded record in step with where a Solana mint ended.
+///
+/// An identity left in the fee payer's name (`pending_stats`,
+/// `pending_transfer`) is recorded against the recipient of the request that
+/// minted it, which is the only recipient a later call may resume it for
+/// ([`crate::erc8004::solana_mint::decide_mint`]); a failed resume refreshes the
+/// record. A delivered identity drops it.
+fn remember_whom_it_is_for(
+    network: crate::network::Network,
+    outcome: &crate::erc8004::solana_mint::MintOutcome,
+) {
+    use crate::erc8004::solana_mint::MintStatus;
+    match (outcome.status(), outcome.recipient) {
+        (MintStatus::PendingStats | MintStatus::PendingTransfer, Some(recipient)) => {
+            register_jobs::record_stranded_solana(network, outcome.asset, recipient);
+        }
+        (MintStatus::Complete, _) => register_jobs::clear_stranded_solana(network, &outcome.asset),
+        _ => {}
+    }
 }
 
 /// Send the whole mint as one transaction. Nothing lands unless all of it does.
@@ -12199,6 +12298,9 @@ where
             })
     });
 
+    // Only the mint's own `Registered` event ties this id to this mint; the
+    // `totalSupply` fallback can name another registration in flight.
+    let agent_id_from_event = agent_id_num.is_some();
     let agent_id = match agent_id_num {
         Some(id) => id,
         None => {
@@ -12304,6 +12406,30 @@ where
             }
             Err(e) => {
                 error!(error = %e, "Transfer failed - agent registered but NOT transferred");
+                // The identity stays in our wallet with the caller's agentURI
+                // until a transfer lands. Retire it first, before the record
+                // below: the recovery puts the URI back right before it
+                // delivers the identity again. Not when the id is only
+                // `totalSupply`'s guess: that could retire somebody else's.
+                let retired = if agent_id_from_event {
+                    retire_undelivered(
+                        provider,
+                        contracts.identity_registry,
+                        facilitator_address,
+                        agent_id,
+                        network,
+                    )
+                    .await
+                } else {
+                    warn!(
+                        network = %network, agent_id,
+                        "Undelivered agent NFT not retired: its id came from totalSupply, not \
+                         from the mint's Registered event"
+                    );
+                    "It was not retired: its id came from totalSupply, not from the mint's \
+                     event."
+                        .to_string()
+                };
                 // FAC-1 #2: remember the stranded self-mint keyed by the exact
                 // triple so a later retry for this recipient+uri reclaims THIS
                 // token instead of minting a fresh one. `recovery_key` is `Some`
@@ -12329,8 +12455,8 @@ where
                         transfer_transaction: None,
                         owner: Some(final_owner),
                         error: Some(format!(
-                            "Agent registered (id={}) but transfer failed: {}",
-                            agent_id_str, e
+                            "Agent registered (id={}) but transfer failed: {}. {}",
+                            agent_id_str, e, retired
                         )),
                         network,
                         mint: None,
@@ -12390,6 +12516,55 @@ enum StrandedRecovery {
     Transient,
 }
 
+/// Retire an identity this registration minted and could not deliver: point
+/// its `agentURI` at [`crate::erc8004::retire::RETIRED_URI`], from the wallet
+/// that holds it.
+///
+/// Until a transfer lands the identity is in our wallet with the caller's URI,
+/// and the registry shows it as ours. It is retired at once rather than left
+/// for an operator; the FAC-1 #2 recovery puts the caller's URI back right
+/// before it delivers the identity again. A retire that fails is logged at
+/// error level and reported, never fatal: the registration already failed.
+///
+/// Returns the sentence the response adds about it.
+async fn retire_undelivered(
+    provider: &crate::chain::evm::EvmProvider,
+    registry: alloy::primitives::Address,
+    holder: alloy::primitives::Address,
+    agent_id: u64,
+    network: crate::network::Network,
+) -> String {
+    use crate::erc8004::retire::{set_agent_uri, RETIRED_URI};
+    match set_agent_uri(
+        provider,
+        registry,
+        alloy::primitives::U256::from(agent_id),
+        holder,
+        RETIRED_URI,
+        network,
+        evm_receipt_timeout(&network),
+    )
+    .await
+    {
+        Ok(tx) => {
+            info!(network = %network, agent_id, %tx, "Undelivered agent NFT retired");
+            format!(
+                "The identity was retired (its agentURI now points at {RETIRED_URI}) while the \
+                 facilitator holds it; repeating this same request puts the agentURI back and \
+                 retries the delivery."
+            )
+        }
+        Err(e) => {
+            error!(
+                network = %network, agent_id, error = %e,
+                "Undelivered agent NFT could not be retired; it is held by the facilitator with \
+                 the caller's agentURI"
+            );
+            format!("Retiring it failed too ({e}).")
+        }
+    }
+}
+
 /// Attempt to reclaim a stranded self-minted agent NFT and hand it to the
 /// recipient, instead of minting a new one (FAC-1 #2).
 ///
@@ -12400,7 +12575,10 @@ enum StrandedRecovery {
 /// left the wallet or that we do not own), and (b) the token's `tokenURI`
 /// byte-exactly matches the requested `agentURI` (never case-folded — IPFS CIDs
 /// and URL paths are case-sensitive), so a registry whose `tokenURI` is not the
-/// raw `agentURI` simply degrades to minting.
+/// raw `agentURI` simply degrades to minting. (b) also accepts the retirement
+/// URI, which is what [`retire_undelivered`] left on it: that identity gets the
+/// requested `agentURI` back before the transfer, and is retired again if the
+/// transfer fails.
 async fn try_recover_stranded_nft(
     provider: &crate::chain::evm::EvmProvider,
     registry: alloy::primitives::Address,
@@ -12431,9 +12609,11 @@ async fn try_recover_stranded_nft(
     }
 
     // (b) tokenURI must byte-match this request's agentURI (trim surrounding
-    //     whitespace only; never case-fold).
-    match identity_registry.tokenURI(id).call().await {
-        Ok(on_chain_uri) if on_chain_uri.trim() == agent_uri.trim() => {}
+    //     whitespace only; never case-fold), or be the retirement URI that
+    //     `retire_undelivered` left on it.
+    let retired = match identity_registry.tokenURI(id).call().await {
+        Ok(on_chain_uri) if on_chain_uri.trim() == agent_uri.trim() => false,
+        Ok(on_chain_uri) if on_chain_uri == crate::erc8004::retire::RETIRED_URI => true,
         Ok(on_chain_uri) => {
             warn!(
                 agent_id,
@@ -12446,9 +12626,28 @@ async fn try_recover_stranded_nft(
             warn!(agent_id, error = %e, "Stranded recovery: tokenURI read failed; will mint fresh");
             return StrandedRecovery::Transient;
         }
+    };
+
+    // (c) A retired identity gets the requested agentURI back first: after the
+    //     transfer only its new owner could change it.
+    if retired {
+        if let Err(e) = crate::erc8004::retire::set_agent_uri(
+            provider,
+            registry,
+            id,
+            facilitator,
+            agent_uri,
+            network,
+            evm_receipt_timeout(&network),
+        )
+        .await
+        {
+            warn!(agent_id, error = %e, "Stranded recovery: could not restore the agentURI; will mint fresh");
+            return StrandedRecovery::Transient;
+        }
     }
 
-    // (c) Transfer the recovered NFT to the recipient (on-chain success checked).
+    // (d) Transfer the recovered NFT to the recipient (on-chain success checked).
     match transfer_agent_nft(
         provider,
         registry,
@@ -12462,6 +12661,9 @@ async fn try_recover_stranded_nft(
         Ok(tx) => StrandedRecovery::Recovered(tx),
         Err(e) => {
             warn!(agent_id, error = %e, "Stranded recovery: transfer failed; will mint fresh");
+            // Not delivered this time either: retired again, so it does not
+            // sit in our wallet with the requested agentURI.
+            retire_undelivered(provider, registry, facilitator, agent_id, network).await;
             StrandedRecovery::Transient
         }
     }
@@ -12469,7 +12671,8 @@ async fn try_recover_stranded_nft(
 
 /// Send a `safeTransferFrom` of an ERC-8004 agent NFT from the facilitator to a
 /// recipient, wait for the receipt (bounded by [`evm_receipt_timeout`]), and
-/// REQUIRE that the transaction actually succeeded on-chain.
+/// REQUIRE that the transaction actually succeeded on-chain and that
+/// `ownerOf(agent_id)` is the recipient afterwards.
 ///
 /// A reverted `safeTransferFrom` still yields a receipt, so `receipt.status()`
 /// MUST be checked — otherwise a non-delivery (e.g. a recipient contract without
@@ -12512,6 +12715,28 @@ async fn transfer_agent_nft(
             "Transfer reverted on-chain (tx {})",
             receipt.transaction_hash
         ));
+    }
+    // A successful receipt is not a delivery: the recipient's
+    // `onERC721Received` runs inside the transfer and can hand the token
+    // straight back. Only `ownerOf` says where it ended.
+    match identity_registry
+        .ownerOf(alloy::primitives::U256::from(agent_id))
+        .call()
+        .await
+    {
+        Ok(owner) if owner == to => {}
+        Ok(owner) => {
+            return Err(format!(
+                "Transfer mined (tx {}) but the NFT is held by {owner}, not the recipient",
+                receipt.transaction_hash
+            ));
+        }
+        Err(e) => {
+            return Err(format!(
+                "Transfer mined (tx {}) but its owner could not be read to confirm it: {e}",
+                receipt.transaction_hash
+            ));
+        }
     }
     Ok(crate::types::TransactionHash::Evm(
         receipt.transaction_hash.0,
@@ -20938,5 +21163,804 @@ mod erc8004_register_gate_tests {
             "recipient_screening_unavailable",
         );
         assert_eq!(doc["retryable"], true, "{doc}");
+    }
+
+    // ── An identity minted and not delivered is retired at once (EVM) ───────
+
+    /// A node where the gate passes (a plain address that holds no agent yet)
+    /// and the mint lands as agent `minted`, named by the `Registered` event of
+    /// its receipt.
+    async fn gate_where_the_mint_lands(
+        minted: u64,
+    ) -> (Gate, crate::payment_operator::test_rpc::MockNode) {
+        use crate::payment_operator::test_rpc::CallAnswer;
+        use alloy::sol_types::{SolCall, SolValue};
+        let (gate, node) = gate_on_node().await;
+        node.on_call(
+            registry(),
+            IIdentityRegistry::balanceOfCall::SELECTOR,
+            CallAnswer::Return(alloy::primitives::U256::ZERO.abi_encode()),
+        );
+        node.set_receipt_logs(vec![registered_log(minted)]);
+        (gate, node)
+    }
+
+    /// The `Registered(agentId, agentURI, owner)` log of a mint by us.
+    fn registered_log(agent_id: u64) -> serde_json::Value {
+        use alloy::sol_types::{SolEvent, SolValue};
+        let topics = [
+            IIdentityRegistry::Registered::SIGNATURE_HASH,
+            alloy::primitives::B256::from(alloy::primitives::U256::from(agent_id)),
+            pinned_signer().into_word(),
+        ];
+        json!({
+            "address": registry().to_string(),
+            "topics": topics.iter().map(|t| t.to_string()).collect::<Vec<_>>(),
+            "data": alloy::primitives::hex::encode_prefixed(
+                ("https://execution.market/agents/x".to_string(),).abi_encode_params()
+            ),
+        })
+    }
+
+    /// As [`gate_where_the_mint_lands`], and the transfer to the recipient is
+    /// refused at estimation, as a receiver that reverts makes it.
+    async fn gate_where_the_transfer_fails(
+        minted: u64,
+    ) -> (Gate, crate::payment_operator::test_rpc::MockNode) {
+        use alloy::sol_types::SolCall;
+        let (gate, node) = gate_where_the_mint_lands(minted).await;
+        node.revert_estimates(IIdentityRegistry::safeTransferFromCall::SELECTOR);
+        (gate, node)
+    }
+
+    /// The token ids of every `safeTransferFrom` the node was handed.
+    fn transferred_ids(node: &crate::payment_operator::test_rpc::MockNode) -> Vec<u64> {
+        use alloy::sol_types::SolCall;
+        node.sent()
+            .iter()
+            .filter_map(|tx| IIdentityRegistry::safeTransferFromCall::abi_decode(&tx.input).ok())
+            .map(|call| call.tokenId.to::<u64>())
+            .collect()
+    }
+
+    /// Script the registry to say the facilitator holds every identity, with
+    /// `uri` as its `tokenURI`.
+    fn held_by_us_with(node: &crate::payment_operator::test_rpc::MockNode, uri: &str) {
+        use crate::payment_operator::test_rpc::CallAnswer;
+        use alloy::sol_types::{SolCall, SolValue};
+        node.on_call(
+            registry(),
+            IIdentityRegistry::ownerOfCall::SELECTOR,
+            CallAnswer::Return(pinned_signer().abi_encode()),
+        );
+        node.on_call(
+            registry(),
+            IIdentityRegistry::tokenURICall::SELECTOR,
+            CallAnswer::Return((uri.to_string(),).abi_encode_params()),
+        );
+    }
+
+    fn pinned_signer() -> alloy::primitives::Address {
+        crate::payment_operator::test_rpc::fixed_wallet()
+            .default_signer()
+            .address()
+    }
+
+    /// `(agentId, newURI)` when `tx` is a `setAgentURI` to the registry.
+    fn set_agent_uri_of(tx: &crate::payment_operator::test_rpc::SentTx) -> Option<(u64, String)> {
+        use alloy::sol_types::SolCall;
+        if tx.to != Some(registry()) {
+            return None;
+        }
+        let call = IIdentityRegistry::setAgentURICall::abi_decode(&tx.input).ok()?;
+        Some((call.agentId.to::<u64>(), call.newURI))
+    }
+
+    fn reclaim_key(uri: &str) -> String {
+        let recipient: MixedAddress = serde_json::from_value(serde_json::json!(OWNER)).unwrap();
+        register_jobs::inflight_key(&Network::Base, uri, &Some(recipient)).unwrap()
+    }
+
+    /// The transfer fails after the mint: the identity is retired from the
+    /// wallet that minted it, and only then recorded for the same request to
+    /// retry. The transfer itself never left.
+    #[tokio::test]
+    async fn an_identity_whose_transfer_fails_is_retired_and_recorded() {
+        use crate::erc8004::retire::RETIRED_URI;
+        let uri = "https://execution.market/agents/gate-test-undelivered";
+        let (gate, node) = gate_where_the_transfer_fails(4_101).await;
+        let (status, doc) = register(&gate, body("base", uri, Some(OWNER))).await;
+
+        assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "{doc}");
+        assert_eq!(doc["agentId"], "4101", "{doc}");
+        assert!(doc["transferTransaction"].is_null(), "{doc}");
+        assert!(
+            doc["error"].as_str().unwrap().contains(RETIRED_URI),
+            "{doc}"
+        );
+        let sent = node.sent();
+        assert_eq!(sent.len(), 2, "the mint, then the retire: {sent:?}");
+        assert_eq!(set_agent_uri_of(&sent[0]), None, "{sent:?}");
+        assert_eq!(
+            set_agent_uri_of(&sent[1]),
+            Some((4_101, RETIRED_URI.to_string()))
+        );
+        assert_eq!(sent[1].from, pinned_signer());
+
+        let key = reclaim_key(uri);
+        assert_eq!(
+            register_jobs::get_stranded(&key).map(|s| s.agent_id),
+            Some(4_101)
+        );
+        register_jobs::clear_stranded(&key);
+    }
+
+    /// A retire the registry refuses is reported, and the record is still
+    /// written: the registration had already failed, the retire is best effort.
+    #[tokio::test]
+    async fn a_retire_that_fails_is_reported_and_the_identity_still_recorded() {
+        use alloy::sol_types::SolCall;
+        let uri = "https://execution.market/agents/gate-test-undelivered-unretired";
+        let (gate, node) = gate_where_the_transfer_fails(4_102).await;
+        node.revert_estimates(IIdentityRegistry::setAgentURICall::SELECTOR);
+        let (status, doc) = register(&gate, body("base", uri, Some(OWNER))).await;
+
+        assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "{doc}");
+        assert!(
+            doc["error"]
+                .as_str()
+                .unwrap()
+                .contains("Retiring it failed too"),
+            "{doc}"
+        );
+        assert_eq!(node.sent().len(), 1, "only the mint: {:?}", node.sent());
+        let key = reclaim_key(uri);
+        assert_eq!(
+            register_jobs::get_stranded(&key).map(|s| s.agent_id),
+            Some(4_102)
+        );
+        register_jobs::clear_stranded(&key);
+    }
+
+    /// The same request again: the retired identity gets its agentURI back,
+    /// then is delivered. No second mint, and the record is gone.
+    #[tokio::test]
+    async fn a_retired_stranded_identity_gets_its_uri_back_then_is_delivered() {
+        use crate::erc8004::retire::RETIRED_URI;
+        use crate::payment_operator::test_rpc::CallAnswer;
+        use alloy::sol_types::{SolCall, SolValue};
+        let uri = "https://execution.market/agents/gate-test-undelivered-recovered";
+        let (gate, node) = gate_on_node().await;
+        node.on_call(
+            registry(),
+            IIdentityRegistry::balanceOfCall::SELECTOR,
+            CallAnswer::Return(alloy::primitives::U256::ZERO.abi_encode()),
+        );
+        held_by_us_with(&node, RETIRED_URI);
+        // Ours when the recovery looks, the recipient's once the transfer lands.
+        let owner: alloy::primitives::Address = OWNER.parse().unwrap();
+        node.on_call_sequence(
+            registry(),
+            IIdentityRegistry::ownerOfCall::SELECTOR,
+            vec![
+                CallAnswer::Return(pinned_signer().abi_encode()),
+                CallAnswer::Return(owner.abi_encode()),
+            ],
+        );
+        let key = reclaim_key(uri);
+        register_jobs::record_stranded(key.clone(), 4_103, None);
+
+        let (status, doc) = register(&gate, body("base", uri, Some(OWNER))).await;
+        assert_eq!(status, StatusCode::OK, "{doc}");
+        assert_eq!(doc["success"], true, "{doc}");
+        assert_eq!(doc["agentId"], "4103", "{doc}");
+        let sent = node.sent();
+        assert_eq!(sent.len(), 2, "{sent:?}");
+        assert_eq!(set_agent_uri_of(&sent[0]), Some((4_103, uri.to_string())));
+        let transfer = IIdentityRegistry::safeTransferFromCall::abi_decode(&sent[1].input).unwrap();
+        assert_eq!(
+            transfer.to,
+            OWNER.parse::<alloy::primitives::Address>().unwrap()
+        );
+        assert_eq!(transfer.tokenId, alloy::primitives::U256::from(4_103));
+        assert!(register_jobs::get_stranded(&key).is_none());
+    }
+
+    /// If that delivery fails too, the identity is retired again before the
+    /// handler moves on (to a fresh mint, which is retired in turn).
+    #[tokio::test]
+    async fn a_recovery_whose_transfer_fails_again_retires_it_again() {
+        use crate::erc8004::retire::RETIRED_URI;
+        let uri = "https://execution.market/agents/gate-test-undelivered-twice";
+        let (gate, node) = gate_where_the_transfer_fails(4_105).await;
+        held_by_us_with(&node, RETIRED_URI);
+        let key = reclaim_key(uri);
+        register_jobs::record_stranded(key.clone(), 4_104, None);
+
+        let (status, doc) = register(&gate, body("base", uri, Some(OWNER))).await;
+        assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "{doc}");
+        let uris: Vec<_> = node.sent().iter().map(set_agent_uri_of).collect();
+        assert_eq!(
+            uris,
+            vec![
+                Some((4_104, uri.to_string())),
+                Some((4_104, RETIRED_URI.to_string())),
+                None, // the fresh mint
+                Some((4_105, RETIRED_URI.to_string())),
+            ]
+        );
+        assert_eq!(
+            register_jobs::get_stranded(&key).map(|s| s.agent_id),
+            Some(4_105)
+        );
+        register_jobs::clear_stranded(&key);
+    }
+
+    /// A receiver whose hook hands the token straight back: the transfer's
+    /// receipt is fine, but `ownerOf` is still us. That is a failed delivery:
+    /// retired and recorded like any other.
+    #[tokio::test]
+    async fn a_transfer_whose_token_comes_back_is_a_failed_delivery() {
+        use crate::erc8004::retire::RETIRED_URI;
+        use crate::payment_operator::test_rpc::CallAnswer;
+        use alloy::sol_types::{SolCall, SolValue};
+        let uri = "https://execution.market/agents/gate-test-hook-gives-it-back";
+        let (gate, node) = gate_where_the_mint_lands(4_106).await;
+        node.on_call(
+            registry(),
+            IIdentityRegistry::ownerOfCall::SELECTOR,
+            CallAnswer::Return(pinned_signer().abi_encode()),
+        );
+        let (status, doc) = register(&gate, body("base", uri, Some(OWNER))).await;
+
+        assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "{doc}");
+        assert!(doc["transferTransaction"].is_null(), "{doc}");
+        assert_ne!(doc["owner"], OWNER, "{doc}");
+        assert_eq!(transferred_ids(&node), vec![4_106]);
+        let sent = node.sent();
+        assert_eq!(
+            set_agent_uri_of(sent.last().unwrap()),
+            Some((4_106, RETIRED_URI.to_string())),
+            "{sent:?}"
+        );
+        let key = reclaim_key(uri);
+        assert_eq!(
+            register_jobs::get_stranded(&key).map(|s| s.agent_id),
+            Some(4_106)
+        );
+        register_jobs::clear_stranded(&key);
+    }
+
+    /// An owner that cannot be read after the transfer is no confirmation:
+    /// handled as a failed delivery. If it did land, the retire is refused at
+    /// estimation and a retry finds the recipient's identity.
+    #[tokio::test]
+    async fn an_unreadable_owner_after_the_transfer_is_not_a_delivery() {
+        use crate::erc8004::retire::RETIRED_URI;
+        use crate::payment_operator::test_rpc::CallAnswer;
+        use alloy::sol_types::SolCall;
+        let uri = "https://execution.market/agents/gate-test-owner-unreadable";
+        let (gate, node) = gate_where_the_mint_lands(4_112).await;
+        node.on_call(
+            registry(),
+            IIdentityRegistry::ownerOfCall::SELECTOR,
+            CallAnswer::Error {
+                code: -32005,
+                message: "rate limit exceeded".into(),
+            },
+        );
+        let (status, doc) = register(&gate, body("base", uri, Some(OWNER))).await;
+
+        assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "{doc}");
+        assert!(doc["transferTransaction"].is_null(), "{doc}");
+        let sent = node.sent();
+        assert_eq!(
+            set_agent_uri_of(sent.last().unwrap()),
+            Some((4_112, RETIRED_URI.to_string())),
+            "{sent:?}"
+        );
+        register_jobs::clear_stranded(&reclaim_key(uri));
+    }
+
+    /// Without the mint's `Registered` event the id is `totalSupply`'s guess
+    /// and could be another registration's: nothing is retired on it.
+    #[tokio::test]
+    async fn an_id_guessed_from_total_supply_is_never_retired() {
+        use crate::payment_operator::test_rpc::CallAnswer;
+        use alloy::sol_types::{SolCall, SolValue};
+        let uri = "https://execution.market/agents/gate-test-guessed-id";
+        let (gate, node) = gate_where_the_transfer_fails(4_111).await;
+        node.set_receipt_logs(vec![]);
+        node.on_call(
+            registry(),
+            IIdentityRegistry::totalSupplyCall::SELECTOR,
+            CallAnswer::Return(alloy::primitives::U256::from(4_111).abi_encode()),
+        );
+        let (status, doc) = register(&gate, body("base", uri, Some(OWNER))).await;
+
+        assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "{doc}");
+        assert_eq!(doc["agentId"], "4111", "{doc}");
+        assert!(
+            doc["error"].as_str().unwrap().contains("not retired"),
+            "{doc}"
+        );
+        let sent = node.sent();
+        assert_eq!(sent.len(), 1, "only the mint: {sent:?}");
+        assert!(sent.iter().all(|tx| set_agent_uri_of(tx).is_none()));
+        register_jobs::clear_stranded(&reclaim_key(uri));
+    }
+
+    /// A retired identity whose agentURI cannot be put back is not delivered:
+    /// it would reach its owner still pointing at the retirement document.
+    #[tokio::test]
+    async fn a_recovery_that_cannot_restore_the_uri_does_not_deliver() {
+        use crate::erc8004::retire::RETIRED_URI;
+        use alloy::sol_types::SolCall;
+        let uri = "https://execution.market/agents/gate-test-restore-fails";
+        let (gate, node) = gate_where_the_mint_lands(4_108).await;
+        held_by_us_with(&node, RETIRED_URI);
+        node.revert_estimates(IIdentityRegistry::setAgentURICall::SELECTOR);
+        let key = reclaim_key(uri);
+        register_jobs::record_stranded(key.clone(), 4_107, None);
+
+        register(&gate, body("base", uri, Some(OWNER))).await;
+        assert!(
+            !transferred_ids(&node).contains(&4_107),
+            "the retired identity was delivered: {:?}",
+            node.sent()
+        );
+        register_jobs::clear_stranded(&key);
+    }
+
+    /// A recorded identity whose tokenURI is neither the requested one nor the
+    /// retirement URI is not ours to re-point: the record is dropped and it is
+    /// never touched.
+    #[tokio::test]
+    async fn a_recorded_identity_with_a_foreign_uri_is_left_alone() {
+        let uri = "https://execution.market/agents/gate-test-foreign-uri";
+        let (gate, node) = gate_where_the_transfer_fails(4_110).await;
+        held_by_us_with(&node, "https://example.org/another-agent.json");
+        let key = reclaim_key(uri);
+        register_jobs::record_stranded(key.clone(), 4_109, None);
+
+        register(&gate, body("base", uri, Some(OWNER))).await;
+        let sent = node.sent();
+        assert!(!transferred_ids(&node).contains(&4_109), "{sent:?}");
+        assert!(
+            sent.iter()
+                .filter_map(set_agent_uri_of)
+                .all(|(id, _)| id != 4_109),
+            "{sent:?}"
+        );
+        // The fresh mint's own failed delivery replaced the stale record.
+        assert_eq!(
+            register_jobs::get_stranded(&key).map(|s| s.agent_id),
+            Some(4_110)
+        );
+        register_jobs::clear_stranded(&key);
+    }
+
+    // ── Solana: a held identity is resumed only for the recipient it was minted for ──
+
+    /// A scripted Solana JSON-RPC node: the registry's two config accounts, the
+    /// agents the fee payer holds, and a send path that confirms every
+    /// transaction until `refuse_from`, and refuses from there on. It records
+    /// every method asked for and every transaction handed to it.
+    #[derive(Clone)]
+    struct SolanaNode {
+        accounts: Arc<std::sync::Mutex<std::collections::HashMap<String, Vec<u8>>>>,
+        held: Arc<std::sync::Mutex<Vec<(String, Vec<u8>)>>>,
+        methods: Arc<std::sync::Mutex<Vec<String>>>,
+        sent: Arc<std::sync::Mutex<Vec<solana_sdk::transaction::Transaction>>>,
+        refuse_from: Arc<std::sync::Mutex<usize>>,
+    }
+
+    fn anchor_discriminator(name: &str) -> [u8; 8] {
+        let hash = solana_sdk::hash::hashv(&[format!("account:{name}").as_bytes()]);
+        hash.to_bytes()[..8].try_into().unwrap()
+    }
+
+    fn solana_programs() -> crate::erc8004::solana::SolanaErc8004Programs {
+        crate::erc8004::solana::get_program_ids(&Network::Solana).unwrap()
+    }
+
+    /// An `AgentAccount` as the registry stores it, owned by `owner`.
+    fn agent_account_bytes(
+        owner: &solana_sdk::pubkey::Pubkey,
+        asset: &solana_sdk::pubkey::Pubkey,
+        uri: &str,
+    ) -> Vec<u8> {
+        let mut data = anchor_discriminator("AgentAccount").to_vec();
+        data.extend([0u8; 32]); // collection
+        data.extend(owner.to_bytes()); // creator
+        data.extend(owner.to_bytes()); // owner
+        data.extend(asset.to_bytes());
+        data.extend([255, 1, 0]); // bump, atom_enabled, agent_wallet: None
+        for _ in 0..3 {
+            data.extend([0u8; 32]); // feedback / response / revoke digest
+            data.extend(0u64.to_le_bytes()); // and its count
+        }
+        data.extend([0, 0, 0]); // parent_asset: None, parent_locked, col_locked
+        for text in [uri, "Agent", ""] {
+            data.extend((text.len() as u32).to_le_bytes());
+            data.extend(text.as_bytes());
+        }
+        data
+    }
+
+    impl SolanaNode {
+        async fn start() -> (Self, String) {
+            use crate::erc8004::solana::{derive_registry_config_pda, derive_root_config_pda};
+            let registry = solana_programs().agent_registry;
+            let collection = solana_sdk::pubkey::Pubkey::new_unique();
+            let authority = solana_sdk::pubkey::Pubkey::new_unique();
+            let config = |name: &str| {
+                let mut data = anchor_discriminator(name).to_vec();
+                data.extend(collection.to_bytes());
+                data.extend(authority.to_bytes());
+                data.push(255);
+                data
+            };
+            let mut accounts = std::collections::HashMap::new();
+            accounts.insert(
+                derive_root_config_pda(&registry).0.to_string(),
+                config("RootConfig"),
+            );
+            accounts.insert(
+                derive_registry_config_pda(&registry, &collection)
+                    .0
+                    .to_string(),
+                config("RegistryConfig"),
+            );
+            let node = Self {
+                accounts: Arc::new(std::sync::Mutex::new(accounts)),
+                held: Arc::default(),
+                methods: Arc::default(),
+                sent: Arc::default(),
+                refuse_from: Arc::new(std::sync::Mutex::new(usize::MAX)),
+            };
+            let app = axum::Router::new()
+                .route("/", axum::routing::post(solana_rpc))
+                .with_state(node.clone());
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let url = format!("http://{}/", listener.local_addr().unwrap());
+            tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+            (node, url)
+        }
+
+        /// The fee payer holds `asset`, registered with `uri`.
+        fn hold(
+            &self,
+            fee_payer: &solana_sdk::pubkey::Pubkey,
+            asset: &solana_sdk::pubkey::Pubkey,
+            uri: &str,
+        ) {
+            let pda =
+                crate::erc8004::solana::derive_agent_pda(asset, &solana_programs().agent_registry)
+                    .0;
+            self.held
+                .lock()
+                .unwrap()
+                .push((pda.to_string(), agent_account_bytes(fee_payer, asset, uri)));
+        }
+
+        fn refuse_sends_from(&self, index: usize) {
+            *self.refuse_from.lock().unwrap() = index;
+        }
+
+        fn methods(&self) -> Vec<String> {
+            self.methods.lock().unwrap().clone()
+        }
+
+        fn sent(&self) -> Vec<solana_sdk::transaction::Transaction> {
+            self.sent.lock().unwrap().clone()
+        }
+    }
+
+    async fn solana_rpc(
+        State(node): State<SolanaNode>,
+        Json(req): Json<serde_json::Value>,
+    ) -> Json<serde_json::Value> {
+        use base64::Engine as _;
+        let b64 = base64::engine::general_purpose::STANDARD;
+        let id = req["id"].clone();
+        let method = req["method"].as_str().unwrap_or_default().to_string();
+        node.methods.lock().unwrap().push(method.clone());
+        let ok =
+            |result: serde_json::Value| Json(json!({"jsonrpc": "2.0", "id": id, "result": result}));
+        let registry = solana_programs().agent_registry.to_string();
+        let account = |data: &[u8]| {
+            json!({"data": [b64.encode(data), "base64"], "executable": false,
+                   "lamports": 10_000_000u64, "owner": registry, "rentEpoch": 0, "space": data.len()})
+        };
+        match method.as_str() {
+            "getVersion" => ok(json!({"solana-core": "2.3.0", "feature-set": 0})),
+            "getAccountInfo" => {
+                let key = req["params"][0].as_str().unwrap_or_default();
+                let value = node.accounts.lock().unwrap().get(key).map(|d| account(d));
+                ok(json!({"context": {"slot": 1}, "value": value}))
+            }
+            "getProgramAccounts" => ok(json!(node
+                .held
+                .lock()
+                .unwrap()
+                .iter()
+                .map(|(pda, data)| json!({"pubkey": pda, "account": account(data)}))
+                .collect::<Vec<_>>())),
+            "getBalance" => ok(json!({"context": {"slot": 1}, "value": 10_000_000_000u64})),
+            "getLatestBlockhash" => ok(json!({"context": {"slot": 1}, "value": {
+                "blockhash": solana_sdk::hash::Hash::default().to_string(),
+                "lastValidBlockHeight": 100}})),
+            "sendTransaction" => {
+                let wire = req["params"][0].as_str().unwrap_or_default();
+                let raw = if req["params"][1]["encoding"] == "base58" {
+                    bs58::decode(wire).into_vec().unwrap()
+                } else {
+                    b64.decode(wire).unwrap()
+                };
+                let tx: solana_sdk::transaction::Transaction = bincode::deserialize(&raw).unwrap();
+                let signature = tx.signatures[0].to_string();
+                let index = {
+                    let mut sent = node.sent.lock().unwrap();
+                    sent.push(tx);
+                    sent.len() - 1
+                };
+                if index >= *node.refuse_from.lock().unwrap() {
+                    return Json(json!({"jsonrpc": "2.0", "id": id, "error": {"code": -32002,
+                        "message": "Transaction simulation failed: Blockhash not found",
+                        "data": {"err": "BlockhashNotFound", "logs": []}}}));
+                }
+                ok(json!(signature))
+            }
+            "getSignatureStatuses" => ok(json!({"context": {"slot": 1}, "value": [{
+                "slot": 1, "confirmations": null, "err": null, "status": {"Ok": null},
+                "confirmationStatus": "finalized"}]})),
+            "isBlockhashValid" => ok(json!({"context": {"slot": 1}, "value": true})),
+            other => Json(json!({"jsonrpc": "2.0", "id": id,
+                "error": {"code": -32601, "message": format!("the stub does not answer {other}")}})),
+        }
+    }
+
+    async fn gate_on_solana_node() -> (Gate, SolanaNode, solana_sdk::pubkey::Pubkey) {
+        let (node, url) = SolanaNode::start().await;
+        let keypair = solana_sdk::signature::Keypair::new();
+        let fee_payer = solana_sdk::signer::Signer::pubkey(&keypair);
+        let provider = crate::chain::solana::SolanaProvider::try_new(
+            keypair,
+            url,
+            Network::Solana,
+            200_000,
+            1_000_000,
+        )
+        .unwrap();
+        let gate = Gate {
+            providers: Arc::new(Providers {
+                lookups: AtomicUsize::new(0),
+                provider: Some(NetworkProvider::Solana(provider)),
+            }),
+            lists: Lists::Clear,
+            screened: Arc::new(AtomicUsize::new(0)),
+        };
+        (gate, node, fee_payer)
+    }
+
+    fn assert_not_resumable(node: &SolanaNode, status: StatusCode, doc: &serde_json::Value) {
+        assert_eq!(status, StatusCode::CONFLICT, "{doc}");
+        assert_eq!(
+            doc["mint"]["errorCode"], "held_identity_not_resumable",
+            "{doc}"
+        );
+        assert_eq!(doc["mint"]["status"], "not_minted", "{doc}");
+        assert_eq!(doc["success"], false, "{doc}");
+        assert!(doc["agentId"].is_null() && doc["owner"].is_null(), "{doc}");
+        let methods = node.methods();
+        // The scan ran (so this is its verdict, not the gate's), and nothing
+        // after it did: no balance read, no send.
+        assert!(
+            methods.iter().any(|m| m == "getProgramAccounts"),
+            "{methods:?}"
+        );
+        assert!(
+            !methods
+                .iter()
+                .any(|m| m == "getBalance" || m == "sendTransaction"),
+            "{methods:?}"
+        );
+        assert!(node.sent().is_empty());
+    }
+
+    /// The fee payer holds an identity with this agentUri and nothing records
+    /// whom it was minted for: refused, not resumed and not minted again.
+    #[tokio::test]
+    async fn a_held_solana_identity_with_no_record_is_refused_with_nothing_sent() {
+        let (gate, node, fee_payer) = gate_on_solana_node().await;
+        let asset = solana_sdk::pubkey::Pubkey::new_unique();
+        let uri = "https://execution.market/agents/solana-held-unrecorded";
+        node.hold(&fee_payer, &asset, uri);
+        let recipient = solana_sdk::pubkey::Pubkey::new_unique().to_string();
+
+        let (status, doc) = register(&gate, body("solana", uri, Some(&recipient))).await;
+        assert_not_resumable(&node, status, &doc);
+    }
+
+    /// Recorded for one recipient: a request for another recipient is refused
+    /// and the record is left as it was; the recorded recipient resumes it, the
+    /// transfer names them, and the record goes.
+    #[tokio::test]
+    async fn only_the_recorded_recipient_resumes_a_held_solana_identity() {
+        let (gate, node, fee_payer) = gate_on_solana_node().await;
+        let asset = solana_sdk::pubkey::Pubkey::new_unique();
+        let uri = "https://execution.market/agents/solana-held-recorded";
+        node.hold(&fee_payer, &asset, uri);
+        let original = solana_sdk::pubkey::Pubkey::new_unique();
+        let other = solana_sdk::pubkey::Pubkey::new_unique();
+        register_jobs::record_stranded_solana(Network::Solana, asset, original);
+
+        let (status, doc) = register(&gate, body("solana", uri, Some(&other.to_string()))).await;
+        assert_not_resumable(&node, status, &doc);
+        assert_eq!(
+            register_jobs::stranded_solana(Network::Solana, &asset),
+            Some(original)
+        );
+
+        let (status, doc) = register(&gate, body("solana", uri, Some(&original.to_string()))).await;
+        assert_eq!(status, StatusCode::OK, "{doc}");
+        assert_eq!(doc["mint"]["status"], "complete", "{doc}");
+        assert_eq!(doc["mint"]["resumed"], true, "{doc}");
+        assert_eq!(doc["agentId"], asset.to_string(), "{doc}");
+        assert_eq!(doc["owner"], original.to_string(), "{doc}");
+        let sent = node.sent();
+        assert_eq!(sent.len(), 1, "one atomic resume");
+        let keys = &sent[0].message.account_keys;
+        assert!(
+            keys.contains(&original) && keys.contains(&asset),
+            "{keys:?}"
+        );
+        assert!(!keys.contains(&other), "{keys:?}");
+        assert_eq!(
+            register_jobs::stranded_solana(Network::Solana, &asset),
+            None
+        );
+    }
+
+    /// A resume that fails again keeps its record alive: it is written anew
+    /// with the recipient, so the next retry of the same request still finds
+    /// it after the first one's 24 hours would have run out.
+    #[tokio::test]
+    async fn a_failed_resume_keeps_the_record_for_the_next_retry() {
+        let (gate, node, fee_payer) = gate_on_solana_node().await;
+        let uri = "https://execution.market/agents/solana-resume-fails";
+        let asset = solana_sdk::pubkey::Pubkey::new_unique();
+        let recipient = solana_sdk::pubkey::Pubkey::new_unique();
+        node.hold(&fee_payer, &asset, uri);
+        register_jobs::record_stranded_solana(Network::Solana, asset, recipient);
+        register_jobs::age_stranded_solana(
+            Network::Solana,
+            &asset,
+            register_jobs::STRANDED_RECORD_TTL_SECONDS - 60,
+        );
+        node.refuse_sends_from(0);
+
+        let request = body("solana", uri, Some(&recipient.to_string()));
+        let (status, doc) = register(&gate, request.clone()).await;
+        assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "{doc}");
+        assert_eq!(doc["mint"]["status"], "pending_stats", "{doc}");
+        assert_eq!(doc["mint"]["resumed"], true, "{doc}");
+        // Two minutes on, the old record would be past its 24 hours.
+        register_jobs::age_stranded_solana(Network::Solana, &asset, 120);
+        assert_eq!(
+            register_jobs::stranded_solana(Network::Solana, &asset),
+            Some(recipient)
+        );
+
+        node.refuse_sends_from(usize::MAX);
+        let (status, doc) = register(&gate, request).await;
+        assert_eq!(status, StatusCode::OK, "{doc}");
+        assert_eq!(doc["owner"], recipient.to_string(), "{doc}");
+        assert_eq!(
+            register_jobs::stranded_solana(Network::Solana, &asset),
+            None
+        );
+    }
+
+    fn with_metadata(mut request: serde_json::Value, keys: &[&str]) -> serde_json::Value {
+        request["metadata"] = json!(keys
+            .iter()
+            .map(|k| json!({"key": k, "value": "v"}))
+            .collect::<Vec<_>>());
+        request
+    }
+
+    /// Refused before the chain: no balance read, nothing sent.
+    fn assert_refused_before_the_chain(
+        node: &SolanaNode,
+        status: StatusCode,
+        doc: &serde_json::Value,
+        code: &str,
+    ) {
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{doc}");
+        assert_eq!(doc["mint"]["errorCode"], code, "{doc}");
+        assert_eq!(doc["mint"]["status"], "not_minted", "{doc}");
+        assert!(doc["agentId"].is_null(), "{doc}");
+        let methods = node.methods();
+        assert!(
+            !methods
+                .iter()
+                .any(|m| m == "getBalance" || m == "sendTransaction"),
+            "{methods:?}"
+        );
+        assert!(node.sent().is_empty());
+    }
+
+    /// A new mint that would not fit one transaction is refused, not sent in
+    /// stages.
+    #[tokio::test]
+    async fn a_solana_mint_that_does_not_fit_one_transaction_is_refused() {
+        let (gate, node, _) = gate_on_solana_node().await;
+        let recipient = solana_sdk::pubkey::Pubkey::new_unique().to_string();
+        let request = with_metadata(
+            body(
+                "solana",
+                "https://execution.market/agents/solana-too-big",
+                Some(&recipient),
+            ),
+            &["k0", "k1", "k2", "k3", "k4", "k5"],
+        );
+        let (status, doc) = register(&gate, request).await;
+        assert_refused_before_the_chain(&node, status, &doc, "mint_not_atomic");
+        assert!(
+            doc["error"]
+                .as_str()
+                .unwrap()
+                .contains("at most 4 metadata entries"),
+            "{doc}"
+        );
+    }
+
+    /// A key given twice would fail the mint after the identity exists.
+    #[tokio::test]
+    async fn a_repeated_solana_metadata_key_is_refused() {
+        let (gate, node, _) = gate_on_solana_node().await;
+        let recipient = solana_sdk::pubkey::Pubkey::new_unique().to_string();
+        let request = with_metadata(
+            body(
+                "solana",
+                "https://execution.market/agents/solana-dup-key",
+                Some(&recipient),
+            ),
+            &["a", "a"],
+        );
+        let (status, doc) = register(&gate, request).await;
+        assert_refused_before_the_chain(&node, status, &doc, "metadata_duplicate_key");
+        assert!(
+            node.methods().is_empty(),
+            "read the chain: {:?}",
+            node.methods()
+        );
+    }
+
+    /// Whatever metadata a request carries, it cannot leave an identity half
+    /// minted under an agentUri: the next request for that URI mints normally.
+    #[tokio::test]
+    async fn a_request_cannot_leave_an_identity_half_minted_under_a_uri() {
+        let (gate, node, _) = gate_on_solana_node().await;
+        let uri = "https://execution.market/agents/solana-uri-stays-free";
+        let first = solana_sdk::pubkey::Pubkey::new_unique().to_string();
+        for keys in [&["dup"; 6][..], &["k0", "k1", "k2", "k3", "k4", "k5"][..]] {
+            let (status, doc) = register(
+                &gate,
+                with_metadata(body("solana", uri, Some(&first)), keys),
+            )
+            .await;
+            assert_eq!(status, StatusCode::BAD_REQUEST, "{doc}");
+        }
+        assert!(node.sent().is_empty());
+
+        let owner = solana_sdk::pubkey::Pubkey::new_unique();
+        let (status, doc) = register(&gate, body("solana", uri, Some(&owner.to_string()))).await;
+        assert_eq!(status, StatusCode::OK, "{doc}");
+        assert_eq!(doc["mint"]["status"], "complete", "{doc}");
+        assert_eq!(doc["owner"], owner.to_string(), "{doc}");
+        assert_eq!(node.sent().len(), 1);
     }
 }

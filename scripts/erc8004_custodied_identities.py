@@ -21,18 +21,26 @@ Usage:
     python3 scripts/erc8004_custodied_identities.py --json > custodied.json
     python3 scripts/erc8004_custodied_identities.py --classify 'http://198-51-100-7.sslip.io/a.json'
 
+Public nodes are flaky: the client sends its own User-Agent (several answer 403 to urllib's), retries a call that
+got no answer with a growing wait, and halves an eth_getLogs range the node refuses or does not answer in time. A
+node without historical state cannot find the registry's deployment block: pass --from-block.
+
 Exit code: 0 when nothing is flagged, 2 when something is, 1 on error.
 """
 
 from __future__ import annotations
 
 import argparse
+import http.client
 import ipaddress
 import json
 import os
 import re
+import socket
 import sys
+import time
 import unicodedata
+import urllib.error
 import urllib.parse
 import urllib.request
 from pathlib import Path
@@ -44,6 +52,8 @@ RULES = json.loads((REPO / "config" / "erc8004_agent_uri_rules.json").read_text(
 FACILITATOR_MAINNET = "0x103040545AC5031A11E8C03dd11324C7333a13C7"
 RETIRED_URI = "https://facilitator.ultravioletadao.xyz/erc8004/retired"
 DEFAULT_RPC = {"base": "https://mainnet.base.org"}
+# urllib's default ("Python-urllib/3.x") gets 403 from several public RPC front ends (measured 2026-09-26).
+USER_AGENT = "uvd-x402-custodied-identities/1.0 (read-only; +https://github.com/UltravioletaDAO/x402-rs)"
 
 # keccak256("Transfer(address,address,uint256)"). Written without its 0x so the pre-commit key guard
 # (.githooks/pre-commit, "0x" + 64 hex) does not read a public event signature as a private key.
@@ -203,30 +213,89 @@ def defang(uri: str) -> str:
 
 
 class RpcError(Exception):
-    pass
+    """The node answered, and refused: a JSON-RPC error, or an HTTP error that is not a rate limit or an outage."""
+
+
+class RpcUnavailable(Exception):
+    """The node did not answer (connection error, 429, 5xx), even after the retries. Says nothing about the data:
+    never read it as "no such token"."""
+
+
+class RpcTimeout(RpcUnavailable):
+    """The node did not answer in time."""
 
 
 class Rpc:
-    """A JSON-RPC client that can only read. Anything outside READ_METHODS is refused before it is sent."""
+    """A JSON-RPC client that can only read. Anything outside READ_METHODS is refused before it is sent.
+
+    A call that gets no answer is retried `retries` times, waiting `backoff`, then twice that, and so on. A call the
+    node answers with a refusal is not retried: asking again gets the same answer.
+    """
 
     READ_METHODS = frozenset({"eth_blockNumber", "eth_chainId", "eth_getLogs", "eth_call", "eth_getCode"})
+    UNAVAILABLE_HTTP = frozenset({429, 500, 502, 503, 504})
 
-    def __init__(self, url: str, timeout: float = 30.0):
+    def __init__(self, url: str, timeout: float = 30.0, retries: int = 3, backoff: float = 2.0, sleep=time.sleep):
         self.url = url
         self.timeout = timeout
+        self.retries = retries
+        self.backoff = backoff
+        self.sleep = sleep
         self._id = 0
 
-    def call(self, method: str, params: list):
+    def call(self, method: str, params: list, retry_timeouts: bool = True):
+        """`retry_timeouts=False` hands a timeout straight back, for a caller with a better answer than asking the
+        same thing again (a shorter eth_getLogs range)."""
         if method not in self.READ_METHODS:
             raise RpcError(f"refusing {method}: this script only reads")
+        for attempt in range(self.retries + 1):
+            try:
+                return self._send(method, params)
+            except RpcTimeout:
+                if not retry_timeouts or attempt == self.retries:
+                    raise
+            except RpcUnavailable:
+                if attempt == self.retries:
+                    raise
+            self.sleep(self.backoff * 2**attempt)
+
+    def _send(self, method: str, params: list):
         self._id += 1
         body = json.dumps({"jsonrpc": "2.0", "id": self._id, "method": method, "params": params}).encode()
-        request = urllib.request.Request(self.url, data=body, headers={"Content-Type": "application/json"})
-        with urllib.request.urlopen(request, timeout=self.timeout) as response:
-            reply = json.loads(response.read())
+        headers = {"Content-Type": "application/json", "User-Agent": USER_AGENT}
+        request = urllib.request.Request(self.url, data=body, headers=headers)
+        # Never put self.url in a message: an RPC_URL_* often carries an API key.
+        try:
+            with urllib.request.urlopen(request, timeout=self.timeout) as response:
+                raw = response.read()
+        except urllib.error.HTTPError as e:
+            detail = f"{method}: HTTP {e.code} {_excerpt(e)}"
+            if e.code in self.UNAVAILABLE_HTTP:
+                raise RpcUnavailable(detail) from e
+            raise RpcError(detail) from e
+        except (TimeoutError, socket.timeout) as e:
+            raise RpcTimeout(f"{method}: no answer in {self.timeout:g}s") from e
+        except urllib.error.URLError as e:
+            if isinstance(e.reason, (TimeoutError, socket.timeout)):
+                raise RpcTimeout(f"{method}: no answer in {self.timeout:g}s") from e
+            raise RpcUnavailable(f"{method}: {e.reason}") from e
+        except (ConnectionError, http.client.HTTPException) as e:
+            raise RpcUnavailable(f"{method}: {e!r}") from e
+        try:
+            reply = json.loads(raw)
+        except ValueError as e:
+            raise RpcError(f"{method}: the node answered something that is not JSON-RPC") from e
         if "error" in reply:
             raise RpcError(str(reply["error"]))
         return reply["result"]
+
+
+def _excerpt(error: urllib.error.HTTPError) -> str:
+    """The start of an HTTP error's body: JSON-RPC nodes put their refusal there."""
+    try:
+        return error.read(200).decode("utf-8", errors="replace").strip()
+    except Exception:  # noqa: BLE001 -- the status code alone still explains the failure
+        return ""
 
 
 def _word(n: int) -> str:
@@ -262,7 +331,8 @@ def deployment_block(rpc: Rpc, address: str, latest: int) -> int:
 
 def received_token_ids(rpc: Rpc, registry: str, holder: str, start: int, end: int, chunk: int,
                        log=lambda *_: None) -> dict[int, int]:
-    """tokenId -> last block it was transferred INTO `holder`. Halves the range when the node refuses it."""
+    """tokenId -> last block it was transferred INTO `holder`. Halves the range when the node refuses it or does
+    not answer in time: a heavy range is the usual reason for both."""
     received: dict[int, int] = {}
     topic_to = "0x" + _address_word(holder)
     block = start
@@ -272,8 +342,8 @@ def received_token_ids(rpc: Rpc, registry: str, holder: str, start: int, end: in
             logs = rpc.call("eth_getLogs", [{
                 "address": registry, "fromBlock": hex(block), "toBlock": hex(upper),
                 "topics": [TRANSFER_TOPIC, None, topic_to],
-            }])
-        except RpcError as e:
+            }], retry_timeouts=False)
+        except (RpcError, RpcTimeout) as e:
             if chunk == 1:
                 raise
             chunk = max(1, chunk // 2)
@@ -306,6 +376,18 @@ def custodied(rpc: Rpc, registry: str, holder: str, received: dict[int, int]) ->
             "violations": [] if uri == RETIRED_URI else violations(uri),
         })
     return rows
+
+
+def start_block(rpc: Rpc, registry: str, latest: int, log=lambda *_: None) -> int:
+    """The registry's deployment block, found with historical eth_getCode, or a clear way out when the node has none."""
+    log(f"finding the deployment block of {registry} ...")
+    try:
+        return deployment_block(rpc, registry, latest)
+    except (RpcError, RpcUnavailable) as e:
+        raise SystemExit(
+            f"this node cannot answer eth_getCode at old blocks ({e}), so it cannot find where the registry was "
+            "deployed: pass --from-block with the registry's first block, or use an archive node with --rpc"
+        ) from e
 
 
 def registry_address(network: str) -> str:
@@ -354,16 +436,21 @@ def main(argv: list[str] | None = None) -> int:
     if not url:
         raise SystemExit(f"no RPC for {a.network}: pass --rpc")
     rpc = Rpc(url)
+    try:
+        return audit(a, rpc)
+    except RpcUnavailable as e:
+        print(f"the node did not answer after {rpc.retries} retries ({e}); try again later or pass another --rpc",
+              file=sys.stderr)
+        return 1
+
+
+def audit(a: argparse.Namespace, rpc: Rpc) -> int:
     registry = registry_address(a.network)
     log = (lambda *m: print(*m, file=sys.stderr))
     latest = a.to_block if a.to_block is not None else int(rpc.call("eth_blockNumber", []), 16)
     start = a.from_block
     if start is None:
-        log(f"finding the deployment block of {registry} ...")
-        try:
-            start = deployment_block(rpc, registry, latest)
-        except RpcError as e:
-            raise SystemExit(f"this node cannot answer historical eth_getCode ({e}); pass --from-block")
+        start = start_block(rpc, registry, latest, log)
     log(f"scanning Transfer(*, {a.holder}, *) on {registry}, blocks {start}..{latest}")
     received = received_token_ids(rpc, registry, a.holder, start, latest, a.chunk, log)
     rows = custodied(rpc, registry, a.holder, received)

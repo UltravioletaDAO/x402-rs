@@ -19,7 +19,13 @@
 //!
 //! It is exposed as an admin maintenance call
 //! (`POST /erc8004/admin/retire-identity`, see `handlers.rs`), with a dry run
-//! that reports what it would do and an idempotent real run.
+//! that reports what it would do and an idempotent real run. `POST /register`
+//! also retires, on its own, an identity it minted and then failed to deliver
+//! ([`set_agent_uri`]): a transfer that reverts, or one whose receipt is fine
+//! but after which `ownerOf` is not the recipient. That is all it covers. An
+//! identity its owner sends back to us later is ERC-721 working as designed,
+//! and nothing here sees it: `scripts/erc8004_custodied_identities.py` lists
+//! what the wallet holds, and this admin call retires it.
 
 use std::time::Duration;
 
@@ -97,6 +103,20 @@ pub enum RetireError {
     Reverted { transaction: B256 },
 }
 
+impl std::fmt::Display for RetireError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            RetireError::NotHeld { owner } => write!(f, "the identity is held by {owner}"),
+            RetireError::Unreadable(e) => write!(f, "a read failed: {e}"),
+            RetireError::NotSent(e) => write!(f, "not sent: {e}"),
+            RetireError::Unconfirmed { transaction, error } => {
+                write!(f, "{transaction} unconfirmed: {error}")
+            }
+            RetireError::Reverted { transaction } => write!(f, "{transaction} reverted"),
+        }
+    }
+}
+
 /// Retire `agent_id` in `registry` if the facilitator holds it.
 ///
 /// Reads the owner and the current URI first, so a dry run and a repeated call
@@ -142,9 +162,40 @@ pub async fn retire_identity(
         return Ok(retirement(RetireStatus::WouldRetire, None));
     }
 
+    let transaction = set_agent_uri(
+        provider,
+        registry,
+        agent_id,
+        owner,
+        RETIRED_URI,
+        network,
+        receipt_timeout,
+    )
+    .await?;
+    Ok(retirement(RetireStatus::Retired, Some(transaction)))
+}
+
+/// Send `setAgentURI(agent_id, uri)` from `owner` and wait for it to confirm.
+///
+/// The one path every `agentURI` change of an identity the facilitator holds
+/// goes through: [`retire_identity`] above, and `POST /register`, which retires
+/// an identity whose delivery failed and puts the caller's URI back just before
+/// delivering it again. No reads first: the caller already knows `owner` holds
+/// it. If it does not any more, the registry refuses the call at estimation and
+/// nothing is sent.
+pub async fn set_agent_uri(
+    provider: &EvmProvider,
+    registry: Address,
+    agent_id: U256,
+    owner: Address,
+    uri: &str,
+    network: Network,
+    receipt_timeout: Duration,
+) -> Result<B256, RetireError> {
+    let identity_registry = IIdentityRegistry::new(registry, provider.inner().clone());
     // From the signer that owns it, through the provider's own nonce manager.
     let call = identity_registry
-        .setAgentURI(agent_id, RETIRED_URI.to_string())
+        .setAgentURI(agent_id, uri.to_string())
         .from(owner);
     let sent = if provider.is_eip1559() {
         crate::chain::evm::send_call_estimated(call, network).await
@@ -170,7 +221,7 @@ pub async fn retire_identity(
     if !receipt.status() {
         return Err(RetireError::Reverted { transaction });
     }
-    Ok(retirement(RetireStatus::Retired, Some(transaction)))
+    Ok(transaction)
 }
 
 #[cfg(test)]

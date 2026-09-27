@@ -21,13 +21,19 @@
 //!
 //! Three things follow, and this module is all three:
 //!
-//! 1. **One transaction.** All the instructions ride in a single transaction
-//!    whenever the wire size and the compute budget allow it, so there is no
-//!    prefix to get stuck on. [`plan_mint`] measures both and says when it does
-//!    not fit; the caller then stages the sends and reports where it stopped.
-//! 2. **A retry resumes.** [`decide_mint`] recognises a half-minted identity by
-//!    its `agent_uri` among the assets the fee payer still holds, so the second
-//!    call finishes the first one instead of creating another orphan.
+//! 1. **One transaction.** All the instructions ride in a single transaction,
+//!    so there is no prefix to get stuck on. [`plan_mint`] measures the wire
+//!    size and the compute budget, and a new mint that does not fit is refused
+//!    before the chain ([`ERROR_MINT_NOT_ATOMIC`]), as are repeated metadata
+//!    keys ([`duplicate_metadata_key`]), which would fail part-way: nothing a
+//!    request controls can leave its own mint half done. Only a resume, whose
+//!    plan always fits, still carries a staged fallback.
+//! 2. **A retry resumes, for the same recipient.** [`decide_mint`] finds a
+//!    half-minted identity by its `agent_uri` among the assets the fee payer
+//!    still holds, and finishes it only when the record written as its mint
+//!    stopped (`register_jobs::record_stranded_solana`) names this request's
+//!    `recipient`: only a retry of the request that minted it resumes it. Any
+//!    other match is refused and left for manual recovery.
 //! 3. **A balance check before the send.** [`estimate_mint_cost`] prices the mint
 //!    from on-chain rent rather than from a guess, so an underfunded fee payer
 //!    is a named 503 instead of an RPC `-32002 Transaction simulation failed`
@@ -461,38 +467,67 @@ fn plan_from_instructions(
 pub enum MintDecision {
     /// Nothing on chain matches this request: mint a new identity.
     Fresh,
-    /// A half-minted identity for this `agent_uri` is still in the facilitator's
-    /// name. Finish that one rather than create another orphan.
+    /// A half-minted identity for this `agent_uri`, recorded as minted for this
+    /// request's recipient, is still in the facilitator's name. Finish that one
+    /// rather than create another orphan.
     Resume { asset: Pubkey },
+    /// The facilitator holds an identity with this `agent_uri` that no record
+    /// ties to this request's recipient. It is neither resumed nor duplicated
+    /// with a fresh mint: the request is refused before anything is sent, and
+    /// the asset stays where it is for the operator to recover.
+    Refuse { asset: Pubkey },
 }
 
-/// Decide between minting and resuming.
+/// Decide between minting, resuming and refusing.
 ///
-/// `facilitator_held` is what `find_agents_by_owner(fee_payer)` returned, so
-/// every entry is by construction an asset the facilitator still owns -- either
-/// one that stalled before its transfer, or one deliberately registered without
-/// a recipient. Both are unreachable to anybody else, so adopting either is
-/// safe; the `agent_uri` is what ties one to this request.
+/// `facilitator_held` is what `find_agents_by_owner(fee_payer)` returned: every
+/// entry is an asset the facilitator still owns, either one whose mint stopped
+/// before its transfer or one registered, before 2.44.0, without a recipient.
+///
+/// The `agent_uri` only finds the candidates. Whether one may be resumed is
+/// decided by `minted_for`, which answers with the recipient the stranded
+/// record names for an asset ([`crate::erc8004::register_jobs::stranded_solana`]):
+/// the record written when the mint that created it stopped short. A candidate
+/// recorded for `recipient` is resumed. Any other candidate -- no record, or a
+/// record for another recipient -- makes the call [`MintDecision::Refuse`], and
+/// no fresh mint is made next to an identity the facilitator itself holds with
+/// that `agent_uri`: that pair is left for an operator to resolve.
+///
+/// This is not a uniqueness rule for `agent_uri`. An identity already delivered
+/// is not in `facilitator_held`, so nothing here stops a new mint with its URI.
 ///
 /// An empty `agent_uri` never matches. It is `#[serde(default)]` on the request,
 /// so treating it as an identity key would let one URI-less call adopt an
 /// unrelated URI-less asset.
 pub fn decide_mint(
     agent_uri: &str,
+    recipient: Option<&Pubkey>,
     fee_payer: &Pubkey,
     facilitator_held: &[(Pubkey, AgentAccount)],
+    minted_for: impl Fn(&Pubkey) -> Option<Pubkey>,
 ) -> MintDecision {
     if agent_uri.is_empty() {
         return MintDecision::Fresh;
     }
+    let mut not_resumable = None;
     for (_, agent) in facilitator_held {
-        if agent.agent_uri == agent_uri && agent.owner == fee_payer.to_bytes() {
-            return MintDecision::Resume {
-                asset: Pubkey::new_from_array(agent.asset),
-            };
+        if agent.agent_uri != agent_uri || agent.owner != fee_payer.to_bytes() {
+            continue;
+        }
+        let asset = Pubkey::new_from_array(agent.asset);
+        match (minted_for(&asset), recipient) {
+            (Some(original), Some(recipient)) if original == *recipient => {
+                return MintDecision::Resume { asset };
+            }
+            _ => {
+                not_resumable.get_or_insert(asset);
+            }
         }
     }
-    MintDecision::Fresh
+    match not_resumable {
+        Some(asset) => MintDecision::Refuse { asset },
+        None => MintDecision::Fresh,
+    }
 }
 
 // ============================================================================
@@ -546,6 +581,31 @@ pub const ERROR_METADATA_FAILED: &str = "set_metadata_failed";
 /// that found the identity where it was.
 pub const ERROR_MINT_TRANSACTION_FAILED: &str = "mint_transaction_failed";
 pub const ERROR_STATS_LOOKUP_INCONCLUSIVE: &str = "stats_lookup_inconclusive";
+/// The facilitator holds an identity with this `agentUri` that no record ties
+/// to this `recipient` ([`MintDecision::Refuse`]). A `409`: nothing was sent,
+/// and repeating the request gets the same answer until an operator acts.
+pub const ERROR_HELD_IDENTITY_NOT_RESUMABLE: &str = "held_identity_not_resumable";
+/// A new mint that would not go out as one transaction. A `400` before the
+/// chain: sent in stages, a step the program refuses would leave the identity
+/// half minted in the facilitator's name.
+pub const ERROR_MINT_NOT_ATOMIC: &str = "mint_not_atomic";
+/// Two metadata entries with the same key. A `400` before the chain: the entry
+/// is an account derived from its key, so the second one would fail the mint.
+pub const ERROR_METADATA_DUPLICATE_KEY: &str = "metadata_duplicate_key";
+
+/// Metadata entries a mint can carry and still go out as one transaction:
+/// `register`, `initialize_stats` and `transfer_agent` take three of the
+/// [`MAX_BUNDLED_INSTRUCTIONS`]. The wire size can bind first, with long values.
+pub const MAX_METADATA_ENTRIES: usize = MAX_BUNDLED_INSTRUCTIONS - 3;
+
+/// The first metadata key that appears more than once, if any.
+pub fn duplicate_metadata_key(metadata: &[(String, Vec<u8>)]) -> Option<&str> {
+    let mut seen = std::collections::HashSet::new();
+    metadata
+        .iter()
+        .map(|(key, _)| key.as_str())
+        .find(|key| !seen.insert(*key))
+}
 
 /// The `ERROR_*` code for a step that failed.
 pub fn error_code_for(step: MintStep) -> &'static str {
@@ -706,14 +766,14 @@ impl MintOutcome {
         Some(match self.status() {
             MintStatus::PendingStats => format!(
                 "Identity {} exists but its ATOM stats were not initialized and it is still \
-                 held by the facilitator. Repeat this same request to finish it; it will \
-                 resume this identity rather than mint another. Cause: {}",
+                 held by the facilitator. Repeat this same request, with the same recipient, \
+                 to finish it; it will resume this identity rather than mint another. Cause: {}",
                 self.asset, detail
             ),
             MintStatus::PendingTransfer => format!(
                 "Identity {} exists and is initialized but is still held by the facilitator. \
-                 Repeat this same request to finish the transfer; it will resume this identity \
-                 rather than mint another. Cause: {}",
+                 Repeat this same request, with the same recipient, to finish the transfer; it \
+                 will resume this identity rather than mint another. Cause: {}",
                 self.asset, detail
             ),
             _ => detail.clone(),
@@ -1230,27 +1290,129 @@ mod tests {
         assert_eq!(outcome.status(), MintStatus::Complete);
     }
 
-    // ── (c) a retry resumes the stranded identity instead of minting another ──
+    // ── (c) a retry resumes the stranded identity, for its recorded recipient ──
 
-    #[test]
-    fn a_retry_resumes_the_stranded_identity() {
-        let fee_payer = Pubkey::from_str(FACILITATOR_FEE_PAYER).unwrap();
-        let uri = "https://karmakadabra.xyz/agents/kk-0xyuls.json";
+    /// What the stranded record answers when it holds exactly `records`.
+    fn recorded(records: Vec<(Pubkey, Pubkey)>) -> impl Fn(&Pubkey) -> Option<Pubkey> {
+        move |asset| {
+            records
+                .iter()
+                .find(|(a, _)| a == asset)
+                .map(|(_, recipient)| *recipient)
+        }
+    }
 
-        let orphan = Pubkey::from_str(ORPHAN_YULS_A).unwrap();
-        let held = vec![(
+    fn held_one(fee_payer: &Pubkey, asset: &Pubkey, uri: &str) -> Vec<(Pubkey, AgentAccount)> {
+        vec![(
             derive_agent_pda(
-                &orphan,
+                asset,
                 &get_program_ids(&Network::Solana).unwrap().agent_registry,
             )
             .0,
-            agent_account(&fee_payer, &orphan, uri),
-        )];
+            agent_account(fee_payer, asset, uri),
+        )]
+    }
+
+    #[test]
+    fn a_retry_by_the_recorded_recipient_resumes_the_stranded_identity() {
+        let fee_payer = Pubkey::from_str(FACILITATOR_FEE_PAYER).unwrap();
+        let uri = "https://agents.example.org/first.json";
+        let recipient = agent_yuls();
+        let orphan = Pubkey::new_unique();
+        let held = held_one(&fee_payer, &orphan, uri);
 
         assert_eq!(
-            decide_mint(uri, &fee_payer, &held),
+            decide_mint(
+                uri,
+                Some(&recipient),
+                &fee_payer,
+                &held,
+                recorded(vec![(orphan, recipient)])
+            ),
             MintDecision::Resume { asset: orphan },
             "the second call must adopt the first call's asset"
+        );
+    }
+
+    /// Same `agentUri`, nothing recorded: not resumed, and not minted again
+    /// either, which would give the URI a second identity.
+    #[test]
+    fn a_held_identity_with_no_record_is_refused() {
+        let fee_payer = Pubkey::from_str(FACILITATOR_FEE_PAYER).unwrap();
+        let uri = "https://agents.example.org/first.json";
+        let orphan = Pubkey::new_unique();
+        let held = held_one(&fee_payer, &orphan, uri);
+
+        assert_eq!(
+            decide_mint(
+                uri,
+                Some(&agent_yuls()),
+                &fee_payer,
+                &held,
+                recorded(vec![])
+            ),
+            MintDecision::Refuse { asset: orphan }
+        );
+    }
+
+    /// A record names one recipient; a request for any other gets nothing.
+    #[test]
+    fn a_held_identity_recorded_for_another_recipient_is_refused() {
+        let fee_payer = Pubkey::from_str(FACILITATOR_FEE_PAYER).unwrap();
+        let uri = "https://agents.example.org/first.json";
+        let orphan = Pubkey::new_unique();
+        let held = held_one(&fee_payer, &orphan, uri);
+        let original = agent_yuls();
+        let other = agent_jokker();
+
+        assert_eq!(
+            decide_mint(
+                uri,
+                Some(&other),
+                &fee_payer,
+                &held,
+                recorded(vec![(orphan, original)])
+            ),
+            MintDecision::Refuse { asset: orphan }
+        );
+        // Without a recipient there is nobody a record could name.
+        assert_eq!(
+            decide_mint(
+                uri,
+                None,
+                &fee_payer,
+                &held,
+                recorded(vec![(orphan, original)])
+            ),
+            MintDecision::Refuse { asset: orphan }
+        );
+    }
+
+    /// Several held assets share the URI: the one recorded for this recipient
+    /// is resumed, wherever it sorts, and the others are left alone.
+    #[test]
+    fn the_recorded_asset_is_resumed_even_when_another_sorts_first() {
+        let fee_payer = Pubkey::from_str(FACILITATOR_FEE_PAYER).unwrap();
+        let uri = "https://agents.example.org/first.json";
+        let recipient = agent_yuls();
+        let mut held: Vec<(Pubkey, AgentAccount)> = (0..2)
+            .map(|_| {
+                let asset = Pubkey::new_unique();
+                (Pubkey::new_unique(), agent_account(&fee_payer, &asset, uri))
+            })
+            .collect();
+        held.sort_by_key(|(_, a)| a.asset);
+        let last = Pubkey::new_from_array(held[1].1.asset);
+
+        assert_eq!(
+            decide_mint(
+                uri,
+                Some(&recipient),
+                &fee_payer,
+                &held,
+                recorded(vec![(last, recipient)])
+            ),
+            MintDecision::Resume { asset: last }
         );
     }
 
@@ -1320,21 +1482,19 @@ mod tests {
     #[test]
     fn a_different_uri_does_not_adopt_someone_elses_orphan() {
         let fee_payer = Pubkey::from_str(FACILITATOR_FEE_PAYER).unwrap();
-        let orphan = Pubkey::from_str(ORPHAN_YULS_A).unwrap();
-        let held = vec![(
-            Pubkey::new_unique(),
-            agent_account(
-                &fee_payer,
-                &orphan,
-                "https://karmakadabra.xyz/agents/kk-0xyuls.json",
-            ),
-        )];
+        let orphan = Pubkey::new_unique();
+        let recipient = agent_jokker();
+        let held = held_one(&fee_payer, &orphan, "https://agents.example.org/first.json");
 
+        // Even a record for this very recipient does not make another URI's
+        // asset a candidate.
         assert_eq!(
             decide_mint(
-                "https://karmakadabra.xyz/agents/kk-0xjokker.json",
+                "https://agents.example.org/second.json",
+                Some(&recipient),
                 &fee_payer,
-                &held
+                &held,
+                recorded(vec![(orphan, recipient)])
             ),
             MintDecision::Fresh
         );
@@ -1343,77 +1503,125 @@ mod tests {
     #[test]
     fn an_empty_uri_never_adopts_anything() {
         let fee_payer = Pubkey::from_str(FACILITATOR_FEE_PAYER).unwrap();
-        let held = vec![(
-            Pubkey::new_unique(),
-            agent_account(&fee_payer, &Pubkey::from_str(ORPHAN_YULS_A).unwrap(), ""),
-        )];
+        let orphan = Pubkey::new_unique();
+        let recipient = agent_yuls();
+        let held = held_one(&fee_payer, &orphan, "");
 
         // `agent_uri` is #[serde(default)], so an absent one must not be an
         // identity key -- otherwise one URI-less call adopts an unrelated asset.
-        assert_eq!(decide_mint("", &fee_payer, &held), MintDecision::Fresh);
+        assert_eq!(
+            decide_mint(
+                "",
+                Some(&recipient),
+                &fee_payer,
+                &held,
+                recorded(vec![(orphan, recipient)])
+            ),
+            MintDecision::Fresh
+        );
     }
 
     #[test]
     fn an_asset_someone_else_owns_is_never_resumed() {
         let fee_payer = Pubkey::from_str(FACILITATOR_FEE_PAYER).unwrap();
         let someone_else = Pubkey::new_unique();
-        let uri = "https://karmakadabra.xyz/agents/kk-0xyuls.json";
+        let uri = "https://agents.example.org/first.json";
+        let orphan = Pubkey::new_unique();
+        let recipient = agent_yuls();
+        let held = held_one(&someone_else, &orphan, uri);
 
-        let held = vec![(
-            Pubkey::new_unique(),
-            agent_account(
-                &someone_else,
-                &Pubkey::from_str(ORPHAN_YULS_A).unwrap(),
+        assert_eq!(
+            decide_mint(
                 uri,
+                Some(&recipient),
+                &fee_payer,
+                &held,
+                recorded(vec![(orphan, recipient)])
             ),
-        )];
+            MintDecision::Fresh
+        );
+    }
 
-        assert_eq!(decide_mint(uri, &fee_payer, &held), MintDecision::Fresh);
+    /// Two URIs, two held assets each, one of each recorded for its recipient
+    /// (sorted as `find_agents_by_owner` returns them): a retry resumes only
+    /// the asset recorded for it, and every other pairing is refused.
+    #[test]
+    fn each_held_asset_resumes_only_for_its_recorded_recipient() {
+        let fee_payer = Pubkey::from_str(FACILITATOR_FEE_PAYER).unwrap();
+        let first_uri = "https://agents.example.org/first.json";
+        let second_uri = "https://agents.example.org/second.json";
+        let (first, second, stranger) = (agent_yuls(), agent_jokker(), Pubkey::new_unique());
+        let assets: Vec<Pubkey> = (0..4).map(|_| Pubkey::new_unique()).collect();
+
+        let mut held: Vec<(Pubkey, AgentAccount)> = assets
+            .iter()
+            .zip([first_uri, first_uri, second_uri, second_uri])
+            .map(|(a, uri)| (Pubkey::new_unique(), agent_account(&fee_payer, a, uri)))
+            .collect();
+        held.sort_by_key(|(_, a)| a.asset);
+        let records = || recorded(vec![(assets[0], first), (assets[3], second)]);
+        let decide = |uri, recipient: &Pubkey| {
+            decide_mint(uri, Some(recipient), &fee_payer, &held, records())
+        };
+
+        assert_eq!(
+            decide(first_uri, &first),
+            MintDecision::Resume { asset: assets[0] }
+        );
+        assert_eq!(
+            decide(second_uri, &second),
+            MintDecision::Resume { asset: assets[3] }
+        );
+        for (uri, recipient) in [
+            (first_uri, &stranger),
+            (second_uri, &stranger),
+            (first_uri, &second),
+            (second_uri, &first),
+        ] {
+            assert!(
+                matches!(decide(uri, recipient), MintDecision::Refuse { .. }),
+                "{uri} was not refused for {recipient}"
+            );
+        }
     }
 
     #[test]
-    fn all_four_stranded_assets_are_reachable_by_their_uri() {
+    fn a_repeated_metadata_key_is_found() {
+        let entry = |k: &str| (k.to_string(), b"v".to_vec());
+        assert_eq!(duplicate_metadata_key(&[entry("a"), entry("b")]), None);
+        assert_eq!(duplicate_metadata_key(&[]), None);
+        assert_eq!(
+            duplicate_metadata_key(&[entry("a"), entry("b"), entry("a")]),
+            Some("a")
+        );
+    }
+
+    /// The cap the `mint_not_atomic` refusal quotes is exactly where
+    /// `plan_mint` stops being one transaction on instruction count.
+    #[test]
+    fn the_metadata_cap_is_where_a_mint_stops_being_atomic() {
+        let programs = get_program_ids(&Network::Solana).unwrap();
+        let registry = registry();
         let fee_payer = Pubkey::from_str(FACILITATOR_FEE_PAYER).unwrap();
-        let yuls_uri = "https://karmakadabra.xyz/agents/kk-0xyuls.json";
-        let jokker_uri = "https://karmakadabra.xyz/agents/kk-0xjokker.json";
-
-        // Ordering matches `find_agents_by_owner`, which sorts by asset pubkey.
-        let mut held: Vec<(Pubkey, AgentAccount)> = vec![
-            (ORPHAN_YULS_A, yuls_uri),
-            (ORPHAN_YULS_B, yuls_uri),
-            (ORPHAN_JOKKER_A, jokker_uri),
-            (ORPHAN_JOKKER_B, jokker_uri),
-        ]
-        .into_iter()
-        .map(|(asset, uri)| {
-            let asset = Pubkey::from_str(asset).unwrap();
-            (Pubkey::new_unique(), agent_account(&fee_payer, &asset, uri))
-        })
-        .collect();
-        held.sort_by_key(|(_, a)| a.asset);
-
-        // Each retry adopts one of that agent's two orphans; a second retry
-        // after the first is delivered picks up the other. Neither mints a new
-        // asset, which is what stops the orphan count from growing.
-        let yuls = decide_mint(yuls_uri, &fee_payer, &held);
-        let jokker = decide_mint(jokker_uri, &fee_payer, &held);
-
-        let yuls_assets = [
-            Pubkey::from_str(ORPHAN_YULS_A).unwrap(),
-            Pubkey::from_str(ORPHAN_YULS_B).unwrap(),
-        ];
-        let jokker_assets = [
-            Pubkey::from_str(ORPHAN_JOKKER_A).unwrap(),
-            Pubkey::from_str(ORPHAN_JOKKER_B).unwrap(),
-        ];
-        match yuls {
-            MintDecision::Resume { asset } => assert!(yuls_assets.contains(&asset)),
-            MintDecision::Fresh => panic!("kk-0xyuls's orphan was not found"),
-        }
-        match jokker {
-            MintDecision::Resume { asset } => assert!(jokker_assets.contains(&asset)),
-            MintDecision::Fresh => panic!("kk-0xjokker's orphan was not found"),
-        }
+        let recipient = agent_yuls();
+        let plan = |n: usize| {
+            let metadata: Vec<(String, Vec<u8>)> =
+                (0..n).map(|i| (format!("k{i}"), b"v".to_vec())).collect();
+            plan_mint(&MintRequest {
+                programs: &programs,
+                registry: &registry,
+                asset: &Pubkey::new_unique(),
+                fee_payer: &fee_payer,
+                agent_uri: "https://execution.market/agents/x",
+                metadata: &metadata,
+                recipient: Some(&recipient),
+            })
+        };
+        assert!(plan(MAX_METADATA_ENTRIES).is_atomic());
+        assert!(matches!(
+            plan(MAX_METADATA_ENTRIES + 1).not_atomic,
+            Some(NotAtomic::ComputeDiluted { .. })
+        ));
     }
 
     // ── (d) an underfunded fee payer is a named error, not an RPC -32002 ──────

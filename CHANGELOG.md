@@ -1,5 +1,21 @@
 # Changelog
 
+## [2.46.0] - 2026-09-27
+
+### `GET /health/ready`: each chain is warned by what its gas costs
+
+- A signer reads `degraded` at its chain's own warning or fewer settles, no longer below one number for every chain. That warning is as many settles as $20 of the chain's gas pays for, at the fee cap the probe just read, never fewer than 20 nor more than 100. At today's costs every chain keeps 100 except Ethereum, whose settle reserves 0.00065 ETH at its 5 gwei floor fee cap: it reads `degraded` at 20 settles or fewer and `ok` above. When a chain's fee cap rises its warning falls toward 20, and when it falls it rises toward 100. `down` is unchanged: below `minSettles` (10).
+- The comparison is now inclusive: a signer with exactly its warning's number of settles is `degraded` (on a chain warned at 100, 100 settles read `ok` before and read `degraded` now).
+- The dollar cost of a settle comes from a table of reference prices for each gas currency, declared and dated in `src/readiness.rs` (read 2026-09-27). Nothing is fetched while probing. A testnet, a chain whose gas currency the table does not price, and a chain that prices gas at zero get 100. Native Hedera is priced at its max transaction fee, the reservation its settles are counted by.
+- Each row carries `warnSettles`, the warning its signers were graded against (absent when the chain could not be read). `thresholds` keeps `warnSettles`, now the ceiling, and adds `warnSettlesFloor`, `warnBudgetUsd`, `warnPricesAsOf` and `warnOverrides`.
+- New settings: `HEALTH_READY_WARN_SETTLES_FLOOR` (default 20, between `HEALTH_READY_MIN_SETTLES` and the ceiling) and `HEALTH_READY_WARN_SETTLES_<NETWORK>` (one chain's warning instead of the rule's, e.g. `HEALTH_READY_WARN_SETTLES_ETHEREUM`; raised to the minimum when set below it). `HEALTH_READY_WARN_SETTLES` is the ceiling, default 100 as before.
+- Nothing else reads this state: `/supported`, `/networks.json` and Bazaar listings do not, and the landing's dot still lights only under 10 settles or for a reason other than gas.
+
+### Low-balance alarms
+
+- `alerts.tf` derives each chain's floor from that chain's warning (`warn_settles_by_chain`), not from one `warn_settles = 100`. Ethereum's threshold falls from 0.065 ETH (100 settles at 5 gwei) to 0.013 ETH (20 settles), still above its declared 0.0035; every other threshold is unchanged, and every derived alarm's description now names its own warning. A test fails when the map disagrees with the binary at the fee caps the file records, and prints the one to paste; it also fails if the deployment sets any `HEALTH_READY_WARN_SETTLES*` variable the alarms would not follow. Not applied by the deploy: `terraform apply -target=aws_cloudwatch_metric_alarm.chain_balance_low`.
+- `scripts/gas_reserve_floors.py` prices each chain's floor at that chain's warning, read from `alerts.tf`.
+
 ## [2.45.0] - 2026-09-27
 
 ### `POST /register`

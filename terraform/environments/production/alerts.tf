@@ -124,27 +124,47 @@ locals {
   # The low-balance floor is at least the DERIVED one, the way GET /health/ready
   # grades a signer:
   #
-  #   min_native = max(SETTLE_GAS_BUDGET * fee_cap * warnSettles, declared floor)
+  #   min_native = max(SETTLE_GAS_BUDGET * fee_cap * warnSettles(chain), declared floor)
   #
-  # Below the derived floor /health/ready already calls the signer `degraded`, so
-  # this alarm pages no later than that moment. Until 2.39.2 each floor was typed
+  # /health/ready calls the signer `degraded` at warnSettles settles or fewer,
+  # that is from a balance under (warnSettles + 1) settles; this alarm
+  # (LessThanThreshold on the derived floor) fires under warnSettles settles:
+  # one settle after that moment, plus the evaluation periods below, where the
+  # derived floor is the threshold. Until 2.39.2 each floor was typed
   # by hand, and the description promised "roughly 100 settles" that the numbers
   # did not always buy: Arc's 0.1 USDC default bought about 19, Ethereum's 0.0035
   # ETH about 5, Hedera's 10 HBAR 10.
   #
-  # The derivation only RAISES a floor, never lowers one: where the declared
-  # floor is above it, the declared floor stays. At 100 uniform settles Base's
-  # floor would drop from 0.005 to 0.000143 ETH, hours of warning at its traffic
-  # instead of days -- this fixes alarms that arrived late, it must not make
-  # others arrive later. Per-chain lead time (warnSettles by chain, or by
-  # traffic) is the future lever, not a lower floor.
+  # The derivation never lowers a declared floor: where the declared floor is
+  # above it, the declared floor stays. At 100 uniform settles Base's floor would
+  # drop from 0.005 to 0.000143 ETH, hours of warning at its traffic instead of
+  # days.
   #
-  # settle_gas_budget and warn_settles mirror SETTLE_GAS_BUDGET and
-  # DEFAULT_WARN_SETTLES in src/readiness.rs, and a test there fails if they
-  # drift. When /health/ready turns a signer `down` (DEFAULT_MIN_SETTLES) is not
-  # decided here and does not change.
+  # Since 2.46.0 each chain has its own warnSettles, by what a settle costs
+  # there (warn_settles_for in src/readiness.rs): as many settles as $20 of gas
+  # pays for, never fewer than 20 nor more than 100. Every chain priced below is
+  # warned 100 settles ahead except Ethereum, whose 0.00065 ETH settle is warned
+  # 20 ahead: its floor fell from 0.065 ETH (100 settles, 2.39.2) to 0.013 ETH,
+  # still above its declared 0.0035.
+  #
+  # settle_gas_budget mirrors SETTLE_GAS_BUDGET, and warn_settles_by_chain is
+  # what warn_settles_for answers at the fee caps below. A test there fails if
+  # either drifts, and prints the map to paste; re-run it whenever the fee caps
+  # change. When /health/ready turns a signer `down` (DEFAULT_MIN_SETTLES) is
+  # not decided here and does not change.
   settle_gas_budget = 130000
-  warn_settles      = 100
+  warn_settles_by_chain = {
+    "arbitrum-mainnet"  = 100
+    "arc-mainnet"       = 100
+    "avalanche-mainnet" = 100
+    "base-mainnet"      = 100
+    "celo-mainnet"      = 100
+    "ethereum-mainnet"  = 20
+    "hedera-mainnet"    = 100
+    "monad-mainnet"     = 100
+    "optimism-mainnet"  = 100
+    "polygon-mainnet"   = 100
+  }
 
   # Every fee cap must be above zero: `settles` divides by it, and a zero here
   # would fail the plan AFTER the merge. The divisor is guarded below, the
@@ -219,18 +239,20 @@ locals {
   monitored_chains = merge(
     {
       for chain, price in local.settle_price : chain => {
-        min_native = max(price.cost * local.warn_settles, lookup(local.declared_floors, chain, 0))
-        settles    = max(local.warn_settles, floor(lookup(local.declared_floors, chain, 0) / max(price.cost, 1e-18)))
-        basis      = lookup(local.declared_floors, chain, 0) > price.cost * local.warn_settles ? "the operator floor, above the derived one" : "the derived floor"
-        priced     = price.priced
+        min_native   = max(price.cost * local.warn_settles_by_chain[chain], lookup(local.declared_floors, chain, 0))
+        settles      = max(local.warn_settles_by_chain[chain], floor(lookup(local.declared_floors, chain, 0) / max(price.cost, 1e-18)))
+        basis        = lookup(local.declared_floors, chain, 0) > price.cost * local.warn_settles_by_chain[chain] ? "the operator floor, above the derived one" : "the derived floor"
+        priced       = price.priced
+        warn_settles = local.warn_settles_by_chain[chain]
       } if !contains(local.switched_off, chain)
     },
     {
       for chain, native in local.hand_set_floors : chain => {
-        min_native = native
-        settles    = null
-        basis      = "a hand-set floor"
-        priced     = null
+        min_native   = native
+        settles      = null
+        basis        = "a hand-set floor"
+        priced       = null
+        warn_settles = null
       }
     },
   )
@@ -283,7 +305,7 @@ resource "aws_cloudwatch_metric_alarm" "chain_balance_low" {
   threshold           = each.value.min_native
   alarm_description = (each.value.settles == null
     ? "Facilitator wallet on ${each.key} is below ${format("%.3g", each.value.min_native)} native, a hand-set floor: /health/ready does not estimate settles for this chain's family. Refill before it reaches zero and settlements start failing."
-    : "Facilitator wallet on ${each.key} is below ${format("%.3g", each.value.min_native)} native (${each.value.basis}): about ${each.value.settles} settles at ${each.value.priced}. /health/ready?network=${trimsuffix(each.key, "-mainnet")} has the live count, and calls the signer degraded below ${local.warn_settles}. Refill before settlements start failing."
+    : "Facilitator wallet on ${each.key} is below ${format("%.3g", each.value.min_native)} native (${each.value.basis}): about ${each.value.settles} settles at ${each.value.priced}. /health/ready?network=${trimsuffix(each.key, "-mainnet")} has the live count, and calls the signer degraded at ${each.value.warn_settles} settles or fewer. Refill before settlements start failing."
   )
 
   # Here missing data is genuinely ambiguous (we could not read the chain), and

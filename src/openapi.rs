@@ -2990,8 +2990,22 @@ healthy tasks during a chain outage). This route is the operator's view.
 
 For every configured EVM chain it asks the RPC for its chain id, reads the fee cap the settle \
 path would set and each signer's native balance, and grades the signer by how many settles that \
-balance still admits (`balance / (130000 gas * fee cap)`): below `minSettles` is `down`, below \
-`warnSettles` is `degraded`. A chain whose RPC does not answer within the probe timeout is `down` \
+balance still admits (`balance / (130000 gas * fee cap)`): below `minSettles` is `down`, at the \
+row's own `warnSettles` or fewer is `degraded`.
+
+**Each chain is warned by what its gas costs.** A row's `warnSettles` is as many settles as \
+`thresholds.warnBudgetUsd` dollars of that chain's gas pay for, at the fee cap just read and a \
+table of reference prices for each gas currency declared in the code (dated \
+`thresholds.warnPricesAsOf`; no price is fetched while probing), held between \
+`thresholds.warnSettlesFloor` and `thresholds.warnSettles`. So a chain whose settle costs \
+dollars (Ethereum, at its 5 gwei floor fee cap) is warned fewer settles ahead than one whose \
+settle costs a fraction of a cent; when a chain's fee cap rises its warning falls toward the \
+floor, and when it falls the warning rises toward the ceiling. A testnet, a chain whose gas \
+currency is not priced, and a chain that prices gas at zero get the ceiling. \
+`thresholds.warnOverrides` lists the chains whose warning is set explicitly instead. \
+`warnSettles` is absent from a row whose chain could not be read.
+
+A chain whose RPC does not answer within the probe timeout is `down` \
 with reason `rpc_unreachable` or `rpc_timeout`; one whose RPC answers for another chain is `down` \
 with `rpc_chain_id_mismatch`. Native Hedera is graded from its sponsor account (one settle per max \
 transaction fee of HBAR) and can also read `signer_key_mismatch` or `store_unavailable`. Other \
@@ -3013,8 +3027,11 @@ code are that chain's alone.
 
 Tunables: `HEALTH_READY_TTL_SECS` (5-3600, default 60), `HEALTH_READY_PROBE_TIMEOUT_MS` \
 (250-30000, default 5000), `HEALTH_READY_MIN_SETTLES` (1-100000, default 10), \
-`HEALTH_READY_WARN_SETTLES` (default 100, never below the minimum). An out-of-range value logs a \
-warning and keeps the default.",
+`HEALTH_READY_WARN_SETTLES` (the ceiling, default 100, never below the minimum), \
+`HEALTH_READY_WARN_SETTLES_FLOOR` (default 20, between the minimum and the ceiling), and \
+`HEALTH_READY_WARN_SETTLES_<NETWORK>` (one chain's warning instead of the rule's: the v1 name in \
+upper case with `-` as `_`, e.g. `HEALTH_READY_WARN_SETTLES_ETHEREUM`; raised to the minimum when \
+below it). An out-of-range value logs a warning and keeps the default.",
     params(
         ("network" = Option<String>, Query, description = "Scope to one chain: `base` or `eip155:8453`")
     ),
@@ -3026,11 +3043,19 @@ warning and keeps the default.",
                 "ageSecs": 12,
                 "ttlSecs": 60,
                 "probeTimeoutMs": 5000,
-                "thresholds": { "minSettles": 10, "warnSettles": 100, "settleGasBudget": 130000 },
-                "summary": { "ok": 1, "degraded": 0, "down": 0 },
+                "thresholds": {
+                    "minSettles": 10, "warnSettles": 100, "warnSettlesFloor": 20, "warnBudgetUsd": 20,
+                    "warnPricesAsOf": "2026-09-27", "warnOverrides": {}, "settleGasBudget": 130000
+                },
+                "summary": { "ok": 2, "degraded": 0, "down": 0 },
                 "networks": [{
                     "network": "base", "caip2": "eip155:8453", "mainnet": true, "status": "ok", "rpc": "ok",
+                    "warnSettles": 100,
                     "signers": [{ "index": 0, "status": "ok", "gasOk": true, "settlesRemaining": 380 }]
+                }, {
+                    "network": "ethereum", "caip2": "eip155:1", "mainnet": true, "status": "ok", "rpc": "ok",
+                    "warnSettles": 20,
+                    "signers": [{ "index": 0, "status": "ok", "gasOk": true, "settlesRemaining": 24 }]
                 }],
                 "unchecked": ["solana"]
             })
@@ -3040,7 +3065,7 @@ warning and keeps the default.",
                 "status": "down",
                 "networks": [{
                     "network": "base", "caip2": "eip155:8453", "mainnet": true, "status": "down",
-                    "reason": "signer_gas_critical", "rpc": "ok",
+                    "reason": "signer_gas_critical", "rpc": "ok", "warnSettles": 100,
                     "signers": [{ "index": 0, "status": "down", "gasOk": false, "settlesRemaining": 0 }]
                 }]
             })

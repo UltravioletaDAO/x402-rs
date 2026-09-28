@@ -162,6 +162,10 @@ impl NetworkProviderOps for HederaProvider {
     }
 }
 impl HederaProvider {
+    /// The most one transaction may pay, in tinybars: what [`Self::health`]
+    /// counts settles by, and what `/health/ready` prices a settle at.
+    pub fn max_fee_tinybars(&self) -> u64 { self.config.max_fee }
+
     /// Read-only recovery for the portable receipt. Reuses the native durable
     /// intent and HTTPS mirror verification; never co-signs or submits.
     pub async fn receipt_evidence(&self, transaction_id: &str) -> Option<bool> {

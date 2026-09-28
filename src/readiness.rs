@@ -34,6 +34,11 @@
 //!    is never taken out of `/supported` by its health: this route is where the
 //!    health goes. Until 2.39.3 a native Hedera ledger whose probe failed at
 //!    startup vanished from both, which hid the problem it was reporting.
+//! 6. **It warns each chain by what its gas costs.** A signer is `degraded` at
+//!    [`warn_settles_for`] settles or fewer, not at one number for every chain:
+//!    as many settles as [`WARN_BUDGET_USD`] pays for there, held between a
+//!    floor and a ceiling. Until 2.46.0 every chain was warned 100 settles
+//!    ahead, which on Ethereum meant keeping 0.065 ETH parked to read green.
 //!
 //! EVM and native Hedera chains are probed; an EVM RPC is also asked for its
 //! chain id on every refresh, so a wrong one reads `rpc_chain_id_mismatch`
@@ -72,10 +77,79 @@ pub const SETTLE_GAS_BUDGET: u128 = 130_000;
 pub const DEFAULT_TTL: Duration = Duration::from_secs(60);
 pub const DEFAULT_PROBE_TIMEOUT: Duration = Duration::from_secs(5);
 pub const DEFAULT_MIN_SETTLES: u64 = 10;
+/// The most settles of warning the rule gives a chain, and what a chain whose
+/// gas it cannot price gets.
 pub const DEFAULT_WARN_SETTLES: u64 = 100;
+/// The fewest settles of warning the rule gives a chain, however dear its gas.
+pub const DEFAULT_WARN_SETTLES_FLOOR: u64 = 20;
+
+/// What a signer's warning margin may be worth, in US dollars: a chain is
+/// warned as many settles ahead as this pays for there, never fewer than the
+/// floor nor more than the ceiling ([`warn_settles_for`]).
+///
+/// At the fee caps `alerts.tf` records and the prices of
+/// [`reference_usd_per_native`], 100 settles cost at most $9.40 on every chain
+/// that file prices but Ethereum (native Hedera's 1 HBAR reservation is the
+/// dearest of them), and 20 settles cost $35 on Ethereum at its 5 gwei floor
+/// fee cap. $20 sits in that gap with room on both sides: Hedera keeps the
+/// ceiling until its settle costs twice what it does, the others longer, and
+/// Ethereum keeps the floor until its settle costs 43% less.
+pub const WARN_BUDGET_USD: u64 = 20;
+
+/// When [`reference_usd_per_native`] was read (CoinGecko `simple/price`,
+/// 2026-09-27T17:08Z).
+pub const REFERENCE_PRICES_AS_OF: &str = "2026-09-27";
+
+/// Decimals of an EVM chain's native balance. Arc's too: its USDC carries 18
+/// natively and 6 only through the ERC-20 view.
+const EVM_NATIVE_DECIMALS: i32 = 18;
+
+/// Decimals of HBAR in tinybars, the unit native Hedera's max fee is set in.
+#[cfg(feature = "hedera")]
+const HBAR_DECIMALS: i32 = 8;
+
+/// `HEALTH_READY_WARN_SETTLES_<NETWORK>` is one network's own warning.
+const WARN_OVERRIDE_PREFIX: &str = "HEALTH_READY_WARN_SETTLES_";
+const WARN_FLOOR_VAR: &str = "HEALTH_READY_WARN_SETTLES_FLOOR";
+
+/// US dollars one whole unit of `network`'s gas currency was worth on
+/// [`REFERENCE_PRICES_AS_OF`].
+///
+/// A table declared and versioned here, not an oracle: nothing on the probe
+/// path asks anyone for a price, so no price feed that is down or wrong can
+/// move the moment a signer reads `degraded`. The rule needs the order of
+/// magnitude, not the quote -- [`WARN_BUDGET_USD`] says how far a price can
+/// move before a chain's warning does -- so refresh it when a price has halved
+/// or doubled, not when it has moved.
+///
+/// `None` for a testnet, whose gas is worth nothing, and for a chain whose gas
+/// currency is not priced here. Both get the ceiling: warning early costs
+/// nothing where the rule cannot price a settle.
+pub fn reference_usd_per_native(network: Network) -> Option<f64> {
+    match network {
+        // ETH pays for gas on L1 and on these rollups.
+        Network::Ethereum
+        | Network::Base
+        | Network::Optimism
+        | Network::Arbitrum
+        | Network::Unichain
+        | Network::Scroll => Some(2688.0),
+        Network::Avalanche => Some(10.9),
+        Network::Polygon => Some(0.12),
+        Network::Celo => Some(0.096),
+        Network::HyperEvm => Some(91.0),
+        Network::Monad => Some(0.026),
+        Network::Bsc => Some(776.0),
+        // USDC is Arc's gas.
+        Network::Arc => Some(1.0),
+        #[cfg(feature = "hedera")]
+        Network::Hedera => Some(0.094),
+        _ => None,
+    }
+}
 
 /// Tunables, all optional.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ReadinessConfig {
     /// How long a probe result is served before the next caller refreshes it.
     /// `HEALTH_READY_TTL_SECS`, 5-3600.
@@ -87,9 +161,16 @@ pub struct ReadinessConfig {
     /// Below this many settles a signer is `down`. `HEALTH_READY_MIN_SETTLES`,
     /// 1-100000: a 0 would switch the gas red off without saying so.
     pub min_settles: u64,
-    /// Below this many it is `degraded`. `HEALTH_READY_WARN_SETTLES`, never
-    /// below `min_settles`.
+    /// The ceiling of the warning rule, and the warning of a chain it cannot
+    /// price. `HEALTH_READY_WARN_SETTLES`, never below `min_settles`.
     pub warn_settles: u64,
+    /// The floor of the warning rule. `HEALTH_READY_WARN_SETTLES_FLOOR`,
+    /// between `min_settles` and `warn_settles`.
+    pub warn_settles_floor: u64,
+    /// One network's warning instead of the rule's, never below `min_settles`:
+    /// `HEALTH_READY_WARN_SETTLES_<NETWORK>`, the v1 name upper-cased with `-`
+    /// as `_` (`..._ETHEREUM`, `..._POLYGON_AMOY`).
+    pub warn_overrides: HashMap<Network, u64>,
 }
 
 impl Default for ReadinessConfig {
@@ -99,41 +180,116 @@ impl Default for ReadinessConfig {
             probe_timeout: DEFAULT_PROBE_TIMEOUT,
             min_settles: DEFAULT_MIN_SETTLES,
             warn_settles: DEFAULT_WARN_SETTLES,
+            warn_settles_floor: DEFAULT_WARN_SETTLES_FLOOR,
+            warn_overrides: HashMap::new(),
         }
     }
 }
 
 impl ReadinessConfig {
     pub fn from_env() -> Self {
+        Self::from_vars(std::env::vars_os().filter_map(|(name, value)| {
+            Some((name.into_string().ok()?, value.into_string().ok()?))
+        }))
+    }
+
+    /// [`Self::from_env`] over any set of variables.
+    pub fn from_vars(vars: impl IntoIterator<Item = (String, String)>) -> Self {
+        let vars: HashMap<String, String> = vars.into_iter().collect();
         let defaults = Self::default();
-        let ttl_secs = env_u64("HEALTH_READY_TTL_SECS", defaults.ttl.as_secs(), 5..=3600);
-        let timeout_ms = env_u64(
+        let ttl_secs = setting(
+            &vars,
+            "HEALTH_READY_TTL_SECS",
+            defaults.ttl.as_secs(),
+            5..=3600,
+        );
+        let timeout_ms = setting(
+            &vars,
             "HEALTH_READY_PROBE_TIMEOUT_MS",
             defaults.probe_timeout.as_millis() as u64,
             250..=30_000,
         );
-        let min_settles = env_u64(
+        let min_settles = setting(
+            &vars,
             "HEALTH_READY_MIN_SETTLES",
             defaults.min_settles,
             1..=100_000,
         );
-        let warn_settles = env_u64(
+        let warn_settles = setting(
+            &vars,
             "HEALTH_READY_WARN_SETTLES",
             defaults.warn_settles,
             0..=u64::MAX,
         )
         .max(min_settles);
+        let warn_settles_floor = setting(
+            &vars,
+            WARN_FLOOR_VAR,
+            defaults.warn_settles_floor,
+            0..=u64::MAX,
+        )
+        .clamp(min_settles, warn_settles);
+        let mut warn_overrides = HashMap::new();
+        for (name, raw) in &vars {
+            let Some(suffix) = name.strip_prefix(WARN_OVERRIDE_PREFIX) else {
+                continue;
+            };
+            if name == WARN_FLOOR_VAR {
+                continue;
+            }
+            let Ok(network) = suffix
+                .to_ascii_lowercase()
+                .replace('_', "-")
+                .parse::<Network>()
+            else {
+                tracing::warn!(
+                    variable = %name,
+                    "[WARN] readiness: no network by that name; the override is ignored"
+                );
+                continue;
+            };
+            match raw.trim().parse::<u64>() {
+                Ok(settles) => {
+                    let settles = settles.max(min_settles);
+                    // Two spellings of one network (`_BASE` and `_BASE_MAINNET`,
+                    // `_BSC` and `_BNB`): the smaller, whatever order the
+                    // variables come in, and said out loud.
+                    if let Some(held) = warn_overrides.get(&network) {
+                        tracing::warn!(
+                            %network,
+                            variable = %name,
+                            "[WARN] readiness: two overrides name the same network; the smaller applies"
+                        );
+                        if *held <= settles {
+                            continue;
+                        }
+                    }
+                    warn_overrides.insert(network, settles);
+                }
+                Err(_) => tracing::warn!(
+                    variable = %name,
+                    "[WARN] readiness override is not a number; the rule applies"
+                ),
+            }
+        }
         Self {
             ttl: Duration::from_secs(ttl_secs),
             probe_timeout: Duration::from_millis(timeout_ms),
             min_settles,
             warn_settles,
+            warn_settles_floor,
+            warn_overrides,
         }
     }
 }
 
-fn env_u64(var: &str, default: u64, range: std::ops::RangeInclusive<u64>) -> u64 {
-    let Ok(raw) = std::env::var(var) else {
+fn setting(
+    vars: &HashMap<String, String>,
+    var: &str,
+    default: u64,
+    range: std::ops::RangeInclusive<u64>,
+) -> u64 {
+    let Some(raw) = vars.get(var) else {
         return default;
     };
     match raw.trim().parse::<u64>() {
@@ -147,6 +303,47 @@ fn env_u64(var: &str, default: u64, range: std::ops::RangeInclusive<u64>) -> u64
             default
         }
     }
+}
+
+/// Settles of warning `network` gets: at this many or fewer, a signer there
+/// reads `degraded`.
+///
+/// Its override when one is set. Otherwise [`WARN_BUDGET_USD`] over the dollar
+/// cost of one settle -- `settle_cost` base units of its gas currency, which
+/// has `decimals`, at [`reference_usd_per_native`] -- rounded down and held
+/// between the floor and the ceiling: the dearer the settle, the fewer settles
+/// of warning. The ceiling where the settle has no price or costs nothing.
+/// Never below `min_settles`.
+pub fn warn_settles_for(
+    network: Network,
+    settle_cost: u128,
+    decimals: i32,
+    config: &ReadinessConfig,
+) -> u64 {
+    if let Some(&settles) = config.warn_overrides.get(&network) {
+        return settles.max(config.min_settles);
+    }
+    let ceiling = config.warn_settles.max(config.min_settles);
+    let floor = config.warn_settles_floor.clamp(config.min_settles, ceiling);
+    let Some(usd_per_native) = reference_usd_per_native(network) else {
+        return ceiling;
+    };
+    let settle_usd = settle_cost as f64 * usd_per_native / 10f64.powi(decimals);
+    if settle_usd.is_nan() || settle_usd <= 0.0 {
+        return ceiling;
+    }
+    // `as` saturates, and the clamp bounds whatever it gives.
+    ((WARN_BUDGET_USD as f64 / settle_usd).floor() as u64).clamp(floor, ceiling)
+}
+
+/// [`warn_settles_for`] an EVM chain whose send path sets `fee_cap_wei`.
+fn evm_warn_settles(network: Network, fee_cap_wei: u128, config: &ReadinessConfig) -> u64 {
+    warn_settles_for(
+        network,
+        SETTLE_GAS_BUDGET.saturating_mul(fee_cap_wei),
+        EVM_NATIVE_DECIMALS,
+        config,
+    )
 }
 
 /// Ordered worst-last, so the worst of several is their `max`.
@@ -189,6 +386,11 @@ pub struct NetworkReport {
     pub reason: Option<&'static str>,
     /// `ok`, `unreachable`, `timeout` or `wrong_chain`.
     pub rpc: &'static str,
+    /// This chain's own warning ([`warn_settles_for`]): a signer with this
+    /// many settles or fewer is `degraded`. Absent when the chain could not be
+    /// read, since the rule prices a settle at the fee cap the probe reads.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub warn_settles: Option<u64>,
     pub signers: Vec<SignerReport>,
 }
 
@@ -202,18 +404,29 @@ pub fn settles_remaining(balance_wei: u128, fee_cap_wei: u128) -> Option<u64> {
     Some(u64::try_from(balance_wei / per_settle).unwrap_or(u64::MAX))
 }
 
+/// `down` below `min_settles`; `degraded` at `warn_settles` or fewer.
+fn settles_status(remaining: u64, warn_settles: u64, config: &ReadinessConfig) -> Status {
+    if remaining < config.min_settles {
+        Status::Down
+    } else if remaining <= warn_settles {
+        Status::Degraded
+    } else {
+        Status::Ok
+    }
+}
+
+/// One EVM signer, `degraded` at `warn_settles` settles or fewer.
 pub fn grade_signer(
     index: usize,
     balance_wei: u128,
     fee_cap_wei: u128,
+    warn_settles: u64,
     config: &ReadinessConfig,
 ) -> SignerReport {
     let remaining = settles_remaining(balance_wei, fee_cap_wei);
     let status = match remaining {
         None => Status::Ok,
-        Some(n) if n < config.min_settles => Status::Down,
-        Some(n) if n < config.warn_settles => Status::Degraded,
-        Some(_) => Status::Ok,
+        Some(n) => settles_status(n, warn_settles, config),
     };
     SignerReport {
         index,
@@ -223,7 +436,11 @@ pub fn grade_signer(
     }
 }
 
-fn graded_network(network: Network, signers: Vec<SignerReport>) -> NetworkReport {
+fn graded_network(
+    network: Network,
+    warn_settles: u64,
+    signers: Vec<SignerReport>,
+) -> NetworkReport {
     let status = signers.iter().map(|s| s.status).max().unwrap_or(Status::Ok);
     let reason = match status {
         Status::Ok => None,
@@ -237,6 +454,7 @@ fn graded_network(network: Network, signers: Vec<SignerReport>) -> NetworkReport
         status,
         reason,
         rpc: "ok",
+        warn_settles: Some(warn_settles),
         signers,
     }
 }
@@ -250,6 +468,7 @@ fn down_network(network: Network, reason: &'static str, rpc: &'static str) -> Ne
         status: Status::Down,
         reason: Some(reason),
         rpc,
+        warn_settles: None,
         signers: Vec::new(),
     }
 }
@@ -264,25 +483,24 @@ fn unreachable_network(network: Network, timed_out: bool) -> NetworkReport {
 
 /// Grade a native Hedera ledger from its health check: settles the sponsor's
 /// HBAR still pays for, or why the check did not pass. `None` when it did not
-/// answer within the probe timeout.
+/// answer within the probe timeout. A settle is priced at `max_fee_tinybars`,
+/// the reservation the health check counts settles by.
 #[cfg(feature = "hedera")]
 pub fn hedera_report(
     network: Network,
     health: Option<Result<u64, crate::chain::hedera::HealthFailure>>,
+    max_fee_tinybars: u64,
     config: &ReadinessConfig,
 ) -> NetworkReport {
     use crate::chain::hedera::HealthFailure;
     match health {
         Some(Ok(remaining)) => {
-            let status = if remaining < config.min_settles {
-                Status::Down
-            } else if remaining < config.warn_settles {
-                Status::Degraded
-            } else {
-                Status::Ok
-            };
+            let warn_settles =
+                warn_settles_for(network, u128::from(max_fee_tinybars), HBAR_DECIMALS, config);
+            let status = settles_status(remaining, warn_settles, config);
             graded_network(
                 network,
+                warn_settles,
                 vec![SignerReport {
                     index: 0,
                     status,
@@ -364,18 +582,20 @@ async fn probe_evm(evm: &EvmProvider, config: &ReadinessConfig) -> NetworkReport
             down_network(network, "rpc_chain_id_mismatch", "wrong_chain")
         }
         Ok(Ok(Ok((fee_cap, balances)))) => {
+            let warn_settles = evm_warn_settles(network, fee_cap, config);
             let signers: Vec<SignerReport> = balances
                 .into_iter()
                 .enumerate()
-                .map(|(index, balance)| grade_signer(index, balance, fee_cap, config))
+                .map(|(index, balance)| grade_signer(index, balance, fee_cap, warn_settles, config))
                 .collect();
-            let report = graded_network(network, signers);
+            let report = graded_network(network, warn_settles, signers);
             if report.status != Status::Ok {
                 tracing::warn!(
                     %network,
                     status = ?report.status,
                     reason = report.reason.unwrap_or(""),
                     fee_cap_wei = fee_cap,
+                    warn_settles,
                     "[WARN] readiness: signer gas below threshold"
                 );
             }
@@ -484,7 +704,7 @@ where
                 NetworkProvider::Evm(evm) => {
                     let network = evm.chain().network();
                     let providers = Arc::clone(&self.providers);
-                    let config = self.config;
+                    let config = self.config.clone();
                     probes.spawn(async move {
                         match providers.by_network(network) {
                             Some(NetworkProvider::Evm(evm)) => Some(probe_evm(evm, &config).await),
@@ -495,9 +715,10 @@ where
                 #[cfg(feature = "hedera")]
                 NetworkProvider::Hedera(hedera) => {
                     let provider = hedera.clone();
-                    let config = self.config;
+                    let config = self.config.clone();
                     probes.spawn(async move {
                         let network = provider.network();
+                        let max_fee = provider.max_fee_tinybars();
                         let health = tokio::time::timeout(config.probe_timeout, provider.health())
                             .await
                             .ok();
@@ -510,7 +731,7 @@ where
                                 "[WARN] readiness: the Hedera health check did not pass"
                             );
                         }
-                        Some(hedera_report(network, health, &config))
+                        Some(hedera_report(network, health, max_fee, &config))
                     });
                 }
                 other => unchecked.push(other.network().to_string()),
@@ -617,9 +838,20 @@ where
         "ageSecs": snapshot.measured.elapsed().as_secs(),
         "ttlSecs": state.config.ttl.as_secs(),
         "probeTimeoutMs": state.config.probe_timeout.as_millis() as u64,
+        // The rule each row's `warnSettles` comes out of. `warnSettles` here is
+        // its ceiling, under the name it has always had.
         "thresholds": {
             "minSettles": state.config.min_settles,
             "warnSettles": state.config.warn_settles,
+            "warnSettlesFloor": state.config.warn_settles_floor,
+            "warnBudgetUsd": WARN_BUDGET_USD,
+            "warnPricesAsOf": REFERENCE_PRICES_AS_OF,
+            "warnOverrides": state
+                .config
+                .warn_overrides
+                .iter()
+                .map(|(network, settles)| (network.to_string(), *settles))
+                .collect::<std::collections::BTreeMap<_, _>>(),
             "settleGasBudget": SETTLE_GAS_BUDGET as u64,
         },
         "summary": {
@@ -675,14 +907,51 @@ mod tests {
         ReadinessConfig {
             ttl: Duration::ZERO,
             probe_timeout: Duration::from_secs(5),
-            min_settles: DEFAULT_MIN_SETTLES,
-            warn_settles: DEFAULT_WARN_SETTLES,
+            ..ReadinessConfig::default()
         }
+    }
+
+    /// Ethereum's fee cap never goes below the 5 gwei floor `quote_fee_cap`
+    /// sets there (`eip1559_fee_floor`), so a settle reserves 0.00065 ETH
+    /// whenever Ethereum's base fee is under 2 gwei: its cost today.
+    const ETHEREUM_FEE_CAP: u128 = 5_000_000_000;
+    /// Polygon's cap never goes below its 1000 gwei floor: 0.13 POL a settle.
+    const POLYGON_FEE_CAP: u128 = 1_000_000_000_000;
+
+    /// A balance that admits exactly `settles` at `fee_cap`.
+    fn balance_for(settles: u64, fee_cap: u128) -> u128 {
+        u128::from(settles) * SETTLE_GAS_BUDGET * fee_cap
+    }
+
+    /// The status of a signer on `network` holding exactly `settles`, graded
+    /// the way `probe_evm` grades it.
+    fn evm_status(
+        network: Network,
+        settles: u64,
+        fee_cap: u128,
+        config: &ReadinessConfig,
+    ) -> Status {
+        let warn = evm_warn_settles(network, fee_cap, config);
+        grade_signer(0, balance_for(settles, fee_cap), fee_cap, warn, config).status
+    }
+
+    fn vars(pairs: &[(&str, &str)]) -> ReadinessConfig {
+        ReadinessConfig::from_vars(
+            pairs
+                .iter()
+                .map(|(name, value)| (name.to_string(), value.to_string())),
+        )
     }
 
     #[test]
     fn the_incident_signer_grades_red() {
-        let s = grade_signer(0, INCIDENT_BALANCE, INCIDENT_FEE_CAP, &config());
+        let s = grade_signer(
+            0,
+            INCIDENT_BALANCE,
+            INCIDENT_FEE_CAP,
+            DEFAULT_WARN_SETTLES,
+            &config(),
+        );
         assert_eq!(s.settles_remaining, Some(0));
         assert_eq!(s.status, Status::Down);
         assert!(!s.gas_ok);
@@ -691,11 +960,23 @@ mod tests {
     #[test]
     fn a_funded_signer_grades_green_and_a_thin_one_amber() {
         // 0.05 ETH at a 1.01 gwei cap: 380 settles.
-        let green = grade_signer(0, 50_000_000_000_000_000, INCIDENT_FEE_CAP, &config());
+        let green = grade_signer(
+            0,
+            50_000_000_000_000_000,
+            INCIDENT_FEE_CAP,
+            DEFAULT_WARN_SETTLES,
+            &config(),
+        );
         assert_eq!(green.status, Status::Ok);
         assert!(green.gas_ok);
         // 0.005 ETH at the same cap: 38 settles, above the floor of 10.
-        let amber = grade_signer(0, 5_000_000_000_000_000, INCIDENT_FEE_CAP, &config());
+        let amber = grade_signer(
+            0,
+            5_000_000_000_000_000,
+            INCIDENT_FEE_CAP,
+            DEFAULT_WARN_SETTLES,
+            &config(),
+        );
         assert_eq!(amber.settles_remaining, Some(38));
         assert_eq!(amber.status, Status::Degraded);
         assert!(amber.gas_ok);
@@ -703,9 +984,216 @@ mod tests {
 
     #[test]
     fn a_zero_fee_chain_is_not_graded_on_balance() {
-        let s = grade_signer(0, 0, 0, &config());
+        let s = grade_signer(0, 0, 0, DEFAULT_WARN_SETTLES, &config());
         assert_eq!(s.settles_remaining, None);
         assert_eq!(s.status, Status::Ok);
+        assert_eq!(
+            evm_warn_settles(Network::Base, 0, &config()),
+            DEFAULT_WARN_SETTLES,
+            "free gas has no cost to scale the warning by"
+        );
+    }
+
+    /// The owner's line (2026-09-27): Ethereum reads `degraded` with 20
+    /// settles or fewer, not 100. At its cost today the rule gives it the
+    /// floor; 9 is below the minimum, as before.
+    #[test]
+    fn ethereum_is_warned_twenty_settles_ahead_at_todays_cost() {
+        let config = config();
+        assert_eq!(
+            evm_warn_settles(Network::Ethereum, ETHEREUM_FEE_CAP, &config),
+            20
+        );
+        let status = |settles| evm_status(Network::Ethereum, settles, ETHEREUM_FEE_CAP, &config);
+        assert_eq!(status(21), Status::Ok);
+        assert_eq!(status(20), Status::Degraded);
+        assert_eq!(status(10), Status::Degraded);
+        assert_eq!(status(9), Status::Down);
+    }
+
+    /// A chain whose settle costs cents keeps the ceiling: `degraded` at 100
+    /// settles or fewer, `ok` above.
+    #[test]
+    fn a_cheap_chain_keeps_the_ceiling() {
+        let config = config();
+        // Base at the 0.011 gwei cap alerts.tf records, Polygon on its floor,
+        // Arc on its 20 gwei minimum (2 x 20 gwei base fee + the tip floor).
+        for (network, fee_cap) in [
+            (Network::Base, 11_000_000),
+            (Network::Polygon, POLYGON_FEE_CAP),
+            (Network::Arc, 40_001_000_000),
+        ] {
+            assert_eq!(
+                evm_warn_settles(network, fee_cap, &config),
+                100,
+                "{network}"
+            );
+            assert_eq!(
+                evm_status(network, 101, fee_cap, &config),
+                Status::Ok,
+                "{network}"
+            );
+            assert_eq!(
+                evm_status(network, 100, fee_cap, &config),
+                Status::Degraded,
+                "{network}"
+            );
+            assert_eq!(
+                evm_status(network, 9, fee_cap, &config),
+                Status::Down,
+                "{network}"
+            );
+        }
+    }
+
+    /// Dynamic: the dearer a chain's settle, the fewer settles of warning,
+    /// never outside the floor and the ceiling. Base's cap swept from the
+    /// 0.011 gwei it holds to the 1.01 gwei of 2026-09-14 and past it.
+    #[test]
+    fn the_dearer_the_settle_the_fewer_settles_of_warning() {
+        let config = config();
+        let caps: [u128; 6] = [
+            11_000_000,
+            100_000_000,
+            1_010_000_000,
+            2_000_000_000,
+            10_000_000_000,
+            100_000_000_000,
+        ];
+        let warned: Vec<u64> = caps
+            .iter()
+            .map(|cap| evm_warn_settles(Network::Base, *cap, &config))
+            .collect();
+        // $20 over 130k gas at each cap and ETH at the table's price, rounded
+        // down: 5200+ and 572 clamp to 100, 56.6, 28.6, then 5.7 and 0.57
+        // clamp to 20. Pinned, so a different budget or rounding shows.
+        assert_eq!(warned, [100, 100, 56, 28, 20, 20]);
+        assert_eq!(warned.first(), Some(&DEFAULT_WARN_SETTLES), "{warned:?}");
+        assert_eq!(
+            warned.last(),
+            Some(&DEFAULT_WARN_SETTLES_FLOOR),
+            "{warned:?}"
+        );
+        assert!(
+            warned.windows(2).all(|pair| pair[0] >= pair[1]),
+            "a dearer settle may not buy more warning: {warned:?}"
+        );
+        assert!(
+            warned
+                .iter()
+                .any(|w| *w > DEFAULT_WARN_SETTLES_FLOOR && *w < DEFAULT_WARN_SETTLES),
+            "between the bounds the warning follows the cost: {warned:?}"
+        );
+        // A chain with no price, testnets included, keeps the ceiling.
+        assert_eq!(
+            evm_warn_settles(Network::EthereumSepolia, ETHEREUM_FEE_CAP, &config),
+            DEFAULT_WARN_SETTLES
+        );
+    }
+
+    /// `HEALTH_READY_WARN_SETTLES_<NETWORK>` wins over the rule, both ways, and
+    /// is raised to `min_settles` when set below it.
+    #[test]
+    fn a_network_override_wins_and_never_falls_below_the_minimum() {
+        let config = vars(&[
+            ("HEALTH_READY_WARN_SETTLES_ETHEREUM", "50"),
+            ("HEALTH_READY_WARN_SETTLES_BASE", "3"),
+            ("HEALTH_READY_WARN_SETTLES_POLYGON_AMOY", "250"),
+            ("HEALTH_READY_WARN_SETTLES_NOT_A_CHAIN", "40"),
+            ("HEALTH_READY_WARN_SETTLES_ARBITRUM", "many"),
+        ]);
+        assert_eq!(
+            config.warn_overrides.len(),
+            3,
+            "{:?}",
+            config.warn_overrides
+        );
+        assert_eq!(
+            config.warn_overrides[&Network::Base],
+            DEFAULT_MIN_SETTLES,
+            "raised where it is read, not only where it is applied"
+        );
+        assert_eq!(
+            evm_warn_settles(Network::Ethereum, ETHEREUM_FEE_CAP, &config),
+            50
+        );
+        assert_eq!(
+            evm_status(Network::Ethereum, 51, ETHEREUM_FEE_CAP, &config),
+            Status::Ok
+        );
+        assert_eq!(
+            evm_status(Network::Ethereum, 50, ETHEREUM_FEE_CAP, &config),
+            Status::Degraded
+        );
+        assert_eq!(
+            evm_warn_settles(Network::Base, 11_000_000, &config),
+            DEFAULT_MIN_SETTLES,
+            "an override below min_settles is raised to it"
+        );
+        assert_eq!(
+            evm_warn_settles(Network::PolygonAmoy, POLYGON_FEE_CAP, &config),
+            250
+        );
+        // An unparsable one leaves the rule in charge.
+        assert_eq!(
+            evm_warn_settles(Network::Arbitrum, 41_100_000, &config),
+            100
+        );
+    }
+
+    /// Two variables that name one network (`_BASE` and `_BASE_MAINNET`,
+    /// `_BSC` and `_BNB`): the smaller applies, whatever order they arrive in.
+    /// `from_vars` walks a `HashMap`, whose order changes from one instance to
+    /// the next, so it is built many times: a winner picked by that order
+    /// would not come out the same every time.
+    #[test]
+    fn two_spellings_of_one_network_apply_the_smaller() {
+        for _ in 0..64 {
+            let config = vars(&[
+                ("HEALTH_READY_WARN_SETTLES_BASE", "70"),
+                ("HEALTH_READY_WARN_SETTLES_BASE_MAINNET", "30"),
+                ("HEALTH_READY_WARN_SETTLES_BSC", "25"),
+                ("HEALTH_READY_WARN_SETTLES_BNB", "60"),
+            ]);
+            assert_eq!(
+                config.warn_overrides.len(),
+                2,
+                "{:?}",
+                config.warn_overrides
+            );
+            assert_eq!(config.warn_overrides[&Network::Base], 30);
+            assert_eq!(config.warn_overrides[&Network::Bsc], 25);
+        }
+    }
+
+    /// The global `HEALTH_READY_WARN_SETTLES` is still the ceiling, and the
+    /// floor has its own variable; neither goes below `min_settles`, and the
+    /// floor never above the ceiling.
+    #[test]
+    fn the_floor_and_the_ceiling_are_settings() {
+        let config = vars(&[
+            ("HEALTH_READY_WARN_SETTLES", "60"),
+            ("HEALTH_READY_WARN_SETTLES_FLOOR", "30"),
+        ]);
+        assert_eq!((config.warn_settles, config.warn_settles_floor), (60, 30));
+        assert!(
+            config.warn_overrides.is_empty(),
+            "the floor is not a network"
+        );
+        assert_eq!(
+            evm_warn_settles(Network::Ethereum, ETHEREUM_FEE_CAP, &config),
+            30
+        );
+        assert_eq!(evm_warn_settles(Network::Base, 11_000_000, &config), 60);
+
+        let low = vars(&[("HEALTH_READY_WARN_SETTLES_FLOOR", "5")]);
+        assert_eq!(low.warn_settles_floor, DEFAULT_MIN_SETTLES);
+        let high = vars(&[
+            ("HEALTH_READY_WARN_SETTLES", "40"),
+            ("HEALTH_READY_WARN_SETTLES_FLOOR", "80"),
+        ]);
+        assert_eq!(high.warn_settles_floor, 40);
+        assert_eq!(vars(&[]), ReadinessConfig::default());
     }
 
     #[test]
@@ -714,7 +1202,14 @@ mod tests {
         let down_mainnet = unreachable_network(Network::Base, false);
         let green = graded_network(
             Network::Avalanche,
-            vec![grade_signer(0, u128::MAX, 1, &config())],
+            DEFAULT_WARN_SETTLES,
+            vec![grade_signer(
+                0,
+                u128::MAX,
+                1,
+                DEFAULT_WARN_SETTLES,
+                &config(),
+            )],
         );
         assert_eq!(overall(std::slice::from_ref(&green)), Status::Ok);
         assert_eq!(overall(&[green.clone(), down_testnet]), Status::Degraded);
@@ -737,6 +1232,12 @@ mod tests {
     }
 
     async fn mock_rpc(balance_wei: u128, hang: bool) -> MockRpc {
+        mock_rpc_on("0x2105", balance_wei, hang).await
+    }
+
+    /// A node answering `eth_chainId` with `chain_id` (Base's, `0x2105`, in
+    /// [`mock_rpc`]).
+    async fn mock_rpc_on(chain_id: &'static str, balance_wei: u128, hang: bool) -> MockRpc {
         let balance = Arc::new(std::sync::Mutex::new(balance_wei));
         let calls = Arc::new(AtomicUsize::new(0));
         let hanging = Arc::new(AtomicBool::new(hang));
@@ -755,7 +1256,7 @@ mod tests {
                         tokio::time::sleep(Duration::from_secs(60)).await;
                     }
                     let result = match req["method"].as_str().unwrap_or_default() {
-                        "eth_chainId" => json!("0x2105"),
+                        "eth_chainId" => json!(chain_id),
                         "eth_feeHistory" => json!({
                             "oldestBlock": "0x1",
                             "baseFeePerGas": ["0x4c4b40", "0x4c4b40"],
@@ -869,6 +1370,94 @@ mod tests {
         assert_eq!(body["status"], "down");
         assert_eq!(body["networks"][0]["rpc"], "unreachable");
         assert_eq!(body["networks"][0]["reason"], "rpc_unreachable");
+    }
+
+    /// Each row publishes its own chain's warning, the one its signers were
+    /// graded against, and `thresholds` publishes the rule it came from with
+    /// the global ceiling under its old name. Ethereum at 21 settles is green
+    /// and at 20 amber; Base, at the 1.01 gwei cap this mock quotes, is warned
+    /// by what that cap costs, which is neither Ethereum's nor the ceiling.
+    #[tokio::test]
+    async fn each_row_publishes_the_warning_its_signers_were_graded_against() {
+        let ethereum = mock_rpc_on("0x1", balance_for(21, ETHEREUM_FEE_CAP), false).await;
+        let base = mock_rpc(balance_for(500, INCIDENT_FEE_CAP), false).await;
+        let (router, _) = router_for(
+            &[
+                (Network::Ethereum, ethereum.url.as_str()),
+                (Network::Base, base.url.as_str()),
+            ],
+            config(),
+        )
+        .await;
+        let row = |body: &serde_json::Value, name: &str| {
+            body["networks"]
+                .as_array()
+                .and_then(|rows| rows.iter().find(|r| r["network"] == name).cloned())
+                .unwrap_or_else(|| panic!("no {name} row: {body}"))
+        };
+        let base_warn = evm_warn_settles(Network::Base, INCIDENT_FEE_CAP, &config());
+        assert!(
+            base_warn > 20 && base_warn < 100,
+            "Base at 1.01 gwei sits between the bounds: {base_warn}"
+        );
+
+        let (code, body, _) = get(&router, "/health/ready").await;
+        assert_eq!(code, StatusCode::OK, "{body}");
+        assert_eq!(body["status"], "ok", "{body}");
+        let eth = row(&body, "ethereum");
+        assert_eq!(eth["warnSettles"], 20, "{body}");
+        assert_eq!(eth["signers"][0]["settlesRemaining"], 21, "{body}");
+        assert_eq!(eth["status"], "ok", "{body}");
+        assert_eq!(row(&body, "base")["warnSettles"], base_warn, "{body}");
+        assert_eq!(
+            body["thresholds"],
+            json!({
+                "minSettles": 10,
+                "warnSettles": 100,
+                "warnSettlesFloor": 20,
+                "warnBudgetUsd": WARN_BUDGET_USD,
+                "warnPricesAsOf": REFERENCE_PRICES_AS_OF,
+                "warnOverrides": {},
+                "settleGasBudget": 130000,
+            }),
+            "{body}"
+        );
+
+        *ethereum.balance_wei.lock().unwrap() = balance_for(20, ETHEREUM_FEE_CAP);
+        let (code, body, _) = get(&router, "/health/ready?network=ethereum").await;
+        assert_eq!(code, StatusCode::OK, "{body}");
+        let eth = row(&body, "ethereum");
+        assert_eq!(eth["status"], "degraded", "{body}");
+        assert_eq!(eth["reason"], "signer_gas_low", "{body}");
+        assert_eq!(eth["warnSettles"], 20, "{body}");
+
+        // A chain that could not be read has no warning to publish.
+        let dead = dead_url().await;
+        let (router, _) = router_for(&[(Network::Ethereum, dead.as_str())], config()).await;
+        let (_, body, _) = get(&router, "/health/ready").await;
+        assert!(
+            row(&body, "ethereum").get("warnSettles").is_none(),
+            "{body}"
+        );
+    }
+
+    /// An override is published where it is read, and its row carries it.
+    #[tokio::test]
+    async fn an_override_is_published_with_its_row() {
+        let ethereum = mock_rpc_on("0x1", balance_for(60, ETHEREUM_FEE_CAP), false).await;
+        let config = ReadinessConfig {
+            ttl: Duration::ZERO,
+            ..vars(&[("HEALTH_READY_WARN_SETTLES_ETHEREUM", "75")])
+        };
+        let (router, _) = router_for(&[(Network::Ethereum, ethereum.url.as_str())], config).await;
+        let (_, body, _) = get(&router, "/health/ready").await;
+        assert_eq!(
+            body["thresholds"]["warnOverrides"],
+            json!({"ethereum": 75}),
+            "{body}"
+        );
+        assert_eq!(body["networks"][0]["warnSettles"], 75, "{body}");
+        assert_eq!(body["networks"][0]["status"], "degraded", "{body}");
     }
 
     /// A node that accepts the connection and never answers is down, and the
@@ -1081,9 +1670,16 @@ mod tests {
     #[cfg(feature = "hedera")]
     #[test]
     fn a_hedera_health_answer_grades_with_its_own_reason() {
-        use crate::chain::hedera::HealthFailure;
+        use crate::chain::hedera::{HealthFailure, DEFAULT_MAX_TRANSACTION_FEE_TINYBARS};
         let network = Network::Hedera;
-        let report = |health| hedera_report(network, health, &config());
+        let report = |health| {
+            hedera_report(
+                network,
+                health,
+                DEFAULT_MAX_TRANSACTION_FEE_TINYBARS,
+                &config(),
+            )
+        };
         let key = report(Some(Err(HealthFailure::SponsorKeyMismatch)));
         assert_eq!(
             (key.status, key.reason, key.rpc),
@@ -1108,6 +1704,18 @@ mod tests {
         assert_eq!(report(Some(Ok(0))).reason, Some("signer_gas_critical"));
         assert_eq!(report(Some(Ok(28))).reason, Some("signer_gas_low"));
         assert_eq!(report(Some(Ok(500))).status, Status::Ok);
+        // A 1 HBAR reservation costs cents: the ceiling, published on the row.
+        assert_eq!(report(Some(Ok(100))).status, Status::Degraded);
+        assert_eq!(report(Some(Ok(101))).status, Status::Ok);
+        assert_eq!(
+            report(Some(Ok(101))).warn_settles,
+            Some(DEFAULT_WARN_SETTLES)
+        );
+        assert_eq!(key.warn_settles, None, "no warning without a reading");
+        // Priced at the max fee it is given, not at the default: 10 HBAR at
+        // $0.094 is $0.94 a settle, and $20 buys 21 of them.
+        let dear = hedera_report(network, Some(Ok(500)), 1_000_000_000, &config());
+        assert_eq!(dear.warn_settles, Some(21));
     }
 
     /// A native Hedera ledger whose health check fails is listed with its
@@ -1162,14 +1770,34 @@ mod tests {
         drop(silent);
     }
 
+    /// `"key" = number` entries of the `alerts.tf` block opened by `opening`.
+    fn tf_block(alerts: &str, opening: &str) -> Vec<(String, f64)> {
+        let start = alerts
+            .find(opening)
+            .unwrap_or_else(|| panic!("alerts.tf no longer declares `{opening}`"));
+        alerts[start + opening.len()..]
+            .lines()
+            .skip(1)
+            .map(str::trim)
+            .take_while(|line| !line.starts_with('}'))
+            .filter_map(|line| {
+                let (key, rest) = line.split_once('=')?;
+                let value = rest.split('#').next()?.trim().parse().ok()?;
+                Some((key.trim().trim_matches('"').to_string(), value))
+            })
+            .collect()
+    }
+
     /// The low-balance alarm is the page for the moment this route turns a
     /// signer `degraded`, so `alerts.tf` derives its floor from the same
-    /// numbers: `SETTLE_GAS_BUDGET * fee_cap * warnSettles`. Terraform cannot
-    /// read Rust and carries copies; this fails when a copy drifts, or when the
-    /// deployment sets the warn level the copy assumes is the default.
+    /// numbers: `SETTLE_GAS_BUDGET * fee_cap * warnSettles`, with each chain's
+    /// own `warnSettles`. Terraform cannot read Rust and carries copies; this
+    /// fails when a copy drifts, or when the deployment sets a warn level the
+    /// copies assume is the default.
     ///
     /// Until 2.39.2 every floor was typed by hand and its description promised
-    /// "roughly 100 settles": Arc's default bought about 19.
+    /// "roughly 100 settles": Arc's default bought about 19. Until 2.46.0 every
+    /// chain was warned 100 settles ahead, Ethereum included.
     #[test]
     fn the_low_balance_alarm_is_derived_from_these_thresholds() {
         let dir = concat!(
@@ -1192,26 +1820,82 @@ mod tests {
             SETTLE_GAS_BUDGET,
             "alerts.tf prices a settle differently from /health/ready"
         );
+
+        // Each chain alerts.tf prices is warned as many settles ahead as this
+        // module warns it at the fee cap alerts.tf records for it.
+        let defaults = ReadinessConfig::default();
+        let mut expected: Vec<(String, u64)> = tf_block(&alerts, "evm_fee_cap_gwei = {")
+            .into_iter()
+            .map(|(chain, gwei)| {
+                let network: Network =
+                    chain
+                        .trim_end_matches("-mainnet")
+                        .parse()
+                        .unwrap_or_else(|_| {
+                            panic!("alerts.tf prices {chain}, no network by that name")
+                        });
+                let fee_cap = (gwei * 1e9).round() as u128;
+                let warn = evm_warn_settles(network, fee_cap, &defaults);
+                (chain, warn)
+            })
+            .collect();
+        #[cfg(feature = "hedera")]
+        expected.push((
+            "hedera-mainnet".to_string(),
+            warn_settles_for(
+                Network::Hedera,
+                u128::from(crate::chain::hedera::DEFAULT_MAX_TRANSACTION_FEE_TINYBARS),
+                HBAR_DECIMALS,
+                &defaults,
+            ),
+        ));
+        expected.sort();
+        let paste = expected
+            .iter()
+            .map(|(chain, warn)| format!("    \"{chain}\" = {warn}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let declared = tf_block(&alerts, "warn_settles_by_chain = {");
+        for (chain, warn) in &expected {
+            let found = declared.iter().find(|(c, _)| c == chain).map(|(_, w)| *w);
+            assert_eq!(
+                found,
+                Some(*warn as f64),
+                "alerts.tf warns {chain} at {found:?} settles, /health/ready at {warn}. \
+                 warn_settles_by_chain should read:\n{paste}"
+            );
+        }
+        #[cfg(feature = "hedera")]
         assert_eq!(
-            local("warn_settles"),
-            u128::from(DEFAULT_WARN_SETTLES),
-            "alerts.tf pages at a different settle count than /health/ready warns at"
+            declared.len(),
+            expected.len(),
+            "warn_settles_by_chain names a chain alerts.tf does not price:\n{paste}"
+        );
+        // The owner's line, read where the alarm reads it.
+        assert_eq!(
+            declared
+                .iter()
+                .find(|(c, _)| c == "ethereum-mainnet")
+                .map(|(_, w)| *w),
+            Some(20.0)
         );
 
         // A deployment override would move /health/ready and leave the alarm
         // on the default. Carry it into alerts.tf instead of setting it here.
+        // Prefixes, opening quote included: an ECS `environment` entry, not a
+        // comment naming it. The first covers the floor and every per-network
+        // override as well as the ceiling.
         let overridden = [
-            "HEALTH_READY_WARN_SETTLES",
-            "HEDERA_MAX_TRANSACTION_FEE_TINYBARS",
+            "\"HEALTH_READY_WARN_SETTLES",
+            "\"HEDERA_MAX_TRANSACTION_FEE_TINYBARS\"",
         ];
         for entry in std::fs::read_dir(dir).expect("terraform directory") {
             let path = entry.expect("directory entry").path();
             if path.extension().is_some_and(|e| e == "tf" || e == "tfvars") {
                 let text = std::fs::read_to_string(&path).expect("terraform file");
                 for name in overridden {
-                    // Quoted: an ECS `environment` entry, not a comment naming it.
                     assert!(
-                        !text.contains(&format!("\"{name}\"")),
+                        !text.contains(name),
                         "{} sets {name}; alerts.tf derives its floors from the default",
                         path.display()
                     );
@@ -1273,26 +1957,9 @@ mod tests {
             "/terraform/environments/production"
         );
         let alerts = std::fs::read_to_string(format!("{dir}/alerts.tf")).expect("alerts.tf");
-        // `"key" = number` entries of the block opened by `opening`.
-        let block = |opening: &str| -> Vec<(String, f64)> {
-            let start = alerts
-                .find(opening)
-                .unwrap_or_else(|| panic!("alerts.tf no longer declares `{opening}`"));
-            alerts[start + opening.len()..]
-                .lines()
-                .skip(1)
-                .map(str::trim)
-                .take_while(|line| !line.starts_with('}'))
-                .filter_map(|line| {
-                    let (key, rest) = line.split_once('=')?;
-                    let value = rest.split('#').next()?.trim().parse().ok()?;
-                    Some((key.trim().trim_matches('"').to_string(), value))
-                })
-                .collect()
-        };
-        let declared = block("declared_floors = merge({");
-        let hand_set = block("hand_set_floors = {");
-        let fee_caps = block("evm_fee_cap_gwei = {");
+        let declared = tf_block(&alerts, "declared_floors = merge({");
+        let hand_set = tf_block(&alerts, "hand_set_floors = {");
+        let fee_caps = tf_block(&alerts, "evm_fee_cap_gwei = {");
 
         for (chain, floor) in DECLARED {
             let now = declared
@@ -1326,10 +1993,24 @@ mod tests {
             .expect("alerts.tf no longer derives min_native from the settle price");
         assert!(
             min_native.contains("max(")
-                && min_native.contains("price.cost * local.warn_settles")
+                && min_native.contains("price.cost * local.warn_settles_by_chain[chain]")
                 && min_native.contains("local.declared_floors"),
-            "min_native must be max(derived, declared): {min_native}"
+            "min_native must be max(derived at the chain's own warning, declared): {min_native}"
         );
+        // Exact, spacing aside: a `contains` let `* 5` after the warning, a
+        // literal 100 in `settles` or in the description's `warn_settles`
+        // through (refutation of 2.46.0).
+        let squeeze = |s: &str| s.split_whitespace().collect::<String>();
+        for expected in [
+            "min_native = max(price.cost * local.warn_settles_by_chain[chain], lookup(local.declared_floors, chain, 0))",
+            "settles = max(local.warn_settles_by_chain[chain], floor(lookup(local.declared_floors, chain, 0) / max(price.cost, 1e-18)))",
+            "warn_settles = local.warn_settles_by_chain[chain]",
+        ] {
+            assert!(
+                alerts.lines().any(|line| squeeze(line) == squeeze(expected)),
+                "alerts.tf no longer reads `{expected}`"
+            );
+        }
 
         let tfvars = std::fs::read_to_string(format!("{dir}/production.auto.tfvars"))
             .expect("production.auto.tfvars");

@@ -5863,26 +5863,15 @@ fn cache_typed_settle_success(
     }
 }
 
-/// The form of `response` the idempotency cache stores: one the replay path
-/// parses back into a [`SettleResponse`] whose serialization is byte-identical
-/// to what the caller was first sent.
-///
-/// The serialized response names the settlement hash three times
-/// (`transaction`, `transactionHash`, `transaction_hash`, see the `Serialize`
-/// impl in `types.rs`), while `Deserialize` reads the last two as aliases of
-/// the first and accepts only one of them per document. The stored form keeps
-/// `transaction` alone; serializing the parsed replay writes the other two
-/// back. `None` -- store nothing -- unless that round trip reproduces the
-/// original bytes exactly.
+/// The form of `response` the idempotency cache stores: its own serialization,
+/// kept only when the replay path parses it back into a [`SettleResponse`]
+/// that serializes to exactly the same bytes. `None` -- store nothing --
+/// otherwise, so a replay can never answer differently from the settle it
+/// stands for.
 fn replayable_settle_json(response: &SettleResponse) -> Option<String> {
     let sent = serde_json::to_string(response).ok()?;
-    let mut stored: serde_json::Value = serde_json::from_str(&sent).ok()?;
-    let fields = stored.as_object_mut()?;
-    fields.remove("transactionHash");
-    fields.remove("transaction_hash");
-    let stored = serde_json::to_string(&stored).ok()?;
-    let replayed: SettleResponse = serde_json::from_str(&stored).ok()?;
-    (serde_json::to_string(&replayed).ok()? == sent).then_some(stored)
+    let replayed: SettleResponse = serde_json::from_str(&sent).ok()?;
+    (serde_json::to_string(&replayed).ok()? == sent).then_some(sent)
 }
 
 fn invalid_schema(payer: Option<MixedAddress>) -> VerifyResponse {
@@ -14994,14 +14983,14 @@ mod settle_idempotency_tests {
     /// switches: these tests settle for real, so another test flipping either
     /// halfway through would turn a replay into a refusal. The switches are
     /// put back as they were when it drops.
-    struct EscrowArmed {
+    struct Armed {
         previous: Vec<(&'static str, Option<String>)>,
         _lock: std::sync::MutexGuard<'static, ()>,
         _writer: std::sync::MutexGuard<'static, ()>,
         _flags: std::sync::MutexGuard<'static, ()>,
     }
 
-    fn arm_escrow() -> EscrowArmed {
+    fn arm_settling() -> Armed {
         let lock = LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let writer = super::writer_lease_gate_tests::WRITER_FLAG
             .lock()
@@ -15018,7 +15007,7 @@ mod settle_idempotency_tests {
                 (var, was)
             })
             .collect();
-        EscrowArmed {
+        Armed {
             previous,
             _lock: lock,
             _writer: writer,
@@ -15026,7 +15015,7 @@ mod settle_idempotency_tests {
         }
     }
 
-    impl Drop for EscrowArmed {
+    impl Drop for Armed {
         fn drop(&mut self) {
             for (var, was) in &self.previous {
                 match was {
@@ -15039,12 +15028,13 @@ mod settle_idempotency_tests {
 
     /// One `/settle` with `key`, answered as raw bytes: a replay has to be
     /// byte-identical, not merely equal as JSON.
-    async fn settle_on(
-        facilitator: &OnNode,
-        key: &str,
-        body: &str,
-    ) -> (StatusCode, HeaderMap, Bytes) {
-        let response = verify_settle_routes::<OnNode>()
+    async fn settle_on<A>(facilitator: &A, key: &str, body: &str) -> (StatusCode, HeaderMap, Bytes)
+    where
+        A: Facilitator + HasProviderMap + Clone + Send + Sync + 'static,
+        A::Error: IntoResponse,
+        A::Map: ProviderMap<Value = NetworkProvider>,
+    {
+        let response = verify_settle_routes::<A>()
             .layer(Extension(Arc::new(DiscoveryRegistry::new())))
             .layer(Extension(Arc::new(crate::events::EventBus::from_env())))
             .layer(Extension(
@@ -15219,7 +15209,7 @@ mod settle_idempotency_tests {
 
     #[tokio::test]
     async fn an_escrow_settle_is_replayed_under_its_key_without_settling_again() {
-        let _g = arm_escrow();
+        let _g = arm_settling();
         let (node, facilitator) = on_base().await;
         assert_replayed_without_settling_again(
             &node,
@@ -15232,7 +15222,7 @@ mod settle_idempotency_tests {
 
     #[tokio::test]
     async fn a_refund_extension_settle_is_replayed_under_its_key_without_settling_again() {
-        let _g = arm_escrow();
+        let _g = arm_settling();
         let (node, facilitator) = on_base().await;
         let body = refund_body(&node, 1);
         assert_replayed_without_settling_again(&node, &facilitator, "refund-replay", &body).await;
@@ -15241,7 +15231,7 @@ mod settle_idempotency_tests {
     /// A settlement that failed leaves nothing to replay: the retry runs again.
     #[tokio::test]
     async fn a_failed_escrow_settle_is_not_cached_and_the_retry_runs_again() {
-        let _g = arm_escrow();
+        let _g = arm_settling();
         let store = store();
         let (node, facilitator) = on_base().await;
         node.revert_receipts(true);
@@ -15290,7 +15280,7 @@ mod settle_idempotency_tests {
     /// Same key, another authorization: refused, and nothing reaches the chain.
     #[tokio::test]
     async fn an_escrow_key_reused_with_another_body_is_refused() {
-        let _g = arm_escrow();
+        let _g = arm_settling();
         let store = store();
         let (node, facilitator) = on_base().await;
         let (status, _, first) = settle_on(&facilitator, "escrow-conflict", &escrow_body(4)).await;
@@ -15310,6 +15300,102 @@ mod settle_idempotency_tests {
             node.sent().len(),
             1,
             "the second authorization must not settle"
+        );
+    }
+
+    /// Settles every `exact` request it is handed, and counts them.
+    #[derive(Clone)]
+    struct SettlesExact {
+        settled: Arc<std::sync::atomic::AtomicUsize>,
+        providers: Arc<NoProviders>,
+    }
+
+    impl HasProviderMap for SettlesExact {
+        type Map = NoProviders;
+        fn provider_map(&self) -> &Self::Map {
+            &self.providers
+        }
+    }
+
+    impl Facilitator for SettlesExact {
+        type Error = FacilitatorLocalError;
+        async fn verify(
+            &self,
+            _r: &crate::types::VerifyRequest,
+        ) -> Result<VerifyResponse, Self::Error> {
+            Err(FacilitatorLocalError::ContractCall("no chain here".into()))
+        }
+        async fn settle(&self, _r: &SettleRequest) -> Result<SettleResponse, Self::Error> {
+            self.settled
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(SettleResponse {
+                success: true,
+                error_reason: None,
+                payer: MixedAddress::Evm(
+                    "0x1111111111111111111111111111111111111111"
+                        .parse()
+                        .unwrap(),
+                ),
+                transaction: Some(crate::types::TransactionHash::Evm([0x5e; 32])),
+                network: Network::CeloSepolia,
+                proof_of_payment: None,
+                extensions: None,
+            })
+        }
+        async fn supported(
+            &self,
+        ) -> Result<crate::types::SupportedPaymentKindsResponse, Self::Error> {
+            Ok(crate::types::SupportedPaymentKindsResponse { kinds: vec![] })
+        }
+    }
+
+    /// The `exact` path keeps its answer under the key as it is sent, all
+    /// three hash names included, and the replay reads it back: the retry is
+    /// the first answer, byte for byte, and the facilitator settles once.
+    #[tokio::test]
+    async fn an_exact_settle_is_replayed_under_its_key_without_settling_again() {
+        let _g = arm_settling();
+        let store = store();
+        let facilitator = SettlesExact {
+            settled: Arc::default(),
+            providers: Arc::new(NoProviders),
+        };
+        let body = v2_body("eip155:11142220");
+
+        let (status, headers, first) = settle_on(&facilitator, "exact-replay", &body).await;
+        assert_eq!(
+            status,
+            StatusCode::OK,
+            "{}",
+            String::from_utf8_lossy(&first)
+        );
+        assert!(headers.get("idempotent-replayed").is_none());
+        let record = cached_record(&store, "exact-replay")
+            .await
+            .expect("a successful exact settle is cached under its key");
+        assert_eq!(record.response_json.as_bytes(), first.as_ref());
+        assert!(record.response_json.contains("\"transactionHash\""));
+
+        let (status, headers, again) = settle_on(&facilitator, "exact-replay", &body).await;
+        assert_eq!(
+            status,
+            StatusCode::OK,
+            "{}",
+            String::from_utf8_lossy(&again)
+        );
+        assert_eq!(
+            headers
+                .get("idempotent-replayed")
+                .map(|v| v.to_str().unwrap()),
+            Some("true")
+        );
+        assert_eq!(again, first, "a replay is the first answer, byte for byte");
+        assert_eq!(
+            facilitator
+                .settled
+                .load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "a replay must not settle again"
         );
     }
 }

@@ -24,6 +24,11 @@ use crate::chain::NetworkProvider;
 use crate::network::Network;
 use crate::provider_cache::{HasProviderMap, ProviderMap};
 
+/// Taken by every test that writes `ENABLE_PAYMENT_OPERATOR` or `ENABLE_ESCROW`.
+/// Both are process-global, so a test flipping one while another is halfway
+/// through a settlement makes a plain parallel `cargo test` flaky.
+pub(crate) static ESCROW_FLAGS: Mutex<()> = Mutex::new(());
+
 /// The hash every `eth_sendRawTransaction` answers with. The receipt the node
 /// serves carries the hash it is asked about, so the value itself is inert.
 const SUBMITTED: [u8; 32] = [0x5e; 32];

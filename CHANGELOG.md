@@ -1,5 +1,9 @@
 # Changelog
 
+## [2.46.1] - 2026-09-29
+
+- `POST /settle`: a successful x402r escrow settle (`escrow` / `commerce`) or `refund`-extension deposit is now kept under its `Idempotency-Key`, as an `exact` settle is: a retry with the same key and body gets the first response back, byte for byte, with `Idempotent-Replayed: true`, and the same key with another body gets `409 idempotency_key_conflict`. Only successes are kept, so a failed settle can still be retried.
+
 ## [2.46.0] - 2026-09-27
 
 ### `GET /health/ready`: each chain is warned by what its gas costs

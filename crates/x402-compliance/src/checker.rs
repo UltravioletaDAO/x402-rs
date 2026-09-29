@@ -88,7 +88,14 @@ pub struct ListMetadata {
     pub name: String,
     pub enabled: bool,
     pub record_count: usize,
+    /// The file's modification time: when this copy was written (a checkout,
+    /// an image build), which says nothing about how old the list is.
     pub last_updated: Option<chrono::DateTime<chrono::Utc>>,
+    /// When the list itself says it was generated from its source. This is the
+    /// list's age. `None` when the file does not say, or says it in a form
+    /// that is not RFC 3339.
+    #[serde(default)]
+    pub generated_at: Option<chrono::DateTime<chrono::Utc>>,
     pub checksum: Option<String>,
     pub source_url: String,
 }

@@ -7,6 +7,9 @@ use sha2::{Digest, Sha256};
 use std::collections::HashSet;
 use std::fs;
 
+/// The name this list reports in [`ListMetadata`].
+pub const LIST_NAME: &str = "OFAC_SDN";
+
 /// Metadata about the OFAC sanctions list
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OfacMetadata {
@@ -59,6 +62,8 @@ pub struct OfacList {
     checksum: String,
     /// Last updated timestamp
     last_updated: Option<chrono::DateTime<chrono::Utc>>,
+    /// `metadata.generated_at`, parsed
+    generated_at: Option<chrono::DateTime<chrono::Utc>>,
 }
 
 impl OfacList {
@@ -101,6 +106,16 @@ impl OfacList {
             .and_then(|m| m.modified().ok())
             .map(chrono::DateTime::<chrono::Utc>::from);
 
+        let generated_at = chrono::DateTime::parse_from_rfc3339(&data.metadata.generated_at)
+            .ok()
+            .map(|at| at.with_timezone(&chrono::Utc));
+        if generated_at.is_none() {
+            tracing::warn!(
+                "[WARN] OFAC list generated_at is not RFC 3339 ({:?}); its age cannot be told",
+                data.metadata.generated_at
+            );
+        }
+
         tracing::info!(
             "Loaded OFAC list: {} addresses across {} currencies (generated: {})",
             data.metadata.total_addresses,
@@ -117,6 +132,7 @@ impl OfacList {
             metadata: data.metadata,
             checksum,
             last_updated,
+            generated_at,
         })
     }
 
@@ -143,10 +159,11 @@ impl SanctionsList for OfacList {
 
     fn metadata(&self) -> ListMetadata {
         ListMetadata {
-            name: "OFAC_SDN".to_string(),
+            name: LIST_NAME.to_string(),
             enabled: true,
             record_count: self.sanctioned_addresses.len(),
             last_updated: self.last_updated,
+            generated_at: self.generated_at,
             checksum: Some(self.checksum.clone()),
             source_url: self.metadata.source_url.clone(),
         }
@@ -218,6 +235,35 @@ mod tests {
         let list = OfacList::load(&config).await.unwrap();
         assert_eq!(list.total_addresses(), 3);
         assert_eq!(list.metadata().record_count, 3);
+        // The list's own date, not the temp file's mtime (which is now).
+        assert_eq!(
+            list.metadata().generated_at.map(|at| at.to_rfc3339()),
+            Some("2025-11-10T00:00:00+00:00".to_string())
+        );
+    }
+
+    /// A date that does not parse still loads the list -- it is the list that
+    /// blocks -- and reports no age rather than a made-up one.
+    #[tokio::test]
+    async fn an_unparseable_generated_at_loads_with_no_age() {
+        let mut file = NamedTempFile::new().unwrap();
+        let data = r#"{"metadata":{"source":"t","source_url":"t","generated_at":"last week",
+            "total_addresses":1,"currencies":["ethereum"]},
+            "addresses":[{"address":"0x1234567890123456789012345678901234567890",
+            "blockchain":"ethereum","entity_name":"t","entity_id":"1","reason":"t"}]}"#;
+        file.write_all(data.as_bytes()).unwrap();
+        file.flush().unwrap();
+        let config = ListConfig {
+            enabled: true,
+            path: file.path().to_path_buf(),
+            source_url: None,
+            auto_update: false,
+            update_interval_hours: 24,
+        };
+
+        let list = OfacList::load(&config).await.unwrap();
+        assert!(list.is_sanctioned("0x1234567890123456789012345678901234567890"));
+        assert_eq!(list.metadata().generated_at, None);
     }
 
     #[tokio::test]

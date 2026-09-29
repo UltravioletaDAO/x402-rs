@@ -212,7 +212,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         payment_operator::autoverify::spawn(Arc::clone(&provider_cache));
     }
 
-    let facilitator = FacilitatorLocal::new(Arc::clone(&provider_cache), compliance_checker);
+    let facilitator =
+        FacilitatorLocal::new(Arc::clone(&provider_cache), Arc::clone(&compliance_checker));
     let axum_state = Arc::new(facilitator);
 
     // Live traffic stream (GET /events, SSE). Lossy broadcast: an observer can never
@@ -679,13 +680,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         // ALB: `/health` stays the liveness check, or a chain outage would
         // have ECS cycle healthy tasks. Metered like the other on-chain reads:
         // the cache bounds the RPC traffic, the governor bounds who gets to
-        // make the task wait for a probe.
+        // make the task wait for a probe. It also grades the age of the OFAC
+        // list the checker screens against: nothing refreshes that file at
+        // runtime, so its age is what says it went unregenerated.
         .merge(
             readiness::routes()
-                .with_state(Arc::new(readiness::ReadinessState::new(
-                    Arc::clone(&provider_cache),
-                    readiness::ReadinessConfig::from_env(),
-                )))
+                .with_state(Arc::new(
+                    readiness::ReadinessState::new(
+                        Arc::clone(&provider_cache),
+                        readiness::ReadinessConfig::from_env(),
+                    )
+                    .with_sanctions_list(compliance_checker),
+                ))
                 .layer(policy.layer(&secondary_read_config)),
         )
         // `GET /config`: the policy in force, for an operator or a stack

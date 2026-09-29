@@ -191,17 +191,22 @@ stays off for `main`, so two releases queued back to back both run to completion
   If that commit cannot be determined, or the compare fails or reaches its 300-file cap, the step
   applies anyway — a redundant `UpdateFunctionCode` is cheap, a silently unapplied change is the
   bug being fixed. A `workflow_dispatch` run always applies the Lambda: that is the manual escape
-  hatch. **Use it to resync the Lambda whenever it drifts from `main`.**
+  hatch. **Use it to resync the Lambda whenever it drifts from `main`.** The observability step
+  below applies it as well whenever it has a pending diff: two of its targets, the schedule's event
+  target and its Lambda permission, reference the function (`alerts.tf:346-355`), and `-target`
+  pulls in their dependencies.
 - **Observability and the discovery bucket:** two more targeted applies (alarms, SNS, SQS, the
   balances schedule and metric filters; the discovery bucket's versioning and lifecycle), on
   **every** deploy. They used to apply only when the push's own diff touched their files, so a
   change that arrived with a failed deploy was never applied by the pushes after it (the
   `alerts-solana-mint.tf` alarms, 2026-09-10). With nothing to change, each is a no-op of seconds.
 - **Verify:** waits for `services-stable`, then polls `/health` for `200`. Both run whenever the
-  image apply succeeded, **even if a step after it failed** — a failed observability step used to
-  skip them and leave the new image live with no verdict (2.19.0). The job still ends red.
+  image apply ran, **even if it or a step after it failed** — a failed observability step used to
+  skip them and leave the new image live with no verdict (2.19.0), and so did an image apply that
+  failed after moving the service (2026-09-26). They skip only when the apply never ran. The job
+  still ends red.
 - `tests/scripts/test_ci_*.py` (run by the `test` job) hold that shape: the wait and the health
-  check key on the image apply, and no deploy step skips on `github.event.before`.
+  check key on the image apply having run, and no deploy step skips on `github.event.before`.
 - `concurrency: deploy-production` serializes deploys so two merges can't apply at once.
 
 > Because CI overrides `image_tag` via `-var`, the value committed in `terraform.tfvars` becomes a

@@ -714,13 +714,16 @@ jobs:
             -target=aws_cloudwatch_log_metric_filter.network_startup_probe \
             -target=aws_cloudwatch_metric_alarm.network_startup_probe
 
-      # The wait and the health check run whenever the image apply succeeded, even if a
-      # step after it failed. The rollout is already under way by then, and skipping the
-      # two would leave the new image live with no verdict: 2.19.0 (#34) failed in the
-      # observability step and neither ran. `if:` only decides whether they run; the
-      # failed step still turns the job red.
+      # The wait and the health check run whenever the image apply RAN, even if it or a
+      # step after it failed. Skipping the two leaves a service that may already have
+      # moved with no verdict: 2.19.0 (#34) failed in the observability step and neither
+      # ran, and on 2026-09-26 the apply itself failed after moving the service (the IAM
+      # refusal described in the drift gate above) and both were skipped again. They skip
+      # only when the apply never ran, which means no new image was rolled. An apply that
+      # failed before changing anything costs one wait on a service that is already
+      # stable. `if:` only decides whether they run; the failed step still turns the job red.
       - name: Wait for ECS rollout to stabilize
-        if: ${{ !cancelled() && steps.ecs_apply.outcome == 'success' }}
+        if: ${{ !cancelled() && steps.ecs_apply.outcome != 'skipped' }}
         run: |
           aws ecs wait services-stable \
             --cluster "${{ env.ECS_CLUSTER }}" \
@@ -728,7 +731,7 @@ jobs:
             --region "${{ env.AWS_REGION }}"
 
       - name: Verify deployment health
-        if: ${{ !cancelled() && steps.ecs_apply.outcome == 'success' }}
+        if: ${{ !cancelled() && steps.ecs_apply.outcome != 'skipped' }}
         run: |
           for i in $(seq 1 10); do
             code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 https://facilitator.ultravioletadao.xyz/health || true)

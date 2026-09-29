@@ -40,9 +40,11 @@ def jobs_path(run_id: int) -> str:
     return f"repos/{OWNER_REPO}/actions/runs/{run_id}/jobs"
 
 
-def run(run_id, sha, started, event="push", branch="main", conclusion="success"):
+def run(run_id, sha, started, event="push", branch="main", conclusion="success", created=None):
+    # A re-run keeps its created_at and gets a new run_started_at, so the two can differ.
     return {"id": run_id, "head_sha": sha, "event": event, "head_branch": branch,
-            "run_started_at": started, "created_at": started, "conclusion": conclusion}
+            "run_started_at": started, "created_at": created or started,
+            "conclusion": conclusion}
 
 
 def jobs(deploy_conclusion, extra=()):
@@ -128,10 +130,13 @@ class CompareBase(unittest.TestCase):
         self.assertEqual(self.base(gh), GREEN)
 
     def test_a_rerun_that_went_green_last_wins_over_a_newer_commit(self):
-        # Run 297 was created first but re-run (and deployed) after run 298.
+        # Run 297 was created first but re-run (and deployed) after run 298: ordering
+        # by created_at would pick 298, a newer commit than the last one deployed, and
+        # hide whatever lies between the two.
         gh = FakeGh({
             RUNS: {"workflow_runs": [run(298, GREEN, "2026-09-29T08:00:00Z"),
-                                     run(297, OLDER_GREEN, "2026-09-29T09:30:00Z")]},
+                                     run(297, OLDER_GREEN, "2026-09-29T09:30:00Z",
+                                         created="2026-09-29T07:00:00Z")]},
             jobs_path(298): jobs("success"),
             jobs_path(297): jobs("success"),
         })

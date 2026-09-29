@@ -3,8 +3,10 @@
 Two holes this job had, each of which left production in a state nobody had
 checked, and neither of which any test would have noticed coming back:
 
-  1. A failed step after the image apply skipped the rollout wait and the
-     health check. The new image was live with no verdict (2.19.0, #34).
+  1. A failed step skipped the rollout wait and the health check: one after
+     the image apply (2.19.0, #34), and the image apply itself after it had
+     moved the service (2026-09-26). Both times production was live with no
+     verdict.
   2. The steps that apply resources outside the image deploy's -target list
      decided whether to run from this push's diff alone. A change whose own
      deploy failed was never applied by the pushes after it (2026-09-10).
@@ -17,7 +19,9 @@ Run:  python3 -m unittest discover -s tests/scripts -p 'test_ci_*.py'
 
 from __future__ import annotations
 
+import fnmatch
 import re
+import shlex
 import sys
 import unittest
 from pathlib import Path
@@ -44,6 +48,9 @@ DISCOVERY = "Deploy discovery bucket versioning"
 # names the context without the braces is not a use and is not matched.
 EVENT_BEFORE = re.compile(r"\$\{\{[^}]*\bgithub\.event\.before\b[^}]*\}\}")
 
+# The compare API lists at most this many files; a list that long may be cut short.
+COMPARE_FILE_CAP = 300
+
 
 def step(prefix: str) -> dict:
     found = [s for s in STEPS if str(s.get("name", "")).startswith(prefix)]
@@ -69,7 +76,9 @@ class RolloutVerdictSurvivesAFailedStep(unittest.TestCase):
                         f"'{ECS_APPLY}' needs an id: the wait and the health check "
                         "key on its outcome.")
 
-    def test_wait_and_health_run_whenever_the_ecs_apply_succeeded(self):
+    def test_wait_and_health_run_whenever_the_ecs_apply_ran(self):
+        # Not `== 'success'`: an apply can fail after the service has moved
+        # (2026-09-26), and that is exactly when the verdict is needed.
         apply_id = step(ECS_APPLY).get("id")
         for name in (WAIT, HEALTH):
             with self.subTest(step=name):
@@ -83,8 +92,8 @@ class RolloutVerdictSurvivesAFailedStep(unittest.TestCase):
                 parts = conjuncts(cond)
                 self.assertIn("!cancelled()", parts,
                               f"'{name}' must run after a failed step (not after a cancel): {cond}")
-                self.assertIn(f"steps.{apply_id}.outcome == 'success'", parts,
-                              f"'{name}' must run exactly when the ECS apply succeeded: {cond}")
+                self.assertIn(f"steps.{apply_id}.outcome != 'skipped'", parts,
+                              f"'{name}' must run whenever the ECS apply ran, failed or not: {cond}")
 
     def test_no_deploy_step_can_turn_a_failure_green(self):
         # The if: above only decides what runs. The job must still end red when a
@@ -141,12 +150,50 @@ class NoApplySkipsOnOnePushDiff(unittest.TestCase):
         self.assertIn("|| base=aplicar", run)
         self.assertIn(f'"$base" != "{ci_last_green_deploy.APLICAR}"', run)
 
+    def test_a_compare_at_the_api_file_cap_applies(self):
+        # A compare that reached the cap cannot prove the Lambda did not change,
+        # so only a list shorter than the cap may decide a skip.
+        run = str(step(LAMBDA).get("run", ""))
+        bound = re.search(r'wc -l\)"\s+-lt\s+(\d+)', run)
+        self.assertIsNotNone(bound, "the Lambda step no longer bounds the compare's file count")
+        self.assertEqual(int(bound.group(1)), COMPARE_FILE_CAP,
+                         f"the compare lists at most {COMPARE_FILE_CAP} files; a longer bound "
+                         "lets a cut-short list skip the Lambda.")
+
     def test_the_lambda_step_can_read_the_run_history(self):
         perms = DEPLOY.get("permissions") or {}
         self.assertEqual(perms.get("actions"), "read",
                          "without actions: read the runs API may refuse the token, and "
                          "the Lambda would be applied on every deploy.")
         self.assertIn("GH_TOKEN", step(LAMBDA).get("env") or {})
+
+
+class TheTestJobRunsTheseGuards(unittest.TestCase):
+    """A guard nobody runs guards nothing. The test job does not discover all of
+    tests/scripts: it runs chosen patterns, and these files must match one."""
+
+    def discover_patterns(self) -> list[str]:
+        patterns = []
+        for s in CI["jobs"]["test"]["steps"]:
+            for line in str(s.get("run", "")).splitlines():
+                if "unittest discover" not in line:
+                    continue
+                args = shlex.split(line)
+                start = args.index("discover") + 1
+                opts = dict(zip(args[start::2], args[start + 1::2]))
+                if opts.get("-s") == "tests/scripts":
+                    patterns.append(opts.get("-p", "test*.py"))  # unittest's default
+        return patterns
+
+    def test_every_deploy_guard_file_is_discovered_by_the_test_job(self):
+        patterns = self.discover_patterns()
+        guards = sorted(p.name for p in (REPO / "tests" / "scripts").glob("test_ci_*.py"))
+        self.assertIn(Path(__file__).name, guards)
+        for name in guards:
+            with self.subTest(file=name):
+                self.assertTrue(any(fnmatch.fnmatch(name, p) for p in patterns),
+                                f"no `unittest discover -s tests/scripts -p ...` in the test "
+                                f"job matches {name}; its patterns are {patterns}")
 
 
 class TheScriptMatchesTheWorkflow(unittest.TestCase):

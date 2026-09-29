@@ -165,6 +165,14 @@ jobs:
         run: |
           python3 -m unittest discover -s tests/scripts -p 'test_erc8004_*.py'
           python3 -m unittest discover -s tests/scripts -p 'test_drift_gate_*.py'
+      # Offline as well: the deploy job's own shape (the rollout verdict survives a
+      # failed step, no apply skips on one push's diff) and the script that picks the
+      # balances Lambda's compare base, driven by a stand-in for gh. They read this
+      # file with PyYAML, like scripts/ci_paths_selftest.py.
+      - name: Deploy-job guard tests
+        run: |
+          python3 -m pip install pyyaml
+          python3 -m unittest discover -s tests/scripts -p 'test_ci_*.py'
       - name: Build (all production features)
         run: cargo build --locked --features ${{ env.CARGO_FEATURES }}
       # --test-threads=1: tests are fast (compile dominates), and running them
@@ -436,9 +444,9 @@ jobs:
       # aws_s3_bucket_versioning.discovery is in a deploy step's target list,
       # a suspended bucket shows up in the plan as a change the deploy DOES
       # cover, which the report prints under "Pending, but a deploy applies
-      # these - not a failure". True in principle and useless in practice: that
-      # step only runs when discovery-bucket.tf changes, so the row would sit
-      # there indefinitely and never fail anything.
+      # these - not a failure". True, and not enough: a deploy only runs on a
+      # push that touches a build input, so until the next one the row would
+      # sit there and never fail anything.
       #
       # So ask S3 directly. Read-only, and it runs on every PR and every push.
       #
@@ -521,6 +529,8 @@ jobs:
       cancel-in-progress: false
     permissions:
       contents: read
+      # scripts/ci_last_green_deploy.py reads this workflow's runs and jobs.
+      actions: read
     steps:
       - uses: actions/checkout@v4
 
@@ -571,6 +581,8 @@ jobs:
           terraform_version: "1.9.8"
 
       - name: Terraform apply (roll ECS to the new image)
+        # The rollout wait and the health check below key on this step's outcome.
+        id: ecs_apply
         working-directory: terraform/environments/production
         run: |
           terraform init -input=false
@@ -615,54 +627,56 @@ jobs:
           # RPC_URL_SUI stayed pointed at a dead endpoint in the Lambda on 2026-08-20 while
           # the same fix went live for the facilitator in the very same commit.
           #
-          # So apply it, but only when its own sources changed. Failure to determine that
-          # falls through to applying: a redundant UpdateFunctionCode is cheap, a silently
-          # unapplied change is what we are fixing.
+          # So apply it, but only when its own sources changed since the LAST DEPLOY THAT
+          # WENT GREEN -- not since this push's parent. Diffing one push lost every change
+          # whose deploy failed before reaching this step: the next push compared against
+          # its own parent, found nothing and skipped (2026-09-10). The script picks that
+          # base from the run history. Failure to determine the diff falls through to
+          # applying: a redundant UpdateFunctionCode is cheap, a silently unapplied change
+          # is what we are fixing.
           #
-          # That fallback doubles as the manual escape hatch: a workflow_dispatch run has no
-          # `github.event.before`, so the compare fails and the Lambda is applied. Use it to
-          # resync the Lambda when it drifted from main (which is how it was first fixed).
-          if files=$(gh api "repos/${{ github.repository }}/compare/${{ github.event.before }}...${{ github.sha }}" --jq '.files[].filename' 2>/dev/null); then
+          # The script also answers "aplicar" for a manual "Run workflow", which is the
+          # escape hatch: use it to resync the Lambda when it drifted from main (which is
+          # how it was first fixed).
+          base=$(python3 "$GITHUB_WORKSPACE/scripts/ci_last_green_deploy.py") || base=aplicar
+          # A compare lists at most 300 files. A list that long may have been cut short,
+          # and a cut-short list cannot prove the Lambda did not change.
+          if [ "$base" != "aplicar" ] \
+            && files=$(gh api "repos/${{ github.repository }}/compare/${base}...${{ github.sha }}" --jq '.files[].filename' 2>/dev/null) \
+            && [ "$(printf '%s\n' "$files" | wc -l)" -lt 300 ]; then
             if printf '%s\n' "$files" | grep -qE '^(lambda/balances/|terraform/environments/production/(lambda-balances\.tf|arc\.tf|hedera\.tf|production\.auto\.tfvars)$)'; then
-              echo "Balances Lambda sources changed; applying."
+              echo "Balances Lambda sources changed since the last green deploy (${base}); applying."
             else
-              echo "No balances Lambda changes in this push; skipping."
+              echo "No balances Lambda changes since the last green deploy (${base}); skipping."
               exit 0
             fi
           else
-            echo "Could not list changed files; applying to be safe."
+            echo "Could not list the files changed since the last green deploy; applying to be safe."
           fi
           terraform init -input=false
           terraform apply -input=false -auto-approve \
             -target=aws_lambda_function.balances
 
       - name: Deploy observability (SNS topic, alarms, schedule)
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         working-directory: terraform/environments/production
         run: |
-          # Same shape as the balances-Lambda step above, and for the same reason: these
-          # resources are outside the image deploy's -target list, so without their own
-          # step they would sit in main unapplied.
+          # A step of its own for the same reason as the balances-Lambda step above: these
+          # resources are outside the image deploy's -target list, so without it they would
+          # sit in main unapplied.
           #
           # This is the alerting the facilitator did not have until 2026-08-21. Five alarms
           # had `alarm_actions = []` and the other three published to Execution Market's
           # SNS topic -- we found out about our own outages from another team's email.
-          if files=$(gh api "repos/${{ github.repository }}/compare/${{ github.event.before }}...${{ github.sha }}" --jq '.files[].filename' 2>/dev/null); then
-            # `alerts-.*\.tf` and not a list of names: this pattern used to spell
-            # out `alerts.tf|alerts-imported.tf`, which silently excluded
-            # alerts-solana-mint.tf -- those alarms only ever got applied when some
-            # OTHER observability file happened to change in the same push. A gate
-            # that skips the file you just added is worse than no gate.
-            if printf '%s\n' "$files" | grep -qE '^terraform/environments/production/(alerts.*\.tf|cloudwatch-.*\.tf|variables\.tf|arc\.tf|hedera\.tf|production\.auto\.tfvars)$'; then
-              echo "Observability config changed; applying."
-            else
-              echo "No observability changes in this push; skipping."
-              exit 0
-            fi
-          else
-            echo "Could not list changed files; applying to be safe."
-          fi
+          #
+          # It applies on EVERY deploy. It used to skip unless this push's own diff touched
+          # an observability file, and a failed deploy cannot be allowed to leave a change
+          # from main unapplied: the push after it compared against its own parent, skipped,
+          # and alarms that were already in main never reached CloudWatch (2026-09-10).
+          # Alarms, SNS, SQS, rules and metric filters: an apply with nothing to change is
+          # a no-op that takes seconds, so skipping saved nothing. Two of the targets (the
+          # schedule's event target and Lambda permission) reference the balances Lambda,
+          # so a pending code diff on it rides along -- the redundant UpdateFunctionCode the
+          # step above already calls cheap, and what this step did whenever it ran before.
           terraform init -input=false
           # orphan_5xx_errors / orphan_latency_p99 / orphan_no_running_tasks (alerts-imported.tf)
           # describe three alarms that were created by hand, outside Terraform, years before
@@ -700,7 +714,13 @@ jobs:
             -target=aws_cloudwatch_log_metric_filter.network_startup_probe \
             -target=aws_cloudwatch_metric_alarm.network_startup_probe
 
+      # The wait and the health check run whenever the image apply succeeded, even if a
+      # step after it failed. The rollout is already under way by then, and skipping the
+      # two would leave the new image live with no verdict: 2.19.0 (#34) failed in the
+      # observability step and neither ran. `if:` only decides whether they run; the
+      # failed step still turns the job red.
       - name: Wait for ECS rollout to stabilize
+        if: ${{ !cancelled() && steps.ecs_apply.outcome == 'success' }}
         run: |
           aws ecs wait services-stable \
             --cluster "${{ env.ECS_CLUSTER }}" \
@@ -708,6 +728,7 @@ jobs:
             --region "${{ env.AWS_REGION }}"
 
       - name: Verify deployment health
+        if: ${{ !cancelled() && steps.ecs_apply.outcome == 'success' }}
         run: |
           for i in $(seq 1 10); do
             code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 https://facilitator.ultravioletadao.xyz/health || true)
@@ -728,32 +749,22 @@ jobs:
       # targeted applies above sit before the wait because they are part of
       # what the release ships; this one is not.
       #
-      # Same change-detection shape as those two, and for the same reason: the
-      # resources are outside the image deploy's target list, so without their
-      # own step they would sit in main unapplied. The catalog bucket has been
-      # unversioned since it was created, and nothing in this pipeline would
-      # ever have noticed.
-      - name: Deploy discovery bucket versioning (only when its config changed)
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      # A step of its own for the same reason as the observability step: the
+      # resources are outside the image deploy's target list, so without it they
+      # would sit in main unapplied. The catalog bucket had been unversioned since
+      # it was created, and nothing in this pipeline would ever have noticed.
+      #
+      # It applies on every deploy, like the observability step and for the same
+      # reason: a skip decided by this push's diff alone let a change that came in
+      # with a failed deploy sit in main unapplied. Two bucket settings; with
+      # nothing to change the apply is a no-op.
+      - name: Deploy discovery bucket versioning
         working-directory: terraform/environments/production
         run: |
-          if files=$(gh api "repos/${{ github.repository }}/compare/${{ github.event.before }}...${{ github.sha }}" --jq '.files[].filename' 2>/dev/null); then
-            if printf '%s\n' "$files" | grep -qE '^terraform/environments/production/discovery-bucket\.tf$'; then
-              echo "Discovery bucket config changed; applying."
-            else
-              echo "No discovery bucket changes in this push; skipping."
-              exit 0
-            fi
-          else
-            echo "Could not list changed files; applying to be safe."
-          fi
-          # The fallback above is also the repair path. Versioning is bucket state,
-          # not repository state: if somebody suspends it in the console, no push
-          # re-enables it, because no file changed. The drift gate's versioning
-          # check goes red, and a manual "Run workflow" on main -- which has no
-          # `github.event.before`, so the compare fails and this applies -- puts it
-          # back without needing a commit.
+          # This is also the repair path. Versioning is bucket state, not repository
+          # state: if somebody suspends it in the console, the drift gate's
+          # versioning check goes red and the next deploy puts it back -- or a manual
+          # "Run workflow" on main does, without needing a commit.
           terraform init -input=false
           if ! terraform apply -input=false -auto-approve -no-color \
             -target=aws_s3_bucket_versioning.discovery \

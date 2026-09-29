@@ -195,9 +195,15 @@ NOACC_CASES: list[tuple[str, list[str]]] = [
 ]
 
 
+def load_workflows() -> dict[str, dict]:
+    """Every workflow file, parsed. tests/scripts/test_ci_deploy_job.py reads ci.yaml
+    through this too, so the two checks can never disagree about what the file says."""
+    return {p.name: yaml.safe_load(p.read_text(encoding="utf-8"))
+            for p in sorted(WORKFLOWS.iterdir()) if p.suffix in (".yml", ".yaml")}
+
+
 def main() -> int:
-    workflows = {p.name: yaml.safe_load(p.read_text()) for p in sorted(WORKFLOWS.iterdir())
-                 if p.suffix in (".yml", ".yaml")}
+    workflows = load_workflows()
     missing = {CI, NOACC} - workflows.keys()
     if missing:
         print(f"FAIL  workflow file(s) not found: {sorted(missing)}")

@@ -1638,7 +1638,7 @@ impl<'de> Deserialize<'de> for FacilitatorErrorReason {
 /// the response includes a `proof_of_payment` field containing cryptographic proof
 /// that can be used to submit reputation feedback on-chain.
 #[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(try_from = "SettleResponseWire")]
 pub struct SettleResponse {
     pub success: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1646,13 +1646,10 @@ pub struct SettleResponse {
     pub payer: MixedAddress,
     /// The settlement transaction hash.
     ///
-    /// Accepted under three spellings on the way in, and emitted under all
-    /// three on the way out — see the `Serialize` impl below for why.
-    #[serde(
-        skip_serializing_if = "Option::is_none",
-        alias = "transactionHash",
-        alias = "transaction_hash"
-    )]
+    /// Emitted under three spellings on the way out -- see the `Serialize` impl
+    /// below for why -- and read back under any of them, including all three at
+    /// once, which is what that impl writes (see [`SettleResponseWire`]).
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub transaction: Option<TransactionHash>,
     pub network: Network,
     /// ERC-8004 proof of payment (included when `8004-reputation` extension is active)
@@ -1661,8 +1658,72 @@ pub struct SettleResponse {
     /// Optional protocol extensions (e.g., "offer-receipt" from x402 PR #935).
     /// Pass-through field: the facilitator preserves extensions from requests
     /// and may populate extensions in responses for downstream consumers.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub extensions: Option<std::collections::HashMap<String, serde_json::Value>>,
+}
+
+/// A [`SettleResponse`] as it reads on the wire, before its hash is settled on.
+///
+/// A response this crate writes names the hash `transaction`,
+/// `transactionHash` and `transaction_hash` at once; one written elsewhere may
+/// use any one of them. Declaring the last two as `alias`es of the first reads
+/// the single-name documents but refuses the three-name one as a duplicate
+/// field, so each name gets its own field here and [`TryFrom`] reduces them to
+/// the one hash they must all be.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SettleResponseWire {
+    success: bool,
+    #[serde(default)]
+    error_reason: Option<FacilitatorErrorReason>,
+    payer: MixedAddress,
+    #[serde(default)]
+    transaction: Option<TransactionHash>,
+    #[serde(default, rename = "transactionHash")]
+    transaction_hash_camel: Option<TransactionHash>,
+    #[serde(default, rename = "transaction_hash")]
+    transaction_hash_snake: Option<TransactionHash>,
+    network: Network,
+    #[serde(default)]
+    proof_of_payment: Option<crate::erc8004::ProofOfPayment>,
+    #[serde(default)]
+    extensions: Option<std::collections::HashMap<String, serde_json::Value>>,
+}
+
+impl TryFrom<SettleResponseWire> for SettleResponse {
+    type Error = String;
+
+    /// Every name present must carry the same hash. Two that disagree are
+    /// refused rather than resolved: picking one would hand a caller a receipt
+    /// for a transaction the response also says it is not.
+    fn try_from(wire: SettleResponseWire) -> Result<Self, Self::Error> {
+        let mut transaction: Option<(&str, TransactionHash)> = None;
+        for (name, hash) in [
+            ("transaction", wire.transaction),
+            ("transactionHash", wire.transaction_hash_camel),
+            ("transaction_hash", wire.transaction_hash_snake),
+        ] {
+            let Some(hash) = hash else { continue };
+            match transaction.as_ref() {
+                None => transaction = Some((name, hash)),
+                Some((first, kept)) if *kept != hash => {
+                    return Err(format!(
+                        "`{first}` and `{name}` name different settlement transactions"
+                    ));
+                }
+                Some(_) => {}
+            }
+        }
+        Ok(SettleResponse {
+            success: wire.success,
+            error_reason: wire.error_reason,
+            payer: wire.payer,
+            transaction: transaction.map(|(_, hash)| hash),
+            network: wire.network,
+            proof_of_payment: wire.proof_of_payment,
+            extensions: wire.extensions,
+        })
+    }
 }
 
 /// Emit the settlement hash under every name the ecosystem reads it by.
@@ -2680,6 +2741,55 @@ mod settle_response_tx_alias_tests {
             assert!(v.get(key).is_none(), "`{key}` must be absent, not empty");
         }
         assert_eq!(v.get("success").and_then(|x| x.as_bool()), Some(true));
+    }
+
+    /// What this crate writes, it reads back: all three names at once, and the
+    /// same bytes when written again. The idempotency cache, the pre-receipt
+    /// replay and `x402-axum`'s client all depend on it.
+    #[test]
+    fn a_response_reads_back_what_it_wrote() {
+        let mut written = sample();
+        written.transaction = Some(TransactionHash::Evm([0x11; 32]));
+        let wire = serde_json::to_string(&written).unwrap();
+        for key in [
+            "\"transaction\"",
+            "\"transactionHash\"",
+            "\"transaction_hash\"",
+        ] {
+            assert!(wire.contains(key), "{key} missing from {wire}");
+        }
+        let read: SettleResponse = serde_json::from_str(&wire)
+            .unwrap_or_else(|e| panic!("its own serialization must parse: {e}\n{wire}"));
+        assert_eq!(read.transaction, Some(TransactionHash::Evm([0x11; 32])));
+        assert_eq!(serde_json::to_string(&read).unwrap(), wire);
+    }
+
+    /// Two names carrying different hashes are refused, whichever two they
+    /// are: a caller must never get back one of two transactions at random.
+    #[test]
+    fn names_that_disagree_are_refused() {
+        let one = format!("0x{}", "11".repeat(32));
+        let other = format!("0x{}", "22".repeat(32));
+        for (a, b) in [
+            ("transaction", "transactionHash"),
+            ("transaction", "transaction_hash"),
+            ("transactionHash", "transaction_hash"),
+        ] {
+            let body = serde_json::json!({
+                "success": true,
+                "payer": "0x7052cA449702e5ffafbE3dc63b74C7b7d8aF402B",
+                "network": "base",
+                a: one,
+                b: other,
+            });
+            let error = serde_json::from_value::<SettleResponse>(body)
+                .expect_err(&format!("`{a}` and `{b}` disagree; this must not parse"));
+            let error = error.to_string();
+            assert!(
+                error.contains(a) && error.contains(b),
+                "the error must name both fields: {error}"
+            );
+        }
     }
 }
 

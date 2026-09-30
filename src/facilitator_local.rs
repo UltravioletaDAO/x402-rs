@@ -1466,6 +1466,9 @@ mod escrow_supported_tests {
             crate::payment_operator::test_rpc::Providers(HashMap::new()),
             Arc::new(Box::new(NoScreening) as Box<dyn ComplianceChecker>),
         );
+        let _flags = crate::payment_operator::test_rpc::ESCROW_FLAGS
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let previous = std::env::var("ENABLE_PAYMENT_OPERATOR").ok();
         std::env::set_var("ENABLE_PAYMENT_OPERATOR", "true");
         let arc_operator = |network| {

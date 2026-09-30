@@ -176,19 +176,37 @@ stays off for `main`, so two releases queued back to back both run to completion
   a day, unapplied by any CI run, while the service ran on a CPU-target-tracking policy alone
   (75% CPU on an I/O-bound service that measured 1-2% CPU in three separate degradation episodes)
   during a 3x traffic spike. It never scaled.
-- **Balances Lambda:** a **separate step**, applied only when `lambda/balances/**` or
-  `lambda-balances.tf` changed in the push (detected via the compare API). Until 2026-08-20 the
+- **Balances Lambda:** a **separate step**, applied only when `lambda/balances/**`,
+  `lambda-balances.tf` or the other files its step lists changed **since the last deploy that
+  went green** — not since the push's parent, which lost every change whose own deploy failed
+  before reaching the step. `scripts/ci_last_green_deploy.py` picks that commit (the head SHA of
+  the newest run of this workflow on `main` whose deploy job succeeded, read from the Actions runs
+  and jobs APIs) and the compare API lists the files. Until 2026-08-20 the
   Lambda was excluded from every run, and the zip-hash reason above was only half the story — the
   deploy user held **no `lambda:*` write permissions at all**, so a full apply could not have
   succeeded either. A change to `lambda/balances/` would land in `main` and never reach AWS: that is
   how `RPC_URL_SUI` stayed pointed at a dead endpoint in the Lambda while the same commit fixed it
   for the facilitator. The `BalancesLambdaDeploy` statement in `facilitator-cicd-infra` (added
   2026-08-20, scoped to that one function ARN) grants the four writes Terraform needs.
-  If the compare call fails the step applies anyway — a redundant `UpdateFunctionCode` is cheap, a
-  silently unapplied change is the bug being fixed. That fallback doubles as the manual escape
-  hatch: a `workflow_dispatch` run has no `github.event.before`, so it always applies the Lambda.
-  **Use it to resync the Lambda whenever it drifts from `main`.**
-- **Verify:** waits for `services-stable`, then polls `/health` for `200`.
+  If that commit cannot be determined, or the compare fails or reaches its 300-file cap, the step
+  applies anyway — a redundant `UpdateFunctionCode` is cheap, a silently unapplied change is the
+  bug being fixed. A `workflow_dispatch` run always applies the Lambda: that is the manual escape
+  hatch. **Use it to resync the Lambda whenever it drifts from `main`.** The observability step
+  below applies it as well whenever it has a pending diff: two of its targets, the schedule's event
+  target and its Lambda permission, reference the function (`alerts.tf:346-355`), and `-target`
+  pulls in their dependencies.
+- **Observability and the discovery bucket:** two more targeted applies (alarms, SNS, SQS, the
+  balances schedule and metric filters; the discovery bucket's versioning and lifecycle), on
+  **every** deploy. They used to apply only when the push's own diff touched their files, so a
+  change that arrived with a failed deploy was never applied by the pushes after it (the
+  `alerts-solana-mint.tf` alarms, 2026-09-10). With nothing to change, each is a no-op of seconds.
+- **Verify:** waits for `services-stable`, then polls `/health` for `200`. Both run whenever the
+  image apply ran, **even if it or a step after it failed** — a failed observability step used to
+  skip them and leave the new image live with no verdict (2.19.0), and so did an image apply that
+  failed after moving the service (2026-09-26). They skip only when the apply never ran. The job
+  still ends red.
+- `tests/scripts/test_ci_*.py` (run by the `test` job) hold that shape: the wait and the health
+  check key on the image apply having run, and no deploy step skips on `github.event.before`.
 - `concurrency: deploy-production` serializes deploys so two merges can't apply at once.
 
 > Because CI overrides `image_tag` via `-var`, the value committed in `terraform.tfvars` becomes a

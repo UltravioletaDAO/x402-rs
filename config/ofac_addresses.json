@@ -2,21 +2,24 @@
   "metadata": {
     "source": "OFAC Specially Designated Nationals (SDN) List",
     "source_url": "https://sanctionslistservice.ofac.treas.gov/api/PublicationPreview/exports/SDN_ADVANCED.XML",
-    "generated_at": "2025-11-16T00:36:45.403829+00:00",
-    "total_addresses": 740,
+    "generated_at": "2026-09-29T23:35:07.291301+00:00",
+    "total_addresses": 1051,
     "currencies": [
       "arb",
+      "binance-coin",
       "binance-smart-chain",
       "bitcoin",
       "bitcoin-cash",
       "bitcoin-sv",
       "btg",
       "dash",
+      "doge",
       "etc",
       "ethereum",
       "litecoin",
       "monero",
       "ripple",
+      "sol",
       "tether",
       "trx",
       "usd-coin",
@@ -25,6 +28,986 @@
     ]
   },
   "addresses": [
+    {
+      "address": "tniq9axbp9ejuqhdhrwrfvaa8u3guqzh81",
+      "blockchain": "trx",
+      "entity_name": "Entity 751",
+      "entity_id": "751",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "ttidlwe6fzk8okmjv6ijg42yrh6w2pjsr9",
+      "blockchain": "trx",
+      "entity_name": "Entity 751",
+      "entity_id": "751",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "tahwhfv3jpk39nc2m8w5lpccotisutirfp",
+      "blockchain": "trx",
+      "entity_name": "Entity 751",
+      "entity_id": "751",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "tjdgb1k6ot3f2nluzug6d8ed3havtmzmsk",
+      "blockchain": "trx",
+      "entity_name": "Entity 751",
+      "entity_id": "751",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "txghxdybgy574z5hbu4lnzq9nzjzq9bhuf",
+      "blockchain": "trx",
+      "entity_name": "Entity 751",
+      "entity_id": "751",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "tfqbqanbmq2xsvor2nbuflkyzvxfc9wc7k",
+      "blockchain": "trx",
+      "entity_name": "Entity 751",
+      "entity_id": "751",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "tuoixkfawvshxgwgnyymzpkrt22yqu7vvh",
+      "blockchain": "trx",
+      "entity_name": "Entity 10371",
+      "entity_id": "10371",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "tbtrqkifzyuwe8nsagqghxygafwaf5eerq",
+      "blockchain": "trx",
+      "entity_name": "Entity 10371",
+      "entity_id": "10371",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "tts7krq39547ruasxb9braputly7h3u6h1",
+      "blockchain": "trx",
+      "entity_name": "Entity 10371",
+      "entity_id": "10371",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "tvttwthtcu9kulp51m9bahpmcw8h1bjjnq",
+      "blockchain": "trx",
+      "entity_name": "Entity 10371",
+      "entity_id": "10371",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "tcqkhk7mppngh3ufyge1trzuo92a5tuvy6",
+      "blockchain": "trx",
+      "entity_name": "Entity 10371",
+      "entity_id": "10371",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "tsbgifzg9xfxuygga6rwbs3jvknpea4c3r",
+      "blockchain": "trx",
+      "entity_name": "Entity 10371",
+      "entity_id": "10371",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "tvxhp8bmrprd5hgy3w1yu9f87qwrrmhfp8",
+      "blockchain": "trx",
+      "entity_name": "Entity 10371",
+      "entity_id": "10371",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "tq8a74sidig3edsc14toslacwlbvanywcj",
+      "blockchain": "trx",
+      "entity_name": "Entity 10371",
+      "entity_id": "10371",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "twdqvca3nyrnv71ngbmwkv3c5xmxj4xjsp",
+      "blockchain": "trx",
+      "entity_name": "Entity 10371",
+      "entity_id": "10371",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "tx1zymryznbtqx7ypzp4adzv5nbtognrks",
+      "blockchain": "trx",
+      "entity_name": "Entity 10371",
+      "entity_id": "10371",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "tssqdgexkuelagzaktacolmviq4sz1etfm",
+      "blockchain": "trx",
+      "entity_name": "Entity 10371",
+      "entity_id": "10371",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "tufq9hfp7qudmojbzkjg4gptnxhzewqk8z",
+      "blockchain": "trx",
+      "entity_name": "Entity 10371",
+      "entity_id": "10371",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "tcee3mcjk9fwby8ysnmtrdwjt1x2s5dftl",
+      "blockchain": "trx",
+      "entity_name": "Entity 10371",
+      "entity_id": "10371",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "tbjqexr1ffgxvkhdskeou6fvlbw1as1ny7",
+      "blockchain": "trx",
+      "entity_name": "Entity 10371",
+      "entity_id": "10371",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "tv6cvfemcfxgswqgxpbrxz35mkhdtdht3g",
+      "blockchain": "trx",
+      "entity_name": "Entity 10371",
+      "entity_id": "10371",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "thflanmbamz7xxnhoz5bkrmmrwuhkqfafr",
+      "blockchain": "trx",
+      "entity_name": "Entity 10371",
+      "entity_id": "10371",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "tcudjgj14kk3ss2pegst15frztkpyg7heh",
+      "blockchain": "trx",
+      "entity_name": "Entity 10371",
+      "entity_id": "10371",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "tck1g37n3x6pdda63waydnqwqtuzfnpsrr",
+      "blockchain": "trx",
+      "entity_name": "Entity 10371",
+      "entity_id": "10371",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "44dzuj7w1t3fkavfw8xyxuvoagsbfvxef2wcbnsjnkgwyorpljbjth5vksfhlgkpykjb2j341tdzhbnbpv72wl7e8zuxfr2",
+      "blockchain": "monero",
+      "entity_name": "Entity 10371",
+      "entity_id": "10371",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "tu8hjxghdxwuj4daabkqfuwdeb8b5xacke",
+      "blockchain": "trx",
+      "entity_name": "Entity 10371",
+      "entity_id": "10371",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "tl5wqcfx7xkhvllwaxrdr57gnjc4stbesg",
+      "blockchain": "trx",
+      "entity_name": "Entity 10371",
+      "entity_id": "10371",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "tsfcggbr57b56c4mxdiw5gzpd8j6cmimgo",
+      "blockchain": "trx",
+      "entity_name": "Entity 10371",
+      "entity_id": "10371",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "txhb3bkggymygys14mjkx8ktcfgt7dxn4r",
+      "blockchain": "trx",
+      "entity_name": "Entity 10371",
+      "entity_id": "10371",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "tn56yacbymut2xoirvy3v2qz2pygmbatso",
+      "blockchain": "trx",
+      "entity_name": "Entity 10371",
+      "entity_id": "10371",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "tpnudsrlyzg1uxgkpxsmhfey5j5etfze9s",
+      "blockchain": "trx",
+      "entity_name": "Entity 10371",
+      "entity_id": "10371",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "tvxp7aj5kfupkmqursu6f3wusyiliuauje",
+      "blockchain": "trx",
+      "entity_name": "Entity 10371",
+      "entity_id": "10371",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "tdxxxmcelgrb5vwyobdmytkvttdy9ljejx",
+      "blockchain": "trx",
+      "entity_name": "Entity 10371",
+      "entity_id": "10371",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "txovnrqm11ffvkcf1vend64gibvkr1hwar",
+      "blockchain": "trx",
+      "entity_name": "Entity 10371",
+      "entity_id": "10371",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "tekey9i4ccvysjmmhuh2axzhtgtmugyumw",
+      "blockchain": "trx",
+      "entity_name": "Entity 10371",
+      "entity_id": "10371",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "tw9mabkenngqyjbqce5khr9fncbf5gsbfq",
+      "blockchain": "trx",
+      "entity_name": "Entity 10371",
+      "entity_id": "10371",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "twumrtaeapcv8bs9mxqkkhy5szvd78qads",
+      "blockchain": "trx",
+      "entity_name": "Entity 10371",
+      "entity_id": "10371",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "td7txyvmjpfjkfhjuq58nxa9dx9q81mqap",
+      "blockchain": "trx",
+      "entity_name": "Entity 10371",
+      "entity_id": "10371",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "tetliezwyjjtth7s5ejqunjtsbm1ui9tok",
+      "blockchain": "trx",
+      "entity_name": "Entity 10371",
+      "entity_id": "10371",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "ts729buxezwbhjgpkcdk75q7vu4nhkjkyt",
+      "blockchain": "trx",
+      "entity_name": "Entity 10371",
+      "entity_id": "10371",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "ter8k4zwt3byuhyvybklstz3qvuuubs9pt",
+      "blockchain": "trx",
+      "entity_name": "Entity 10371",
+      "entity_id": "10371",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "tbyksckutmaywhcsaetmagufpeyfdxbrjk",
+      "blockchain": "trx",
+      "entity_name": "Entity 10371",
+      "entity_id": "10371",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "tnmkrdylptfwpnwjujrxdkqw4gswpszujd",
+      "blockchain": "trx",
+      "entity_name": "Entity 10371",
+      "entity_id": "10371",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "ttudmnhu8a6kopjrud8q5rnst1fmfrznoj",
+      "blockchain": "trx",
+      "entity_name": "Entity 10371",
+      "entity_id": "10371",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "tglrjzc9c48imfb4zmdnsjsrmq27mxpg2k",
+      "blockchain": "trx",
+      "entity_name": "Entity 10371",
+      "entity_id": "10371",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "tvgjtk9qpg7wgtyetg2myf8akmex883xyu",
+      "blockchain": "trx",
+      "entity_name": "Entity 10371",
+      "entity_id": "10371",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "tpknp2z5kia1slwppmwsfnervo2dhxc4iy",
+      "blockchain": "trx",
+      "entity_name": "Entity 10371",
+      "entity_id": "10371",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "tdsgtccie9yfkyzdj1kbbc3f7gosgudqwc",
+      "blockchain": "trx",
+      "entity_name": "Entity 10371",
+      "entity_id": "10371",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "tnvbvxagut83sv7e9ozwwutxqzs13sr6xn",
+      "blockchain": "trx",
+      "entity_name": "Entity 10371",
+      "entity_id": "10371",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "tawnqn5tmzjj694ppuofuxqy13qubs8yga",
+      "blockchain": "trx",
+      "entity_name": "Entity 10371",
+      "entity_id": "10371",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "tgnwkzhjyvyp2swsrmcyrrrvcrdxqglq1w",
+      "blockchain": "trx",
+      "entity_name": "Entity 10371",
+      "entity_id": "10371",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "ta3rh2a7ihnm6pkh8gr9ck1eznshnmzdfg",
+      "blockchain": "trx",
+      "entity_name": "Entity 10371",
+      "entity_id": "10371",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "tlj5zrvem4dadbzltgu3qabadlqug57jvo",
+      "blockchain": "trx",
+      "entity_name": "Entity 10371",
+      "entity_id": "10371",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "tmrxajt87mvynadwne53axzfg1fpkgfogz",
+      "blockchain": "trx",
+      "entity_name": "Entity 10371",
+      "entity_id": "10371",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "trmrnqiuy1ofmctquxvgeaukczpnmwueur",
+      "blockchain": "trx",
+      "entity_name": "Entity 10371",
+      "entity_id": "10371",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "tbkq3szxigsghqnzdcyocpt8rzomh3uxar",
+      "blockchain": "trx",
+      "entity_name": "Entity 10371",
+      "entity_id": "10371",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "tyaiwf2khxrguwxmcpajgc6znywfuktioi",
+      "blockchain": "trx",
+      "entity_name": "Entity 10371",
+      "entity_id": "10371",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "tyvveapkrkm5rhcdnpu9qnpk8n5rdss4iy",
+      "blockchain": "trx",
+      "entity_name": "Entity 10371",
+      "entity_id": "10371",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "tk7hunru8ylmz7vv8kzwrpre2zsgzecahv",
+      "blockchain": "trx",
+      "entity_name": "Entity 10371",
+      "entity_id": "10371",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "tayyw6zotzexvtcn7wrr9t79jufgsavkl8",
+      "blockchain": "trx",
+      "entity_name": "Entity 10371",
+      "entity_id": "10371",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "tjgvhmhvnuu1vsxggalloirpworzomuuhg",
+      "blockchain": "trx",
+      "entity_name": "Entity 10371",
+      "entity_id": "10371",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "tb1bcv3x8mg7pvv4nvm48pghjkcybotypu",
+      "blockchain": "trx",
+      "entity_name": "Entity 10371",
+      "entity_id": "10371",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "twxodf6qvjmuetyrimaiargsjtunjrzzn3",
+      "blockchain": "trx",
+      "entity_name": "Entity 10371",
+      "entity_id": "10371",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "tcxihiscsaodr942xq45df9qqadr5nhkjq",
+      "blockchain": "trx",
+      "entity_name": "Entity 10371",
+      "entity_id": "10371",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "tdhtvunmywwfzwvrnzryr3fbqo8vtvj4ji",
+      "blockchain": "trx",
+      "entity_name": "Entity 10371",
+      "entity_id": "10371",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "te6vgr7rauy4kuzcjdsvczfxpjjzsqyy7x",
+      "blockchain": "trx",
+      "entity_name": "Entity 10371",
+      "entity_id": "10371",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "tv62lkip1gindfcjedy3xf6gdnlcci6mfu",
+      "blockchain": "trx",
+      "entity_name": "Entity 10371",
+      "entity_id": "10371",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "twbqpqldpcrxgrw1x9yfqr8nffjyfsq5k4",
+      "blockchain": "trx",
+      "entity_name": "Entity 10371",
+      "entity_id": "10371",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "tqetj6xmqvv2fu4ftd9udbhuakem5hbmou",
+      "blockchain": "trx",
+      "entity_name": "Entity 10371",
+      "entity_id": "10371",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "twafc6hts1fyfv1r3akenud8dqgmzbbp8l",
+      "blockchain": "trx",
+      "entity_name": "Entity 10371",
+      "entity_id": "10371",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "tmfdhpuqw5w6hcmpxfajfaiy271cya51hs",
+      "blockchain": "trx",
+      "entity_name": "Entity 10371",
+      "entity_id": "10371",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "tb5j8w166ytumtpusy4xnntklvtesue9ev",
+      "blockchain": "trx",
+      "entity_name": "Entity 10371",
+      "entity_id": "10371",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "tse5nwtjckin8hjcuzwb3rgsmbdf4ucrmr",
+      "blockchain": "trx",
+      "entity_name": "Entity 10371",
+      "entity_id": "10371",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "tdi9s3geatfbbuvgxqxiznxiah9qpqjyfn",
+      "blockchain": "trx",
+      "entity_name": "Entity 10371",
+      "entity_id": "10371",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "45ezvpejnskyntjhyyeb7fbfzi1sxyqozc5ffseh8jpgw4jzqqvxykntfk5ugfiij7hp3qpv3t5hcr7f3fnmz2mze1akqwo",
+      "blockchain": "monero",
+      "entity_name": "Entity 10371",
+      "entity_id": "10371",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "47fvhkrkwgnls81ubqgy8ui6axab1627hjjky2qpnwxmbgfx7387kcy6rzschggmqaah6cbxkxas4862ts2fhs9brdmuyav",
+      "blockchain": "monero",
+      "entity_name": "Entity 10371",
+      "entity_id": "10371",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "tcutmwspsajb3u5jus5ahvcgwaftyk1qtp",
+      "blockchain": "trx",
+      "entity_name": "Entity 10371",
+      "entity_id": "10371",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "tyvr9x3dqx39s9rooasahwvwf8psbrcfbv",
+      "blockchain": "trx",
+      "entity_name": "Entity 10371",
+      "entity_id": "10371",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "tuyo1kfnnjr2imqdzxlwpx1u8xiy1wz5z5",
+      "blockchain": "trx",
+      "entity_name": "Entity 10371",
+      "entity_id": "10371",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "tbhr5mlrtsnz8fuykgzdrcjwkyd2oryldx",
+      "blockchain": "trx",
+      "entity_name": "Entity 10371",
+      "entity_id": "10371",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "thstquwnidzc4yej7upowf55zdvztgchj5",
+      "blockchain": "trx",
+      "entity_name": "Entity 10371",
+      "entity_id": "10371",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "tkx6rgpgpgrjwzf1qxuusnl5cyhqt7z9ry",
+      "blockchain": "trx",
+      "entity_name": "Entity 10371",
+      "entity_id": "10371",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "tworwyzsifrd79dhdpthc8fq787mvh9qro",
+      "blockchain": "trx",
+      "entity_name": "Entity 10371",
+      "entity_id": "10371",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "tdhjnjhosn6xndxmecfzwxytze9bygxp9l",
+      "blockchain": "trx",
+      "entity_name": "Entity 10371",
+      "entity_id": "10371",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "tqvzeulhacexyjx3nzstapzxces63c9bax",
+      "blockchain": "trx",
+      "entity_name": "Entity 10371",
+      "entity_id": "10371",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "tqb6pc4pmfuduoklq5ygnioj4pnodnak9b",
+      "blockchain": "trx",
+      "entity_name": "Entity 10371",
+      "entity_id": "10371",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "tr3yieufrbbnp8x5dkyfjrxcwbxcyyftd4",
+      "blockchain": "trx",
+      "entity_name": "Entity 10371",
+      "entity_id": "10371",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "tebhpd6iiaqhys4w7zzfmd1rrv65a5hvtd",
+      "blockchain": "trx",
+      "entity_name": "Entity 10371",
+      "entity_id": "10371",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "tmocscwsbsn2cqrchvkzzsear3jk5asxgo",
+      "blockchain": "trx",
+      "entity_name": "Entity 10371",
+      "entity_id": "10371",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "tnkydgjn2whzwhhh2mj5agmnk4mobx9xqd",
+      "blockchain": "trx",
+      "entity_name": "Entity 10371",
+      "entity_id": "10371",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "tpcwqbj3viwmuqmikfmjdm7vticzdru1ch",
+      "blockchain": "trx",
+      "entity_name": "Entity 10371",
+      "entity_id": "10371",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "tvj4b5r8c8ds65ntuxpzpmgupcrq8bqurc",
+      "blockchain": "trx",
+      "entity_name": "Entity 10371",
+      "entity_id": "10371",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "tagzxxuvfukyjy5upc1dxf8nphbkttzegu",
+      "blockchain": "trx",
+      "entity_name": "Entity 10371",
+      "entity_id": "10371",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "tcyae8lxa1rmtthhe5z3x95pc9rgmrremx",
+      "blockchain": "trx",
+      "entity_name": "Entity 10371",
+      "entity_id": "10371",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "tsi1d66cgg3cpm9l6c2zd8k1381xussjkc",
+      "blockchain": "trx",
+      "entity_name": "Entity 10371",
+      "entity_id": "10371",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "tr83ksdjukeds62pcago7bfhpjpspmk7ba",
+      "blockchain": "trx",
+      "entity_name": "Entity 10371",
+      "entity_id": "10371",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "tdx3dfnpvjea9evllnqf1ixr4u2ktcdmod",
+      "blockchain": "trx",
+      "entity_name": "Entity 10371",
+      "entity_id": "10371",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "tjcuwt9eketyzdw42658h8ayxqxscldczr",
+      "blockchain": "trx",
+      "entity_name": "Entity 10371",
+      "entity_id": "10371",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "tetfvihwf9znb6wjgzbrmb48ptabfo5rmd",
+      "blockchain": "trx",
+      "entity_name": "Entity 10371",
+      "entity_id": "10371",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "tbhtmbaaewittmgmdj97zmyotghey543cc",
+      "blockchain": "trx",
+      "entity_name": "Entity 10371",
+      "entity_id": "10371",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "tfebc149jcdiow1mbphhfphdlemakrnrqj",
+      "blockchain": "trx",
+      "entity_name": "Entity 10371",
+      "entity_id": "10371",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "txw4d7bsehbn6snemuzm4nedfpvjujgeh9",
+      "blockchain": "trx",
+      "entity_name": "Entity 10371",
+      "entity_id": "10371",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "tqt3dwhipdakiog7nwovotdutxfimyuxya",
+      "blockchain": "trx",
+      "entity_name": "Entity 10371",
+      "entity_id": "10371",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "te5r3hj6reap6vh14yaqjxczkryaitety3",
+      "blockchain": "trx",
+      "entity_name": "Entity 10371",
+      "entity_id": "10371",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "tccrymcqb5a5fsykmcvy26nd8j1fwhtfwh",
+      "blockchain": "trx",
+      "entity_name": "Entity 10371",
+      "entity_id": "10371",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "tlc3pieq5n4tculkhqltghmyfuyhuvsxck",
+      "blockchain": "trx",
+      "entity_name": "Entity 10371",
+      "entity_id": "10371",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "tldtpq9pqsduqunme8csevdyaltrdrvgoj",
+      "blockchain": "trx",
+      "entity_name": "Entity 10371",
+      "entity_id": "10371",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "trqbvmhwck3j2vkza16l69v3cwuoyqsy8l",
+      "blockchain": "trx",
+      "entity_name": "Entity 10371",
+      "entity_id": "10371",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "ta82wq77kb9diew4c8q7c4kwmfnczfziqn",
+      "blockchain": "trx",
+      "entity_name": "Entity 10371",
+      "entity_id": "10371",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "tucjuvb6rfvsmge352kdc3vhvfvteti97b",
+      "blockchain": "trx",
+      "entity_name": "Entity 10371",
+      "entity_id": "10371",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "tbfvdwns6hc2ln2qtltrkmmpddscfehhru",
+      "blockchain": "trx",
+      "entity_name": "Entity 10371",
+      "entity_id": "10371",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "tc7vajsxzteeennm2efm9brszvezvsua86",
+      "blockchain": "trx",
+      "entity_name": "Entity 10371",
+      "entity_id": "10371",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "trwdtgcfxztcmv8w6ijxh6umeqef3zg7n5",
+      "blockchain": "trx",
+      "entity_name": "Entity 10371",
+      "entity_id": "10371",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "tua7bcrjt3et7kpynwpvhqkz4qf9v68d7a",
+      "blockchain": "trx",
+      "entity_name": "Entity 10371",
+      "entity_id": "10371",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "tnhnysuf8lmzhzsiqnhcxcbgatscqbm4zq",
+      "blockchain": "trx",
+      "entity_name": "Entity 10371",
+      "entity_id": "10371",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "tnzvdtvcqtay9jfrv85jnqibngcudepj1z",
+      "blockchain": "trx",
+      "entity_name": "Entity 10371",
+      "entity_id": "10371",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "tucnb6c22jmcwxbbbuv9hvpevqv5hsitwq",
+      "blockchain": "trx",
+      "entity_name": "Entity 10371",
+      "entity_id": "10371",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "tvus1cvqnnzojg8pbwkcwyf7dklrs8yh5z",
+      "blockchain": "trx",
+      "entity_name": "Entity 10371",
+      "entity_id": "10371",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "txr1nhqaek4c5dq9efjqlarcbwr9jp6n7m",
+      "blockchain": "trx",
+      "entity_name": "Entity 10371",
+      "entity_id": "10371",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "tfs2lhncrffdavrhpdupnvnmchs78csnbz",
+      "blockchain": "trx",
+      "entity_name": "Entity 10371",
+      "entity_id": "10371",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "tptfrdhx5tntyp5mrx423daae8aldmus31",
+      "blockchain": "trx",
+      "entity_name": "Entity 10371",
+      "entity_id": "10371",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "tcn9wm828b1gtsvn8kuacvoe3rpfcamteb",
+      "blockchain": "trx",
+      "entity_name": "Entity 10371",
+      "entity_id": "10371",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "tftz6ae6nno9vvhnvrj6v1ryefmtzqmh3r",
+      "blockchain": "trx",
+      "entity_name": "Entity 10371",
+      "entity_id": "10371",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "tmomat6oyjlkxsb6sfqwbwc7q5psm3gr6u",
+      "blockchain": "trx",
+      "entity_name": "Entity 10371",
+      "entity_id": "10371",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "tnsmjkvatqiwntanrcs8jkugl37fgzoqss",
+      "blockchain": "trx",
+      "entity_name": "Entity 10371",
+      "entity_id": "10371",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "tpcnxv28xnbvtaaeppddvnfkjqpafeakv3",
+      "blockchain": "trx",
+      "entity_name": "Entity 10371",
+      "entity_id": "10371",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "tdxbeozxrjy7ebyncoqrdmrcx5qbn4jcct",
+      "blockchain": "trx",
+      "entity_name": "Entity 10371",
+      "entity_id": "10371",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "ttrjwfl8scswbxwapczv8pd5fzf1rznrhz",
+      "blockchain": "trx",
+      "entity_name": "Entity 10371",
+      "entity_id": "10371",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "tfqo5f16fjfskespxtgn4vn5hnzjebqmqx",
+      "blockchain": "trx",
+      "entity_name": "Entity 10371",
+      "entity_id": "10371",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "tpwjq8yuabthppkm5ppsuagbfwdhzpny11",
+      "blockchain": "trx",
+      "entity_name": "Entity 10371",
+      "entity_id": "10371",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "txgm2pej4dhzh6oajvaxavfdevggjqfskr",
+      "blockchain": "trx",
+      "entity_name": "Entity 10371",
+      "entity_id": "10371",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "tuermq9gtrdgc4g4l5wjws55ju5hyfr3sa",
+      "blockchain": "trx",
+      "entity_name": "Entity 10371",
+      "entity_id": "10371",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "thpflwegvhvgrzi7emnviafy5wg1fedh1p",
+      "blockchain": "trx",
+      "entity_name": "Entity 10371",
+      "entity_id": "10371",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "tph1ehjuny8crujgwtxoguzkvpk5ckuelf",
+      "blockchain": "trx",
+      "entity_name": "Entity 10371",
+      "entity_id": "10371",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "trzvmk2d4fmjgjtuzhrvpgw6yjk8ncjshv",
+      "blockchain": "trx",
+      "entity_name": "Entity 10371",
+      "entity_id": "10371",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "tmubvwcgrtj6jysmmutxwapjk1krek2bde",
+      "blockchain": "trx",
+      "entity_name": "Entity 10371",
+      "entity_id": "10371",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "te5pamku1hpr8bdjksjlveyubxjkksx1h6",
+      "blockchain": "trx",
+      "entity_name": "Entity 10371",
+      "entity_id": "10371",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "tbmqxsfnytmkyw9jvgbaecgalylwbxftm1",
+      "blockchain": "trx",
+      "entity_name": "Entity 10371",
+      "entity_id": "10371",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "tfh7z4qmdit7opayylmnvxqjtvckatg7zh",
+      "blockchain": "trx",
+      "entity_name": "Entity 10371",
+      "entity_id": "10371",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "tlfqehig7rusz9x5iph99ke5782dkgrnwf",
+      "blockchain": "trx",
+      "entity_name": "Entity 10371",
+      "entity_id": "10371",
+      "reason": "OFAC SDN List"
+    },
     {
       "address": "ta3941ufavmvibskq6fmjxxmasnovx86mz",
       "blockchain": "tether",
@@ -394,6 +1377,111 @@
       "blockchain": "tether",
       "entity_name": "Entity 14689",
       "entity_id": "14689",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "12ankp2idkuhede2yfpdd4dfgenrutkupl",
+      "blockchain": "bitcoin",
+      "entity_name": "Entity 15707",
+      "entity_id": "15707",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "0x252a8bd2319d8a555b872990601221b3a2053bce",
+      "blockchain": "ethereum",
+      "entity_name": "Entity 15707",
+      "entity_id": "15707",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "0x1cab8177ace78b1b6b1c393371f4f2dcae40cbeb",
+      "blockchain": "ethereum",
+      "entity_name": "Entity 15707",
+      "entity_id": "15707",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "0x6fac4d18c912343bf86fa7049364dd4e424ab9c0",
+      "blockchain": "ethereum",
+      "entity_name": "Entity 15707",
+      "entity_id": "15707",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "0xa40cfbfc8534ffc84e20a7d8bbc3729b26a35f6f",
+      "blockchain": "ethereum",
+      "entity_name": "Entity 15707",
+      "entity_id": "15707",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "0x7f03679b56d8772530efa516b58bb83d4829e881",
+      "blockchain": "ethereum",
+      "entity_name": "Entity 15707",
+      "entity_id": "15707",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "0x8ac5381fcd9e7395d14e02986c344aada84b4bc6",
+      "blockchain": "ethereum",
+      "entity_name": "Entity 15707",
+      "entity_id": "15707",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "0x9697749a9e8d6c119d8eeb0d6268a1b99c40684c",
+      "blockchain": "ethereum",
+      "entity_name": "Entity 15707",
+      "entity_id": "15707",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "0x9dd7fa4b4950154f7e75bdd8a77266b99b94ec08",
+      "blockchain": "ethereum",
+      "entity_name": "Entity 15707",
+      "entity_id": "15707",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "0xb5a69da691670f62510793f79a9b36c7db1a7b7c",
+      "blockchain": "ethereum",
+      "entity_name": "Entity 15707",
+      "entity_id": "15707",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "0x6b0736fed0634e15e19cc57fba19cd179c13abca",
+      "blockchain": "ethereum",
+      "entity_name": "Entity 15707",
+      "entity_id": "15707",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "0xd81414abc631c6cadae1c6198b0c2b15a9b4fde5",
+      "blockchain": "ethereum",
+      "entity_name": "Entity 15707",
+      "entity_id": "15707",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "0xf45ecc3a59c7911181c659ce9115854c6175be91",
+      "blockchain": "ethereum",
+      "entity_name": "Entity 15707",
+      "entity_id": "15707",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "tabbvabkgh4vblxgwqacuwokf4ch1hinqh",
+      "blockchain": "trx",
+      "entity_name": "Entity 15707",
+      "entity_id": "15707",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "tesxmcvocwetm82mdmc5dikc6qycwqsppv",
+      "blockchain": "trx",
+      "entity_name": "Entity 15707",
+      "entity_id": "15707",
       "reason": "OFAC SDN List"
     },
     {
@@ -1164,13 +2252,6 @@
       "blockchain": "monero",
       "entity_name": "Entity 22896",
       "entity_id": "22896",
-      "reason": "OFAC SDN List"
-    },
-    {
-      "address": "17a5bpkvep1j1trs4qtbcnzrby53jbas9c",
-      "blockchain": "bitcoin",
-      "entity_name": "Entity 23455",
-      "entity_id": "23455",
       "reason": "OFAC SDN List"
     },
     {
@@ -3603,6 +4684,83 @@
       "reason": "OFAC SDN List"
     },
     {
+      "address": "tgxe9dgwawjfd3xqfsho1h1brbrv9wugrf",
+      "blockchain": "trx",
+      "entity_name": "Entity 34122",
+      "entity_id": "34122",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "tpdlpxxpcassupez3yrvksmnkyp5slekxu",
+      "blockchain": "trx",
+      "entity_name": "Entity 34122",
+      "entity_id": "34122",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "tntfhgfokh4srbmiwbfrvfqp2athsmdwf1",
+      "blockchain": "trx",
+      "entity_name": "Entity 34122",
+      "entity_id": "34122",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "txhf9nu9bjo1j9z5qeeshdr6gtdndfna4t",
+      "blockchain": "trx",
+      "entity_name": "Entity 34122",
+      "entity_id": "34122",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "tk17wfspp32rwrnzzprgpv7txdnfvvve2s",
+      "blockchain": "trx",
+      "entity_name": "Entity 34122",
+      "entity_id": "34122",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "tyeqd2vddtz9nkfkant9dd8cugetguqzb2",
+      "blockchain": "trx",
+      "entity_name": "Entity 34122",
+      "entity_id": "34122",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "0xd04e33461fea8302c5e1e13895b60cee8aefda7f",
+      "blockchain": "ethereum",
+      "entity_name": "Entity 34122",
+      "entity_id": "34122",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "0x76ea76ca4eb727f18956ab93445a94c5280412b9",
+      "blockchain": "ethereum",
+      "entity_name": "Entity 34122",
+      "entity_id": "34122",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "0xfb3eff152ea55d1bfa04dbdd509a80fd7b72cdeb",
+      "blockchain": "ethereum",
+      "entity_name": "Entity 34122",
+      "entity_id": "34122",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "0xfda1ec4a6178d4916b001a065422d31ebe5f62ff",
+      "blockchain": "ethereum",
+      "entity_name": "Entity 34122",
+      "entity_id": "34122",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "0x747afb5c7a7fc34b547cd0fdebf9b91759c5a52b",
+      "blockchain": "ethereum",
+      "entity_name": "Entity 34122",
+      "entity_id": "34122",
+      "reason": "OFAC SDN List"
+    },
+    {
       "address": "0x38735f03b30fbc022ddd06abed01f0ca823c6a94",
       "blockchain": "tether",
       "entity_name": "Entity 34709",
@@ -4870,6 +6028,13 @@
       "reason": "OFAC SDN List"
     },
     {
+      "address": "18dldawi8lmrhbeq3qzdjb9slxcf4uimxb",
+      "blockchain": "bitcoin",
+      "entity_name": "Entity 45381",
+      "entity_id": "45381",
+      "reason": "OFAC SDN List"
+    },
+    {
       "address": "tu4tdfrvckhaz1jdihojmbwzqvjhqcnj4f",
       "blockchain": "trx",
       "entity_name": "Entity 45913",
@@ -5203,6 +6368,1021 @@
       "blockchain": "bitcoin",
       "entity_name": "Entity 46852",
       "entity_id": "46852",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "taolw5yd5xuohwebzrsz1exk9hmv2cipvp",
+      "blockchain": "trx",
+      "entity_name": "Entity 47749",
+      "entity_id": "47749",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "tvnyvx2astt2ab1us67enjfmzeexzeiuu6",
+      "blockchain": "trx",
+      "entity_name": "Entity 47749",
+      "entity_id": "47749",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "tpj1jnx98mjphuebjef5svsg85z8myg1p1",
+      "blockchain": "trx",
+      "entity_name": "Entity 47749",
+      "entity_id": "47749",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "tcu5onczxuqxjvvzdb2tr4fluf66d4yrqf",
+      "blockchain": "trx",
+      "entity_name": "Entity 47752",
+      "entity_id": "47752",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "tbclqqqyzjnj1ptuxfgj5h768nhnu5ndyn",
+      "blockchain": "trx",
+      "entity_name": "Entity 47752",
+      "entity_id": "47752",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "37fkfzqgmqdbkjsuub1jcdwggshwv9vxfz",
+      "blockchain": "bitcoin",
+      "entity_name": "Entity 47752",
+      "entity_id": "47752",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "1jpqj8sxlbvdhbqmqsfbmukoh2vaucunvs",
+      "blockchain": "bitcoin",
+      "entity_name": "Entity 47752",
+      "entity_id": "47752",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "0x5d5b5dafecbf31bdb08bfd3edad4f2694372d0ef",
+      "blockchain": "ethereum",
+      "entity_name": "Entity 47752",
+      "entity_id": "47752",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "0xc103b7dc095c904b92081eef0c1640081ec01c10",
+      "blockchain": "ethereum",
+      "entity_name": "Entity 47752",
+      "entity_id": "47752",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "0xe1e4c5e5ed8f03ae61b581e2def126025f2b9401",
+      "blockchain": "ethereum",
+      "entity_name": "Entity 47752",
+      "entity_id": "47752",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "42rlpacwzpx3vyymxsueqsogfynbdqxk298edsnoyohi",
+      "blockchain": "sol",
+      "entity_name": "Entity 47752",
+      "entity_id": "47752",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "tca9vmjsyw9mtpkewrbtghkfrfr4clxjav",
+      "blockchain": "trx",
+      "entity_name": "Entity 48284",
+      "entity_id": "48284",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "tgsnfrgwfbgn2gx25wcf8otejtxtqkvmex",
+      "blockchain": "trx",
+      "entity_name": "Entity 48284",
+      "entity_id": "48284",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "taswbk6x1witku5tmmmqyqyfvshvetfjy8",
+      "blockchain": "trx",
+      "entity_name": "Entity 48284",
+      "entity_id": "48284",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "tts9o5kkpggh8ck9loflmmapyb5zfqvsna",
+      "blockchain": "trx",
+      "entity_name": "Entity 48284",
+      "entity_id": "48284",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "tczq6m2zxnqkrzrf8cqyck6bbxqyafwykc",
+      "blockchain": "trx",
+      "entity_name": "Entity 48284",
+      "entity_id": "48284",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "tlvuvpfbkdxddxssjefeigce9evy8huroe",
+      "blockchain": "trx",
+      "entity_name": "Entity 48284",
+      "entity_id": "48284",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "tnua5cq6lb4jthonrjeeqzjmcmhquhmbq7",
+      "blockchain": "trx",
+      "entity_name": "Entity 48284",
+      "entity_id": "48284",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "0xb637f84b66876ebf609c2a4208905f9ddac9d075",
+      "blockchain": "ethereum",
+      "entity_name": "Entity 48465",
+      "entity_id": "48465",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "0x95584c303fcd48af5c6b9873015f2ad0ca84eae3",
+      "blockchain": "ethereum",
+      "entity_name": "Entity 48465",
+      "entity_id": "48465",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "bc1qyy5pt5cx3zth8xlj92lq5y87dh8xv3nwgs4ncq",
+      "blockchain": "bitcoin",
+      "entity_name": "Entity 48466",
+      "entity_id": "48466",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "tnrx2fwrhkoo4xacgkmszqek4pdnkyn6z7",
+      "blockchain": "trx",
+      "entity_name": "Entity 48475",
+      "entity_id": "48475",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "0xcb74874f1e06fcf80a306e06e5379a44b488ba2d",
+      "blockchain": "ethereum",
+      "entity_name": "Entity 48475",
+      "entity_id": "48475",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "0x0330070fd38ec3bb94f58fa55d40368271e9e54a",
+      "blockchain": "ethereum",
+      "entity_name": "Entity 48475",
+      "entity_id": "48475",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "0x9be599d7867f5e1a2d7ec6db9710df2b98a15573",
+      "blockchain": "ethereum",
+      "entity_name": "Entity 48475",
+      "entity_id": "48475",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "teeycugdyenkudj4u6gqrxxxo3nh29r2vp",
+      "blockchain": "trx",
+      "entity_name": "Entity 48475",
+      "entity_id": "48475",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "tzb4nrx7k9zsv6prc1gigaztll8whplvwp",
+      "blockchain": "trx",
+      "entity_name": "Entity 48475",
+      "entity_id": "48475",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "tde2unavuuntbbdo7518eme3txn5qjw8ft",
+      "blockchain": "trx",
+      "entity_name": "Entity 48475",
+      "entity_id": "48475",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "bc1qr2pwmvkpq5tc5um2g9uh34yyu6wepwx89rts70",
+      "blockchain": "bitcoin",
+      "entity_name": "Entity 48480",
+      "entity_id": "48480",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "bc1q4ktvxxhhvf8qhs9qkdsm9arcxfmmeex6rl7n50",
+      "blockchain": "bitcoin",
+      "entity_name": "Entity 48480",
+      "entity_id": "48480",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "0x4060cbf80734193f521a3cc6fd4e985df2825279",
+      "blockchain": "ethereum",
+      "entity_name": "Entity 48480",
+      "entity_id": "48480",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "0x56de1527136f76a809e5b14ded6103eecd072ba7",
+      "blockchain": "ethereum",
+      "entity_name": "Entity 48480",
+      "entity_id": "48480",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "0x8694ed130432be2cd3efff2e4d9dc52351dc7423",
+      "blockchain": "ethereum",
+      "entity_name": "Entity 48480",
+      "entity_id": "48480",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "0xbd3276f265b83b5e828c05f46cde9d10a1521a24",
+      "blockchain": "ethereum",
+      "entity_name": "Entity 48480",
+      "entity_id": "48480",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "0xf1c4c44d2dcbcfa704349e3b57628dbd8404e597",
+      "blockchain": "ethereum",
+      "entity_name": "Entity 48480",
+      "entity_id": "48480",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "tp3kvtnfgdsosqzw178nljtgwnjrbkngb6",
+      "blockchain": "trx",
+      "entity_name": "Entity 48480",
+      "entity_id": "48480",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "bc1qf6zxs4lkp9umh6hf087mh70w0ymcyt8cunp58r",
+      "blockchain": "bitcoin",
+      "entity_name": "Entity 48480",
+      "entity_id": "48480",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "txr4fdazzldsvurxvew9abmybbas12wwhk",
+      "blockchain": "trx",
+      "entity_name": "Entity 48480",
+      "entity_id": "48480",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "1gxeckfqq7syo6b7wdlapkkri6nftfb7no",
+      "blockchain": "bitcoin",
+      "entity_name": "Entity 48483",
+      "entity_id": "48483",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "0x1b8579cf6ab12ea6b74ac5fa41f3829a3cb61e6e",
+      "blockchain": "ethereum",
+      "entity_name": "Entity 48483",
+      "entity_id": "48483",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "1jgpiqgk78xtxavoxa1mjk3z15m84rj6bl",
+      "blockchain": "bitcoin",
+      "entity_name": "Entity 48484",
+      "entity_id": "48484",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "0xeb507efa9ee692a4c774ad1de9f3cb26fc459da3",
+      "blockchain": "ethereum",
+      "entity_name": "Entity 48484",
+      "entity_id": "48484",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "0xef85a6fafa5942a964dc618e94e230881d29ce2a",
+      "blockchain": "ethereum",
+      "entity_name": "Entity 48484",
+      "entity_id": "48484",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "0x038989cbb1710c72b9920dc4fa529158f463e72c",
+      "blockchain": "ethereum",
+      "entity_name": "Entity 48526",
+      "entity_id": "48526",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "0x14779cec0b117d5194c750c55ea1f42086631964",
+      "blockchain": "ethereum",
+      "entity_name": "Entity 48526",
+      "entity_id": "48526",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "0x32da24ca413f3e7b53145d4737e172c3bdf81e3e",
+      "blockchain": "ethereum",
+      "entity_name": "Entity 48526",
+      "entity_id": "48526",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "0xf2235d55b2950a0b1317469d72d07ae65b2e27cb",
+      "blockchain": "ethereum",
+      "entity_name": "Entity 48526",
+      "entity_id": "48526",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "0x4f428c11dc82388fa5136d636e613ad923eb700b",
+      "blockchain": "ethereum",
+      "entity_name": "Entity 48526",
+      "entity_id": "48526",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "0xac4cc4b68ea24bbfaac8fd127b67ed445accce22",
+      "blockchain": "ethereum",
+      "entity_name": "Entity 48537",
+      "entity_id": "48537",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "tbxmirqup1xh1zlazwu8cwitmascv4hsyq",
+      "blockchain": "trx",
+      "entity_name": "Entity 49460",
+      "entity_id": "49460",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "tdfj8tyzfldkwemo4mj2dfrbpmztuccnan",
+      "blockchain": "trx",
+      "entity_name": "Entity 49460",
+      "entity_id": "49460",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "tuuaxbawfa5nmsqnfycxyrzevz4a5gjmgy",
+      "blockchain": "trx",
+      "entity_name": "Entity 49474",
+      "entity_id": "49474",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "bc1qdnr88f4d2yqunnc4mjsguezm6g3mlwe44z5dw8",
+      "blockchain": "bitcoin",
+      "entity_name": "Entity 49474",
+      "entity_id": "49474",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "bc1qr4ankqmvmrhce3ydvzse86dfx5s3zhehfr9tg9",
+      "blockchain": "bitcoin",
+      "entity_name": "Entity 49474",
+      "entity_id": "49474",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "0x2711d73d559f62f4f855ee21f38378f528e07985",
+      "blockchain": "ethereum",
+      "entity_name": "Entity 49474",
+      "entity_id": "49474",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "ltc1qr8ntsedq8tv0svmxqhzvdcdl5k7kntdmnhwep7",
+      "blockchain": "litecoin",
+      "entity_name": "Entity 49474",
+      "entity_id": "49474",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "1mtndg4k51rrmvkzyvguahnqpimlnxfgzm",
+      "blockchain": "bitcoin",
+      "entity_name": "Entity 49477",
+      "entity_id": "49477",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "0x1d19b52b54e7ef5ea1a4b40b616165e798eac9f8",
+      "blockchain": "ethereum",
+      "entity_name": "Entity 49477",
+      "entity_id": "49477",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "ttlrnglpz5h5tlpunu4fvius7zmmatyvzw",
+      "blockchain": "trx",
+      "entity_name": "Entity 49477",
+      "entity_id": "49477",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "fc1ewquzyteagadva1uthxccznyg1x2plt2dfnu1cjdh",
+      "blockchain": "sol",
+      "entity_name": "Entity 49477",
+      "entity_id": "49477",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "lcp1dumxknjbbtsyd3xxafsj2nzr5hldpm",
+      "blockchain": "litecoin",
+      "entity_name": "Entity 49477",
+      "entity_id": "49477",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "1dfywkixvvqwfcsduj23qtdis9kb2qvrda",
+      "blockchain": "bitcoin",
+      "entity_name": "Entity 49477",
+      "entity_id": "49477",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "dhzavdeol3pjgelwndejwwma1ceq9j9cpo",
+      "blockchain": "doge",
+      "entity_name": "Entity 49477",
+      "entity_id": "49477",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "xcugqrfrr85zydrzvr1gsl5rnjwwpbu2ks",
+      "blockchain": "dash",
+      "entity_name": "Entity 49477",
+      "entity_id": "49477",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "t1lhesgnkapzigqcjtrfzwyxhyjftvo1dvh",
+      "blockchain": "zcash",
+      "entity_name": "Entity 49477",
+      "entity_id": "49477",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "lbpaqhvemzbv3pvaqiatdnz3u1t6ezial1",
+      "blockchain": "litecoin",
+      "entity_name": "Entity 49477",
+      "entity_id": "49477",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "dtqpkq96rqktvhcohqqd9bksmgrjashggo",
+      "blockchain": "doge",
+      "entity_name": "Entity 49477",
+      "entity_id": "49477",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "xowuemfa1fkeunahl78e5oqpezmfsb6xp1",
+      "blockchain": "dash",
+      "entity_name": "Entity 49477",
+      "entity_id": "49477",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "tbfw9gf4odx5cg44gs7aoxqeujscmm3z6h",
+      "blockchain": "trx",
+      "entity_name": "Entity 49477",
+      "entity_id": "49477",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "0x2c7dcd774b33e10367f7d6385479e04f97d179dc",
+      "blockchain": "ethereum",
+      "entity_name": "Entity 49477",
+      "entity_id": "49477",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "fucc7goywt5tsntjwl23xx9ukcvc18chjmefpl3vjdcc",
+      "blockchain": "sol",
+      "entity_name": "Entity 49477",
+      "entity_id": "49477",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "tpye2osoaysrxflzwf9wetbvr9judlwjtd",
+      "blockchain": "trx",
+      "entity_name": "Entity 49678",
+      "entity_id": "49678",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "tvgusvza7mpfexp4zs7hhbtkti6uubduwz",
+      "blockchain": "trx",
+      "entity_name": "Entity 49678",
+      "entity_id": "49678",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "tlog3vbjdgqmtd5bm7w9rmga6ysanreury",
+      "blockchain": "trx",
+      "entity_name": "Entity 49678",
+      "entity_id": "49678",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "tahhpxprwo1bmm1a9m51uz31tcb7epq7sy",
+      "blockchain": "trx",
+      "entity_name": "Entity 49678",
+      "entity_id": "49678",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "tscxztbdjjz6a6jic7dzjgcqfno4vm7atv",
+      "blockchain": "trx",
+      "entity_name": "Entity 49678",
+      "entity_id": "49678",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "tgr2i8zqiimrjp3mwyquh2mqbfku8gjnqm",
+      "blockchain": "trx",
+      "entity_name": "Entity 49678",
+      "entity_id": "49678",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "thjujfytnrbwb1ijwav7qfrbrjuukgp49z",
+      "blockchain": "trx",
+      "entity_name": "Entity 49678",
+      "entity_id": "49678",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "ttvjuxwcusaurrpnshiypauageh1n4crxv",
+      "blockchain": "trx",
+      "entity_name": "Entity 49737",
+      "entity_id": "49737",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "0xbb69e01921b17cd22080968bcc96ba6115da6062",
+      "blockchain": "ethereum",
+      "entity_name": "Entity 49737",
+      "entity_id": "49737",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "1g1v1b9s9upsfcnl15ibzk44xsvygksp2u",
+      "blockchain": "bitcoin",
+      "entity_name": "Entity 49737",
+      "entity_id": "49737",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "bnb136ns6lfw4zs5hg4n85vdthaad7hq5m4gtkgf23",
+      "blockchain": "binance-coin",
+      "entity_name": "Entity 49737",
+      "entity_id": "49737",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "0x8d79c73daae8630c88de372ba8f57592fa987607",
+      "blockchain": "ethereum",
+      "entity_name": "Entity 49771",
+      "entity_id": "49771",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "tpgxjjb6ajemsqfngbum6dmmxpha9getya",
+      "blockchain": "trx",
+      "entity_name": "Entity 49771",
+      "entity_id": "49771",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "15zt2mkuq5qy6dexfdcbtsevneogqqxrs4",
+      "blockchain": "bitcoin",
+      "entity_name": "Entity 49771",
+      "entity_id": "49771",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "1buxxhcwzfukm9cuxnhag85ssxdkmrbxse",
+      "blockchain": "bitcoin",
+      "entity_name": "Entity 49771",
+      "entity_id": "49771",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "0xe05f529f5284d75624eba386cb716928c3b54a2a",
+      "blockchain": "ethereum",
+      "entity_name": "Entity 49774",
+      "entity_id": "49774",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "6wjqwwra8ombzaw6vhrg5xpq972jcyf6bbhifcbwmr4u",
+      "blockchain": "sol",
+      "entity_name": "Entity 49774",
+      "entity_id": "49774",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "bc1qjzk63wwatq2f638psymq3qapn00aqgksyx56l3t8eg7zuuccwasq498khf",
+      "blockchain": "bitcoin",
+      "entity_name": "Entity 49774",
+      "entity_id": "49774",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "txn3hvukebhyyr31ypcyd7ajavmuexu1ab",
+      "blockchain": "trx",
+      "entity_name": "Entity 49774",
+      "entity_id": "49774",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "bc1qz654h5qcqzalv6ltpxsk4ksdcc3e20wkedqntgnarv3a0t2e2p7scr48pl",
+      "blockchain": "bitcoin",
+      "entity_name": "Entity 49774",
+      "entity_id": "49774",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "0x6b69e2a7545c166417a80c61a77562052bffa9c5",
+      "blockchain": "ethereum",
+      "entity_name": "Entity 49774",
+      "entity_id": "49774",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "tw5tokvhefrb77z98rc8hqbkzqj6sxytgx",
+      "blockchain": "trx",
+      "entity_name": "Entity 49848",
+      "entity_id": "49848",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "tbkpozurdwlrbkkxtdqkveeq1dsb8axj3v",
+      "blockchain": "trx",
+      "entity_name": "Entity 49848",
+      "entity_id": "49848",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "twqcmjv7wq2rhe2csikqhpkn6a7b2awupe",
+      "blockchain": "trx",
+      "entity_name": "Entity 49848",
+      "entity_id": "49848",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "tg83fk56s2mycaumyhzyzp9wmg6dcf4bun",
+      "blockchain": "trx",
+      "entity_name": "Entity 49848",
+      "entity_id": "49848",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "tyke8vwx1sghm3q2ca29nka5u2f2khkaj5",
+      "blockchain": "trx",
+      "entity_name": "Entity 49848",
+      "entity_id": "49848",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "teecjwhqvg8sdmm3vtscjucare5p351mu7",
+      "blockchain": "trx",
+      "entity_name": "Entity 49848",
+      "entity_id": "49848",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "tdu61o35uee5hdb3r16c116drpsv4kiykz",
+      "blockchain": "trx",
+      "entity_name": "Entity 49848",
+      "entity_id": "49848",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "tkrncetxbimmyymrackgdxkdlr1zkmkxv5",
+      "blockchain": "trx",
+      "entity_name": "Entity 49848",
+      "entity_id": "49848",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "ttwrf2md6zj26bs4ukcnrcp84aar7amtjm",
+      "blockchain": "trx",
+      "entity_name": "Entity 49848",
+      "entity_id": "49848",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "tyvjt4zkfsiphja52nzgjujdbf622slcih",
+      "blockchain": "trx",
+      "entity_name": "Entity 49848",
+      "entity_id": "49848",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "txhx2nuvcgft4zs6mkkutdnverptavhdwn",
+      "blockchain": "trx",
+      "entity_name": "Entity 49848",
+      "entity_id": "49848",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "twpma8xh48aen93x2krdukv9e1j6spsbes",
+      "blockchain": "trx",
+      "entity_name": "Entity 49848",
+      "entity_id": "49848",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "tk3n8pghvdtck53mpfedamzdwjb22qvfu3",
+      "blockchain": "trx",
+      "entity_name": "Entity 49848",
+      "entity_id": "49848",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "tgsgw4aueamncfd8wqlrle8erqij1vqghj",
+      "blockchain": "trx",
+      "entity_name": "Entity 49848",
+      "entity_id": "49848",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "tbnjci1d5ns6ec5amp28lpfkcx7xtpykan",
+      "blockchain": "trx",
+      "entity_name": "Entity 49848",
+      "entity_id": "49848",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "thh9jjnbldn7qs1cytxjqejhc9y5fnzuhu",
+      "blockchain": "trx",
+      "entity_name": "Entity 49848",
+      "entity_id": "49848",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "tqht3qwabfiy6geyubrbk97up3xvmtprd8",
+      "blockchain": "trx",
+      "entity_name": "Entity 49848",
+      "entity_id": "49848",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "txka5xc6mekcovxr7f2tfdkernylt3xyw4",
+      "blockchain": "trx",
+      "entity_name": "Entity 49848",
+      "entity_id": "49848",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "th1yknksde3pby3owvhuxvtbwblqdafqyt",
+      "blockchain": "trx",
+      "entity_name": "Entity 49848",
+      "entity_id": "49848",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "tlhwezcdmxk6idnagwsq9cemk24kpoggrm",
+      "blockchain": "trx",
+      "entity_name": "Entity 49848",
+      "entity_id": "49848",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "ttmvr41fa9lewjq8nkq5t4wfuspgea1mjf",
+      "blockchain": "trx",
+      "entity_name": "Entity 49848",
+      "entity_id": "49848",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "thifikwe6rtxynwdcp9cwujxs8gh1xbcoa",
+      "blockchain": "trx",
+      "entity_name": "Entity 49848",
+      "entity_id": "49848",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "tr983hnyungrnsb1xncg9thznhgypbnvsh",
+      "blockchain": "trx",
+      "entity_name": "Entity 49848",
+      "entity_id": "49848",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "tnwe3woex6xrq5npaewpkvpttdaf27xyxk",
+      "blockchain": "trx",
+      "entity_name": "Entity 49848",
+      "entity_id": "49848",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "tgcewgsdly7fzc66kxxeb8kh2b6u2xcvnv",
+      "blockchain": "trx",
+      "entity_name": "Entity 49848",
+      "entity_id": "49848",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "tyq3irujcbelxx89i9jy32umlxcyzaje7e",
+      "blockchain": "trx",
+      "entity_name": "Entity 49848",
+      "entity_id": "49848",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "tryqivskqchryfnyne1bumjhnl3tvkupvs",
+      "blockchain": "trx",
+      "entity_name": "Entity 49848",
+      "entity_id": "49848",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "tgjyojlhfaid2brv9hwceuhhz54d3glktd",
+      "blockchain": "trx",
+      "entity_name": "Entity 49848",
+      "entity_id": "49848",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "txt9atp8qbmxkbfynrywkm88uxyyobqnlp",
+      "blockchain": "trx",
+      "entity_name": "Entity 49848",
+      "entity_id": "49848",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "tthrmusidd4gqecnu56cffcmqs421nmbu7",
+      "blockchain": "trx",
+      "entity_name": "Entity 49848",
+      "entity_id": "49848",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "takpwpt2jzdilskg7zx2vaqkzqsngz1nqh",
+      "blockchain": "trx",
+      "entity_name": "Entity 49848",
+      "entity_id": "49848",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "tz8zsue9m9tkhrftfe7vmmmewgvef3n2un",
+      "blockchain": "trx",
+      "entity_name": "Entity 49848",
+      "entity_id": "49848",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "tm9c5ur2ukwd5fmysgaoysjphryi3ajatc",
+      "blockchain": "trx",
+      "entity_name": "Entity 49848",
+      "entity_id": "49848",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "ttjhn8qnvxazb3uroiekgrpum2w2gwvnbn",
+      "blockchain": "trx",
+      "entity_name": "Entity 49848",
+      "entity_id": "49848",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "twhwre81mv4hvupndhnsyx9fpocm29dqqq",
+      "blockchain": "trx",
+      "entity_name": "Entity 49848",
+      "entity_id": "49848",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "tt4wkpqsck7fkxrpj1e9pjzp1htvbupotm",
+      "blockchain": "trx",
+      "entity_name": "Entity 49848",
+      "entity_id": "49848",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "tyzkyk2fbvw3eapes2dafvov4dqpna43jd",
+      "blockchain": "trx",
+      "entity_name": "Entity 49848",
+      "entity_id": "49848",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "tf7lusozqydfxtfzcl11sabhaqmayph8dk",
+      "blockchain": "trx",
+      "entity_name": "Entity 49848",
+      "entity_id": "49848",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "tsmchwvtr27ao4nn8hhpfcvcpu5ateqldt",
+      "blockchain": "trx",
+      "entity_name": "Entity 49848",
+      "entity_id": "49848",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "tj6nznpbv5uupp5uzgdub9zd1999999999",
+      "blockchain": "trx",
+      "entity_name": "Entity 49848",
+      "entity_id": "49848",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "tpd4pmojfa2f2rvgnsda7ycugj4bes9yk2",
+      "blockchain": "trx",
+      "entity_name": "Entity 49848",
+      "entity_id": "49848",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "txth3iuipk6dznynu3kgjdsnsslhlz8zzu",
+      "blockchain": "trx",
+      "entity_name": "Entity 49848",
+      "entity_id": "49848",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "tbeqqgtxxrwxxeqe7zwmsb6hc5mmmmmmmm",
+      "blockchain": "trx",
+      "entity_name": "Entity 49848",
+      "entity_id": "49848",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "ttyf9kcvabtsizxsdbc2e5co6jx9jvj111",
+      "blockchain": "trx",
+      "entity_name": "Entity 49848",
+      "entity_id": "49848",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "ttrhak4biv5ztnwn1k8oi7916cjmevveh8",
+      "blockchain": "trx",
+      "entity_name": "Entity 49848",
+      "entity_id": "49848",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "tcokgvdqbsypnjnf9onunqn3dwmdd9wbql",
+      "blockchain": "trx",
+      "entity_name": "Entity 49848",
+      "entity_id": "49848",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "tnuq2rzsrjzaghtbwafzevuaemmj5z5fnm",
+      "blockchain": "trx",
+      "entity_name": "Entity 49848",
+      "entity_id": "49848",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "ttwbrngoooss9hqqkmty3zqdbs9lzgjnih",
+      "blockchain": "trx",
+      "entity_name": "Entity 49848",
+      "entity_id": "49848",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "tgu8xk3u1qca9fncqz4rutvniicjnkjxka",
+      "blockchain": "trx",
+      "entity_name": "Entity 49848",
+      "entity_id": "49848",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "taqpzv9941nvutj4ng2vd6l11re57r42pw",
+      "blockchain": "trx",
+      "entity_name": "Entity 49848",
+      "entity_id": "49848",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "tmdzfvvasxksbxgmv3kbnegm69z3qhh3kz",
+      "blockchain": "trx",
+      "entity_name": "Entity 49848",
+      "entity_id": "49848",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "tz42su5kq2n5rlz6phegkmfltmhjoi2vpr",
+      "blockchain": "trx",
+      "entity_name": "Entity 49848",
+      "entity_id": "49848",
+      "reason": "OFAC SDN List"
+    },
+    {
+      "address": "tjcbpxz3yc7c7oegsrzmfxbcscmuvesa36",
+      "blockchain": "tether",
+      "entity_name": "Entity 49896",
+      "entity_id": "49896",
       "reason": "OFAC SDN List"
     }
   ]

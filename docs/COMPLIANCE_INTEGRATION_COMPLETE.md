@@ -283,7 +283,7 @@ curl -X POST http://localhost:8080/verify \
 
 ### For Operations
 - `INTEGRATION_STATUS.md` - Deployment guide
-- `scripts/update_ofac_list.py` - List update automation
+- `scripts/update_ofac_list.py` - Regenerates `config/ofac_addresses.json` from the SDN list; run by hand, nothing schedules it
 - `.env.example` - Configuration reference
 
 ---

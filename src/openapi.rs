@@ -3015,6 +3015,12 @@ chains are listed under `unchecked`, never counted as green.
 CAIP-2 id (`caip2`). A chain's health never takes it out of `/supported`: this route is where the \
 health is reported.
 
+**`sanctionsList` grades the OFAC list** every payer and payee is screened against, by its own \
+`generatedAtUnix`: `ageDays` since then, `maxAgeDays`, `records`. Past `maxAgeDays` it is \
+`degraded` with reason `sanctions_list_stale`; `sanctions_list_age_unknown` when the list carries \
+no parseable date or one in the future, `sanctions_list_not_loaded` when there is no list. It is \
+never `down`: an old list still blocks every address it holds, and the task can still settle.
+
 **Cached**: one probe per `ttlSecs` (default 60) per task, however often the route is called \
 and however its callers disconnect: the refresh runs in its own task, so a caller that hangs up \
 does not cancel it. `checkedAtUnix` and `ageSecs` say when it was measured, and `probeTimeoutMs` \
@@ -3022,8 +3028,8 @@ bounds each chain's read. Rate limited per IP like the other on-chain reads (429
 address or balance appears in the body.
 
 Overall `status` is `down` (HTTP 503) when any MAINNET chain is down, `degraded` when anything \
-else is short of green or nothing was probed, `ok` otherwise. With `?network=` the status and the \
-code are that chain's alone.
+else is short of green (the sanctions list included) or nothing was probed, `ok` otherwise. With \
+`?network=` the status and the code are that chain's alone.
 
 Tunables: `HEALTH_READY_TTL_SECS` (5-3600, default 60), `HEALTH_READY_PROBE_TIMEOUT_MS` \
 (250-30000, default 5000), `HEALTH_READY_MIN_SETTLES` (1-100000, default 10), \
@@ -3031,7 +3037,8 @@ Tunables: `HEALTH_READY_TTL_SECS` (5-3600, default 60), `HEALTH_READY_PROBE_TIME
 `HEALTH_READY_WARN_SETTLES_FLOOR` (default 20, between the minimum and the ceiling), and \
 `HEALTH_READY_WARN_SETTLES_<NETWORK>` (one chain's warning instead of the rule's: the v1 name in \
 upper case with `-` as `_`, e.g. `HEALTH_READY_WARN_SETTLES_ETHEREUM`; raised to the minimum when \
-below it). An out-of-range value logs a warning and keeps the default.",
+below it), and `HEALTH_READY_SANCTIONS_MAX_AGE_DAYS` (1-365, default 7). An out-of-range value \
+logs a warning and keeps the default.",
     params(
         ("network" = Option<String>, Query, description = "Scope to one chain: `base` or `eip155:8453`")
     ),
@@ -3057,7 +3064,11 @@ below it). An out-of-range value logs a warning and keeps the default.",
                     "warnSettles": 20,
                     "signers": [{ "index": 0, "status": "ok", "gasOk": true, "settlesRemaining": 24 }]
                 }],
-                "unchecked": ["solana"]
+                "unchecked": ["solana"],
+                "sanctionsList": {
+                    "list": "OFAC_SDN", "status": "ok", "generatedAtUnix": 1789329600,
+                    "ageDays": 1, "maxAgeDays": 7, "records": 1035
+                }
             })
         ),
         (status = 503, description = "`down`: a mainnet (or the chain named in `?network=`) cannot settle; or `probe_failed` if the refresh task died without an answer", body = Object,

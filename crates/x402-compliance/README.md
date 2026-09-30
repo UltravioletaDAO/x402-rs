@@ -112,6 +112,24 @@ let compliance_checker = ComplianceCheckerBuilder::new()
     .await?;
 ```
 
+### Keeping the OFAC list current
+
+`config/ofac_addresses.json` is a file, and nothing refreshes it at runtime: `auto_update` is
+parsed but not acted on, and `reload_lists` does nothing yet. Regenerate it from OFAC's SDN
+Advanced XML (`sanctionslistservice.ofac.treas.gov`) and ship it with a release:
+
+```bash
+python scripts/update_ofac_list.py --verbose
+```
+
+Two guards say when that has not happened:
+
+- `tests/ofac_canary.rs`, run in CI, reads the shipped file: the addresses designated on
+  2026-05-20 must be blocked and an address on no list must screen clear.
+- The facilitator's `GET /health/ready` grades the list's own `metadata.generated_at` under
+  `sanctionsList` and reads `degraded` once it is older than
+  `HEALTH_READY_SANCTIONS_MAX_AGE_DAYS` (default 7).
+
 ## Features
 
 - `default`: Enables OFAC screening
@@ -166,8 +184,8 @@ cargo test -p x402-compliance
 # Run with Solana feature
 cargo test -p x402-compliance --features solana
 
-# Run specific test
-cargo test -p x402-compliance --test integration_tests
+# Run the canary over the shipped OFAC list
+cargo test -p x402-compliance --test ofac_canary
 ```
 
 ## Examples

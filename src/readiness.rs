@@ -44,6 +44,13 @@
 //! chain id on every refresh, so a wrong one reads `rpc_chain_id_mismatch`
 //! instead of green. Every other configured family is listed under `unchecked`
 //! rather than folded into a green answer.
+//!
+//! The answer also carries the age of the sanctions list every payer and payee
+//! is screened against (`sanctionsList`). The list is a file shipped in the
+//! image and nothing refreshes it at runtime; from 2025-11-16 to 2026-09-29 it
+//! went unregenerated while this route could only say green. Past
+//! [`ReadinessConfig::sanctions_max_age_days`] the whole answer reads
+//! `degraded` -- never `down`: an old list still blocks every address it holds.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -59,6 +66,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use tokio::sync::watch;
 use tokio::time::Instant;
+use x402_compliance::checker::ListMetadata;
+use x402_compliance::lists::ofac::LIST_NAME;
+use x402_compliance::ComplianceChecker;
 
 use crate::chain::evm::{EvmProvider, MetaEvmProvider};
 use crate::chain::{NetworkProvider, NetworkProviderOps};
@@ -82,6 +92,10 @@ pub const DEFAULT_MIN_SETTLES: u64 = 10;
 pub const DEFAULT_WARN_SETTLES: u64 = 100;
 /// The fewest settles of warning the rule gives a chain, however dear its gas.
 pub const DEFAULT_WARN_SETTLES_FLOOR: u64 = 20;
+/// A sanctions list generated longer ago than this many days reads `degraded`.
+pub const DEFAULT_SANCTIONS_MAX_AGE_DAYS: u64 = 7;
+
+const SECS_PER_DAY: i64 = 86_400;
 
 /// What a signer's warning margin may be worth, in US dollars: a chain is
 /// warned as many settles ahead as this pays for there, never fewer than the
@@ -171,6 +185,9 @@ pub struct ReadinessConfig {
     /// `HEALTH_READY_WARN_SETTLES_<NETWORK>`, the v1 name upper-cased with `-`
     /// as `_` (`..._ETHEREUM`, `..._POLYGON_AMOY`).
     pub warn_overrides: HashMap<Network, u64>,
+    /// Past this many days since it was generated, the sanctions list reads
+    /// `degraded`. `HEALTH_READY_SANCTIONS_MAX_AGE_DAYS`, 1-365.
+    pub sanctions_max_age_days: u64,
 }
 
 impl Default for ReadinessConfig {
@@ -182,6 +199,7 @@ impl Default for ReadinessConfig {
             warn_settles: DEFAULT_WARN_SETTLES,
             warn_settles_floor: DEFAULT_WARN_SETTLES_FLOOR,
             warn_overrides: HashMap::new(),
+            sanctions_max_age_days: DEFAULT_SANCTIONS_MAX_AGE_DAYS,
         }
     }
 }
@@ -229,6 +247,12 @@ impl ReadinessConfig {
             0..=u64::MAX,
         )
         .clamp(min_settles, warn_settles);
+        let sanctions_max_age_days = setting(
+            &vars,
+            "HEALTH_READY_SANCTIONS_MAX_AGE_DAYS",
+            defaults.sanctions_max_age_days,
+            1..=365,
+        );
         let mut warn_overrides = HashMap::new();
         for (name, raw) in &vars {
             let Some(suffix) = name.strip_prefix(WARN_OVERRIDE_PREFIX) else {
@@ -279,6 +303,7 @@ impl ReadinessConfig {
             warn_settles,
             warn_settles_floor,
             warn_overrides,
+            sanctions_max_age_days,
         }
     }
 }
@@ -538,6 +563,72 @@ pub fn overall(networks: &[NetworkReport]) -> Status {
         .unwrap_or(Status::Degraded)
 }
 
+/// The sanctions list this task screens payers and payees against, graded by
+/// its age.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SanctionsListReport {
+    pub list: &'static str,
+    /// `ok` or `degraded`, never `down`.
+    pub status: Status,
+    /// Bounded token, present unless `status` is `ok`: `sanctions_list_stale`,
+    /// `sanctions_list_age_unknown` or `sanctions_list_not_loaded`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<&'static str>,
+    /// When the loaded list says it was generated from its source.
+    pub generated_at_unix: Option<i64>,
+    /// Whole days since then; absent when that cannot be told.
+    pub age_days: Option<u64>,
+    pub max_age_days: u64,
+    /// Distinct addresses loaded.
+    pub records: usize,
+}
+
+/// Grade the loaded sanctions list at `now_unix`: `degraded` once it is more
+/// than `max_age_days` old, and whenever its age cannot be told -- no list, no
+/// date, or a date in the future, which would otherwise read fresh for good.
+pub fn grade_sanctions_list(
+    metadata: Option<&ListMetadata>,
+    now_unix: i64,
+    max_age_days: u64,
+) -> SanctionsListReport {
+    let generated_at_unix = metadata
+        .and_then(|m| m.generated_at)
+        .map(|at| at.timestamp());
+    let age_secs = generated_at_unix
+        .map(|at| now_unix.saturating_sub(at))
+        .filter(|age| *age >= 0);
+    let max_age_secs = i64::try_from(max_age_days)
+        .unwrap_or(i64::MAX)
+        .saturating_mul(SECS_PER_DAY);
+    let reason = match (metadata, age_secs) {
+        (None, _) => Some("sanctions_list_not_loaded"),
+        (Some(_), None) => Some("sanctions_list_age_unknown"),
+        (Some(_), Some(age)) if age > max_age_secs => Some("sanctions_list_stale"),
+        (Some(_), Some(_)) => None,
+    };
+    SanctionsListReport {
+        list: LIST_NAME,
+        status: if reason.is_some() {
+            Status::Degraded
+        } else {
+            Status::Ok
+        },
+        reason,
+        generated_at_unix,
+        age_days: age_secs.map(|age| (age / SECS_PER_DAY) as u64),
+        max_age_days,
+        records: metadata.map_or(0, |m| m.record_count),
+    }
+}
+
+fn now_unix() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX))
+        .unwrap_or(0)
+}
+
 /// Read one EVM chain: the chain id its RPC answers for, then the fee cap the
 /// send path would set, then every signer's balance, all inside one timeout.
 /// A chain id that is not the declared one stops there: balances read on
@@ -618,6 +709,9 @@ pub struct ReadinessState<P> {
     providers: Arc<P>,
     config: ReadinessConfig,
     cache: std::sync::Mutex<CacheState>,
+    /// The checker whose sanctions list `sanctionsList` grades. Read on every
+    /// answer, not cached with the probe: it costs no I/O.
+    sanctions: Option<Arc<Box<dyn ComplianceChecker>>>,
 }
 
 #[derive(Default)]
@@ -637,7 +731,16 @@ where
             providers,
             config,
             cache: std::sync::Mutex::new(CacheState::default()),
+            sanctions: None,
         }
+    }
+
+    /// Grade, in every answer, the age of the OFAC list `checker` screens
+    /// against. `main.rs` always wires it; without it the answer has no
+    /// `sanctionsList` and its status is the chains' alone.
+    pub fn with_sanctions_list(mut self, checker: Arc<Box<dyn ComplianceChecker>>) -> Self {
+        self.sanctions = Some(checker);
+        self
     }
 
     /// The cached probe, refreshed when older than the TTL. `None` only if the
@@ -772,6 +875,7 @@ pub struct ReadyQuery {
 ///
 /// `200` when the task can settle everywhere it is configured to (`ok`) or
 /// everywhere that matters (`degraded`); `503` when a mainnet cannot (`down`).
+/// A sanctions list past its age makes it `degraded`, never `down`.
 /// With `?network=`, the status and the code are that chain's alone -- a
 /// testnet included, since the caller asked about it by name.
 pub async fn get_health_ready<P>(
@@ -815,8 +919,19 @@ where
         );
     }
 
+    let sanctions = state.sanctions.as_ref().map(|checker| {
+        grade_sanctions_list(
+            checker.list_metadata().get(LIST_NAME),
+            now_unix(),
+            state.config.sanctions_max_age_days,
+        )
+    });
     let status = match &scope {
-        None => overall(&snapshot.networks),
+        // At most `degraded`: the list's grade never takes the task `down`.
+        None => sanctions
+            .iter()
+            .map(|s| s.status)
+            .fold(overall(&snapshot.networks), Status::max),
         Some(_) => networks
             .iter()
             .map(|n| n.status)
@@ -832,7 +947,7 @@ where
         };
         *counts.entry(key).or_default() += 1;
     }
-    let body = json!({
+    let mut body = json!({
         "status": status,
         "checkedAtUnix": snapshot.checked_at_unix,
         "ageSecs": snapshot.measured.elapsed().as_secs(),
@@ -862,6 +977,9 @@ where
         "networks": networks,
         "unchecked": if scope.is_some() { Vec::new() } else { snapshot.unchecked.clone() },
     });
+    if let Some(sanctions) = sanctions {
+        body["sanctionsList"] = json!(sanctions);
+    }
     let code = if status == Status::Down {
         StatusCode::SERVICE_UNAVAILABLE
     } else {
@@ -1311,6 +1429,15 @@ mod tests {
         chains: &[(Network, &str)],
         config: ReadinessConfig,
     ) -> (Router, Vec<String>) {
+        router_for_with(chains, config, None).await
+    }
+
+    /// [`router_for`], grading the list `sanctions` reports when there is one.
+    async fn router_for_with(
+        chains: &[(Network, &str)],
+        config: ReadinessConfig,
+        sanctions: Option<ListOnly>,
+    ) -> (Router, Vec<String>) {
         let mut map = HashMap::new();
         let mut addresses = Vec::new();
         for (network, url) in chains {
@@ -1321,8 +1448,11 @@ mod tests {
                 .expect("provider");
             map.insert(*network, NetworkProvider::Evm(provider));
         }
-        let state = Arc::new(ReadinessState::new(Arc::new(Providers(map)), config));
-        (routes::<Providers>().with_state(state), addresses)
+        let mut state = ReadinessState::new(Arc::new(Providers(map)), config);
+        if let Some(checker) = sanctions {
+            state = state.with_sanctions_list(Arc::new(Box::new(checker)));
+        }
+        (routes::<Providers>().with_state(Arc::new(state)), addresses)
     }
 
     async fn get(router: &Router, uri: &str) -> (StatusCode, serde_json::Value, String) {
@@ -1585,6 +1715,167 @@ mod tests {
         let from_env = ReadinessConfig::from_env();
         std::env::remove_var("HEALTH_READY_MIN_SETTLES");
         assert_eq!(from_env.min_settles, DEFAULT_MIN_SETTLES);
+    }
+
+    /// A checker that only reports the metadata of one list, or of none.
+    struct ListOnly(Option<ListMetadata>);
+
+    #[async_trait::async_trait]
+    impl ComplianceChecker for ListOnly {
+        async fn screen_payment(
+            &self,
+            _payer: &str,
+            _payee: &str,
+            _context: &x402_compliance::TransactionContext,
+        ) -> x402_compliance::Result<x402_compliance::ScreeningResult> {
+            unreachable!("readiness screens nothing")
+        }
+        async fn screen_address(
+            &self,
+            _address: &str,
+        ) -> x402_compliance::Result<x402_compliance::ScreeningDecision> {
+            unreachable!("readiness screens nothing")
+        }
+        fn is_list_enabled(&self, list_name: &str) -> bool {
+            self.0.as_ref().is_some_and(|m| m.name == list_name)
+        }
+        fn list_metadata(&self) -> HashMap<String, ListMetadata> {
+            self.0.iter().map(|m| (m.name.clone(), m.clone())).collect()
+        }
+        async fn reload_lists(&mut self) -> x402_compliance::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// The OFAC list's metadata, generated at `generated_unix` (`None`: the
+    /// file carries no date that parses).
+    fn ofac_list(generated_unix: Option<u64>) -> ListMetadata {
+        ListMetadata {
+            name: LIST_NAME.to_string(),
+            enabled: true,
+            record_count: 1035,
+            last_updated: None,
+            generated_at: generated_unix
+                .map(|secs| (UNIX_EPOCH + Duration::from_secs(secs)).into()),
+            checksum: None,
+            source_url: String::new(),
+        }
+    }
+
+    const DAY: u64 = 86_400;
+    /// 2026-09-29T00:00:00Z.
+    const NOW: u64 = 1_790_640_000;
+
+    /// Seven days is the limit and not a second more; a list whose age cannot
+    /// be told is not taken for a fresh one.
+    #[test]
+    fn a_sanctions_list_past_its_age_reads_degraded() {
+        let grade = |generated: Option<u64>| {
+            grade_sanctions_list(
+                Some(&ofac_list(generated)),
+                NOW as i64,
+                DEFAULT_SANCTIONS_MAX_AGE_DAYS,
+            )
+        };
+        let fresh = grade(Some(NOW - 7 * DAY));
+        assert_eq!(
+            (fresh.status, fresh.reason, fresh.age_days),
+            (Status::Ok, None, Some(7))
+        );
+        let stale = grade(Some(NOW - 7 * DAY - 1));
+        assert_eq!(
+            (stale.status, stale.reason, stale.age_days),
+            (Status::Degraded, Some("sanctions_list_stale"), Some(7))
+        );
+        // The list shipped until 2026-09-29, generated on 2025-11-16.
+        let shipped = grade(Some(1_763_253_405));
+        assert_eq!(shipped.reason, Some("sanctions_list_stale"));
+        assert_eq!(shipped.age_days, Some(316));
+        for unknown in [None, Some(NOW + 1)] {
+            let report = grade(unknown);
+            assert_eq!(
+                (report.status, report.reason, report.age_days),
+                (Status::Degraded, Some("sanctions_list_age_unknown"), None),
+                "{unknown:?}"
+            );
+        }
+        let missing = grade_sanctions_list(None, NOW as i64, DEFAULT_SANCTIONS_MAX_AGE_DAYS);
+        assert_eq!(
+            (missing.status, missing.reason, missing.records),
+            (Status::Degraded, Some("sanctions_list_not_loaded"), 0)
+        );
+        // The limit is the setting, not the default.
+        let ten_days = ofac_list(Some(NOW - 10 * DAY));
+        assert_eq!(
+            grade_sanctions_list(Some(&ten_days), NOW as i64, 30).status,
+            Status::Ok
+        );
+    }
+
+    #[test]
+    fn the_sanctions_age_limit_is_a_setting_within_range() {
+        const VAR: &str = "HEALTH_READY_SANCTIONS_MAX_AGE_DAYS";
+        assert_eq!(vars(&[]).sanctions_max_age_days, 7);
+        assert_eq!(vars(&[(VAR, "30")]).sanctions_max_age_days, 30);
+        for garbage in ["0", "366", "a week", "-1"] {
+            assert_eq!(
+                vars(&[(VAR, garbage)]).sanctions_max_age_days,
+                DEFAULT_SANCTIONS_MAX_AGE_DAYS,
+                "{garbage}"
+            );
+        }
+    }
+
+    /// The route says it: with every chain green, a list past its age makes
+    /// the answer `degraded` -- a 200, never the 503 of a chain that cannot
+    /// settle -- and a scoped answer stays that chain's alone.
+    #[tokio::test]
+    async fn a_stale_sanctions_list_degrades_the_answer_not_a_chain() {
+        let rpc = mock_rpc(50_000_000_000_000_000, false).await;
+        let chains = [(Network::Base, rpc.url.as_str())];
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+
+        let fresh = ListOnly(Some(ofac_list(Some(now - DAY))));
+        let (router, _) = router_for_with(&chains, config(), Some(fresh)).await;
+        let (code, body, _) = get(&router, "/health/ready").await;
+        assert_eq!(code, StatusCode::OK, "{body}");
+        assert_eq!(body["status"], "ok", "{body}");
+        let list = &body["sanctionsList"];
+        assert_eq!(list["list"], "OFAC_SDN", "{body}");
+        assert_eq!(list["status"], "ok", "{body}");
+        assert_eq!(list["ageDays"], 1, "{body}");
+        assert_eq!(list["maxAgeDays"], 7, "{body}");
+        assert_eq!(list["records"], 1035, "{body}");
+        assert!(list.get("reason").is_none(), "{body}");
+
+        let stale = ListOnly(Some(ofac_list(Some(now - 8 * DAY))));
+        let (router, _) = router_for_with(&chains, config(), Some(stale)).await;
+        let (code, body, _) = get(&router, "/health/ready").await;
+        assert_eq!(code, StatusCode::OK, "{body}");
+        assert_eq!(body["status"], "degraded", "{body}");
+        assert_eq!(body["networks"][0]["status"], "ok", "{body}");
+        assert_eq!(body["summary"]["degraded"], 0, "{body}");
+        let list = &body["sanctionsList"];
+        assert_eq!(list["status"], "degraded", "{body}");
+        assert_eq!(list["reason"], "sanctions_list_stale", "{body}");
+        assert_eq!(list["ageDays"], 8, "{body}");
+
+        let (code, body, _) = get(&router, "/health/ready?network=base").await;
+        assert_eq!(code, StatusCode::OK, "{body}");
+        assert_eq!(body["status"], "ok", "scoped to the chain: {body}");
+        assert_eq!(body["sanctionsList"]["reason"], "sanctions_list_stale");
+
+        let (router, _) = router_for_with(&chains, config(), Some(ListOnly(None))).await;
+        let (code, body, _) = get(&router, "/health/ready").await;
+        assert_eq!(code, StatusCode::OK, "{body}");
+        assert_eq!(body["status"], "degraded", "{body}");
+        assert_eq!(
+            body["sanctionsList"]["reason"], "sanctions_list_not_loaded",
+            "{body}"
+        );
     }
 
     /// `?network=` scopes the verdict: a testnet asked for by name can be the

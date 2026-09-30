@@ -924,6 +924,9 @@ mod tests {
 
     #[test]
     fn test_is_escrow_enabled() {
+        let _flags = crate::payment_operator::test_rpc::ESCROW_FLAGS
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         // Default should be disabled
         env::remove_var("ENABLE_ESCROW");
         assert!(!is_escrow_enabled());

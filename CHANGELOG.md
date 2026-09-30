@@ -1,5 +1,11 @@
 # Changelog
 
+## [2.46.1] - 2026-09-29
+
+- `POST /settle`: a successful x402r escrow settle (`escrow` / `commerce`) or `refund`-extension deposit is now kept under its `Idempotency-Key`, as an `exact` settle is: a retry with the same key and body gets the first response back, byte for byte, with `Idempotent-Replayed: true`, and the same key with another body gets `409 idempotency_key_conflict`. Only successes are kept, so a failed settle can still be retried.
+- `POST /settle`: a retry of a successful `exact` settle with the same `Idempotency-Key` and body gets the first response back, byte for byte, with `Idempotent-Replayed: true`. The same holds for responses kept before this release.
+- `SettleResponse` reads the settlement hash under `transaction`, `transactionHash` or `transaction_hash`, and under all three at once, which is how the facilitator writes it; `x402-axum`'s `FacilitatorClient::settle` now reads the facilitator's settle response. A document whose names carry different hashes is refused.
+
 ## [2.46.0] - 2026-09-27
 
 ### `GET /health/ready`: each chain is warned by what its gas costs

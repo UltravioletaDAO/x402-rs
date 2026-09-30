@@ -94,6 +94,37 @@ async fn pre_receipt_cache_preserves_success_and_conflict_without_a_fabricated_r
         StatusCode::CONFLICT
     );
 }
+
+/// A pre-receipt record holds the settle response exactly as it was sent,
+/// with the hash under all three of its names: it replays, byte for byte.
+#[tokio::test]
+async fn a_pre_receipt_record_with_a_transaction_replays_as_it_was_sent() {
+    let settled = SettleResponse {
+        success: true,
+        error_reason: None,
+        payer: MixedAddress::Evm(
+            "0x1111111111111111111111111111111111111111"
+                .parse()
+                .unwrap(),
+        ),
+        transaction: Some(crate::types::TransactionHash::Evm([0x22; 32])),
+        network: Network::ArcTestnet,
+        proof_of_payment: None,
+        extensions: None,
+    };
+    let sent = serde_json::to_string(&settled).unwrap();
+    let old = crate::idempotency_store::IdempotencyRecord {
+        idempotency_key: "before-upgrade-with-tx".into(),
+        request_hash: "original-body".into(),
+        response_json: sent.clone(),
+        expires_at: now() + 60,
+    };
+    let replay = legacy_response(old, "original-body");
+    assert_eq!(replay.status(), StatusCode::OK);
+    assert_eq!(replay.headers()["idempotent-replayed"], "true");
+    let replayed = to_bytes(replay.into_body(), 65536).await.unwrap();
+    assert_eq!(String::from_utf8_lossy(&replayed), sent);
+}
 pub(super) fn fixture_record() -> Record {
     fixture_record_on("arc-testnet", ARC_USDC)
 }

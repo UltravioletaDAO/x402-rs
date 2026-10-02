@@ -228,17 +228,51 @@ pub async fn safe_post_json(
     url: &Url,
     body: String,
 ) -> Result<reqwest::Response, SecurityReject> {
-    safe_request(user_agent, timeout, url, Some(body)).await
+    safe_send_json(user_agent, timeout, url, reqwest::Method::POST, body).await
 }
 
-/// Shared implementation for [`safe_get`] / [`safe_post_json`]: `body = None`
-/// issues a GET, `Some(json)` issues a POST with `content-type: application/json`.
+/// [`safe_post_json`] with the method named: the health prober sends the
+/// method a listing declares (POST, PUT or PATCH), and it gets exactly the
+/// connector a GET gets -- the same checks on every hop, the same timeout.
+pub async fn safe_send_json(
+    user_agent: &str,
+    timeout: Duration,
+    url: &Url,
+    method: reqwest::Method,
+    body: String,
+) -> Result<reqwest::Response, SecurityReject> {
+    safe_request(user_agent, timeout, url, Some((method, body))).await
+}
+
+/// The request one hop sends: a bare GET, or `method` with a JSON body and its
+/// `content-type`. Nothing else is attached -- in particular no payment header.
+///
+/// `pub(crate)` so the prober's loopback tests build their requests here too,
+/// and so test the shape production sends rather than a copy of it.
+pub(crate) fn json_request(
+    client: &reqwest::Client,
+    url: &Url,
+    body: Option<&(reqwest::Method, String)>,
+) -> reqwest::RequestBuilder {
+    match body {
+        None => client.get(url.clone()),
+        Some((method, b)) => client
+            .request(method.clone(), url.clone())
+            .header(reqwest::header::CONTENT_TYPE, "application/json")
+            .body(b.clone()),
+    }
+}
+
+/// Shared implementation for [`safe_get`] / [`safe_send_json`]: `body = None`
+/// issues a GET, `Some((method, json))` issues `method` with
+/// `content-type: application/json`.
 async fn safe_request(
     user_agent: &str,
     timeout: Duration,
     url: &Url,
-    body: Option<String>,
+    body: Option<(reqwest::Method, String)>,
 ) -> Result<reqwest::Response, SecurityReject> {
+    let mut body = body;
     let mut current = url.clone();
     for _hop in 0..=MAX_REDIRECTS {
         let addrs = check_url_target(&current).await?;
@@ -255,14 +289,7 @@ async fn safe_request(
             .build()
             .map_err(|e| SecurityReject::Http(e.to_string()))?;
 
-        let req = match body.as_ref() {
-            None => client.get(current.clone()),
-            Some(b) => client
-                .post(current.clone())
-                .header(reqwest::header::CONTENT_TYPE, "application/json")
-                .body(b.clone()),
-        };
-        let resp = req
+        let resp = json_request(&client, &current, body.as_ref())
             .send()
             .await
             .map_err(|e| SecurityReject::Http(e.to_string()))?;
@@ -277,12 +304,55 @@ async fn safe_request(
             let next = current
                 .join(location)
                 .map_err(|e| SecurityReject::Parse(e.to_string()))?;
-            current = next;
-            continue;
+            match redirect_hop(resp.status().as_u16(), url, next, body) {
+                Some((to, carried)) => {
+                    current = to;
+                    body = carried;
+                    continue;
+                }
+                // Not followed: the redirect itself is the answer.
+                None => return Ok(resp),
+            }
         }
         return Ok(resp);
     }
     Err(SecurityReject::TooManyRedirects(MAX_REDIRECTS))
+}
+
+/// Where a redirect takes a request, and with what -- or `None` when it is not
+/// followed.
+///
+/// A GET follows any hop that passes the checks, as it always has. A request
+/// carrying a body is a different matter, because the body is somebody else's
+/// (a listing's example) and the hop is chosen by the server we are talking
+/// to: following a 307 across hosts would let any origin aim our POST, with a
+/// stranger's JSON in it, at any third party -- this facilitator included. So:
+///
+/// * 307 / 308 keep the method and the body, and are followed only on the
+///   ORIGINAL request's host;
+/// * 301 / 302 / 303 become a GET without the body (RFC 9110 15.4), which is
+///   no more than `safe_get` would do;
+/// * anything else with a body is not followed.
+pub(crate) fn redirect_hop(
+    status: u16,
+    origin: &Url,
+    to: Url,
+    body: Option<(reqwest::Method, String)>,
+) -> Option<(Url, Option<(reqwest::Method, String)>)> {
+    let Some(body) = body else {
+        return Some((to, None));
+    };
+    match status {
+        307 | 308 => {
+            let same_host = to
+                .host_str()
+                .zip(origin.host_str())
+                .is_some_and(|(a, b)| a.eq_ignore_ascii_case(b));
+            same_host.then_some((to, Some(body)))
+        }
+        301..=303 => Some((to, None)),
+        _ => None,
+    }
 }
 
 /// Redirect policy for a long-lived shared client (the aggregator, which fetches
@@ -544,6 +614,39 @@ mod tests {
         // allowed public literal on 443 passes
         let u = Url::parse("https://93.184.216.34/x").unwrap();
         assert!(check_url_target(&u).await.is_ok());
+    }
+
+    #[test]
+    fn a_body_never_follows_a_redirect_to_another_host() {
+        let origin = Url::parse("https://seller.example/x").unwrap();
+        let same = Url::parse("https://seller.example/x/").unwrap();
+        let ours = Url::parse("https://facilitator.ultravioletadao.xyz/register").unwrap();
+        let body = || Some((reqwest::Method::POST, r#"{"a":1}"#.to_string()));
+        for status in [307u16, 308] {
+            assert_eq!(
+                redirect_hop(status, &origin, same.clone(), body()),
+                Some((same.clone(), body())),
+                "{status} on the same host keeps the method and the body"
+            );
+            assert_eq!(
+                redirect_hop(status, &origin, ours.clone(), body()),
+                None,
+                "{status} to another host is not followed with a body"
+            );
+        }
+        for status in [301u16, 302, 303] {
+            assert_eq!(
+                redirect_hop(status, &origin, ours.clone(), body()),
+                Some((ours.clone(), None)),
+                "{status} becomes a GET without the body"
+            );
+        }
+        assert_eq!(redirect_hop(300, &origin, same.clone(), body()), None);
+        // A GET follows as it always did.
+        assert_eq!(
+            redirect_hop(307, &origin, ours.clone(), None),
+            Some((ours.clone(), None))
+        );
     }
 
     #[test]

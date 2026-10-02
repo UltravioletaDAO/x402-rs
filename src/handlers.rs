@@ -2252,6 +2252,7 @@ pub fn discovery_admin_routes() -> Router<Arc<DiscoveryRegistry>> {
         )
         .route("/discovery/admin/suppress", post(post_discovery_suppress))
         .route("/discovery/admin/release", post(post_discovery_release))
+        .route("/discovery/admin/pending", get(get_discovery_pending))
         .route("/discovery/refresh", post(post_discovery_refresh))
 }
 
@@ -2550,6 +2551,33 @@ pub async fn post_discovery_release(
         Json(json!({"success": true, "url": body.url, "suppressed": false, "changed": changed})),
     )
         .into_response()
+}
+
+/// `GET /discovery/admin/pending?limit=&offset=`: everything the Bazaar does
+/// NOT expose -- every listing that is not verified alive -- with its health,
+/// for operating the prober. Public routes serve verified alive only and no
+/// parameter widens them; this is the one way to see the rest, behind the
+/// curation token like the other admin routes (404 when it is unset). The
+/// numbers are parsed after authentication and a malformed one falls back to
+/// its default, so nothing about the query can answer for a disabled surface.
+#[instrument(skip_all)]
+pub async fn get_discovery_pending(
+    State(registry): State<Arc<DiscoveryRegistry>>,
+    headers: axum::http::HeaderMap,
+    Query(q): Query<std::collections::HashMap<String, String>>,
+) -> impl IntoResponse {
+    if let Some(r) = admin_reject(admin_auth(&headers, BAZAAR_ADMIN_TOKEN_VAR)) {
+        return r;
+    }
+    let number = |key: &str, default: u32| {
+        q.get(key)
+            .and_then(|v| v.parse::<u32>().ok())
+            .unwrap_or(default)
+    };
+    let response = registry
+        .list_pending(number("limit", 100), number("offset", 0))
+        .await;
+    (StatusCode::OK, Json(response)).into_response()
 }
 
 /// `GET /discovery/attestation/{hash}`: serve a hosted ERC-8004 attestation
@@ -16321,6 +16349,68 @@ mod erc8004_admin_gate_tests {
         let status = status_with(gated_router(), Some("bazaar-only-token")).await;
         std::env::remove_var(BAZAAR_ADMIN_TOKEN_VAR);
         assert_eq!(status, StatusCode::NOT_FOUND);
+    }
+
+    /// `GET /discovery/admin/pending`, the one window on what the Bazaar does
+    /// not expose, sits behind the curation token: absent while it is unset,
+    /// 401 without it, the pending records with it. Here because it shares
+    /// this module's lock on the process environment with the test above.
+    #[tokio::test]
+    async fn the_pending_queue_is_behind_the_bazaar_token() {
+        let _guard = ADMIN_ENV.lock().unwrap_or_else(|e| e.into_inner());
+        let registry = Arc::new(DiscoveryRegistry::new());
+        let listing = json!({
+            "resource": "https://seller.example/pending",
+            "type": "http",
+            "x402Version": 2,
+            "description": "never probed",
+            "accepts": [{
+                "scheme": "exact",
+                "network": "eip155:8453",
+                "asset": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+                "amount": "1000",
+                "payTo": "0x3333333333333333333333333333333333333333",
+                "maxTimeoutSeconds": 300
+            }]
+        });
+        let (mut imported, _) = crate::discovery_aggregator::convert_resources(
+            vec![serde_json::from_value(listing).unwrap()],
+            "coinbase",
+        );
+        registry.register(imported.remove(0)).await.unwrap();
+        let get = |bearer: Option<&str>| {
+            let mut builder = Request::builder()
+                .method("GET")
+                .uri("/discovery/admin/pending?limit=5");
+            if let Some(token) = bearer {
+                builder = builder.header(
+                    axum::http::header::AUTHORIZATION,
+                    format!("Bearer {}", token),
+                );
+            }
+            discovery_admin_routes()
+                .with_state(Arc::clone(&registry))
+                .oneshot(builder.body(Body::empty()).unwrap())
+        };
+
+        std::env::remove_var(BAZAAR_ADMIN_TOKEN_VAR);
+        let unset = get(Some("bazaar-only-token")).await.unwrap().status();
+        std::env::set_var(BAZAAR_ADMIN_TOKEN_VAR, "bazaar-only-token");
+        let without = get(None).await.unwrap().status();
+        let with = get(Some("bazaar-only-token")).await.unwrap();
+        std::env::remove_var(BAZAAR_ADMIN_TOKEN_VAR);
+
+        assert_eq!(unset, StatusCode::NOT_FOUND);
+        assert_eq!(without, StatusCode::UNAUTHORIZED);
+        assert_eq!(with.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(with.into_body(), 64 * 1024)
+            .await
+            .unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(body["pagination"]["total"], 1);
+        assert_eq!(body["items"][0]["url"], "https://seller.example/pending");
+        // And the public listing does not show it.
+        assert_eq!(registry.list(10, 0, None).await.pagination.total, 0);
     }
 
     /// Authentication runs BEFORE the writer lease.

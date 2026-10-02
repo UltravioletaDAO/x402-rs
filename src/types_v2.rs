@@ -1143,6 +1143,17 @@ pub enum HealthStatus {
     Unprobeable,
 }
 
+/// Why a resource is quarantined. Response-facing as `health.quarantineReason`,
+/// so a reader can tell a dead endpoint from one whose payment was redirected.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum QuarantineReason {
+    /// Consecutive fail-class probes (404/410/5xx/unreachable).
+    FailStreak,
+    /// A live 402 paid a recipient the listing never declared: a hijack signal.
+    PayToDrift,
+}
+
 /// Response-facing health snapshot for a resource. Set on list responses from
 /// the health overlay; never persisted onto the resource in S3.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1155,6 +1166,28 @@ pub struct HealthState {
     pub http_status: Option<u16>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub latency_ms: Option<u64>,
+    /// Share of the `probeCount` probes recorded for this URL that found it up
+    /// (alive, auth-gated or degraded), in basis points: 9977 = 99.77%. The
+    /// number the uptime attestation publishes, per listing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub uptime_bps: Option<u16>,
+    /// How many probes `uptimeBps` is over.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub probe_count: Option<u64>,
+    /// HTTP method of the last probe (`GET`, `POST`, `PUT`, `PATCH`): the one
+    /// the listing declares, or the one the fallback found answering. Absent
+    /// for MCP endpoints and for records older than method-aware probing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub probe_method: Option<String>,
+    /// Why the resource is quarantined; present only while `status` is
+    /// `quarantined`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quarantine_reason: Option<QuarantineReason>,
+    /// When the last probe -- with the request the listing declares, or the
+    /// one its fallback found -- read a valid x402 challenge in a 402. Absent
+    /// when the last probe did not.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verified_at: Option<u64>,
 }
 
 /// Curated tier of a resource (WS-C). Orders the listing:

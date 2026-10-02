@@ -1,5 +1,74 @@
 # Changelog
 
+## [2.47.0] - 2026-10-02
+
+### Changed
+
+- **The Bazaar exposes only what is verified alive.** `GET /discovery/resources`,
+  `GET /discovery/stats`, the `/bazaar` page and the uptime attestation now
+  cover only listings whose last probe, made with the request the listing
+  declares, read a valid x402 challenge in a 402 within the observed-terms
+  freshness window, and that are not quarantined. Auth-gated, degraded,
+  quarantined, unprobeable and never-probed listings are no longer listed or
+  counted anywhere public, and no parameter lists them (`health` can only
+  narrow). They stay in the catalog and keep being probed; the first probe that
+  verifies one promotes it. Every listing served is `alive`, and `stats.visible`
+  equals a full offset walk of the default listing. MCP endpoints, whose probe is
+  a handshake that reads no challenge, are not exposed.
+- The `/bazaar` page shows one number, the listings verified alive, and drops the
+  health filter, the "Listed" tier and the catalog health, sources, networks and
+  tiers sections. Featured products appear only while one of their listings is
+  verified alive.
+- An alive listing is re-probed before its verification leaves the window. A
+  record written before this release keeps its listing on the reading the
+  observed-terms overlay took in the same probe, and is re-probed at once.
+- **The Bazaar health prober asks each listing the way the listing says it is
+  called.** The method comes from the `bazaar` extension
+  (`info.input.method`, else the schema's method, else POST when a body is
+  declared), and for a listing that declares nothing, from the `resource.method`
+  of its own 402. A body method is sent `{}` first; the listing's own JSON
+  example (at most 8 KiB) only when `{}` gets a 400 or 422. A listing that
+  declares nothing is probed with GET plus one POST `{}` when the GET answers
+  405, 400 or 404, and the method that answered is remembered. Still unpaid: no
+  payment header, nothing from the listing in the URL or the headers, and our
+  own origin -- or a prefix whose owner opts out in `probeGetOnly` of
+  `config/bazaar_curation.json` -- only ever gets a GET. Until now every listing
+  got a GET, so a POST-only service answering 405 or 404 was shown as
+  auth-gated or hidden as quarantined; an external router measured 14 of 18
+  sampled auth-gated and 15 of 25 quarantined listings answering 402 to a POST.
+- At most one extra request per listing per cycle, counted in requests against
+  the per-host cap and the tick's budget, on-demand revalidation included: a
+  probe that may send one reserves two slots. A request carrying a body follows
+  a 307/308 only on its own host; a 301/302/303 becomes a GET without it.
+- A health verdict reached with a different request no longer holds a listing
+  back: the first cycle after the deploy re-probes those listings, and the
+  first 402 to the right request lifts a fail-streak quarantine the GET built.
+  A payTo-drift hold is lifted only by two clean challenges in a row: neither a
+  new request nor an answer that is not a challenge (401, 405, 400) lifts it.
+- A 405 to the method a listing declares reads as degraded rather than
+  auth-gated.
+- The payTo drift check compares every live recipient except a URN: a quote
+  reference such as `urn:x402:agent-pay:see-quote` cannot be paid, and the
+  catalog drops that option at import.
+- A 402 body is read up to 256 KiB; the challenge header still counts past it.
+- Observed terms record the request that drew them (`context.method`).
+
+### Added
+
+- `health.quarantineReason` (`fail_streak` | `pay_to_drift`) while a listing
+  is quarantined, `health.probeMethod`, and `health.uptimeBps` /
+  `health.probeCount` (the figure the uptime attestation publishes). All new
+  optional fields; nothing in the listing is renamed or retyped, and the health
+  vocabulary is unchanged.
+- `health.verifiedAt`, when the last probe read a valid challenge, and
+  `verifiedAlive` in `GET /discovery/stats`.
+- `GET /discovery/admin/pending`: what is not exposed, with its health, behind
+  `BAZAAR_ADMIN_TOKEN` like the other admin routes (404 when it is unset).
+- `scripts/bazaar_probe_churn.py methods`: an offline report, from a local
+  snapshot or the catalog object plus the health overlay, of which listings the
+  change touches; `compare` now splits the probed listings into auth_gated ->
+  alive, quarantined -> visible and unchanged, and `--by-method` per method.
+
 ## [2.46.1] - 2026-09-29
 
 - `POST /settle`: a successful x402r escrow settle (`escrow` / `commerce`) or `refund`-extension deposit is now kept under its `Idempotency-Key`, as an `exact` settle is: a retry with the same key and body gets the first response back, byte for byte, with `Idempotent-Replayed: true`, and the same key with another body gets `409 idempotency_key_conflict`. Only successes are kept, so a failed settle can still be retried.

@@ -382,8 +382,10 @@ fn import_verdict(incoming: &DiscoveryResource, existing: &DiscoveryResource) ->
 
 /// Why this resource's price cannot be established by probing it.
 ///
-/// The prober issues one kind of request: an unauthenticated `GET` of the
-/// listing URL. Anything else is a different purchase, and the annex is explicit
+/// The prober issues one kind of request: an unauthenticated request of the
+/// listing URL with the method the listing declares -- a `GET`, or a
+/// `POST`/`PUT`/`PATCH` carrying the listing's own example body -- and never a
+/// payment. Anything else is a different purchase, and the annex is explicit
 /// that we do not fire a seller's real commercial operation to find out what it
 /// charges. So a resource that cannot be answered that way is reported as
 /// unverifiable rather than queued forever or, worse, probed anyway.
@@ -753,9 +755,14 @@ impl DiscoveryRegistry {
         *self.stats_cache.write().await = None;
     }
 
-    /// Aggregate catalog metrics for `GET /discovery/stats`, served from a
-    /// 60-second in-process cache: the computation is a full pass over the
-    /// catalog, and this route is public and unauthenticated.
+    /// Aggregate metrics for `GET /discovery/stats`, served from a 60-second
+    /// in-process cache: the computation is a full pass over the catalog, and
+    /// this route is public and unauthenticated.
+    ///
+    /// Every count is over what is EXPOSED -- verified alive, see
+    /// [`Self::is_exposed`] -- like every other public surface: `total`,
+    /// `visible` and `verifiedAlive` are the same number, and it is exactly what
+    /// a full offset walk of the default `GET /discovery/resources` returns.
     pub async fn stats(&self) -> serde_json::Value {
         const TTL_SECS: u64 = 60;
         let now = now_secs();
@@ -769,7 +776,9 @@ impl DiscoveryRegistry {
         // Snapshot the overlays before taking the resources guard (no awaits
         // while it is held).
         let health = self.health.snapshot().await;
+        let observed = self.terms.snapshot().await;
         let suppressed = self.suppressed_snapshot().await;
+        let window = crate::discovery_terms::freshness_window_secs();
 
         let mut by_source: HashMap<String, u64> = HashMap::new();
         let mut by_facilitator: HashMap<String, u64> = HashMap::new();
@@ -784,6 +793,11 @@ impl DiscoveryRegistry {
                 if self.curation.is_suppressed(&r.url)
                     || suppressed.contains(&Self::suppression_key(r.url.as_str()))
                 {
+                    continue;
+                }
+                // The same exposure `list()` applies, so `visible` is exactly
+                // what a full offset walk of the default listing returns.
+                if !self.is_exposed(r, &health, &observed, now, window) {
                     continue;
                 }
                 total += 1;
@@ -819,6 +833,7 @@ impl DiscoveryRegistry {
         let payload = serde_json::json!({
             "total": total,
             "visible": visible,
+            "verifiedAlive": visible,
             "bySource": by_source,
             "bySourceFacilitator": by_facilitator,
             "byNetwork": by_network,
@@ -828,6 +843,91 @@ impl DiscoveryRegistry {
         });
         *self.stats_cache.write().await = Some((now, payload.clone()));
         payload
+    }
+
+    /// Whether `r` leaves this registry at all: **verified alive**
+    /// ([`crate::discovery_health::is_verified_alive`]) against the request its
+    /// listing declares. The one rule every public surface applies -- the
+    /// listing, the stats, the page that reads them. Everything else stays here,
+    /// probed with the right request until a valid 402 promotes it.
+    fn is_exposed(
+        &self,
+        r: &DiscoveryResource,
+        health: &HashMap<String, HealthState>,
+        observed: &HashMap<String, crate::discovery_terms::ObservedTerms>,
+        now: u64,
+        window: u64,
+    ) -> bool {
+        let Some(state) = health.get(r.url.as_str()) else {
+            return false;
+        };
+        let request = crate::discovery_health::probe_request(
+            &r.url,
+            r.extensions.as_ref(),
+            self.curation.probes_get_only(&r.url),
+        );
+        let observed_at = observed.get(r.url.as_str()).map(|t| t.observed_at);
+        crate::discovery_health::is_verified_alive(state, &request, observed_at, now, window)
+    }
+
+    /// The URLs exposed right now. For the capacity rule: a pending record must
+    /// never displace an exposed one when the catalog is trimmed. The trim
+    /// itself (`enforce_capacity`) is being reworked in the same release by the
+    /// per-host cap change, which wires [`Self::exposed_in`] in.
+    #[allow(dead_code)]
+    pub async fn exposed_urls(&self) -> std::collections::HashSet<String> {
+        let health = self.health.snapshot().await;
+        let observed = self.terms.snapshot().await;
+        let resources = self.resources.read().await;
+        self.exposed_in(&resources, &health, &observed)
+    }
+
+    /// The URLs of `resources` that are exposed, for a caller that already
+    /// holds the catalog guard -- trimming and admission do -- with the two
+    /// overlays snapshotted before it took it. Sync, so nothing is awaited
+    /// under the guard.
+    fn exposed_in(
+        &self,
+        resources: &HashMap<String, DiscoveryResource>,
+        health: &HashMap<String, HealthState>,
+        observed: &HashMap<String, crate::discovery_terms::ObservedTerms>,
+    ) -> std::collections::HashSet<String> {
+        let window = crate::discovery_terms::freshness_window_secs();
+        let now = now_secs();
+        resources
+            .values()
+            .filter(|r| self.is_exposed(r, health, observed, now, window))
+            .map(|r| r.url.to_string())
+            .collect()
+    }
+
+    /// What is NOT exposed, with its health, for the admin route only
+    /// (`GET /discovery/admin/pending`): the queue the prober keeps working on.
+    /// Ordered by URL, so a walk by offset is stable.
+    pub async fn list_pending(&self, limit: u32, offset: u32) -> DiscoveryResponse {
+        let health = self.health.snapshot().await;
+        let observed = self.terms.snapshot().await;
+        let window = crate::discovery_terms::freshness_window_secs();
+        let now = now_secs();
+        let resources = self.resources.read().await;
+        let mut pending: Vec<&DiscoveryResource> = resources
+            .values()
+            .filter(|r| !self.is_exposed(r, &health, &observed, now, window))
+            .collect();
+        pending.sort_by(|a, b| a.url.as_str().cmp(b.url.as_str()));
+        let total = pending.len() as u32;
+        let limit = limit.min(100);
+        let items = pending
+            .into_iter()
+            .skip(offset as usize)
+            .take(limit as usize)
+            .map(|r| {
+                let mut c = r.clone();
+                c.health = health.get(r.url.as_str()).cloned();
+                c
+            })
+            .collect();
+        DiscoveryResponse::new(items, Pagination::new(limit, offset, total))
     }
 
     /// Snapshot of every registered resource URL (for the health prober).
@@ -840,23 +940,28 @@ impl DiscoveryRegistry {
             .collect()
     }
 
-    /// Snapshot of probe targets: `(url, resource_type, expected_pay_to)`.
-    /// `expected_pay_to` is the set of recipients currently listed for the
-    /// resource, so the prober can detect a payTo swap in the live 402 body.
-    pub async fn probe_targets(&self) -> Vec<(url::Url, String, Vec<String>)> {
+    /// Snapshot of probe targets: url, resource type, expected payTo, and the
+    /// request the listing declares. `pay_to` is the set of recipients currently
+    /// listed for the resource, so the prober can detect a payTo swap in the
+    /// live 402 body.
+    pub async fn probe_targets(&self) -> Vec<crate::discovery_health::ProbeTarget> {
         self.resources
             .read()
             .await
             .values()
-            .map(|r| {
-                (
-                    r.url.clone(),
-                    r.resource_type.clone(),
-                    r.accepts
-                        .iter()
-                        .map(|a| a.pay_to.to_string().to_ascii_lowercase())
-                        .collect(),
-                )
+            .map(|r| crate::discovery_health::ProbeTarget {
+                url: r.url.clone(),
+                resource_type: r.resource_type.clone(),
+                pay_to: r
+                    .accepts
+                    .iter()
+                    .map(|a| a.pay_to.to_string().to_ascii_lowercase())
+                    .collect(),
+                request: crate::discovery_health::probe_request(
+                    &r.url,
+                    r.extensions.as_ref(),
+                    self.curation.probes_get_only(&r.url),
+                ),
             })
             .collect()
     }
@@ -1189,6 +1294,9 @@ impl DiscoveryRegistry {
                     && !suppressed.contains(&Self::suppression_key(r.url.as_str()))
             })
             .filter(|r| health_visible(&health, r.url.as_str(), health_filter.as_deref()))
+            // Exposure: only what is verified alive leaves this registry. No
+            // parameter widens it; the rest is probed and waits, unseen.
+            .filter(|r| self.is_exposed(r, &health, &observed, now, freshness_window))
             .map(|r| {
                 let alive = health
                     .get(r.url.as_str())
@@ -2049,6 +2157,23 @@ mod tests {
         resource
     }
 
+    /// Give every held record the probe that exposes it -- a readable 402 to
+    /// the request its listing declares. For the tests about what an exposed
+    /// listing SAYS; the ones about whether it is exposed at all probe it.
+    async fn expose_all(registry: &DiscoveryRegistry) {
+        use crate::discovery_health::{ProbeMethod, ProbeRequest};
+        for t in registry.probe_targets().await {
+            let method = match t.request {
+                ProbeRequest::Declared { method, .. } => method,
+                ProbeRequest::Undeclared => ProbeMethod::Get,
+            };
+            registry
+                .health()
+                .mark_verified(t.url.as_str(), method)
+                .await;
+        }
+    }
+
     #[tokio::test]
     async fn test_register_and_get() {
         let registry = DiscoveryRegistry::new();
@@ -2069,6 +2194,7 @@ mod tests {
         let b = create_test_resource("https://other.example.com/weather", None);
         registry.register(a).await.unwrap();
         registry.register(b).await.unwrap();
+        expose_all(&registry).await;
 
         let q = |s: &str| DiscoveryFilters {
             q: Some(s.to_string()),
@@ -2096,6 +2222,7 @@ mod tests {
             .register(create_test_resource(url, None))
             .await
             .unwrap();
+        expose_all(&registry).await;
         assert_eq!(registry.list(10, 0, None).await.pagination.total, 1);
 
         assert!(
@@ -2124,10 +2251,12 @@ mod tests {
             .register(create_test_resource("https://api.example.com/b", None))
             .await
             .unwrap();
+        expose_all(&registry).await;
 
         let s = registry.stats().await;
         assert_eq!(s["total"], 2);
         assert_eq!(s["visible"], 2, "nothing quarantined yet");
+        assert_eq!(s["verifiedAlive"], 2);
         assert_eq!(s["bySource"]["self_registered"], 2);
         // Base is the network used by the test fixture.
         assert_eq!(s["byNetwork"]["eip155:8453"], 2);
@@ -2511,6 +2640,7 @@ mod tests {
                 },
             )
             .await;
+        expose_all(&registry).await;
 
         let listing = registry.list(10, 0, None).await;
         assert_eq!(
@@ -2597,6 +2727,7 @@ mod tests {
                 },
             )
             .await;
+        expose_all(&registry).await;
         let listing = registry.list(10, 0, None).await;
         let item = &listing.items[0];
         assert_eq!(
@@ -2621,6 +2752,7 @@ mod tests {
             .register(create_test_resource(url, None))
             .await
             .unwrap();
+        expose_all(&registry).await;
 
         // Never observed, so `unknown`.
         let listed = registry.list(10, 0, None).await;
@@ -2653,15 +2785,14 @@ mod tests {
         r.resource_type = "mcp".to_string();
         registry.register(r).await.unwrap();
 
-        let listed = registry.list(10, 0, None).await;
+        let held = registry.get(url).await.unwrap();
         assert_eq!(
-            listed.items[0].price_revalidation.as_deref(),
-            Some("not_verifiable")
-        );
-        assert_eq!(
-            listed.items[0].not_verifiable_reason.as_deref(),
+            not_verifiable_reason(&held).map(|r| r.as_str()),
             Some("not-a-get-resource")
         );
+        // The handshake reads no challenge, so nothing verifies an MCP endpoint
+        // alive and none is exposed. Reading it does not queue it either.
+        assert_eq!(registry.list(10, 0, None).await.pagination.total, 0);
         assert!(
             !registry.revalidation().is_pending(url).await,
             "and it is not queued for a probe that could never answer"
@@ -2676,11 +2807,15 @@ mod tests {
             .register(create_test_resource(url, None))
             .await
             .unwrap();
-        let listed = registry.list(10, 0, None).await;
+        let held = registry.get(url).await.unwrap();
         assert_eq!(
-            listed.items[0].not_verifiable_reason.as_deref(),
+            not_verifiable_reason(&held).map(|r| r.as_str()),
             Some("unprobeable")
         );
+        // And, never answering a challenge, it is never exposed: it waits in
+        // the pending queue the admin route reads.
+        assert_eq!(registry.list(10, 0, None).await.pagination.total, 0);
+        assert_eq!(registry.list_pending(10, 0).await.pagination.total, 1);
     }
 
     #[tokio::test]
@@ -2714,6 +2849,7 @@ mod tests {
                 },
             )
             .await;
+        expose_all(&registry).await;
 
         let listed = registry.list(10, 0, None).await;
         assert_eq!(listed.items[0].price_freshness.as_deref(), Some("fresh"));
@@ -2742,6 +2878,7 @@ mod tests {
         assert_eq!(held.content_hash, None);
 
         // The listing answers it from the overlay, where there is nothing.
+        expose_all(&registry).await;
         let listing = registry.list(10, 0, None).await;
         assert_eq!(listing.items[0].price_freshness.as_deref(), Some("unknown"));
         assert_eq!(listing.items[0].terms_observed_at, None);
@@ -2755,6 +2892,7 @@ mod tests {
             .register(create_test_resource("https://api.annotated.com/x", None))
             .await
             .unwrap();
+        expose_all(&registry).await;
 
         let listed = registry.list(10, 0, None).await;
         let option = &listed.items[0].accepts[0];
@@ -2780,6 +2918,7 @@ mod tests {
             .register(create_test_resource("https://api.served.example/x", None))
             .await
             .unwrap();
+        expose_all(&registry).await;
 
         let listed = registry.list(10, 0, None).await;
         let option = &listed.items[0].accepts[0];
@@ -3244,6 +3383,7 @@ mod tests {
             );
             registry.register(resource).await.unwrap();
         }
+        expose_all(&registry).await;
 
         // Get first page
         let page1 = registry.list(2, 0, None).await;
@@ -3289,6 +3429,7 @@ mod tests {
             category: Some("finance".to_string()),
             ..Default::default()
         });
+        expose_all(&registry).await;
 
         let response = registry.list(10, 0, filters).await;
         assert_eq!(response.pagination.total, 2);
@@ -3413,10 +3554,11 @@ mod tests {
         let result = registry.register(resource).await;
         assert!(result.is_ok());
 
-        // Verify it was registered
-        let response = registry.list(10, 0, None).await;
-        assert_eq!(response.items.len(), 1);
-        assert_eq!(response.items[0].resource_type, "facilitator");
+        // Verify it was registered. Held, not exposed: a facilitator answers no
+        // payment challenge, so nothing verifies it alive.
+        let held = registry.get("https://facilitator.example.com/").await;
+        assert_eq!(held.unwrap().resource_type, "facilitator");
+        assert_eq!(registry.list(10, 0, None).await.pagination.total, 0);
     }
 
     // ===================================================================

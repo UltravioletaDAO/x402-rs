@@ -90,8 +90,12 @@ Curated resource discovery for x402-enabled services. Entries carry a discovery 
 a liveness `health` status from periodic probing, and a curated `tier`
 (`first_party` > `vip` > `verified` > `listed`) which also drives listing order.
 
-- `GET /discovery/resources` - List curated resources (filters: category, provider, tag, network, source, sourceFacilitator, q, health, tier; any other parameter is a 400)
-- `GET /discovery/stats` - Aggregate catalog metrics (60s cache)
+Every public Bazaar surface exposes only what is **verified alive**: the last probe, made with
+the request the listing declares, read a valid x402 challenge in a 402 within the observed-terms
+freshness window. Everything else stays in the catalog and keeps being probed, unseen.
+
+- `GET /discovery/resources` - List verified-alive resources (filters: category, provider, tag, network, source, sourceFacilitator, q, health, tier; any other parameter is a 400)
+- `GET /discovery/stats` - Aggregate metrics of what is exposed (60s cache)
 - `GET /bazaar` - HTML Bazaar explorer UI
 - `GET /discovery/attestation/{hash}` - ERC-8004 attestation evidence body
 - `GET /discovery/config` - The tuning this task resolved, and what it is spending
@@ -103,6 +107,7 @@ a liveness `health` status from periodic probing, and a curated `tier`
 - `DELETE /discovery/resources?url=...` - Permanently unregister a resource
 - `POST /discovery/admin/suppress` - Hide a resource from listings without deleting it
 - `POST /discovery/admin/release` - Un-suppress a resource
+- `GET /discovery/admin/pending` - What is not exposed (not verified alive), with its health
 
 ## Errors
 
@@ -272,6 +277,7 @@ constraint rather than as grounds for a `406`.
         path_bazaar_admin_delete,
         path_bazaar_admin_suppress,
         path_bazaar_admin_release,
+        path_bazaar_admin_pending,
         // DX402 durable-evidence
         path_dx402_anchor,
         path_dx402_evidence,
@@ -2253,8 +2259,21 @@ Lists x402-enabled resources known to the curated Bazaar catalog.
 then by liveness (`alive` resources first), then by `lastUpdated` descending. A settlement does
 not reorder the listing: it moves `lastSettledAt`, never `lastUpdated`.
 
-**Health visibility:** when `health` is omitted, quarantined resources are hidden.
-Pass `health=any` to return everything, or a specific status to filter to it.
+**Exposure:** only resources **verified alive** are listed: the last probe, made with the request
+the listing declares, read a valid x402 challenge in a 402 (`health.verifiedAt`), no longer ago
+than the observed-terms freshness window, and the resource is not quarantined. Auth-gated,
+degraded, quarantined, unprobeable and never-probed resources are not listed, and no parameter
+lists them: they stay in the catalog and keep being probed until a challenge promotes them. So
+every listed resource has `health.status` `alive`, and `health` can only narrow what is exposed.
+A full offset walk returns exactly `GET /discovery/stats` `visible`.
+Each resource is probed, unpaid, with the method its `bazaar` extension declares (a body
+method is sent `{}`, and the listing's own example only when `{}` is refused with a 400 or
+422); one that declares none is probed with GET, and with one POST `{}` when that GET answers
+405, 400 or 404. `health.probeMethod` is the method of the last probe. While a resource is
+quarantined, `health.quarantineReason` says why: `fail_streak` (it stopped answering) or
+`pay_to_drift` (its live 402 paid a recipient the listing never declared). `health.uptimeBps`
+is the share of the `health.probeCount` probes recorded for the resource that found it up, in
+basis points.
 
 **Response:**
 ```json
@@ -2316,7 +2335,11 @@ Pass `health=any` to return everything, or a specific status to filter to it.
         "status": "alive",
         "lastChecked": 1784900000,
         "httpStatus": 402,
-        "latencyMs": 240
+        "latencyMs": 240,
+        "uptimeBps": 9977,
+        "probeCount": 1312,
+        "probeMethod": "POST",
+        "verifiedAt": 1784900000
       },
       "curation": {
         "tier": "first_party",
@@ -2332,7 +2355,7 @@ Pass `health=any` to return everything, or a specific status to filter to it.
       }
     }
   ],
-  "pagination": { "limit": 10, "offset": 0, "total": 21195 }
+  "pagination": { "limit": 10, "offset": 0, "total": 1951 }
 }
 ```
 
@@ -2480,7 +2503,7 @@ so `?search=logs` fails loudly and points at `q` instead of quietly returning th
         ("source" = Option<String>, Query, description = "Discovery source: self_registered | settlement | crawled | aggregated"),
         ("sourceFacilitator" = Option<String>, Query, description = "Facilitator the entry was aggregated from (e.g., coinbase, payai, thirdweb)"),
         ("q" = Option<String>, Query, description = "Free-text search over url, description, provider and tags. Max 128 characters (longer returns 400)"),
-        ("health" = Option<String>, Query, description = "Liveness filter: alive | degraded | auth_gated | quarantined | unknown | unprobeable | any. When omitted, quarantined resources are hidden; 'any' returns everything"),
+        ("health" = Option<String>, Query, description = "Liveness filter: alive | degraded | auth_gated | quarantined | unknown | unprobeable | any. It narrows what is exposed and never widens it: only verified-alive resources are listed, so 'alive' and 'any' return them and every other value returns none"),
         ("tier" = Option<String>, Query, description = "Curated tier filter: first_party | vip | verified | listed")
     ),
     responses(
@@ -2520,7 +2543,10 @@ so `?search=logs` fails loudly and points at `q` instead of quietly returning th
                         "status": "alive",
                         "lastChecked": 1784900000,
                         "httpStatus": 402,
-                        "latencyMs": 240
+                        "latencyMs": 240,
+                        "uptimeBps": 9977,
+                        "probeCount": 1312,
+                        "probeMethod": "GET"
                     },
                     "curation": {
                         "tier": "first_party",
@@ -2642,34 +2668,41 @@ async fn path_bazaar_refresh() {}
 Aggregate metrics for the curated Bazaar catalog. Served from a 60-second in-process cache,
 so counters can lag recent registrations or health probes by up to a minute.
 
-- `total` counts every resource in the catalog.
-- `visible` counts the resources returned by the default `GET /discovery/resources` listing
-  (quarantined resources excluded).
+Every count is over what the Bazaar EXPOSES -- resources verified alive, the same set
+`GET /discovery/resources` lists -- like every other public surface; what is not verified alive
+is not counted here either.
+
+- `verifiedAlive` is the number of exposed resources.
+- `visible` and `total` are the same number, kept for the clients that read them: `visible` is
+  exactly what a full offset walk of the default `GET /discovery/resources` returns.
+- The `by*` breakdowns split that same set, so `byHealth` holds only `alive`.
 
 **Response:**
 ```json
 {
-  "total": 21195,
-  "visible": 19263,
-  "bySource": { "aggregated": 21067, "self_registered": 128 },
-  "bySourceFacilitator": { "payai": 19800, "thirdweb": 622, "coinbase": 336 },
-  "byNetwork": { "eip155:8453": 20991, "eip155:1": 56 },
-  "byTier": { "first_party": 10, "vip": 127, "verified": 1814, "listed": 19244 },
-  "byHealth": { "alive": 1814, "quarantined": 1932, "auth_gated": 263, "unknown": 17029 },
+  "total": 1951,
+  "visible": 1951,
+  "verifiedAlive": 1951,
+  "bySource": { "aggregated": 1823, "self_registered": 128 },
+  "bySourceFacilitator": { "payai": 1700, "thirdweb": 75, "coinbase": 48 },
+  "byNetwork": { "eip155:8453": 1930, "eip155:1": 21 },
+  "byTier": { "first_party": 10, "vip": 127, "verified": 1814 },
+  "byHealth": { "alive": 1951 },
   "generatedAt": 1784900000
 }
 ```
 "#,
     responses(
-        (status = 200, description = "Catalog metrics", body = Object,
+        (status = 200, description = "Metrics of the exposed catalog", body = Object,
             example = json!({
-                "total": 21195,
-                "visible": 19263,
-                "bySource": { "aggregated": 21067, "self_registered": 128 },
-                "bySourceFacilitator": { "payai": 19800, "thirdweb": 622, "coinbase": 336 },
-                "byNetwork": { "eip155:8453": 20991, "eip155:1": 56 },
-                "byTier": { "first_party": 10, "vip": 127, "verified": 1814, "listed": 19244 },
-                "byHealth": { "alive": 1814, "quarantined": 1932, "auth_gated": 263, "unknown": 17029 },
+                "total": 1951,
+                "visible": 1951,
+                "verifiedAlive": 1951,
+                "bySource": { "aggregated": 1823, "self_registered": 128 },
+                "bySourceFacilitator": { "payai": 1700, "thirdweb": 75, "coinbase": 48 },
+                "byNetwork": { "eip155:8453": 1930, "eip155:1": 21 },
+                "byTier": { "first_party": 10, "vip": 127, "verified": 1814 },
+                "byHealth": { "alive": 1951 },
                 "generatedAt": 1784900000
             })
         )
@@ -2931,6 +2964,37 @@ Rate limited to roughly 5 requests per minute per IP.
     )
 )]
 async fn path_bazaar_admin_release() {}
+
+#[utoipa::path(
+    get,
+    path = "/discovery/admin/pending",
+    tag = "Bazaar",
+    summary = "Resources not exposed (admin)",
+    description = r#"
+**Admin only.** Every resource the Bazaar does NOT expose -- not verified alive -- with its
+`health`, ordered by URL so an offset walk is stable. The public routes serve verified alive
+only and no parameter widens them; this is the one way to see the rest while the prober works
+on it.
+
+Requires an `Authorization: Bearer <BAZAAR_ADMIN_TOKEN>` header. When the server has no admin
+token configured the whole admin surface is absent and this route returns **404**.
+
+Rate limited like the other admin routes. `limit` is capped at 100.
+
+**Response:** the same shape as `GET /discovery/resources`.
+"#,
+    params(
+        ("limit" = Option<u32>, Query, description = "Page size (default 100, at most 100)"),
+        ("offset" = Option<u32>, Query, description = "Records to skip (default 0)"),
+        ("Authorization" = String, Header, description = "Bearer <BAZAAR_ADMIN_TOKEN>")
+    ),
+    responses(
+        (status = 200, description = "A page of the resources not exposed", body = Object),
+        (status = 401, description = "Missing or invalid bearer token", body = Object),
+        (status = 404, description = "Admin surface disabled (no admin token configured)", body = Object)
+    )
+)]
+async fn path_bazaar_admin_pending() {}
 
 // ============================================================================
 // Compliance Endpoints

@@ -13,10 +13,17 @@
 //! Probe classification:
 //! - `402` -> alive (a live x402 resource).
 //! - `401/403/405/415` -> auth-gated (healthy for its design; e.g. Execution
-//!   Market authenticates before 402, and POST-only endpoints answer 405 to GET).
+//!   Market authenticates before 402).
 //! - `200/201/429` -> degraded (responds, no payment challenge).
 //! - `404/410` / dead / 5xx / DNS-fail -> fail (counts toward quarantine).
 //! - SSRF-refused / template / non-http -> unprobeable.
+//!
+//! The request is the one the listing declares (see [`declared_request`]): a
+//! listing whose `bazaar` extension says `POST` is probed with a POST carrying
+//! its own example body, because a GET to a POST-only endpoint answers 405 or
+//! 404 and says nothing about whether the service is up. A listing that
+//! declares nothing is probed with GET, and gets ONE POST `{}` retry in the same
+//! cycle when that GET answers 405 or 400.
 
 use std::collections::{BTreeMap, HashMap};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -31,12 +38,13 @@ use crate::discovery::DiscoveryRegistry;
 use crate::discovery_price::{
     normalize_declared_option, CatalogPaymentOption, DeclaredPaymentOption,
 };
-use crate::discovery_security::{safe_get, safe_post_json, SecurityReject};
+use crate::discovery_revalidation::RefreshReason;
+use crate::discovery_security::{safe_get, safe_post_json, safe_send_json, SecurityReject};
 use crate::discovery_terms::{
     ObservationContext, ObservationPhase, ObservedTerms, TermsProvenance, TermsTransport,
     TransportReading,
 };
-use crate::types_v2::{HealthState, HealthStatus};
+use crate::types_v2::{HealthState, HealthStatus, QuarantineReason};
 
 /// Consecutive fail-class probes before a resource is quarantined.
 const QUARANTINE_AFTER_FAILS: u32 = 3;
@@ -52,12 +60,416 @@ const MAX_PER_HOST_PER_TICK: usize = 3;
 const PROBE_TIMEOUT: Duration = Duration::from_secs(12);
 /// User-Agent for probes.
 const PROBE_UA: &str = "uvd-bazaar-health/1.0 (+https://facilitator.ultravioletadao.xyz)";
+/// Longest example body the prober will send, serialized.
+///
+/// The body is a third party's, so it is bounded like everything else a
+/// listing hands us. Past this the probe still goes out with the declared
+/// method, carrying [`EMPTY_JSON_BODY`] -- the same body a listing that
+/// declares no example gets. Never truncated: half a JSON document is not a
+/// smaller one.
+const MAX_PROBE_BODY_BYTES: usize = 8 * 1024;
+/// The body of a body-method probe with no usable example.
+const EMPTY_JSON_BODY: &str = "{}";
+/// Most of a 402 response body the prober reads; see [`read_capped`].
+const MAX_PROBE_RESPONSE_BYTES: usize = 256 * 1024;
 
 fn now_secs() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0)
+}
+
+/// An HTTP method the prober sends.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProbeMethod {
+    Get,
+    Post,
+    Put,
+    Patch,
+}
+
+impl ProbeMethod {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ProbeMethod::Get => "GET",
+            ProbeMethod::Post => "POST",
+            ProbeMethod::Put => "PUT",
+            ProbeMethod::Patch => "PATCH",
+        }
+    }
+
+    /// Read a method as a listing declares it (or as a health record stored
+    /// it). Case and surrounding whitespace are not significant.
+    ///
+    /// `HEAD` and `DELETE` probe as `GET`: a HEAD carries no challenge body to
+    /// read, and the prober never sends a DELETE to somebody else's endpoint.
+    /// Anything else is not a declaration we can act on.
+    fn parse(raw: &str) -> Option<Self> {
+        match raw.trim().to_ascii_uppercase().as_str() {
+            "GET" | "HEAD" | "DELETE" => Some(ProbeMethod::Get),
+            "POST" => Some(ProbeMethod::Post),
+            "PUT" => Some(ProbeMethod::Put),
+            "PATCH" => Some(ProbeMethod::Patch),
+            _ => None,
+        }
+    }
+
+    fn to_reqwest(self) -> reqwest::Method {
+        match self {
+            ProbeMethod::Get => reqwest::Method::GET,
+            ProbeMethod::Post => reqwest::Method::POST,
+            ProbeMethod::Put => reqwest::Method::PUT,
+            ProbeMethod::Patch => reqwest::Method::PATCH,
+        }
+    }
+}
+
+/// The request a listing declares, as far as the prober honours it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ProbeRequest {
+    /// The listing declares a method: the probe uses exactly that one. A body
+    /// method is sent `{}` first; `example` -- the listing's own example body,
+    /// when it declared a usable one -- only when `{}` is refused with a 400 or
+    /// a 422. Always `None` for GET.
+    Declared {
+        method: ProbeMethod,
+        example: Option<String>,
+    },
+    /// No usable declaration. GET -- or the method this origin's own challenge
+    /// or the fallback last named -- with ONE retry by the other method. See
+    /// [`probe_listing`].
+    Undeclared,
+}
+
+impl ProbeRequest {
+    /// Request slots one probe of this request may spend on its host: 2 when
+    /// it can send an extra request in the same cycle, else 1. The scheduler
+    /// reserves them up front, so the extra request counts against
+    /// [`MAX_PER_HOST_PER_TICK`] like any other and is never starved of it.
+    fn slots(&self) -> usize {
+        match self {
+            ProbeRequest::Undeclared
+            | ProbeRequest::Declared {
+                example: Some(_), ..
+            } => 2,
+            ProbeRequest::Declared { .. } => 1,
+        }
+    }
+}
+
+/// One catalog resource, as the prober sees it.
+#[derive(Debug, Clone)]
+pub struct ProbeTarget {
+    pub url: url::Url,
+    pub resource_type: String,
+    /// Recipients the listing declares, lowercased: the payTo drift baseline.
+    pub pay_to: Vec<String>,
+    /// The request the listing declares.
+    pub request: ProbeRequest,
+}
+
+impl ProbeTarget {
+    /// Request slots one probe of this target may spend on its host. The MCP
+    /// handshake is always one request.
+    fn slots(&self) -> usize {
+        if self.resource_type == "mcp" {
+            1
+        } else {
+            self.request.slots()
+        }
+    }
+}
+
+/// Choose this tick's probes: the demanded ones first, then the periodic
+/// sweep. Every one is admitted against its host's request slots ([`admit`])
+/// and against the tick's budget, and both are counted in REQUESTS -- a probe
+/// that may send an extra one spends two -- so neither the per-host cap nor
+/// `DISCOVERY_HEALTH_MAX_RPS` is exceeded by the fallback.
+///
+/// Returns the probes to run, and the demanded ones that did not fit, for the
+/// revalidation queue to hand back next tick rather than lose.
+fn plan_tick(
+    tracker: &HealthTracker,
+    targets: Vec<ProbeTarget>,
+    demanded: Vec<(ProbeTarget, RefreshReason)>,
+    max_per_tick: usize,
+    now: u64,
+) -> (Vec<ProbeTarget>, Vec<(String, RefreshReason)>) {
+    let mut per_host: HashMap<String, usize> = HashMap::new();
+    let mut spent = 0usize;
+    let mut due = Vec::new();
+    let mut overflow = Vec::new();
+    let mut taken = std::collections::HashSet::new();
+    for (target, reason) in demanded {
+        taken.insert(target.url.to_string());
+        if spent + target.slots() <= max_per_tick && admit(&mut per_host, &target) {
+            spent += target.slots();
+            due.push(target);
+        } else {
+            overflow.push((target.url.to_string(), reason));
+        }
+    }
+    for target in targets {
+        if spent >= max_per_tick {
+            break;
+        }
+        if taken.contains(target.url.as_str()) || !tracker_due(tracker, &target, now) {
+            continue;
+        }
+        if spent + target.slots() > max_per_tick || !admit(&mut per_host, &target) {
+            continue;
+        }
+        spent += target.slots();
+        due.push(target);
+    }
+    (due, overflow)
+}
+
+/// Whether a listing is **verified alive** -- the only thing the Bazaar exposes.
+///
+/// All of it, or nothing:
+/// * its last probe answered `alive` (not quarantined for any reason, not
+///   auth-gated, degraded, unprobeable or never probed);
+/// * that probe read a valid x402 challenge in a 402 and passed the drift
+///   check (`verifiedAt`), within the observed-terms freshness window;
+/// * and it was the RIGHT request: the method the listing declares, or -- for a
+///   listing that declares none -- whichever the probe sent (GET, or what the
+///   fallback found). A POST-only listing that answered a GET does not count.
+///
+/// `observed_at` is when the observed-terms overlay last read this listing's
+/// challenge; it only matters for a record from before `verifiedAt` existed
+/// ([`legacy_verified_at`]).
+pub fn is_verified_alive(
+    state: &HealthState,
+    request: &ProbeRequest,
+    observed_at: Option<u64>,
+    now: u64,
+    window: u64,
+) -> bool {
+    let verified_at = state
+        .verified_at
+        .or_else(|| legacy_verified_at(state, observed_at));
+    if !verified_recently(state.status, verified_at, now, window) {
+        return false;
+    }
+    match request {
+        ProbeRequest::Declared { method, .. } => {
+            state
+                .probe_method
+                .as_deref()
+                .and_then(ProbeMethod::parse)
+                .unwrap_or(ProbeMethod::Get)
+                == *method
+        }
+        ProbeRequest::Undeclared => true,
+    }
+}
+
+/// Alive, and verified by a challenge no older than `window`.
+fn verified_recently(
+    status: HealthStatus,
+    verified_at: Option<u64>,
+    now: u64,
+    window: u64,
+) -> bool {
+    status == HealthStatus::Alive && verified_at.is_some_and(|t| now.saturating_sub(t) <= window)
+}
+
+/// Most seconds between a probe and the observation it recorded. Both are
+/// stamped inside one `probe_and_record`, a few awaits apart.
+const LEGACY_OBSERVATION_SLACK_SECS: u64 = 60;
+
+/// The verification a record written before `verifiedAt` existed can still
+/// show, so a deploy does not empty the catalog until each record is probed
+/// again.
+///
+/// Such a record (no `verifiedAt`, no method: every probe then was a GET)
+/// said `alive` for any 402, readable or not. The observed-terms overlay tells
+/// the two apart: a challenge is recorded there only when it could be read,
+/// and by the same probe, so its `observedAt` sits beside `lastChecked`. One
+/// recorded long before or after belongs to another probe and proves nothing
+/// about this one. A drift is not a risk here: it quarantines, and only
+/// `alive` is ever exposed.
+///
+/// Read-only, so every replica agrees the moment it loads both overlays. It
+/// lasts one probe: [`tracker_due`] probes these records at once, and that
+/// probe records a method and its own `verifiedAt`, which ends this.
+pub fn legacy_verified_at(state: &HealthState, observed_at: Option<u64>) -> Option<u64> {
+    if state.verified_at.is_some()
+        || state.probe_method.is_some()
+        || state.status != HealthStatus::Alive
+        || state.http_status != Some(402)
+    {
+        return None;
+    }
+    let (checked, seen) = (state.last_checked?, observed_at?);
+    (checked.abs_diff(seen) <= LEGACY_OBSERVATION_SLACK_SECS).then_some(seen)
+}
+
+/// When an alive record is probed again: the healthy cadence, but never later
+/// than its verification would expire. Exposure needs a verification no older
+/// than the observed-terms window, so the re-probe lands inside it, with an
+/// eighth of the window to spare for a full tick or a host at its cap.
+fn alive_reprobe_secs() -> u64 {
+    let window = crate::discovery_terms::freshness_window_secs();
+    HEALTHY_REPROBE_SECS
+        .min(window.saturating_sub(window / 8))
+        .max(1)
+}
+
+/// Take `target`'s request slots on its host for this tick, if they fit under
+/// [`MAX_PER_HOST_PER_TICK`].
+///
+/// A target that may send an extra request reserves two up front, so the
+/// fallback counts against the per-host cap like any other request -- and,
+/// reserved before the probe rather than asked for during it, is never left
+/// without room by the host's other listings.
+fn admit(per_host: &mut HashMap<String, usize>, target: &ProbeTarget) -> bool {
+    let host = target.url.host_str().unwrap_or_default().to_string();
+    let used = per_host.entry(host).or_insert(0);
+    if *used + target.slots() > MAX_PER_HOST_PER_TICK {
+        return false;
+    }
+    *used += target.slots();
+    true
+}
+
+/// Read the request a listing declares from its `bazaar` extension.
+///
+/// The method, from the first of these that names one:
+///
+/// 1. `extensions.bazaar.info.input.method` -- the x402 Bazaar spelling, and
+///    what the Coinbase feed carries;
+/// 2. the extension's JSON Schema: `schema.properties.input.method` (the HTTP
+///    shape `uvd-x402-sdk` writes) or the `const` / first `enum` value of
+///    `schema.properties.input.properties.method`;
+/// 3. POST, when either half declares a body (`body` or `bodyType`) without a
+///    method -- the body shape `uvd-x402-sdk` writes, and MeshRelay's.
+///
+/// The `resource.method` an origin puts in its own 402 is never in the catalog
+/// record; the prober learns it from the live challenge instead (see
+/// [`probe_and_record`]).
+///
+/// Only the method and the example body are used. The input also declares
+/// `queryParams` and `headers`, and they are ignored on purpose: the listing is
+/// a third party, and nothing it says goes into the URL or the headers we send.
+/// The example must be JSON and at most [`MAX_PROBE_BODY_BYTES`] serialized,
+/// or there is none.
+pub fn declared_request(extensions: Option<&serde_json::Value>) -> ProbeRequest {
+    let bazaar = extensions.and_then(|e| e.get("bazaar"));
+    let info_input = bazaar
+        .and_then(|b| b.get("info"))
+        .and_then(|i| i.get("input"));
+    let schema_input = bazaar
+        .and_then(|b| b.get("schema"))
+        .and_then(|s| s.get("properties"))
+        .and_then(|p| p.get("input"));
+    let method = info_input
+        .and_then(|i| i.get("method"))
+        .and_then(|m| m.as_str())
+        .and_then(ProbeMethod::parse)
+        .or_else(|| schema_input.and_then(schema_method))
+        .or_else(|| declares_body(info_input, schema_input).then_some(ProbeMethod::Post));
+    match method {
+        None => ProbeRequest::Undeclared,
+        Some(ProbeMethod::Get) => ProbeRequest::Declared {
+            method: ProbeMethod::Get,
+            example: None,
+        },
+        Some(method) => ProbeRequest::Declared {
+            method,
+            example: info_input.and_then(example_body),
+        },
+    }
+}
+
+/// The method a JSON Schema input declares: the plain `method` of the SDK's
+/// HTTP shape, or the `const` / first `enum` value of `properties.method`.
+fn schema_method(schema_input: &serde_json::Value) -> Option<ProbeMethod> {
+    if let Some(m) = schema_input.get("method").and_then(|m| m.as_str()) {
+        return ProbeMethod::parse(m);
+    }
+    let method = schema_input.get("properties")?.get("method")?;
+    method
+        .get("const")
+        .and_then(|c| c.as_str())
+        .or_else(|| {
+            method
+                .get("enum")
+                .and_then(|e| e.as_array())
+                .and_then(|e| e.first())
+                .and_then(|m| m.as_str())
+        })
+        .and_then(ProbeMethod::parse)
+}
+
+/// Whether either half of the extension declares a request body.
+fn declares_body(
+    info_input: Option<&serde_json::Value>,
+    schema_input: Option<&serde_json::Value>,
+) -> bool {
+    let present = |v: Option<&serde_json::Value>| v.is_some_and(|v| !v.is_null());
+    let info = info_input.is_some_and(|i| present(i.get("body")) || present(i.get("bodyType")));
+    let schema = schema_input
+        .and_then(|s| s.get("properties"))
+        .is_some_and(|p| present(p.get("body")) || present(p.get("bodyType")));
+    info || schema
+}
+
+/// The request the prober sends to `url`: the one the listing declares --
+/// except where only a GET may go, which gets exactly that: no body method and
+/// no fallback.
+///
+/// * `get_only`: the owner asked for it (`probeGetOnly` in the curation
+///   manifest, `config/bazaar_curation.json`).
+/// * This facilitator's own origin. A listing is anybody's to write
+///   (`POST /discovery/register` is open), and a body method aimed at our own
+///   API -- `/register`, `/feedback`, `/settle` -- would be this service
+///   calling its own write endpoints with a stranger's JSON, on a schedule.
+pub fn probe_request(
+    url: &url::Url,
+    extensions: Option<&serde_json::Value>,
+    get_only: bool,
+) -> ProbeRequest {
+    if get_only || is_own_origin(url) {
+        return ProbeRequest::Declared {
+            method: ProbeMethod::Get,
+            example: None,
+        };
+    }
+    declared_request(extensions)
+}
+
+/// Whether `url` is on this facilitator's public origin
+/// ([`crate::interop::PUBLIC_URL`]), any port, any case, with or without the
+/// trailing FQDN dot.
+fn is_own_origin(url: &url::Url) -> bool {
+    let own = url::Url::parse(crate::interop::PUBLIC_URL).ok();
+    match (url.host_str(), own.as_ref().and_then(|u| u.host_str())) {
+        (Some(host), Some(own)) => host.trim_end_matches('.').eq_ignore_ascii_case(own),
+        _ => false,
+    }
+}
+
+/// The listing's example body, serialized, when it is JSON and within bounds.
+fn example_body(input: &serde_json::Value) -> Option<String> {
+    // Only JSON. A form or a text body is not something this prober builds,
+    // and sending one we assembled from somebody else's description would be
+    // inventing a request.
+    if let Some(body_type) = input.get("bodyType").filter(|t| !t.is_null()) {
+        let is_json = body_type
+            .as_str()
+            .is_some_and(|t| t.trim().eq_ignore_ascii_case("json"));
+        if !is_json {
+            return None;
+        }
+    }
+    let body = input.get("body").filter(|b| !b.is_null())?;
+    let serialized = serde_json::to_string(body).ok()?;
+    // `{}` is what the first probe sends anyway: not an example worth a retry.
+    (serialized.len() <= MAX_PROBE_BODY_BYTES && serialized != EMPTY_JSON_BODY)
+        .then_some(serialized)
 }
 
 /// Persisted per-resource liveness record (overlay `bazaar/health.json`).
@@ -83,16 +495,80 @@ pub struct HealthRecord {
     pub total_probes: u64,
     #[serde(default)]
     pub total_ok: u64,
+    /// HTTP method of the last probe of an HTTP listing. Absent on a record
+    /// written before the prober honoured a listing's declared method -- every
+    /// one of those was a GET -- and on MCP endpoints, which are probed by
+    /// their handshake whatever they declare.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub probe_method: Option<String>,
+    /// Why the record is quarantined, while it is. Absent on a record written
+    /// before the reason was kept; [`Self::reason`] reads those.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quarantine_reason: Option<QuarantineReason>,
+    /// The method this origin's own challenge names (`resource.method` of its
+    /// 402), for a listing whose catalog record declares none. Where the next
+    /// probe of such a listing starts.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub learned_method: Option<String>,
+    /// When the LAST probe read a valid x402 challenge in a 402 and passed the
+    /// drift check; cleared by any probe that did not. What "verified alive"
+    /// is measured from ([`is_verified_alive`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verified_at: Option<u64>,
 }
 
 impl HealthRecord {
+    /// Why the record is quarantined, `None` when it is not.
+    ///
+    /// A record from before the reason was kept is read by its signature: a
+    /// fail-class probe never carries a 402 (402 is alive, or drift), and a
+    /// drift zeroes the alive streak, so a quarantined record whose last probe
+    /// answered 402 with no alive streak was put there by a payTo drift. One
+    /// alive probe into a recovery (a streak of 1) reads as the fail streak it
+    /// is recovering from: it has already seen one clean challenge.
+    fn reason(&self) -> Option<QuarantineReason> {
+        if self.status != HealthStatus::Quarantined {
+            return None;
+        }
+        let drift_signature = self.http_status == Some(402) && self.consecutive_ok == 0;
+        Some(self.quarantine_reason.unwrap_or(if drift_signature {
+            QuarantineReason::PayToDrift
+        } else {
+            QuarantineReason::FailStreak
+        }))
+    }
+
     fn to_state(&self) -> HealthState {
+        // The same number the uptime attestation publishes
+        // (`HealthTracker::uptime`), so the listing and the on-chain feedback
+        // can never disagree about it.
+        let uptime_bps = (self.total_probes > 0)
+            .then(|| ((self.total_ok as u128 * 10_000) / self.total_probes as u128) as u16);
         HealthState {
             status: self.status,
             last_checked: self.last_checked,
             http_status: self.http_status,
             latency_ms: self.latency_ms,
+            uptime_bps,
+            probe_count: (self.total_probes > 0).then_some(self.total_probes),
+            probe_method: self.probe_method.clone(),
+            quarantine_reason: self.reason(),
+            verified_at: self.verified_at,
         }
+    }
+
+    /// The method the last probe used; a record without one was a GET.
+    fn last_method(&self) -> ProbeMethod {
+        self.probe_method
+            .as_deref()
+            .and_then(ProbeMethod::parse)
+            .unwrap_or(ProbeMethod::Get)
+    }
+
+    /// Held in quarantine by a payTo drift rather than by failures. No 402 lifts
+    /// such a hold early, whatever the request: it keeps its two-probe recovery.
+    fn held_for_drift(&self) -> bool {
+        self.reason() == Some(QuarantineReason::PayToDrift)
     }
 }
 
@@ -193,26 +669,6 @@ impl HealthTracker {
         }
         let bps = ((r.total_ok as u128 * 10_000) / r.total_probes as u128) as u16;
         Some((bps, r.total_probes, r.total_ok))
-    }
-
-    /// Cumulative uptime aggregated over every probed URL starting with
-    /// `prefix` — a curated product usually owns many resource URLs (all of
-    /// MeshRelay's channels, every Tenjin article), so its attested uptime is
-    /// the aggregate rather than one representative URL.
-    pub async fn uptime_prefix(&self, prefix: &str) -> Option<(u16, u64, u64)> {
-        let records = self.records.read().await;
-        let (mut probes, mut oks) = (0u64, 0u64);
-        for (url, r) in records.iter() {
-            if url.starts_with(prefix) {
-                probes = probes.saturating_add(r.total_probes);
-                oks = oks.saturating_add(r.total_ok);
-            }
-        }
-        if probes == 0 {
-            return None;
-        }
-        let bps = ((oks as u128 * 10_000) / probes as u128) as u16;
-        Some((bps, probes, oks))
     }
 
     /// Drop records for URLs the catalog no longer holds.
@@ -395,8 +851,31 @@ impl HealthTracker {
         }
     }
 
+    /// Where the next probe of a listing that declares nothing starts: the
+    /// method its own challenge named (`resource.method`), else the one the
+    /// last probe used -- which, after a fallback, is the one that answered.
+    async fn recorded_method(&self, url: &str) -> Option<ProbeMethod> {
+        self.records
+            .read()
+            .await
+            .get(url)
+            .and_then(|r| r.learned_method.as_deref().or(r.probe_method.as_deref()))
+            .and_then(ProbeMethod::parse)
+    }
+
     /// Apply a probe result to the record for `url`, driving the state machine.
-    async fn record_probe(&self, url: &str, class: ProbeClass, http: Option<u16>, latency: u64) {
+    ///
+    /// `method` is the request the probe sent, for an HTTP listing; `None` for
+    /// a probe the method does not describe (the MCP handshake), which leaves
+    /// the record's method alone.
+    async fn record_probe(
+        &self,
+        url: &str,
+        class: ProbeClass,
+        http: Option<u16>,
+        latency: u64,
+        method: Option<ProbeMethod>,
+    ) {
         let now = now_secs();
         let mut records = self.records.write().await;
         let rec = records.entry(url.to_string()).or_insert(HealthRecord {
@@ -410,7 +889,31 @@ impl HealthTracker {
             quarantined_at: None,
             total_probes: 0,
             total_ok: 0,
+            probe_method: None,
+            quarantine_reason: None,
+            learned_method: None,
+            verified_at: None,
         });
+        // A record from before the reason was kept gets it now, read off its
+        // signature while the last status code is still the one that set it.
+        rec.quarantine_reason = rec.reason();
+        // Evidence about one request says nothing about another. A listing
+        // that declares POST and was probed with GET collected 405s and 404s
+        // from a request it never serves; when the request changes, the
+        // streaks restart, and a quarantine the other request built is lifted
+        // by the first live challenge this one gets. Not a drift hold: that is
+        // a security hold, and it keeps its own recovery rule.
+        let request_changed = method.is_some_and(|m| rec.last_method() != m);
+        let drift_hold = rec.held_for_drift();
+        let quarantined_by_other_request =
+            request_changed && rec.status == HealthStatus::Quarantined && !drift_hold;
+        if request_changed {
+            rec.consecutive_ok = 0;
+            rec.consecutive_fail = 0;
+        }
+        if let Some(m) = method {
+            rec.probe_method = Some(m.as_str().to_string());
+        }
         rec.last_checked = Some(now);
         rec.http_status = http;
         rec.latency_ms = Some(latency);
@@ -425,14 +928,27 @@ impl HealthTracker {
         }
 
         match class {
+            // A drift hold is a security hold. An answer that is not a payment
+            // challenge -- a 401, a 405, a 400 to `{}`, a hop to a private
+            // address -- says nothing about who gets paid, so it cannot lift
+            // it: only two clean challenges in a row do.
+            ProbeClass::AuthGated | ProbeClass::Degraded | ProbeClass::Unprobeable
+                if drift_hold =>
+            {
+                rec.consecutive_ok = 0;
+                rec.next_probe_at = now + BACKOFF_SECS[BACKOFF_SECS.len() - 1];
+            }
             ProbeClass::Alive => {
                 rec.consecutive_ok = rec.consecutive_ok.saturating_add(1);
                 rec.consecutive_fail = 0;
                 let recovering = rec.status == HealthStatus::Quarantined;
-                if !recovering || rec.consecutive_ok >= RECOVER_AFTER_OK {
+                if !recovering
+                    || quarantined_by_other_request
+                    || rec.consecutive_ok >= RECOVER_AFTER_OK
+                {
                     rec.status = HealthStatus::Alive;
                     rec.quarantined_at = None;
-                    rec.next_probe_at = now + HEALTHY_REPROBE_SECS;
+                    rec.next_probe_at = now + alive_reprobe_secs();
                 } else {
                     // Still quarantined but recovering — re-probe soon to confirm.
                     rec.next_probe_at = now + BACKOFF_SECS[0];
@@ -455,6 +971,7 @@ impl HealthTracker {
                 if rec.consecutive_fail >= QUARANTINE_AFTER_FAILS {
                     if rec.status != HealthStatus::Quarantined {
                         rec.quarantined_at = Some(now);
+                        rec.quarantine_reason = Some(QuarantineReason::FailStreak);
                     }
                     rec.status = HealthStatus::Quarantined;
                 }
@@ -475,10 +992,78 @@ impl HealthTracker {
                     rec.quarantined_at = Some(now);
                 }
                 rec.status = HealthStatus::Quarantined;
+                rec.quarantine_reason = Some(QuarantineReason::PayToDrift);
                 rec.next_probe_at = now + BACKOFF_SECS[BACKOFF_SECS.len() - 1];
             }
         }
+        if rec.status != HealthStatus::Quarantined {
+            rec.quarantine_reason = None;
+        }
         self.dirty.store(true, Ordering::SeqCst);
+    }
+
+    /// Record whether the probe just recorded for `url` verified it: a 402 whose
+    /// challenge we could read, that passed the drift check. Any other outcome
+    /// clears it -- "verified alive" is about the LAST probe, not the best one.
+    async fn note_verified(&self, url: &str, verified: bool) {
+        if let Some(rec) = self.records.write().await.get_mut(url) {
+            let at = verified.then(now_secs);
+            if rec.verified_at != at {
+                rec.verified_at = at;
+                self.dirty.store(true, Ordering::SeqCst);
+            }
+        }
+    }
+
+    /// Record a verified-alive probe of `url` with `method`, as the prober does
+    /// when a 402 with a readable challenge answers the right request. For
+    /// tests (this crate's and the integration suite) that need a listing to be
+    /// exposed without a network round trip.
+    #[doc(hidden)]
+    #[allow(dead_code)]
+    pub async fn mark_verified(&self, url: &str, method: ProbeMethod) {
+        self.record_probe(url, ProbeClass::Alive, Some(402), 1, Some(method))
+            .await;
+        self.note_verified(url, true).await;
+    }
+
+    /// Cumulative uptime aggregated over the URLs starting with `prefix` that
+    /// are verified alive right now -- a curated product usually owns many
+    /// resource URLs (all of MeshRelay's channels, every Tenjin article), so its
+    /// attested uptime is the aggregate rather than one representative URL --
+    /// and `None` when none is: an attestation, like every other public surface
+    /// of the Bazaar, speaks only for what is exposed.
+    pub async fn uptime_prefix_verified(
+        &self,
+        prefix: &str,
+        now: u64,
+        window: u64,
+    ) -> Option<(u16, u64, u64)> {
+        let records = self.records.read().await;
+        let (mut probes, mut oks) = (0u64, 0u64);
+        for (url, r) in records.iter() {
+            if url.starts_with(prefix) && verified_recently(r.status, r.verified_at, now, window) {
+                probes = probes.saturating_add(r.total_probes);
+                oks = oks.saturating_add(r.total_ok);
+            }
+        }
+        if probes == 0 {
+            return None;
+        }
+        let bps = ((oks as u128 * 10_000) / probes as u128) as u16;
+        Some((bps, probes, oks))
+    }
+
+    /// Remember the method this origin's own challenge names, for a listing
+    /// whose catalog record declares none. Forget it with `None`.
+    async fn learn_method(&self, url: &str, method: Option<ProbeMethod>) {
+        let learned = method.map(|m| m.as_str().to_string());
+        if let Some(rec) = self.records.write().await.get_mut(url) {
+            if rec.learned_method != learned {
+                rec.learned_method = learned;
+                self.dirty.store(true, Ordering::SeqCst);
+            }
+        }
     }
 }
 
@@ -547,6 +1132,11 @@ pub struct LiveTerms {
     pub conflict: Option<TransportReading>,
     /// Options in the challenge we could not read, counted by cause.
     pub rejected: BTreeMap<String, usize>,
+    /// The method the winning transport's `resource` object names, when it
+    /// names one (`resource.method` of an x402 v2 challenge).
+    pub resource_method: Option<ProbeMethod>,
+    /// The host of that `resource.url`, lowercased.
+    pub resource_host: Option<String>,
 }
 
 /// One transport's reading of a challenge, before the two are reconciled.
@@ -556,6 +1146,8 @@ struct ChallengeReading {
     accepts: Vec<CatalogPaymentOption>,
     x402_version: Option<u64>,
     rejected: BTreeMap<String, usize>,
+    resource_method: Option<ProbeMethod>,
+    resource_host: Option<String>,
     /// Whether the document looked like an x402 challenge at all. A body that
     /// parses as JSON but carries no payment terms -- a free preview, an error
     /// object -- has not been read.
@@ -637,6 +1229,8 @@ fn pay_to_from_402(body: Option<&str>, header: Option<&str>) -> LiveTerms {
     };
 
     terms.transport = Some(winning_transport);
+    terms.resource_method = winner.resource_method;
+    terms.resource_host = winner.resource_host;
     terms.x402_version = winner.x402_version;
     terms.accepts = winner.accepts;
     terms.rejected = winner.rejected;
@@ -685,6 +1279,17 @@ fn decode_payment_required(raw: &str) -> Option<serde_json::Value> {
 fn read_challenge(v: &serde_json::Value) -> ChallengeReading {
     let mut reading = ChallengeReading::default();
     reading.x402_version = v.get("x402Version").and_then(|x| x.as_u64());
+    reading.resource_method = v
+        .get("resource")
+        .and_then(|r| r.get("method"))
+        .and_then(|m| m.as_str())
+        .and_then(ProbeMethod::parse);
+    reading.resource_host = v
+        .get("resource")
+        .and_then(|r| r.get("url"))
+        .and_then(|u| u.as_str())
+        .and_then(|u| url::Url::parse(u).ok())
+        .and_then(|u| u.host_str().map(str::to_ascii_lowercase));
 
     // `paymentRequirements` is the v1 spelling of `accepts`. Missing it made a
     // seller using it look like "no terms here" -- which is exactly the state
@@ -693,8 +1298,8 @@ fn read_challenge(v: &serde_json::Value) -> ChallengeReading {
         if let Some(accepts) = v.get(key).and_then(|a| a.as_array()) {
             reading.found_shape = true;
             for a in accepts {
-                if let Some(p) = a.get("payTo").and_then(|p| p.as_str()) {
-                    reading.pay_to.push(p.to_ascii_lowercase());
+                if let Some(p) = a.get("payTo").and_then(drift_recipient_value) {
+                    reading.pay_to.push(p);
                 }
                 match serde_json::from_value::<DeclaredPaymentOption>(a.clone()) {
                     Ok(declared) => match normalize_declared_option(declared) {
@@ -716,19 +1321,45 @@ fn read_challenge(v: &serde_json::Value) -> ChallengeReading {
             }
         }
     }
-    if let Some(p) = v.get("payTo").and_then(|p| p.as_str()) {
+    if let Some(p) = v.get("payTo").filter(|p| p.is_string()) {
         reading.found_shape = true;
-        reading.pay_to.push(p.to_ascii_lowercase());
+        if let Some(p) = drift_recipient_value(p) {
+            reading.pay_to.push(p);
+        }
     }
     reading
 }
 
-/// Classify a single probe of `url` (GET, no payment attached).
+/// A live `payTo`, lowercased, for the drift check -- or `None` when it is a
+/// URN.
 ///
-/// On a 402 BOTH transports are captured -- the body and the `PAYMENT-REQUIRED`
-/// header -- because the caller has to check for a payTo swap and sellers put
-/// the challenge in either one. Reading only the body found nothing on 36 of 36
-/// live resources measured 2026-08-20.
+/// A URN (RFC 8141) names something; it is not an account and cannot receive a
+/// transfer, so it cannot redirect anybody's money. The `agent-pay` option
+/// carries one (`urn:x402:agent-pay:see-quote`), the catalog drops that option
+/// at import (`parse_catalog_address`), so it is never in the declared set --
+/// and comparing it anyway reported its seller as hijacked: one offer like that
+/// in a challenge quarantined every listing that challenge guards, at once.
+///
+/// That is the ONLY exclusion, on purpose. The check fails closed: a payTo we
+/// cannot parse is still compared, because a client may pay a spelling we do
+/// not read (`0X` + hex, a chain we do not support).
+fn drift_recipient(raw: &str) -> Option<String> {
+    let lowered = raw.trim().to_ascii_lowercase();
+    (!lowered.starts_with("urn:")).then_some(lowered)
+}
+
+/// [`drift_recipient`] for the JSON value an option carries. A `payTo` that is
+/// not a string -- a number, an object -- is no recipient we can name, and is
+/// compared as written, so it counts as undeclared: failing closed. Only an
+/// absent or `null` one is nothing at all.
+fn drift_recipient_value(value: &serde_json::Value) -> Option<String> {
+    match value {
+        serde_json::Value::Null => None,
+        serde_json::Value::String(s) => drift_recipient(s),
+        other => Some(other.to_string().to_ascii_lowercase()),
+    }
+}
+
 /// One probe's result.
 ///
 /// A struct rather than a tuple because it grew a sixth member: the origin's own
@@ -747,9 +1378,193 @@ struct ProbeOutcome {
     retry_after: Option<Duration>,
 }
 
-async fn probe(url: &url::Url) -> ProbeOutcome {
+/// How a probe reaches the network.
+///
+/// Production is [`SafeTransport`], the SSRF-hardened connector. The seam
+/// exists for the tests: that connector refuses loopback by design, so they
+/// drive the same probe logic against a local server through a client that
+/// builds its requests with the same [`wire_body`] and
+/// [`crate::discovery_security::json_request`].
+#[async_trait::async_trait]
+trait ProbeTransport: Send + Sync {
+    async fn send(
+        &self,
+        url: &url::Url,
+        method: ProbeMethod,
+        body: Option<&str>,
+    ) -> Result<reqwest::Response, SecurityReject>;
+}
+
+/// What goes on the wire for `method`: nothing for a GET, else the method and
+/// its JSON body (`{}` when there is none). Never a payment header.
+fn wire_body(method: ProbeMethod, body: Option<&str>) -> Option<(reqwest::Method, String)> {
+    match method {
+        ProbeMethod::Get => None,
+        m => Some((m.to_reqwest(), body.unwrap_or(EMPTY_JSON_BODY).to_string())),
+    }
+}
+
+/// The production transport: every request through `discovery_security`, so a
+/// POST gets exactly the SSRF checks, redirect handling and timeout a GET gets.
+struct SafeTransport;
+
+#[async_trait::async_trait]
+impl ProbeTransport for SafeTransport {
+    async fn send(
+        &self,
+        url: &url::Url,
+        method: ProbeMethod,
+        body: Option<&str>,
+    ) -> Result<reqwest::Response, SecurityReject> {
+        match wire_body(method, body) {
+            None => safe_get(PROBE_UA, PROBE_TIMEOUT, url).await,
+            Some((m, b)) => safe_send_json(PROBE_UA, PROBE_TIMEOUT, url, m, b).await,
+        }
+    }
+}
+
+/// A listing's probe: what it found, and with which request.
+#[derive(Debug)]
+struct ListingProbe {
+    outcome: ProbeOutcome,
+    /// The request whose answer `outcome` is.
+    method: ProbeMethod,
+    /// Whether that answer came from the fallback's extra request.
+    fell_back: bool,
+}
+
+/// Probe one listing with the request it declares. At most ONE extra request
+/// per listing per cycle, and its answer replaces the first only when it
+/// [`proves`] the request: a 402 carrying a challenge we can read. Anything
+/// less leaves the first answer standing.
+///
+/// * **Declared GET**: one GET.
+/// * **Declared POST/PUT/PATCH**: that method with `{}`. Only when `{}` is
+///   refused as malformed -- 400 or 422 -- and the listing declared an example,
+///   the same method once more, carrying the example. A seller that does work
+///   before it challenges does it with an empty body, and a stranger's example
+///   travels only when the endpoint needs it to get as far as the 402.
+/// * **Undeclared**: GET, or the method this origin last named or answered
+///   with (`recorded`). A GET answering 405, 400 or 404 -- "not like this", or
+///   the 404 an Express app gives a method it has no route for -- gets ONE
+///   POST `{}`; a remembered body method refused with a 405, 400, 404 or 422
+///   gets ONE GET, so a remembered method cannot get stuck. A 429, a 5xx or a
+///   timeout gets nothing more: that is the origin asking to be left alone.
+///
+/// A 405 to the method the listing declares, or to the one it answered with
+/// last time, is [`refused_expected_method`]: degraded, not auth-gated.
+async fn probe_listing<T: ProbeTransport + ?Sized>(
+    transport: &T,
+    url: &url::Url,
+    request: &ProbeRequest,
+    recorded: Option<ProbeMethod>,
+) -> ListingProbe {
+    let (first, example, expected) = match request {
+        ProbeRequest::Declared { method, example } => (*method, example.as_deref(), true),
+        ProbeRequest::Undeclared => match recorded {
+            Some(m) if m != ProbeMethod::Get => (m, None, true),
+            _ => (ProbeMethod::Get, None, false),
+        },
+    };
+    let mut outcome = probe_once(transport, url, first, None).await;
+    if expected {
+        refused_expected_method(&mut outcome);
+    }
+    let retry = match request {
+        ProbeRequest::Declared { .. } => match example {
+            Some(example) if matches!(outcome.http, Some(400) | Some(422)) => {
+                Some((first, Some(example)))
+            }
+            _ => None,
+        },
+        ProbeRequest::Undeclared if first == ProbeMethod::Get => {
+            matches!(outcome.http, Some(405) | Some(400) | Some(404))
+                .then_some((ProbeMethod::Post, None))
+        }
+        // Only a refusal of the request, never a refusal of us: a 429, a 5xx or
+        // a timeout is the origin asking to be left alone, not a wrong method.
+        ProbeRequest::Undeclared => {
+            matches!(outcome.http, Some(405) | Some(400) | Some(404) | Some(422))
+                .then_some((ProbeMethod::Get, None))
+        }
+    };
+    let Some((method, body)) = retry else {
+        return ListingProbe {
+            outcome,
+            method: first,
+            fell_back: false,
+        };
+    };
+    let second = probe_once(transport, url, method, body).await;
+    if proves(&second) {
+        ListingProbe {
+            outcome: second,
+            method,
+            fell_back: true,
+        }
+    } else {
+        ListingProbe {
+            outcome,
+            method: first,
+            fell_back: false,
+        }
+    }
+}
+
+/// Whether a probe proved its request: a 402 carrying a challenge we can read.
+fn proves(outcome: &ProbeOutcome) -> bool {
+    outcome.class == ProbeClass::Alive
+        && pay_to_from_402(outcome.body.as_deref(), outcome.challenge_header.as_deref()).readable
+}
+
+/// Read at most `cap` bytes of a response body; `None` past that.
+///
+/// A stranger's 402 used to be read whole. A challenge is a few KB; the free
+/// preview some sellers put beside it can be an article. Past the cap the body
+/// is dropped rather than truncated -- the `PAYMENT-REQUIRED` header still
+/// carries the challenge, which is where sellers put it.
+async fn read_capped(mut resp: reqwest::Response, cap: usize) -> Option<String> {
+    if resp.content_length().is_some_and(|n| n > cap as u64) {
+        return None;
+    }
+    let mut buf: Vec<u8> = Vec::new();
+    while let Some(chunk) = resp.chunk().await.ok()? {
+        if buf.len() + chunk.len() > cap {
+            return None;
+        }
+        buf.extend_from_slice(&chunk);
+    }
+    Some(String::from_utf8_lossy(&buf).into_owned())
+}
+
+/// A 405 to the method a listing is known to take -- the one it declares, or
+/// the one that answered it last time -- is the endpoint refusing the very
+/// request it is listed for. It responds, so it is not dead; but it is not
+/// "healthy for its design" either, which is what auth-gated means and what a
+/// consumer admits as live. Degraded.
+///
+/// A 405 to a GET we sent on a guess stays auth-gated, as it always was: that
+/// is the case the fallback exists for.
+fn refused_expected_method(outcome: &mut ProbeOutcome) {
+    if outcome.http == Some(405) {
+        outcome.class = ProbeClass::Degraded;
+    }
+}
+
+/// Classify a single request to `url` (no payment attached).
+///
+/// On a 402 BOTH transports are captured -- the body and the `PAYMENT-REQUIRED`
+/// header -- because the caller has to check for a payTo swap and sellers put
+/// the challenge in either one. Reading only the body found nothing on 36 of 36
+/// live resources measured 2026-08-20.
+async fn probe_once<T: ProbeTransport + ?Sized>(
+    transport: &T,
+    url: &url::Url,
+    method: ProbeMethod,
+    body: Option<&str>,
+) -> ProbeOutcome {
     let start = std::time::Instant::now();
-    let result = safe_get(PROBE_UA, PROBE_TIMEOUT, url).await;
+    let result = transport.send(url, method, body).await;
     let latency = start.elapsed().as_millis() as u64;
     match result {
         Ok(resp) => {
@@ -776,7 +1591,7 @@ async fn probe(url: &url::Url) -> ProbeOutcome {
                     .or_else(|| resp.headers().get("x-payment-required"))
                     .and_then(|v| v.to_str().ok())
                     .map(str::to_string);
-                (resp.text().await.ok(), header)
+                (read_capped(resp, MAX_PROBE_RESPONSE_BYTES).await, header)
             } else {
                 (None, None)
             };
@@ -856,14 +1671,12 @@ pub fn start_health_task(
             // no registry guard is held across the probes below). Cap probes
             // per host per tick so a mega-host (e.g. orbisapi.com with thousands
             // of listings) is spread across ticks rather than hammered.
-            let mut per_host: HashMap<String, usize> = HashMap::new();
-            let mut due: Vec<(url::Url, String, Vec<String>)> = Vec::new();
             let targets = registry.probe_targets().await;
             // The catalog is bounded now, so the overlay has to be too: a health
             // record for a URL that left the catalog is written to S3 every tick
             // and read by nobody.
             let live: std::collections::HashSet<String> =
-                targets.iter().map(|(u, _, _)| u.to_string()).collect();
+                targets.iter().map(|t| t.url.to_string()).collect();
             let pruned = tracker.retain_urls(&live).await;
             if pruned > 0 {
                 info!(
@@ -896,7 +1709,7 @@ pub fn start_health_task(
                 crate::discovery_config::long_tail_share(),
             );
 
-            let mut demanded: Vec<(url::Url, String, Vec<String>)> = Vec::new();
+            let mut demanded: Vec<(ProbeTarget, RefreshReason)> = Vec::new();
             if crate::discovery_config::revalidation_enabled() {
                 // Fold in what the other replicas asked for, then take the top
                 // of the queue. Both are owner-only: this whole block is behind
@@ -917,43 +1730,23 @@ pub fn start_health_task(
                         "revalidation batch"
                     );
                 }
-                let by_url: HashMap<String, (url::Url, String, Vec<String>)> = targets
-                    .iter()
-                    .map(|(u, ty, p)| (u.to_string(), (u.clone(), ty.clone(), p.clone())))
-                    .collect();
+                let by_url: HashMap<String, &ProbeTarget> =
+                    targets.iter().map(|t| (t.url.to_string(), t)).collect();
                 for (url, reason) in batch {
                     // A queued URL that has left the catalog is simply dropped:
                     // we do not probe what we no longer list.
                     if let Some(target) = by_url.get(&url) {
-                        let host = target.0.host_str().unwrap_or_default().to_string();
-                        *per_host.entry(host).or_insert(0) += 1;
                         debug!(url = %url, reason = reason.as_str(), "revalidating on demand");
-                        demanded.push(target.clone());
+                        demanded.push(((*target).clone(), reason));
                     }
                 }
             }
 
-            let already: std::collections::HashSet<String> =
-                demanded.iter().map(|(u, _, _)| u.to_string()).collect();
-            due.extend(demanded);
-
-            for (u, ty, pay_to) in targets {
-                if due.len() >= max_per_tick {
-                    break;
-                }
-                if already.contains(u.as_str()) {
-                    continue;
-                }
-                if !tracker_due(&tracker, &u, now) {
-                    continue;
-                }
-                let host = u.host_str().unwrap_or_default().to_string();
-                let c = per_host.entry(host).or_insert(0);
-                if *c >= MAX_PER_HOST_PER_TICK {
-                    continue;
-                }
-                *c += 1;
-                due.push((u, ty, pay_to));
+            let (due, overflow) = plan_tick(&tracker, targets, demanded, max_per_tick, now);
+            // Demand that did not fit this tick's requests goes back to the
+            // queue instead of being lost; it is taken again next tick.
+            for (url, reason) in overflow {
+                queue.requeue(&url, reason, now).await;
             }
 
             if due.is_empty() {
@@ -962,120 +1755,13 @@ pub fn start_health_task(
             debug!(due = due.len(), "Health prober cycle");
 
             let mut handles = Vec::with_capacity(due.len());
-            for (u, resource_type, expected_pay_to) in due {
+            for target in due {
                 let sem = Arc::clone(&sem);
                 let tracker = Arc::clone(&tracker);
-                let terms_overlay = registry.terms();
-                let registry_for_terms = registry.clone();
-                let queue_for_probe = registry.revalidation();
+                let registry = registry.clone();
                 handles.push(tokio::spawn(async move {
                     let _permit = sem.acquire().await.ok();
-                    // MCP endpoints answer a POST JSON-RPC handshake, not a GET
-                    // 402 — probing them with GET would mark our own first-party
-                    // MCP services dead.
-                    let outcome = if resource_type == "mcp" {
-                        let (c, h, l) = probe_mcp(&u).await;
-                        ProbeOutcome {
-                            class: c,
-                            http: h,
-                            latency_ms: l,
-                            ..ProbeOutcome::default()
-                        }
-                    } else {
-                        probe(&u).await
-                    };
-                    let ProbeOutcome {
-                        mut class,
-                        http,
-                        latency_ms: latency,
-                        body,
-                        challenge_header: pr_header,
-                        retry_after,
-                    } = outcome;
-
-                    // The challenge is read ONCE, and read whole. Two callers
-                    // want it and they want different halves: the hijack check
-                    // wants the recipients, the terms overlay wants the price.
-                    // Probing twice for that would double every seller's load.
-                    let live = if class == ProbeClass::Alive
-                        && (body.is_some() || pr_header.is_some())
-                    {
-                        Some(pay_to_from_402(body.as_deref(), pr_header.as_deref()))
-                    } else {
-                        None
-                    };
-
-                    // payTo drift (F4): a live 402 that now pays a recipient the
-                    // listing never declared is a hijack signal, not a health
-                    // signal. Quarantine immediately and alarm.
-                    //
-                    // A changed AMOUNT is deliberately not in this branch and
-                    // must never be: a seller repricing is ordinary commerce,
-                    // and quarantining for it would hide a live resource over a
-                    // change it is entitled to make. The price change is
-                    // recorded below, as an observation.
-                    if !expected_pay_to.is_empty() {
-                        if let Some(live) = live.as_ref() {
-                            if pay_to_drifted(&expected_pay_to, live) {
-                                warn!(
-                                    url = %u,
-                                    expected = ?expected_pay_to,
-                                    observed = ?live.pay_to,
-                                    "paytoswap: live 402 pays an undeclared recipient; quarantining"
-                                );
-                                class = ProbeClass::PayToDrift;
-                            } else if !live.readable {
-                                // A check that did NOT run must not look like one
-                                // that passed. This is the state that hid the bug:
-                                // the terms were in the header, the body parsed as
-                                // a free preview, and the swap check quietly saw
-                                // nothing on every resource it examined.
-                                warn!(
-                                    url = %u,
-                                    has_body = body.is_some(),
-                                    has_header = pr_header.is_some(),
-                                    "paytoswap: could not read payment terms from either transport -- \
-                                     the hijack check did not run for this resource"
-                                );
-                            }
-                        }
-                    }
-
-                    tracker.record_probe(u.as_str(), class, http, latency).await;
-
-                    // Politeness feedback. A host that refuses us goes into
-                    // backoff -- its own `Retry-After` when it sent one, an
-                    // exponential schedule with jitter when it did not -- so a
-                    // failing origin is asked less often rather than by every
-                    // replica at the same instant.
-                    match http {
-                        Some(429) | Some(503) => {
-                            queue_for_probe
-                                .note_refusal(u.as_str(), retry_after, now_secs())
-                                .await
-                        }
-                        Some(code) if (500..600).contains(&code) => {
-                            queue_for_probe.note_refusal(u.as_str(), None, now_secs()).await
-                        }
-                        None => queue_for_probe.note_refusal(u.as_str(), None, now_secs()).await,
-                        _ => queue_for_probe.note_success(u.as_str()).await,
-                    }
-
-                    // Record what the origin actually said, with the context it
-                    // said it in. Written even when the probe quarantined the
-                    // resource: the reading happened, and hiding it would lose
-                    // the evidence of what it was hidden for.
-                    if let Some(live) = live {
-                        record_observation(
-                            &registry_for_terms,
-                            &terms_overlay,
-                            &u,
-                            &resource_type,
-                            http,
-                            live,
-                        )
-                        .await;
-                    }
+                    probe_and_record(&SafeTransport, &registry, &tracker, target).await;
                 }));
             }
             for h in handles {
@@ -1087,6 +1773,177 @@ pub fn start_health_task(
             registry.terms().persist().await;
         }
     })
+}
+
+/// Probe one target and record everything the probe found: the liveness
+/// verdict, the politeness feedback for its host, and the terms its challenge
+/// advertised.
+///
+/// One function for the scheduler and for the tests, so what the tests drive
+/// is the production path -- including the method handed to the record, which
+/// is what turns the one-off re-probe off again.
+async fn probe_and_record<T: ProbeTransport + ?Sized>(
+    transport: &T,
+    registry: &DiscoveryRegistry,
+    tracker: &HealthTracker,
+    target: ProbeTarget,
+) {
+    let queue = registry.revalidation();
+    let ProbeTarget {
+        url: u,
+        resource_type,
+        pay_to: expected_pay_to,
+        request,
+    } = target;
+    // MCP endpoints answer a POST JSON-RPC handshake, not a GET
+    // 402 — probing them with GET would mark our own first-party
+    // MCP services dead.
+    let (outcome, method, fell_back) = if resource_type == "mcp" {
+        let (c, h, l) = probe_mcp(&u).await;
+        let outcome = ProbeOutcome {
+            class: c,
+            http: h,
+            latency_ms: l,
+            ..ProbeOutcome::default()
+        };
+        (outcome, None, false)
+    } else {
+        let recorded = tracker.recorded_method(u.as_str()).await;
+        let probed = probe_listing(transport, &u, &request, recorded).await;
+        if probed.fell_back {
+            debug!(
+                url = %u,
+                method = probed.method.as_str(),
+                "the extra request answered 402"
+            );
+        }
+        (probed.outcome, Some(probed.method), probed.fell_back)
+    };
+    let ProbeOutcome {
+        mut class,
+        http,
+        latency_ms: latency,
+        body,
+        challenge_header: pr_header,
+        retry_after,
+    } = outcome;
+
+    // The challenge is read ONCE, and read whole. Two callers
+    // want it and they want different halves: the hijack check
+    // wants the recipients, the terms overlay wants the price.
+    // Probing twice for that would double every seller's load.
+    let live = if class == ProbeClass::Alive && (body.is_some() || pr_header.is_some()) {
+        Some(pay_to_from_402(body.as_deref(), pr_header.as_deref()))
+    } else {
+        None
+    };
+
+    // payTo drift (F4): a live 402 that now pays a recipient the
+    // listing never declared is a hijack signal, not a health
+    // signal. Quarantine immediately and alarm.
+    //
+    // A changed AMOUNT is deliberately not in this branch and
+    // must never be: a seller repricing is ordinary commerce,
+    // and quarantining for it would hide a live resource over a
+    // change it is entitled to make. The price change is
+    // recorded below, as an observation.
+    if !expected_pay_to.is_empty() {
+        if let Some(live) = live.as_ref() {
+            if pay_to_drifted(&expected_pay_to, live) {
+                warn!(
+                    url = %u,
+                    expected = ?expected_pay_to,
+                    observed = ?live.pay_to,
+                    "paytoswap: live 402 pays an undeclared recipient; quarantining"
+                );
+                class = ProbeClass::PayToDrift;
+            } else if !live.readable {
+                // A check that did NOT run must not look like one
+                // that passed. This is the state that hid the bug:
+                // the terms were in the header, the body parsed as
+                // a free preview, and the swap check quietly saw
+                // nothing on every resource it examined.
+                warn!(
+                    url = %u,
+                    has_body = body.is_some(),
+                    has_header = pr_header.is_some(),
+                    "paytoswap: could not read payment terms from either transport -- \
+                     the hijack check did not run for this resource"
+                );
+            }
+        }
+    }
+
+    tracker
+        .record_probe(u.as_str(), class, http, latency, method)
+        .await;
+
+    // A listing whose catalog record declares nothing may still say how it is
+    // called in its own challenge (`resource.method`, where MeshRelay puts
+    // it), and the next probe starts there. Only a POST, only from a clean
+    // challenge that names this listing's own host -- a 402 reached through a
+    // redirect, or one that just failed the drift check, names nothing for us
+    // -- and forgotten as soon as the fallback has to answer instead.
+    if request == ProbeRequest::Undeclared {
+        let named = live
+            .as_ref()
+            .filter(|_| class == ProbeClass::Alive)
+            .filter(|l| {
+                l.resource_host
+                    .as_deref()
+                    .zip(u.host_str())
+                    .is_some_and(|(theirs, ours)| theirs.eq_ignore_ascii_case(ours))
+            })
+            .and_then(|l| l.resource_method)
+            .filter(|m| *m == ProbeMethod::Post);
+        if fell_back {
+            tracker.learn_method(u.as_str(), None).await;
+        } else if named.is_some() {
+            tracker.learn_method(u.as_str(), named).await;
+        }
+    }
+
+    // Verified alive is earned by THIS probe or lost by it: a 402 whose
+    // challenge we read and whose recipients passed the drift check. An MCP
+    // handshake, an unreadable 402 or any other answer clears it.
+    let verified = class == ProbeClass::Alive && live.as_ref().is_some_and(|l| l.readable);
+    tracker.note_verified(u.as_str(), verified).await;
+
+    // Politeness feedback. A host that refuses us goes into
+    // backoff -- its own `Retry-After` when it sent one, an
+    // exponential schedule with jitter when it did not -- so a
+    // failing origin is asked less often rather than by every
+    // replica at the same instant.
+    match http {
+        Some(429) | Some(503) => {
+            queue
+                .note_refusal(u.as_str(), retry_after, now_secs())
+                .await
+        }
+        Some(code) if (500..600).contains(&code) => {
+            queue.note_refusal(u.as_str(), None, now_secs()).await
+        }
+        None => queue.note_refusal(u.as_str(), None, now_secs()).await,
+        _ => queue.note_success(u.as_str()).await,
+    }
+
+    // Record what the origin actually said, with the context it
+    // said it in. Written even when the probe quarantined the
+    // resource: the reading happened, and hiding it would lose
+    // the evidence of what it was hidden for.
+    if let Some(live) = live {
+        record_observation(
+            registry,
+            &registry.terms(),
+            &u,
+            &resource_type,
+            // `None` is the MCP handshake, which is a POST.
+            method.unwrap_or(ProbeMethod::Post),
+            http,
+            live,
+        )
+        .await;
+    }
 }
 
 /// Whether a live challenge pays a recipient the listing never declared.
@@ -1118,6 +1975,7 @@ async fn record_observation(
     overlay: &Arc<crate::discovery_terms::TermsOverlay>,
     url: &url::Url,
     resource_type: &str,
+    method: ProbeMethod,
     http_status: Option<u16>,
     live: LiveTerms,
 ) {
@@ -1131,7 +1989,9 @@ async fn record_observation(
     let observation = ObservedTerms {
         accepts: live.accepts,
         observed_at: now_secs(),
-        context: ObservationContext::anonymous_get(resource_type),
+        // The request that drew this challenge. A price read from a POST with
+        // the listing's example body is a reading of THAT request, and says so.
+        context: ObservationContext::anonymous(method.as_str(), resource_type),
         // A challenge is the verification phase by construction: no payment has
         // been made, so an `upto` amount here is the ceiling, not a charge.
         phase: ObservationPhase::Verification,
@@ -1163,15 +2023,77 @@ async fn record_observation(
     overlay.record(url.as_str(), observation).await;
 }
 
-/// Whether `url` is due for a probe now (blocking helper is cheap: one read).
-fn tracker_due(tracker: &HealthTracker, url: &url::Url, now: u64) -> bool {
+/// Whether `target` is due for a probe now (blocking helper is cheap: one read).
+fn tracker_due(tracker: &HealthTracker, target: &ProbeTarget, now: u64) -> bool {
     // Best-effort non-async read via try_read; if contended, treat as due.
     match tracker.records.try_read() {
         Ok(records) => records
-            .get(url.as_str())
-            .map(|r| r.next_probe_at <= now)
+            .get(target.url.as_str())
+            .map(|r| {
+                r.next_probe_at <= now
+                    || verification_due(r, now)
+                    || unverified_legacy_alive(r, target)
+                    || probed_with_another_request(r, target)
+            })
             .unwrap_or(true),
         Err(_) => false,
+    }
+}
+
+/// A verification about to leave the window it is exposed on, under the
+/// CURRENT window: a record scheduled before the window was shortened would
+/// otherwise wait out the old cadence and drop out of the catalog first.
+fn verification_due(rec: &HealthRecord, now: u64) -> bool {
+    rec.verified_at
+        .is_some_and(|t| now >= t.saturating_add(alive_reprobe_secs()))
+}
+
+/// An `alive` record from before `verifiedAt` existed. It is probed now, so
+/// what it is exposed on is this build's own verification rather than an
+/// overlay reading ([`legacy_verified_at`]); afterwards it carries a method
+/// and this stops matching -- one probe per record, once. Not an MCP
+/// endpoint, which never records a method and would match forever.
+fn unverified_legacy_alive(rec: &HealthRecord, target: &ProbeTarget) -> bool {
+    target.resource_type != "mcp"
+        && rec.status == HealthStatus::Alive
+        && rec.probe_method.is_none()
+        && rec.verified_at.is_none()
+}
+
+/// Whether a record's verdict came from a request this listing does not call
+/// for, so it is re-probed now rather than at its scheduled time.
+///
+/// Without this, a listing that declares POST and was quarantined by GET 404s
+/// would sit hidden until its backoff ran out (up to 72 h), and one labelled
+/// auth-gated by a GET 405 would wait out the 7-day healthy cadence. Once
+/// re-probed, the record carries the method it was probed with and this stops
+/// matching, so it costs one probe per listing, once. The re-probes still go
+/// through the per-host cap, so a host with many such listings is worked
+/// through over several ticks.
+fn probed_with_another_request(rec: &HealthRecord, target: &ProbeTarget) -> bool {
+    // The MCP handshake is what an MCP endpoint is probed with, whatever it
+    // declares; there is no other request to try.
+    if target.resource_type == "mcp" {
+        return false;
+    }
+    // A payTo-drift hold keeps its schedule: it is a security hold, not a
+    // liveness verdict, and a different request is no reason to look sooner.
+    // Except ONCE for a hold a build without the URN exclusion set (no method
+    // recorded): that build quarantined every seller whose challenge carried an
+    // agent-pay quote reference, for 72 hours. Looking again does not lift
+    // anything -- the hold still needs two clean challenges in a row, and a
+    // real swap is seen again on this very probe.
+    if rec.held_for_drift() {
+        return rec.probe_method.is_none();
+    }
+    match &target.request {
+        ProbeRequest::Declared { method, .. } => rec.last_method() != *method,
+        // Probed only by a build without the fallback, and its GET answered
+        // exactly what the fallback exists for.
+        ProbeRequest::Undeclared => {
+            rec.probe_method.is_none()
+                && matches!(rec.http_status, Some(405) | Some(400) | Some(404))
+        }
     }
 }
 
@@ -1187,15 +2109,20 @@ mod tests {
     async fn quarantine_after_three_fails_and_recovers_after_two() {
         let t = HealthTracker::new();
         let u = "https://x.example/a";
-        t.record_probe(u, ProbeClass::Fail, Some(404), 10).await;
-        t.record_probe(u, ProbeClass::Fail, Some(404), 10).await;
+        t.record_probe(u, ProbeClass::Fail, Some(404), 10, None)
+            .await;
+        t.record_probe(u, ProbeClass::Fail, Some(404), 10, None)
+            .await;
         assert_ne!(status_of(&t, u).await, HealthStatus::Quarantined);
-        t.record_probe(u, ProbeClass::Fail, Some(404), 10).await;
+        t.record_probe(u, ProbeClass::Fail, Some(404), 10, None)
+            .await;
         assert_eq!(status_of(&t, u).await, HealthStatus::Quarantined);
         // recovery needs two consecutive alives
-        t.record_probe(u, ProbeClass::Alive, Some(402), 10).await;
+        t.record_probe(u, ProbeClass::Alive, Some(402), 10, None)
+            .await;
         assert_eq!(status_of(&t, u).await, HealthStatus::Quarantined);
-        t.record_probe(u, ProbeClass::Alive, Some(402), 10).await;
+        t.record_probe(u, ProbeClass::Alive, Some(402), 10, None)
+            .await;
         assert_eq!(status_of(&t, u).await, HealthStatus::Alive);
     }
 
@@ -1230,7 +2157,8 @@ mod tests {
         // record nothing can read.
         let t = HealthTracker::new();
         for url in ["https://a.example/x", "https://gone.example/x"] {
-            t.record_probe(url, ProbeClass::Alive, Some(402), 5).await;
+            t.record_probe(url, ProbeClass::Alive, Some(402), 5, None)
+                .await;
         }
         assert_eq!(t.snapshot().await.len(), 2);
 
@@ -1249,7 +2177,7 @@ mod tests {
         // 7 GB a day, to record that some counters moved. Nothing reads this
         // object except a task that is starting.
         let t = HealthTracker::new();
-        t.record_probe("https://a.example/x", ProbeClass::Alive, Some(402), 5)
+        t.record_probe("https://a.example/x", ProbeClass::Alive, Some(402), 5, None)
             .await;
         assert!(t.dirty.load(Ordering::SeqCst), "a probe marks it changed");
 
@@ -1279,7 +2207,8 @@ mod tests {
         // count the uptime attestation is built from.
         let t = HealthTracker::new();
         for url in ["https://a.example/x", "https://b.example/x"] {
-            t.record_probe(url, ProbeClass::Alive, Some(402), 5).await;
+            t.record_probe(url, ProbeClass::Alive, Some(402), 5, None)
+                .await;
         }
         let nothing: std::collections::HashSet<String> = std::collections::HashSet::new();
         assert_eq!(t.retain_urls(&nothing).await, 0);
@@ -1294,7 +2223,7 @@ mod tests {
     async fn pruning_nothing_does_not_dirty_the_overlay() {
         // A no-op prune must not schedule a 9.8 MB upload.
         let t = HealthTracker::new();
-        t.record_probe("https://a.example/x", ProbeClass::Alive, Some(402), 5)
+        t.record_probe("https://a.example/x", ProbeClass::Alive, Some(402), 5, None)
             .await;
         t.dirty.store(false, Ordering::SeqCst);
         let live: std::collections::HashSet<String> =
@@ -1308,7 +2237,7 @@ mod tests {
         let t = HealthTracker::new();
         let u = "https://hijacked.example/pay";
         // A single drift observation quarantines — no failure streak required.
-        t.record_probe(u, ProbeClass::PayToDrift, Some(402), 12)
+        t.record_probe(u, ProbeClass::PayToDrift, Some(402), 12, None)
             .await;
         assert_eq!(status_of(&t, u).await, HealthStatus::Quarantined);
     }
@@ -1316,10 +2245,10 @@ mod tests {
     #[tokio::test]
     async fn alive_and_authgated_are_immediate() {
         let t = HealthTracker::new();
-        t.record_probe("https://a/x", ProbeClass::Alive, Some(402), 5)
+        t.record_probe("https://a/x", ProbeClass::Alive, Some(402), 5, None)
             .await;
         assert_eq!(status_of(&t, "https://a/x").await, HealthStatus::Alive);
-        t.record_probe("https://b/x", ProbeClass::AuthGated, Some(401), 5)
+        t.record_probe("https://b/x", ProbeClass::AuthGated, Some(401), 5, None)
             .await;
         assert_eq!(status_of(&t, "https://b/x").await, HealthStatus::AuthGated);
     }
@@ -1560,5 +2489,2049 @@ mod payment_required_transport_tests {
                 "{junk:?} must not count as a challenge we read"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod declared_method_tests {
+    //! The prober against a local seller: what it sends, and what it concludes.
+    //!
+    //! The SSRF connector refuses loopback by design, so these drive the same
+    //! probe logic through [`Loopback`], which builds every request with the
+    //! production [`wire_body`] and `json_request`. No test reaches a real host.
+    use super::*;
+    use axum::body::Bytes;
+    use axum::extract::State;
+    use axum::http::{HeaderMap, Method, StatusCode, Uri};
+    use axum::response::{IntoResponse, Response};
+    use serde_json::{json, Value};
+    use std::sync::Mutex;
+
+    const CDP_PAGE: &str = include_str!("../tests/fixtures/bazaar/cdp-pricing-page.json");
+    const REPORT_CASES: &str =
+        include_str!("../tests/fixtures/bazaar/declared-method-listings.json");
+
+    /// What the seller saw of one request.
+    #[derive(Debug, Clone)]
+    struct Seen {
+        method: String,
+        path: String,
+        content_type: Option<String>,
+        payment_header: bool,
+        body: String,
+    }
+
+    /// How the local seller answers one path.
+    #[derive(Clone)]
+    struct Route {
+        /// Status for a GET.
+        get: u16,
+        /// Status for any body method.
+        other: u16,
+        /// When set, a body method gets its 402 only for exactly this JSON;
+        /// any other body gets `refuse`, as a validating seller would answer.
+        expect_body: Option<Value>,
+        refuse: u16,
+        /// The PAYMENT-REQUIRED header a 402 carries; `None` is a 402 with no
+        /// challenge anywhere.
+        challenge: Option<String>,
+        /// Bytes of body beside a challenged 402 (a free preview); 0 is `{}`.
+        pad: usize,
+    }
+
+    #[derive(Clone, Default)]
+    struct Seller {
+        routes: Arc<HashMap<String, Route>>,
+        seen: Arc<Mutex<Vec<Seen>>>,
+    }
+
+    impl Seller {
+        fn seen(&self, path: &str) -> Vec<Seen> {
+            self.seen
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|s| s.path == path)
+                .cloned()
+                .collect()
+        }
+
+        fn methods(&self, path: &str) -> Vec<String> {
+            self.seen(path).into_iter().map(|s| s.method).collect()
+        }
+    }
+
+    async fn answer(
+        State(seller): State<Seller>,
+        method: Method,
+        uri: Uri,
+        headers: HeaderMap,
+        body: Bytes,
+    ) -> Response {
+        let body = String::from_utf8_lossy(&body).into_owned();
+        seller.seen.lock().unwrap().push(Seen {
+            method: method.to_string(),
+            path: uri.path().to_string(),
+            content_type: headers
+                .get("content-type")
+                .and_then(|v| v.to_str().ok())
+                .map(str::to_string),
+            payment_header: headers
+                .keys()
+                .any(|k| k.as_str() == "x-payment" || k.as_str() == "payment-signature"),
+            body: body.clone(),
+        });
+        let Some(route) = seller.routes.get(uri.path()) else {
+            return StatusCode::NOT_FOUND.into_response();
+        };
+        let mut code = if method == Method::GET {
+            route.get
+        } else {
+            route.other
+        };
+        if code == 402 && method != Method::GET {
+            if let Some(expected) = &route.expect_body {
+                if serde_json::from_str::<Value>(&body).ok().as_ref() != Some(expected) {
+                    code = route.refuse;
+                }
+            }
+        }
+        let status = StatusCode::from_u16(code).unwrap();
+        let preview = if route.pad > 0 {
+            "x".repeat(route.pad)
+        } else {
+            "{}".to_string()
+        };
+        match (code, &route.challenge) {
+            (402, Some(c)) => (status, [("payment-required", c.clone())], preview).into_response(),
+            (402, None) => (status, "payment required").into_response(),
+            _ => status.into_response(),
+        }
+    }
+
+    async fn serve(routes: HashMap<String, Route>) -> (String, Seller) {
+        let seller = Seller {
+            routes: Arc::new(routes),
+            seen: Arc::default(),
+        };
+        let app = axum::Router::new()
+            .fallback(answer)
+            .with_state(seller.clone());
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        (format!("http://{addr}"), seller)
+    }
+
+    /// The prober's transport, pointed at loopback.
+    struct Loopback {
+        client: reqwest::Client,
+        /// When set, every request goes to this local seller, whatever host
+        /// the listing names -- so a listing keeps its real URL end to end.
+        serving: Option<url::Url>,
+    }
+
+    impl Loopback {
+        fn new() -> Self {
+            Self {
+                client: reqwest::Client::builder()
+                    .no_proxy()
+                    .redirect(reqwest::redirect::Policy::none())
+                    .build()
+                    .unwrap(),
+                serving: None,
+            }
+        }
+
+        fn serving(base: &str) -> Self {
+            Self {
+                serving: Some(url::Url::parse(base).unwrap()),
+                ..Self::new()
+            }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl ProbeTransport for Loopback {
+        async fn send(
+            &self,
+            url: &url::Url,
+            method: ProbeMethod,
+            body: Option<&str>,
+        ) -> Result<reqwest::Response, SecurityReject> {
+            let mut to = url.clone();
+            if let Some(base) = &self.serving {
+                let _ = to.set_scheme("http");
+                let _ = to.set_host(base.host_str());
+                let _ = to.set_port(base.port());
+            }
+            crate::discovery_security::json_request(
+                &self.client,
+                &to,
+                wire_body(method, body).as_ref(),
+            )
+            .send()
+            .await
+            .map_err(|e| SecurityReject::Http(e.to_string()))
+        }
+    }
+
+    fn header_of(challenge: &Value) -> String {
+        use base64::Engine as _;
+        base64::engine::general_purpose::STANDARD.encode(challenge.to_string())
+    }
+
+    fn challenge_for(accepts: &Value) -> String {
+        header_of(&json!({ "x402Version": 2, "accepts": accepts }))
+    }
+
+    fn route(get: u16, other: u16, accepts: &Value) -> Route {
+        Route {
+            get,
+            other,
+            expect_body: None,
+            refuse: 400,
+            challenge: Some(challenge_for(accepts)),
+            pad: 0,
+        }
+    }
+
+    fn at(base: &str, path: &str) -> url::Url {
+        url::Url::parse(&format!("{base}{path}")).unwrap()
+    }
+
+    fn captured(resource: &str) -> Value {
+        let page: Value = serde_json::from_str(CDP_PAGE).unwrap();
+        page["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|i| i["resource"] == resource)
+            .unwrap_or_else(|| panic!("{resource} is not in cdp-pricing-page.json"))
+            .clone()
+    }
+
+    /// Tavily's listing as the Coinbase feed carries it: POST with an example
+    /// body, and two payment options -- `exact` to an address, and `agent-pay`
+    /// whose payTo is a quote reference.
+    fn tavily() -> Value {
+        captured("https://x402.tavily.com/search")
+    }
+
+    fn accepts() -> Value {
+        tavily()["accepts"].clone()
+    }
+
+    fn post(example: Option<&str>) -> ProbeRequest {
+        ProbeRequest::Declared {
+            method: ProbeMethod::Post,
+            example: example.map(str::to_string),
+        }
+    }
+
+    fn get() -> ProbeRequest {
+        ProbeRequest::Declared {
+            method: ProbeMethod::Get,
+            example: None,
+        }
+    }
+
+    fn target(url: &str, request: ProbeRequest) -> ProbeTarget {
+        ProbeTarget {
+            url: url::Url::parse(url).unwrap(),
+            resource_type: "http".to_string(),
+            pay_to: vec![],
+            request,
+        }
+    }
+
+    async fn status_of(t: &HealthTracker, url: &str) -> HealthStatus {
+        t.snapshot().await.get(url).unwrap().status
+    }
+
+    async fn reason_of(t: &HealthTracker, url: &str) -> Option<QuarantineReason> {
+        t.snapshot().await.get(url).unwrap().quarantine_reason
+    }
+
+    // ------------------------------------------------------------------------
+    // Where the method comes from
+    // ------------------------------------------------------------------------
+
+    #[test]
+    fn declared_request_reads_every_declaration_in_order() {
+        // The feed's own shapes: GET with query params, POST with a body, and
+        // an entry that declares nothing.
+        let onesource = captured("https://api.onesource.io/api/chain/erc20-balance");
+        assert_eq!(
+            declared_request(onesource.get("extensions")),
+            get(),
+            "query params are declared, and never sent: nothing a listing says goes into the URL"
+        );
+        let enrich = captured("https://stableenrich.dev/api/fullenrich/people-search");
+        let ProbeRequest::Declared { method, example } = declared_request(enrich.get("extensions"))
+        else {
+            panic!("StableEnrich declares POST");
+        };
+        assert_eq!(method, ProbeMethod::Post);
+        assert_eq!(
+            serde_json::from_str::<Value>(&example.unwrap()).unwrap(),
+            enrich["extensions"]["bazaar"]["info"]["input"]["body"]
+        );
+        let nodate = captured("https://api.example-nodate.test/quote");
+        assert_eq!(
+            declared_request(nodate.get("extensions")),
+            ProbeRequest::Undeclared
+        );
+        assert_eq!(declared_request(None), ProbeRequest::Undeclared);
+        assert_eq!(
+            declared_request(Some(&json!({ "other": {} }))),
+            ProbeRequest::Undeclared
+        );
+
+        // 1. info.input.method, case and spaces aside.
+        let info = |m: Value| json!({ "bazaar": { "info": { "input": { "method": m } } } });
+        for (raw, want) in [
+            (json!(" post "), Some(ProbeMethod::Post)),
+            (json!("put"), Some(ProbeMethod::Put)),
+            (json!("PATCH"), Some(ProbeMethod::Patch)),
+            (json!("get"), Some(ProbeMethod::Get)),
+            (json!("HEAD"), Some(ProbeMethod::Get)),
+            (json!("DELETE"), Some(ProbeMethod::Get)),
+            (json!("FETCH"), None),
+            (json!(""), None),
+            (json!(42), None),
+            (Value::Null, None),
+        ] {
+            let got = declared_request(Some(&info(raw.clone())));
+            match want {
+                None => assert_eq!(got, ProbeRequest::Undeclared, "{raw}"),
+                Some(ProbeMethod::Get) => assert_eq!(got, get(), "{raw}"),
+                Some(m) => assert_eq!(
+                    got,
+                    ProbeRequest::Declared {
+                        method: m,
+                        example: None
+                    },
+                    "{raw}: a body method with no example"
+                ),
+            }
+        }
+
+        // 2. The JSON Schema half: the SDK's HTTP shape, a const, an enum.
+        let schema =
+            |input: Value| json!({ "bazaar": { "schema": { "properties": { "input": input } } } });
+        assert_eq!(
+            declared_request(Some(&schema(json!({ "type": "http", "method": "GET" })))),
+            get()
+        );
+        assert_eq!(
+            declared_request(Some(&schema(
+                json!({ "properties": { "method": { "const": "PUT" } } })
+            ))),
+            ProbeRequest::Declared {
+                method: ProbeMethod::Put,
+                example: None
+            }
+        );
+        assert_eq!(
+            declared_request(Some(&schema(
+                json!({ "properties": { "method": { "enum": ["POST", "GET"] } } })
+            ))),
+            post(None)
+        );
+
+        // 3. A body declared without a method is a POST: the SDK's body shape
+        // (MeshRelay's), a bare bodyType, a bare example body.
+        assert_eq!(
+            declared_request(Some(&schema(
+                json!({ "properties": { "body": { "type": "object" } } })
+            ))),
+            post(None)
+        );
+        assert_eq!(
+            declared_request(Some(
+                &json!({ "bazaar": { "info": { "input": { "bodyType": "json" } } } })
+            )),
+            post(None)
+        );
+        assert_eq!(
+            declared_request(Some(
+                &json!({ "bazaar": { "info": { "input": { "body": { "q": 1 } } } } })
+            )),
+            post(Some(r#"{"q":1}"#))
+        );
+
+        // The order: info.input.method wins over the schema.
+        assert_eq!(
+            declared_request(Some(&json!({ "bazaar": {
+                "info": { "input": { "method": "GET" } },
+                "schema": { "properties": { "input": { "properties": { "body": {} } } } }
+            } }))),
+            get()
+        );
+    }
+
+    #[test]
+    fn our_own_origin_and_opted_out_prefixes_only_ever_get_a_get() {
+        let ext = json!({ "bazaar": { "info": { "input": {
+            "method": "POST", "body": { "agentUri": "https://x.example", "recipient": "0x1" }
+        } } } });
+        for own in [
+            "https://facilitator.ultravioletadao.xyz/register",
+            "https://FACILITATOR.ultravioletadao.xyz./feedback",
+            "https://facilitator.ultravioletadao.xyz:8443/settle",
+        ] {
+            let url = url::Url::parse(own).unwrap();
+            assert_eq!(probe_request(&url, Some(&ext), false), get(), "{own}");
+        }
+        let other = url::Url::parse("https://facilitator.ultravioletadao.xyz.evil.com/x").unwrap();
+        assert!(matches!(
+            probe_request(&other, Some(&ext), false),
+            ProbeRequest::Declared {
+                method: ProbeMethod::Post,
+                ..
+            }
+        ));
+        // The owner's opt-out, read from the curation manifest.
+        assert_eq!(probe_request(&other, Some(&ext), true), get());
+        assert_eq!(
+            probe_request(&other, None, true),
+            get(),
+            "and no fallback either"
+        );
+    }
+
+    // ------------------------------------------------------------------------
+    // What goes on the wire
+    // ------------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn a_post_only_listing_is_probed_with_post_and_found_alive() {
+        let listing = tavily();
+        let request = declared_request(listing.get("extensions"));
+        let (base, seller) = serve(HashMap::from([(
+            "/search".to_string(),
+            route(405, 402, &listing["accepts"]),
+        )]))
+        .await;
+        let url = at(&base, "/search");
+
+        // What the prober did until now: a GET, which a POST-only endpoint
+        // refuses -- and that refusal was filed as auth-gated.
+        let get = probe_once(&Loopback::new(), &url, ProbeMethod::Get, None).await;
+        assert_eq!(get.http, Some(405));
+        assert_eq!(get.class, ProbeClass::AuthGated);
+
+        let probed = probe_listing(&Loopback::new(), &url, &request, None).await;
+        assert_eq!(probed.outcome.class, ProbeClass::Alive);
+        assert_eq!(probed.outcome.http, Some(402));
+        assert_eq!(probed.method, ProbeMethod::Post);
+        assert!(!probed.fell_back);
+
+        let posts: Vec<Seen> = seller
+            .seen("/search")
+            .into_iter()
+            .filter(|s| s.method == "POST")
+            .collect();
+        assert_eq!(posts.len(), 1, "one probe: `{{}}` was enough");
+        assert_eq!(posts[0].body, EMPTY_JSON_BODY, "the example stays home");
+        assert_eq!(posts[0].content_type.as_deref(), Some("application/json"));
+        assert!(!posts[0].payment_header, "unpaid: no payment header");
+    }
+
+    #[tokio::test]
+    async fn the_example_body_travels_only_when_empty_is_refused() {
+        let listing = tavily();
+        let example = listing["extensions"]["bazaar"]["info"]["input"]["body"].clone();
+        let request = declared_request(listing.get("extensions"));
+        let mut validating = route(405, 402, &accepts());
+        validating.expect_body = Some(example.clone());
+        let mut strict = validating.clone();
+        strict.refuse = 422;
+        let (base, seller) = serve(HashMap::from([
+            ("/validating".to_string(), validating),
+            ("/strict".to_string(), strict),
+        ]))
+        .await;
+
+        for path in ["/validating", "/strict"] {
+            let probed = probe_listing(&Loopback::new(), &at(&base, path), &request, None).await;
+            assert_eq!(probed.outcome.class, ProbeClass::Alive, "{path}");
+            assert!(probed.fell_back, "{path}");
+            let seen = seller.seen(path);
+            assert_eq!(seen.len(), 2, "{path}: one extra request, no more");
+            assert_eq!(seen[0].body, EMPTY_JSON_BODY, "{path}");
+            assert_eq!(
+                serde_json::from_str::<Value>(&seen[1].body).unwrap(),
+                example,
+                "{path}: the listing's own example, second"
+            );
+        }
+
+        // No example declared: the 400 stands, and nothing else is sent.
+        let probed = probe_listing(
+            &Loopback::new(),
+            &at(&base, "/validating"),
+            &post(None),
+            None,
+        )
+        .await;
+        assert_eq!(probed.outcome.http, Some(400));
+        assert_eq!(probed.outcome.class, ProbeClass::Degraded);
+        assert_eq!(seller.seen("/validating").len(), 3);
+    }
+
+    #[tokio::test]
+    async fn a_declared_put_or_patch_is_sent_as_declared() {
+        let (base, seller) = serve(HashMap::from([(
+            "/item".to_string(),
+            route(405, 402, &accepts()),
+        )]))
+        .await;
+        let url = at(&base, "/item");
+        for method in [ProbeMethod::Put, ProbeMethod::Patch] {
+            let request = ProbeRequest::Declared {
+                method,
+                example: Some(r#"{"id":1}"#.to_string()),
+            };
+            let probed = probe_listing(&Loopback::new(), &url, &request, None).await;
+            assert_eq!(probed.outcome.class, ProbeClass::Alive);
+            let last = seller.seen("/item").pop().unwrap();
+            assert_eq!(last.method, method.as_str());
+            assert_eq!(last.body, EMPTY_JSON_BODY);
+        }
+    }
+
+    #[tokio::test]
+    async fn a_405_to_the_declared_method_is_degraded_not_auth_gated() {
+        let (base, seller) = serve(HashMap::from([(
+            "/moved".to_string(),
+            route(405, 405, &accepts()),
+        )]))
+        .await;
+        let probed = probe_listing(
+            &Loopback::new(),
+            &at(&base, "/moved"),
+            &post(Some(r#"{"q":1}"#)),
+            None,
+        )
+        .await;
+        assert_eq!(probed.outcome.http, Some(405));
+        assert_eq!(probed.outcome.class, ProbeClass::Degraded);
+        assert_eq!(
+            seller.methods("/moved"),
+            ["POST"],
+            "a refusal of the method is not a refusal of the body: the example stays home"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_declared_post_that_answers_404_fails_as_always() {
+        let (base, _seller) = serve(HashMap::from([(
+            "/gone".to_string(),
+            route(404, 404, &accepts()),
+        )]))
+        .await;
+        let url = at(&base, "/gone");
+        let probed = probe_listing(&Loopback::new(), &url, &post(None), None).await;
+        assert_eq!(probed.outcome.class, ProbeClass::Fail);
+        assert_eq!(probed.outcome.http, Some(404));
+
+        let t = HealthTracker::new();
+        for n in 1..=3 {
+            t.record_probe(
+                url.as_str(),
+                ProbeClass::Fail,
+                Some(404),
+                1,
+                Some(probed.method),
+            )
+            .await;
+            let quarantined = status_of(&t, url.as_str()).await == HealthStatus::Quarantined;
+            assert_eq!(quarantined, n == 3, "fail #{n}");
+        }
+        assert_eq!(
+            reason_of(&t, url.as_str()).await,
+            Some(QuarantineReason::FailStreak)
+        );
+    }
+
+    #[tokio::test]
+    async fn an_oversized_or_non_json_example_is_never_sent() {
+        let ext = |body: Value, body_type: Value| {
+            json!({ "bazaar": { "info": { "input": {
+                "method": "POST", "bodyType": body_type, "body": body
+            } } } })
+        };
+        let example_of = |e: &Value| match declared_request(Some(e)) {
+            ProbeRequest::Declared { example, .. } => example,
+            other => panic!("POST is declared: {other:?}"),
+        };
+        // `{"q":"…"}` serializes to 8 bytes plus the string.
+        let at_cap = json!({ "q": "x".repeat(MAX_PROBE_BODY_BYTES - 8) });
+        assert_eq!(
+            serde_json::to_string(&at_cap).unwrap().len(),
+            MAX_PROBE_BODY_BYTES
+        );
+        assert_eq!(
+            example_of(&ext(at_cap.clone(), json!("json"))),
+            Some(serde_json::to_string(&at_cap).unwrap()),
+            "exactly at the cap is kept"
+        );
+        let giant = json!({ "q": "x".repeat(MAX_PROBE_BODY_BYTES - 7) });
+        assert_eq!(example_of(&ext(giant.clone(), json!("json"))), None);
+        assert_eq!(
+            example_of(&ext(json!({ "a": 1 }), json!("form-data"))),
+            None
+        );
+        assert_eq!(example_of(&ext(json!("a=1"), json!("text"))), None);
+        assert_eq!(example_of(&ext(Value::Null, json!("json"))), None);
+        assert_eq!(
+            example_of(&ext(json!({}), json!("json"))),
+            None,
+            "`{{}}` is no example"
+        );
+        assert_eq!(
+            example_of(&ext(json!({ "a": 1 }), json!(" JSON "))),
+            Some(r#"{"a":1}"#.to_string()),
+            "bodyType is not case-sensitive"
+        );
+        assert_eq!(
+            example_of(&ext(json!({ "a": 1 }), Value::Null)),
+            Some(r#"{"a":1}"#.to_string()),
+            "no bodyType: the example is JSON already"
+        );
+
+        // On the wire: a seller that refuses `{}` never sees the giant either.
+        let mut validating = route(405, 402, &accepts());
+        validating.expect_body = Some(giant.clone());
+        let (base, seller) = serve(HashMap::from([("/echo".to_string(), validating)])).await;
+        let request = declared_request(Some(&ext(giant, json!("json"))));
+        let probed = probe_listing(&Loopback::new(), &at(&base, "/echo"), &request, None).await;
+        assert_eq!(probed.outcome.http, Some(400));
+        let seen = seller.seen("/echo");
+        assert_eq!(seen.len(), 1);
+        assert_eq!(seen[0].body, EMPTY_JSON_BODY);
+    }
+
+    #[tokio::test]
+    async fn a_body_probe_goes_through_the_same_connector_checks_as_a_get() {
+        use crate::discovery_security::{json_request, safe_send_json};
+        let loopback = url::Url::parse("http://127.0.0.1:8080/x").unwrap();
+        assert!(matches!(
+            safe_send_json(
+                PROBE_UA,
+                PROBE_TIMEOUT,
+                &loopback,
+                reqwest::Method::POST,
+                "{}".into()
+            )
+            .await,
+            Err(SecurityReject::DisallowedAddress(_))
+        ));
+        let bad_port = url::Url::parse("http://93.184.216.34:6379/x").unwrap();
+        assert!(matches!(
+            safe_send_json(
+                PROBE_UA,
+                PROBE_TIMEOUT,
+                &bad_port,
+                reqwest::Method::PUT,
+                "{}".into()
+            )
+            .await,
+            Err(SecurityReject::Port(6379))
+        ));
+
+        // The shape each hop sends, built without sending it.
+        let client = reqwest::Client::new();
+        let url = url::Url::parse("https://seller.example/x").unwrap();
+        let body = wire_body(ProbeMethod::Patch, Some(r#"{"a":1}"#));
+        let req = json_request(&client, &url, body.as_ref()).build().unwrap();
+        assert_eq!(req.method(), reqwest::Method::PATCH);
+        assert_eq!(
+            req.headers().get(reqwest::header::CONTENT_TYPE).unwrap(),
+            "application/json"
+        );
+        assert_eq!(req.body().unwrap().as_bytes(), Some(&br#"{"a":1}"#[..]));
+        assert!(!req.headers().keys().any(|k| k.as_str().contains("payment")));
+        let req = json_request(&client, &url, wire_body(ProbeMethod::Get, None).as_ref())
+            .build()
+            .unwrap();
+        assert_eq!(req.method(), reqwest::Method::GET);
+        assert!(req.body().is_none());
+        assert!(req.headers().get(reqwest::header::CONTENT_TYPE).is_none());
+    }
+
+    #[tokio::test]
+    async fn an_oversized_402_body_is_dropped_and_the_header_still_read() {
+        let mut big = route(402, 402, &accepts());
+        big.pad = MAX_PROBE_RESPONSE_BYTES + 1;
+        let mut small = route(402, 402, &accepts());
+        small.pad = 1024;
+        let (base, _seller) = serve(HashMap::from([
+            ("/big".to_string(), big),
+            ("/small".to_string(), small),
+        ]))
+        .await;
+        let out = probe_once(&Loopback::new(), &at(&base, "/big"), ProbeMethod::Get, None).await;
+        assert_eq!(out.class, ProbeClass::Alive);
+        assert!(out.body.is_none(), "never read whole");
+        assert!(
+            pay_to_from_402(out.body.as_deref(), out.challenge_header.as_deref()).readable,
+            "the challenge is in the header"
+        );
+        let out = probe_once(
+            &Loopback::new(),
+            &at(&base, "/small"),
+            ProbeMethod::Get,
+            None,
+        )
+        .await;
+        assert_eq!(out.body.map(|b| b.len()), Some(1024));
+    }
+
+    // ------------------------------------------------------------------------
+    // The fallback
+    // ------------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn a_listing_with_no_method_is_found_by_one_post_after_a_405_400_or_404() {
+        let mut routes = HashMap::new();
+        for code in [405u16, 400, 404] {
+            routes.insert(format!("/r{code}"), route(code, 402, &accepts()));
+        }
+        let (base, seller) = serve(routes).await;
+        for code in [405u16, 400, 404] {
+            let path = format!("/r{code}");
+            let url = at(&base, &path);
+            let probed =
+                probe_listing(&Loopback::new(), &url, &ProbeRequest::Undeclared, None).await;
+            assert_eq!(probed.outcome.class, ProbeClass::Alive, "{code}");
+            assert_eq!(probed.method, ProbeMethod::Post, "{code}");
+            assert!(probed.fell_back, "{code}");
+            let seen = seller.seen(&path);
+            assert_eq!(seller.methods(&path), ["GET", "POST"], "{code}");
+            assert_eq!(seen[1].body, EMPTY_JSON_BODY);
+            assert_eq!(seen[1].content_type.as_deref(), Some("application/json"));
+            assert!(!seen[1].payment_header);
+        }
+
+        // The method that worked is remembered, and the next cycle starts there.
+        let url = at(&base, "/r404");
+        let t = HealthTracker::new();
+        t.record_probe(
+            url.as_str(),
+            ProbeClass::Alive,
+            Some(402),
+            1,
+            Some(ProbeMethod::Post),
+        )
+        .await;
+        let recorded = t.recorded_method(url.as_str()).await;
+        assert_eq!(recorded, Some(ProbeMethod::Post));
+        assert_eq!(
+            t.snapshot().await[url.as_str()].probe_method.as_deref(),
+            Some("POST"),
+            "and the listing says which request answered"
+        );
+        let again =
+            probe_listing(&Loopback::new(), &url, &ProbeRequest::Undeclared, recorded).await;
+        assert_eq!(again.outcome.class, ProbeClass::Alive);
+        assert!(!again.fell_back);
+        assert_eq!(seller.methods("/r404"), ["GET", "POST", "POST"]);
+    }
+
+    #[tokio::test]
+    async fn the_fallback_is_one_request_and_has_to_be_proven_by_a_readable_challenge() {
+        let (base, seller) = serve(HashMap::from([
+            ("/both-405".to_string(), route(405, 405, &accepts())),
+            (
+                "/unreadable".to_string(),
+                Route {
+                    challenge: None,
+                    ..route(405, 402, &accepts())
+                },
+            ),
+            ("/teapot".to_string(), route(418, 402, &accepts())),
+        ]))
+        .await;
+
+        for path in ["/both-405", "/unreadable"] {
+            let probed = probe_listing(
+                &Loopback::new(),
+                &at(&base, path),
+                &ProbeRequest::Undeclared,
+                None,
+            )
+            .await;
+            assert_eq!(
+                seller.seen(path).len(),
+                2,
+                "{path}: never more than one extra probe"
+            );
+            assert_eq!(
+                probed.outcome.class,
+                ProbeClass::AuthGated,
+                "{path}: the GET stands"
+            );
+            assert_eq!(probed.outcome.http, Some(405), "{path}");
+            assert_eq!(probed.method, ProbeMethod::Get, "{path}");
+            assert!(!probed.fell_back, "{path}");
+        }
+        // Any other refusal is not what the fallback is for.
+        let probed = probe_listing(
+            &Loopback::new(),
+            &at(&base, "/teapot"),
+            &ProbeRequest::Undeclared,
+            None,
+        )
+        .await;
+        assert_eq!(seller.methods("/teapot"), ["GET"]);
+        assert_eq!(probed.outcome.http, Some(418));
+    }
+
+    #[tokio::test]
+    async fn a_remembered_post_that_stops_answering_is_retried_with_get() {
+        let (base, seller) = serve(HashMap::from([
+            ("/now-get".to_string(), route(402, 404, &accepts())),
+            ("/gone".to_string(), route(404, 405, &accepts())),
+            ("/busy".to_string(), route(402, 503, &accepts())),
+        ]))
+        .await;
+        // An origin asking to be left alone is not a wrong method: no retry.
+        let probed = probe_listing(
+            &Loopback::new(),
+            &at(&base, "/busy"),
+            &ProbeRequest::Undeclared,
+            Some(ProbeMethod::Post),
+        )
+        .await;
+        assert_eq!(seller.methods("/busy"), ["POST"]);
+        assert_eq!(probed.outcome.http, Some(503));
+        let probed = probe_listing(
+            &Loopback::new(),
+            &at(&base, "/now-get"),
+            &ProbeRequest::Undeclared,
+            Some(ProbeMethod::Post),
+        )
+        .await;
+        assert_eq!(seller.methods("/now-get"), ["POST", "GET"]);
+        assert_eq!(probed.outcome.class, ProbeClass::Alive);
+        assert_eq!(probed.method, ProbeMethod::Get);
+
+        // Both refuse: the remembered method's 405 is the answer, and it is
+        // not "healthy for its design".
+        let probed = probe_listing(
+            &Loopback::new(),
+            &at(&base, "/gone"),
+            &ProbeRequest::Undeclared,
+            Some(ProbeMethod::Post),
+        )
+        .await;
+        assert_eq!(seller.methods("/gone"), ["POST", "GET"]);
+        assert_eq!(probed.method, ProbeMethod::Post);
+        assert_eq!(probed.outcome.http, Some(405));
+        assert_eq!(probed.outcome.class, ProbeClass::Degraded);
+    }
+
+    #[test]
+    fn a_tick_is_planned_in_requests_demand_included() {
+        let t = HealthTracker::new();
+        let undeclared = |u: &str| target(u, ProbeRequest::Undeclared);
+        // The sweep: a host with three listings that may each send two
+        // requests, and one that sends one.
+        let targets = vec![
+            undeclared("https://busy.example/a"),
+            undeclared("https://busy.example/b"),
+            target("https://busy.example/c", get()),
+            target("https://quiet.example/x", get()),
+        ];
+        let (due, overflow) = plan_tick(&t, targets.clone(), Vec::new(), 120, now_secs());
+        let urls: Vec<&str> = due.iter().map(|t| t.url.as_str()).collect();
+        assert_eq!(
+            urls,
+            [
+                "https://busy.example/a",
+                "https://busy.example/c",
+                "https://quiet.example/x"
+            ]
+        );
+        assert!(overflow.is_empty());
+
+        // The global budget is in requests too: 3 requests, not 3 listings --
+        // a second two-slot probe does not fit even on a fresh host.
+        let spread = vec![
+            undeclared("https://busy.example/a"),
+            undeclared("https://other.example/y"),
+            target("https://other.example/z", get()),
+        ];
+        let (due, _) = plan_tick(&t, spread, Vec::new(), 3, now_secs());
+        let urls: Vec<&str> = due.iter().map(|t| t.url.as_str()).collect();
+        assert_eq!(urls, ["https://busy.example/a", "https://other.example/z"]);
+
+        // Demand goes first and is held to the same cap; what does not fit is
+        // handed back, and is not probed by the sweep in the same tick.
+        let demanded = vec![
+            (
+                undeclared("https://busy.example/a"),
+                RefreshReason::PurchaseIntent,
+            ),
+            (
+                undeclared("https://busy.example/b"),
+                RefreshReason::ListingStale,
+            ),
+        ];
+        let (due, overflow) = plan_tick(&t, targets, demanded, 120, now_secs());
+        let urls: Vec<&str> = due.iter().map(|t| t.url.as_str()).collect();
+        assert_eq!(
+            urls,
+            [
+                "https://busy.example/a",
+                "https://busy.example/c",
+                "https://quiet.example/x"
+            ]
+        );
+        assert_eq!(
+            overflow,
+            [(
+                "https://busy.example/b".to_string(),
+                RefreshReason::ListingStale
+            )]
+        );
+    }
+
+    #[tokio::test]
+    async fn demand_that_did_not_fit_goes_back_to_the_queue() {
+        let q = crate::discovery_revalidation::RevalidationQueue::new();
+        let url = "https://busy.example/b";
+        let now = now_secs();
+        assert!(q.request(url, RefreshReason::ListingStale, now).await);
+        assert_eq!(q.take_batch(10, now).await.len(), 1);
+        assert!(
+            !q.request(url, RefreshReason::ListingStale, now).await,
+            "inside its window a request is refused"
+        );
+        q.requeue(url, RefreshReason::ListingStale, now).await;
+        let again = q.take_batch(10, now).await;
+        assert_eq!(again, [(url.to_string(), RefreshReason::ListingStale)]);
+    }
+
+    #[test]
+    fn the_extra_request_counts_against_the_per_host_cap() {
+        let mut per_host = HashMap::new();
+        let a = target("https://busy.example/a", ProbeRequest::Undeclared);
+        let b = target("https://busy.example/b", ProbeRequest::Undeclared);
+        let c = target("https://busy.example/c", get());
+        let d = target("https://busy.example/d", post(Some(r#"{"q":1}"#)));
+        assert!(
+            admit(&mut per_host, &a),
+            "two slots: the GET and its fallback"
+        );
+        assert!(!admit(&mut per_host, &b), "2 + 2 is over the cap of 3");
+        assert!(
+            !admit(&mut per_host, &d),
+            "an example retry reserves two as well"
+        );
+        assert!(
+            admit(&mut per_host, &c),
+            "a GET-only probe fits the last slot"
+        );
+        assert_eq!(per_host["busy.example"], MAX_PER_HOST_PER_TICK);
+        assert!(admit(
+            &mut per_host,
+            &target("https://quiet.example/x", post(None))
+        ));
+        let mut mcp = target("https://mcp.example/mcp", ProbeRequest::Undeclared);
+        mcp.resource_type = "mcp".to_string();
+        assert_eq!(mcp.slots(), 1, "the MCP handshake is one request");
+    }
+
+    #[tokio::test]
+    async fn an_origin_that_names_its_method_in_its_challenge_is_asked_that_way_next() {
+        let accepts = accepts();
+        let naming = |url: &str, method: &str| {
+            header_of(&json!({
+                "x402Version": 2,
+                "resource": { "url": url, "method": method },
+                "accepts": accepts
+            }))
+        };
+        let path = |p: &str, get: u16, post: u16, challenge: String| {
+            (
+                p.to_string(),
+                Route {
+                    challenge: Some(challenge),
+                    ..route(get, post, &accepts)
+                },
+            )
+        };
+        let mut hijacked = accepts.clone();
+        hijacked[0]["payTo"] = json!("0x000000000000000000000000000000000000dEaD");
+        let drifted = header_of(&json!({
+            "x402Version": 2,
+            "resource": { "url": "https://seller.example/drifted", "method": "POST" },
+            "accepts": hijacked
+        }));
+        let (base, seller) = serve(HashMap::from([
+            path(
+                "/query",
+                402,
+                402,
+                naming("https://seller.example/query", "POST"),
+            ),
+            path(
+                "/elsewhere",
+                402,
+                402,
+                naming("https://other.example/q", "POST"),
+            ),
+            path(
+                "/put",
+                402,
+                402,
+                naming("https://seller.example/put", "PUT"),
+            ),
+            path(
+                "/forget",
+                402,
+                404,
+                naming("https://seller.example/forget", "POST"),
+            ),
+            path("/drifted", 402, 402, drifted),
+        ]))
+        .await;
+        let registry = DiscoveryRegistry::new();
+        let t = HealthTracker::new();
+        let lo = Loopback::serving(&base);
+        let undeclared = |p: &str| ProbeTarget {
+            pay_to: vec!["0xfe2d09ca270818e9736207ee27f0fa464a67ac66".to_string()],
+            ..target(
+                &format!("https://seller.example{p}"),
+                ProbeRequest::Undeclared,
+            )
+        };
+        let learned = |t: &HealthTracker, p: &str| {
+            let url = format!("https://seller.example{p}");
+            let records = t.records.try_read().unwrap();
+            records[url.as_str()].learned_method.clone()
+        };
+
+        for p in ["/query", "/elsewhere", "/put", "/forget", "/drifted"] {
+            probe_and_record(&lo, &registry, &t, undeclared(p)).await;
+            assert_eq!(seller.methods(p), ["GET"], "{p}");
+        }
+        assert_eq!(learned(&t, "/query").as_deref(), Some("POST"));
+        assert_eq!(
+            learned(&t, "/elsewhere"),
+            None,
+            "another host names nothing for us"
+        );
+        assert_eq!(learned(&t, "/put"), None, "only a POST is learned");
+        assert_eq!(
+            learned(&t, "/drifted"),
+            None,
+            "a challenge that failed the drift check names nothing"
+        );
+
+        probe_and_record(&lo, &registry, &t, undeclared("/query")).await;
+        assert_eq!(
+            seller.methods("/query"),
+            ["GET", "POST"],
+            "its own challenge said POST"
+        );
+        probe_and_record(&lo, &registry, &t, undeclared("/elsewhere")).await;
+        assert_eq!(seller.methods("/elsewhere"), ["GET", "GET"]);
+
+        // The remembered POST stops answering and the GET still does: the
+        // fallback answers, and what was learned is forgotten.
+        probe_and_record(&lo, &registry, &t, undeclared("/forget")).await;
+        assert_eq!(seller.methods("/forget"), ["GET", "POST", "GET"]);
+        assert_eq!(learned(&t, "/forget"), None);
+    }
+
+    // ------------------------------------------------------------------------
+    // The state machine
+    // ------------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn a_quarantine_built_by_get_is_reprobed_at_once_and_lifted_by_the_first_402() {
+        let url = "https://seller.example/search";
+        let post_target = target(url, post(None));
+        let t = HealthTracker::new();
+        // What the GET-only build left: three GET 404s, quarantined, and the
+        // next probe an hour or more away.
+        for _ in 0..3 {
+            t.record_probe(url, ProbeClass::Fail, Some(404), 1, None)
+                .await;
+        }
+        assert_eq!(status_of(&t, url).await, HealthStatus::Quarantined);
+        let now = now_secs();
+        assert!(
+            tracker_due(&t, &post_target, now),
+            "re-probed this cycle, not after the backoff"
+        );
+        // The same record under a listing that declares GET keeps its schedule:
+        // that one was probed with the right request.
+        assert!(!tracker_due(&t, &target(url, get()), now));
+
+        t.record_probe(
+            url,
+            ProbeClass::Alive,
+            Some(402),
+            1,
+            Some(ProbeMethod::Post),
+        )
+        .await;
+        assert_eq!(
+            status_of(&t, url).await,
+            HealthStatus::Alive,
+            "the first live challenge to the right request lifts what the wrong one built"
+        );
+        assert!(
+            !tracker_due(&t, &post_target, now_secs()),
+            "once probed right, it is back on its schedule"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_get_405_or_404_without_a_declared_method_is_reprobed_once_for_the_fallback() {
+        for (class, code) in [(ProbeClass::AuthGated, 405u16), (ProbeClass::Fail, 404)] {
+            let url = "https://seller.example/lookup";
+            let undeclared = target(url, ProbeRequest::Undeclared);
+            let t = HealthTracker::new();
+            t.record_probe(url, class, Some(code), 1, None).await;
+            assert!(
+                tracker_due(&t, &undeclared, now_secs()),
+                "{code}: not after its schedule"
+            );
+            t.record_probe(url, class, Some(code), 1, Some(ProbeMethod::Get))
+                .await;
+            assert!(
+                !tracker_due(&t, &undeclared, now_secs()),
+                "{code}: a build with the fallback already tried it"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn mcp_endpoints_keep_their_handshake_and_their_schedule() {
+        let url = "https://mcp.seller.example/mcp";
+        let mut mcp = target(url, post(None));
+        mcp.resource_type = "mcp".to_string();
+        let t = HealthTracker::new();
+        t.record_probe(url, ProbeClass::AuthGated, Some(405), 1, None)
+            .await;
+        assert!(!tracker_due(&t, &mcp, now_secs()));
+        t.record_probe(url, ProbeClass::PayToDrift, Some(402), 1, None)
+            .await;
+        assert!(!tracker_due(&t, &mcp, now_secs()));
+    }
+
+    #[tokio::test]
+    async fn evidence_about_another_request_does_not_count_toward_quarantine() {
+        let url = "https://seller.example/search";
+        let t = HealthTracker::new();
+        t.record_probe(url, ProbeClass::Fail, Some(404), 1, None)
+            .await;
+        t.record_probe(url, ProbeClass::Fail, Some(404), 1, None)
+            .await;
+        // One POST failure is one failure of THIS request, not the third.
+        t.record_probe(url, ProbeClass::Fail, Some(404), 1, Some(ProbeMethod::Post))
+            .await;
+        assert_ne!(status_of(&t, url).await, HealthStatus::Quarantined);
+    }
+
+    #[tokio::test]
+    async fn a_drift_hold_is_never_lifted_by_a_single_402() {
+        let url = "https://hijacked.example/pay";
+        let post_target = target(url, post(None));
+
+        // A hold this build set: its schedule stands, and a new request does
+        // not shortcut its recovery.
+        let t = HealthTracker::new();
+        t.record_probe(
+            url,
+            ProbeClass::PayToDrift,
+            Some(402),
+            1,
+            Some(ProbeMethod::Get),
+        )
+        .await;
+        assert_eq!(reason_of(&t, url).await, Some(QuarantineReason::PayToDrift));
+        assert!(!tracker_due(&t, &post_target, now_secs()));
+        t.record_probe(
+            url,
+            ProbeClass::Alive,
+            Some(402),
+            1,
+            Some(ProbeMethod::Post),
+        )
+        .await;
+        assert_eq!(
+            status_of(&t, url).await,
+            HealthStatus::Quarantined,
+            "one clean challenge to another request does not lift it"
+        );
+        assert_eq!(reason_of(&t, url).await, Some(QuarantineReason::PayToDrift));
+        t.record_probe(
+            url,
+            ProbeClass::Alive,
+            Some(402),
+            1,
+            Some(ProbeMethod::Post),
+        )
+        .await;
+        assert_eq!(
+            status_of(&t, url).await,
+            HealthStatus::Alive,
+            "two do, as always"
+        );
+        assert_eq!(reason_of(&t, url).await, None);
+
+        // A hold an older build set (no method, no reason): read by its
+        // signature, looked at once now -- and still not lifted by one 402.
+        let legacy = HealthTracker::new();
+        legacy
+            .record_probe(url, ProbeClass::PayToDrift, Some(402), 1, None)
+            .await;
+        legacy
+            .records
+            .write()
+            .await
+            .get_mut(url)
+            .unwrap()
+            .quarantine_reason = None;
+        assert_eq!(
+            reason_of(&legacy, url).await,
+            Some(QuarantineReason::PayToDrift)
+        );
+        assert!(
+            tracker_due(&legacy, &post_target, now_secs()),
+            "looked at once"
+        );
+        legacy
+            .record_probe(
+                url,
+                ProbeClass::Alive,
+                Some(402),
+                1,
+                Some(ProbeMethod::Post),
+            )
+            .await;
+        assert_eq!(status_of(&legacy, url).await, HealthStatus::Quarantined);
+        assert!(
+            !tracker_due(&legacy, &post_target, now_secs()),
+            "and only once"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_drift_hold_is_not_lifted_by_an_answer_that_is_not_a_challenge() {
+        for (class, code) in [
+            (ProbeClass::AuthGated, Some(401)),
+            (ProbeClass::Degraded, Some(400)),
+            (ProbeClass::Unprobeable, None),
+        ] {
+            let url = "https://hijacked.example/pay";
+            let t = HealthTracker::new();
+            t.record_probe(
+                url,
+                ProbeClass::PayToDrift,
+                Some(402),
+                1,
+                Some(ProbeMethod::Post),
+            )
+            .await;
+            t.record_probe(
+                url,
+                ProbeClass::Alive,
+                Some(402),
+                1,
+                Some(ProbeMethod::Post),
+            )
+            .await;
+            t.record_probe(url, class, code, 1, Some(ProbeMethod::Post))
+                .await;
+            assert_eq!(
+                status_of(&t, url).await,
+                HealthStatus::Quarantined,
+                "{class:?}"
+            );
+            assert_eq!(
+                reason_of(&t, url).await,
+                Some(QuarantineReason::PayToDrift),
+                "{class:?}"
+            );
+            // And it reset the clean streak: one more challenge is not two.
+            t.record_probe(
+                url,
+                ProbeClass::Alive,
+                Some(402),
+                1,
+                Some(ProbeMethod::Post),
+            )
+            .await;
+            assert_eq!(
+                status_of(&t, url).await,
+                HealthStatus::Quarantined,
+                "{class:?}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn a_legacy_drift_hold_stays_a_drift_hold_through_a_failure() {
+        // Read off its signature on the first probe by this build, and KEPT:
+        // once its last status code is a 404, the signature would say "fail
+        // streak", and a change of request would lift it with one 402.
+        let url = "https://hijacked.example/pay";
+        let old: HashMap<String, HealthRecord> = serde_json::from_value(json!({
+            "https://hijacked.example/pay": { "status": "quarantined", "http_status": 402 }
+        }))
+        .unwrap();
+        let t = HealthTracker::new();
+        *t.records.write().await = old;
+        t.record_probe(url, ProbeClass::Fail, Some(404), 1, Some(ProbeMethod::Get))
+            .await;
+        assert_eq!(reason_of(&t, url).await, Some(QuarantineReason::PayToDrift));
+        t.record_probe(
+            url,
+            ProbeClass::Alive,
+            Some(402),
+            1,
+            Some(ProbeMethod::Post),
+        )
+        .await;
+        assert_eq!(
+            status_of(&t, url).await,
+            HealthStatus::Quarantined,
+            "a new request does not lift a drift hold"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_quarantine_reason_is_kept_and_published() {
+        let url = "https://seller.example/x";
+        let t = HealthTracker::new();
+        for _ in 0..3 {
+            t.record_probe(url, ProbeClass::Fail, Some(404), 1, Some(ProbeMethod::Get))
+                .await;
+        }
+        let json = serde_json::to_value(&t.snapshot().await[url]).unwrap();
+        assert_eq!(json["quarantineReason"], "fail_streak");
+        // One clean challenge into the recovery: still a fail streak, not a
+        // drift -- the reason is kept, not guessed from the last status code.
+        t.record_probe(url, ProbeClass::Alive, Some(402), 1, Some(ProbeMethod::Get))
+            .await;
+        assert_eq!(reason_of(&t, url).await, Some(QuarantineReason::FailStreak));
+        t.record_probe(
+            url,
+            ProbeClass::PayToDrift,
+            Some(402),
+            1,
+            Some(ProbeMethod::Get),
+        )
+        .await;
+        assert_eq!(reason_of(&t, url).await, Some(QuarantineReason::PayToDrift));
+        for _ in 0..2 {
+            t.record_probe(url, ProbeClass::Alive, Some(402), 1, Some(ProbeMethod::Get))
+                .await;
+        }
+        let json = serde_json::to_value(&t.snapshot().await[url]).unwrap();
+        assert_eq!(json["status"], "alive");
+        assert!(
+            json.get("quarantineReason").is_none(),
+            "only while quarantined"
+        );
+
+        // A record from before the reason existed, as the overlay holds it.
+        let old: HashMap<String, HealthRecord> = serde_json::from_value(json!({
+            "https://a.example/x": { "status": "quarantined", "http_status": 402 },
+            "https://b.example/x": { "status": "quarantined", "http_status": 404 },
+            "https://c.example/x": {
+                "status": "quarantined", "http_status": 402, "consecutive_ok": 1
+            }
+        }))
+        .unwrap();
+        let t = HealthTracker::new();
+        *t.records.write().await = old;
+        assert_eq!(
+            reason_of(&t, "https://a.example/x").await,
+            Some(QuarantineReason::PayToDrift)
+        );
+        assert_eq!(
+            reason_of(&t, "https://b.example/x").await,
+            Some(QuarantineReason::FailStreak)
+        );
+        assert_eq!(
+            reason_of(&t, "https://c.example/x").await,
+            Some(QuarantineReason::FailStreak),
+            "one clean challenge into a recovery is not a drift"
+        );
+        // Its first probe by this build keeps the reason the signature gave it,
+        // even when that probe's 402 would read as a drift on its own.
+        t.record_probe(
+            "https://b.example/x",
+            ProbeClass::Alive,
+            Some(402),
+            1,
+            Some(ProbeMethod::Get),
+        )
+        .await;
+        assert_eq!(
+            reason_of(&t, "https://b.example/x").await,
+            Some(QuarantineReason::FailStreak)
+        );
+    }
+
+    #[test]
+    fn the_drift_check_ignores_a_quote_reference_and_nothing_else() {
+        let listing = tavily();
+        // What the catalog keeps from this listing, by the import rule itself:
+        // the agent-pay option is dropped, so its quote reference is never a
+        // declared recipient.
+        let (mut imported, _rejected) = crate::discovery_aggregator::convert_resources(
+            vec![serde_json::from_value(listing.clone()).unwrap()],
+            "coinbase",
+        );
+        let declared: Vec<String> = imported
+            .remove(0)
+            .accepts
+            .iter()
+            .map(|a| a.pay_to.to_string().to_ascii_lowercase())
+            .collect();
+        assert_eq!(declared, ["0xfe2d09ca270818e9736207ee27f0fa464a67ac66"]);
+
+        let live = pay_to_from_402(None, Some(&challenge_for(&listing["accepts"])));
+        assert!(live.readable);
+        assert_eq!(
+            live.pay_to, declared,
+            "urn:x402:agent-pay:see-quote is not a recipient"
+        );
+        assert!(
+            !pay_to_drifted(&declared, &live),
+            "the seller's own challenge"
+        );
+
+        let with = |slot: usize, pay_to: &str| {
+            let mut a = listing["accepts"].clone();
+            a[slot]["payTo"] = json!(pay_to);
+            pay_to_from_402(None, Some(&challenge_for(&a)))
+        };
+        // Another URN, in any case, is still not a recipient.
+        assert!(!pay_to_drifted(
+            &declared,
+            &with(1, "URN:x402:agent-pay:other")
+        ));
+        // The declared address in another spelling is the declared address.
+        assert!(!pay_to_drifted(
+            &declared,
+            &with(0, " 0XFE2D09CA270818E9736207EE27F0FA464A67AC66 ")
+        ));
+        // Fails closed: anything else counts, in either slot -- including
+        // spellings and chains this build cannot parse.
+        for slot in [0, 1] {
+            for swapped in [
+                "0x000000000000000000000000000000000000dEaD",
+                "0X000000000000000000000000000000000000DEAD",
+                "attacker-account",
+                "cosmos1qypqxpq9qcrsszg2pvxq6rs0zqg3yyc5lzv7xu",
+                "eip155:8453:0x000000000000000000000000000000000000dEaD",
+            ] {
+                assert!(
+                    pay_to_drifted(&declared, &with(slot, swapped)),
+                    "slot {slot}: {swapped}"
+                );
+            }
+        }
+        // A payTo that is not a string is no recipient we can name: it counts.
+        let mut odd = listing["accepts"].clone();
+        odd[1]["payTo"] = json!({ "to": "0x000000000000000000000000000000000000dEaD" });
+        let live = pay_to_from_402(None, Some(&challenge_for(&odd)));
+        assert!(pay_to_drifted(&declared, &live), "fails closed");
+        odd[1]["payTo"] = Value::Null;
+        let live = pay_to_from_402(None, Some(&challenge_for(&odd)));
+        assert!(
+            !pay_to_drifted(&declared, &live),
+            "a null one is nothing at all"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_observation_records_the_request_that_drew_it() {
+        let registry = DiscoveryRegistry::new();
+        let overlay = registry.terms();
+        let url = url::Url::parse("https://x402.tavily.com/search").unwrap();
+        let live = pay_to_from_402(None, Some(&challenge_for(&accepts())));
+        record_observation(
+            &registry,
+            &overlay,
+            &url,
+            "http",
+            ProbeMethod::Post,
+            Some(402),
+            live,
+        )
+        .await;
+        let observed = overlay.get(url.as_str()).await.unwrap();
+        assert_eq!(observed.context.method, "POST");
+        assert_eq!(
+            observed.accepts[0].amount.to_string(),
+            "10000",
+            "and the price it read"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_uptime_attested_is_the_uptime_listed() {
+        let t = HealthTracker::new();
+        let url = "https://seller.example/x";
+        assert!(t.snapshot().await.is_empty());
+        t.record_probe(url, ProbeClass::Alive, Some(402), 1, Some(ProbeMethod::Get))
+            .await;
+        t.record_probe(url, ProbeClass::Fail, Some(500), 1, Some(ProbeMethod::Get))
+            .await;
+        t.record_probe(
+            url,
+            ProbeClass::AuthGated,
+            Some(401),
+            1,
+            Some(ProbeMethod::Get),
+        )
+        .await;
+        let state = t.snapshot().await.remove(url).unwrap();
+        assert_eq!(state.probe_count, Some(3));
+        assert_eq!(state.uptime_bps, Some(6666));
+        assert_eq!(
+            t.uptime(url).await,
+            Some((6666, 3, 2)),
+            "the attestation's number"
+        );
+        let json = serde_json::to_value(&state).unwrap();
+        assert_eq!(json["uptimeBps"], 6666);
+        assert_eq!(json["probeCount"], 3);
+        assert_eq!(json["probeMethod"], "GET");
+        // A record that predates all of this serializes exactly as before.
+        let legacy = HealthTracker::new();
+        legacy
+            .record_probe(url, ProbeClass::Alive, Some(402), 1, None)
+            .await;
+        let json = serde_json::to_value(legacy.snapshot().await.remove(url).unwrap()).unwrap();
+        assert!(json.get("probeMethod").is_none());
+        assert!(json.get("quarantineReason").is_none());
+    }
+
+    // ------------------------------------------------------------------------
+    // End to end
+    // ------------------------------------------------------------------------
+
+    /// The listings the router report found live but hidden or mislabelled,
+    /// plus the first-party family measured the same day, end to end: the
+    /// catalog import, `probe_targets`, the record the GET-only build left,
+    /// one `probe_and_record`, and what the listing shows after it.
+    #[tokio::test]
+    async fn the_reported_listings_are_found_with_the_request_they_declare() {
+        let file: Value = serde_json::from_str(REPORT_CASES).unwrap();
+        let cases = file["cases"].as_array().unwrap();
+        let registry = DiscoveryRegistry::new();
+        let mut routes = HashMap::new();
+        let mut resources = Vec::new();
+        for case in cases {
+            let listing = match case["capturedIn"].as_str() {
+                Some(_) => captured(case["resource"].as_str().unwrap()),
+                None => case["listing"].clone(),
+            };
+            let (mut imported, _) = crate::discovery_aggregator::convert_resources(
+                vec![serde_json::from_value(listing.clone()).unwrap()],
+                "coinbase",
+            );
+            let resource = imported.remove(0);
+            routes.insert(
+                resource.url.path().to_string(),
+                route(
+                    case["seller"]["GET"].as_u64().unwrap() as u16,
+                    case["seller"]["POST"].as_u64().unwrap() as u16,
+                    &listing["accepts"],
+                ),
+            );
+            resources.push(resource.url.to_string());
+            registry.register(resource).await.unwrap();
+        }
+        let (base, seller) = serve(routes).await;
+        let lo = Loopback::serving(&base);
+        let targets = registry.probe_targets().await;
+        assert_eq!(targets.len(), cases.len());
+
+        for (case, resource) in cases.iter().zip(&resources) {
+            let name = case["name"].as_str().unwrap();
+            let target = targets
+                .iter()
+                .find(|t| t.url.as_str() == resource)
+                .unwrap()
+                .clone();
+            let url = target.url.to_string();
+
+            // What the GET-only build left behind.
+            let t = HealthTracker::new();
+            match case["reported"].as_str().unwrap() {
+                "quarantined" => {
+                    for _ in 0..3 {
+                        t.record_probe(&url, ProbeClass::Fail, Some(404), 1, None)
+                            .await;
+                    }
+                }
+                "auth_gated" => {
+                    t.record_probe(&url, ProbeClass::AuthGated, Some(405), 1, None)
+                        .await;
+                }
+                other => panic!("{name}: unexpected label {other}"),
+            }
+
+            let due_now = tracker_due(&t, &target, now_secs());
+            probe_and_record(&lo, &registry, &t, target.clone()).await;
+            let state = t.snapshot().await.remove(&url).unwrap();
+            let expect = &case["expect"];
+            assert_eq!(
+                state.probe_method.as_deref(),
+                expect["method"].as_str(),
+                "{name}: answered by"
+            );
+            assert_eq!(state.http_status, Some(402), "{name}");
+            let visible = state.status != HealthStatus::Quarantined;
+            let expect_visible = expect["visibleAfterOneProbe"].as_bool().unwrap();
+            assert_eq!(due_now, expect_visible, "{name}: re-probed this cycle");
+            assert_eq!(visible, expect_visible, "{name}: visible after one probe");
+            assert_eq!(
+                is_verified_alive(
+                    &state,
+                    &target.request,
+                    None,
+                    now_secs(),
+                    crate::discovery_terms::freshness_window_secs()
+                ),
+                expect_visible,
+                "{name}: and exposed, by the rule every public surface applies"
+            );
+            if visible {
+                assert_eq!(state.status, HealthStatus::Alive, "{name}: same vocabulary");
+            } else {
+                assert_eq!(
+                    state.quarantine_reason,
+                    Some(QuarantineReason::FailStreak),
+                    "{name}: and it says why"
+                );
+            }
+            assert!(
+                !tracker_due(&t, &target, now_secs()),
+                "{name}: back on its schedule after one probe"
+            );
+            let observed = registry.terms().get(&url).await.unwrap();
+            assert_eq!(
+                Some(observed.context.method.as_str()),
+                expect["method"].as_str(),
+                "{name}: the price says which request it answers"
+            );
+        }
+        // Tavily got `{}` and answered: its example never travelled.
+        let tavily = seller.seen("/search");
+        assert!(tavily
+            .iter()
+            .all(|s| s.body.is_empty() || s.body == EMPTY_JSON_BODY));
+        // The one that declares nothing: GET, then the one fallback POST.
+        assert_eq!(seller.methods("/api/phone-lookup"), ["GET", "POST"]);
+        assert_eq!(
+            seller.methods("/payments/access/alpha-test"),
+            ["GET", "POST"]
+        );
+    }
+
+    // ------------------------------------------------------------------------
+    // Exposure: only what is verified alive leaves the registry
+    // ------------------------------------------------------------------------
+
+    /// A listing of `path` on `seller.example` paying Tavily's options,
+    /// declaring `method` when given, imported the way the aggregator does.
+    fn listing_of(path: &str, method: Option<&str>) -> crate::types_v2::DiscoveryResource {
+        let mut listing = json!({
+            "resource": format!("https://seller.example{path}"),
+            "type": "http",
+            "x402Version": 2,
+            "description": "exposure fixture",
+            "accepts": accepts(),
+        });
+        if let Some(m) = method {
+            listing["extensions"] =
+                json!({ "bazaar": { "info": { "input": { "type": "http", "method": m } } } });
+        }
+        let (mut imported, _) = crate::discovery_aggregator::convert_resources(
+            vec![serde_json::from_value(listing).unwrap()],
+            "coinbase",
+        );
+        imported.remove(0)
+    }
+
+    /// Every exposed URL, by walking the default listing page by page, as a
+    /// consumer does (Emporium's `bazar.rs` walks it by offset).
+    async fn walk(registry: &DiscoveryRegistry) -> Vec<String> {
+        let mut urls = Vec::new();
+        loop {
+            let page = registry.list(2, urls.len() as u32, None).await;
+            if page.items.is_empty() {
+                break;
+            }
+            urls.extend(page.items.into_iter().map(|r| r.url.to_string()));
+        }
+        urls.sort();
+        urls
+    }
+
+    /// The owner's rule, end to end through real probes of a local seller: a
+    /// listing is exposed only once a probe with the request it declares has
+    /// read a valid challenge in a 402. Auth-gated, degraded, quarantined, an
+    /// unreadable 402, a GET answer to a POST listing, and never probed: none
+    /// of those reach the listing, the stats or a full walk, and the stats
+    /// count exactly what the walk returns.
+    #[tokio::test]
+    async fn only_a_verified_challenge_exposes_a_listing_anywhere() {
+        let a = accepts();
+        let (base, _seller) = serve(HashMap::from([
+            ("/get-alive".to_string(), route(402, 405, &a)),
+            ("/post-alive".to_string(), route(405, 402, &a)),
+            ("/auth".to_string(), route(401, 401, &a)),
+            ("/degraded".to_string(), route(200, 200, &a)),
+            ("/dead".to_string(), route(404, 404, &a)),
+            (
+                "/garbage".to_string(),
+                Route {
+                    challenge: None,
+                    ..route(402, 402, &a)
+                },
+            ),
+            ("/get-only-alive".to_string(), route(402, 404, &a)),
+        ]))
+        .await;
+        let registry = DiscoveryRegistry::new();
+        for (path, method) in [
+            ("/get-alive", None),
+            ("/post-alive", Some("POST")),
+            ("/auth", Some("GET")),
+            ("/degraded", Some("GET")),
+            ("/dead", Some("GET")),
+            ("/garbage", Some("GET")),
+            ("/get-only-alive", Some("POST")),
+            ("/never-probed", Some("GET")),
+        ] {
+            registry.register(listing_of(path, method)).await.unwrap();
+        }
+        assert!(walk(&registry).await.is_empty(), "nothing before a probe");
+
+        let lo = Loopback::serving(&base);
+        let health = registry.health();
+        for t in registry.probe_targets().await {
+            let rounds = if t.url.path() == "/dead" { 3 } else { 1 };
+            if t.url.path() == "/never-probed" {
+                continue;
+            }
+            for _ in 0..rounds {
+                probe_and_record(&lo, &registry, &health, t.clone()).await;
+            }
+        }
+        // A POST listing a GET found alive -- what the GET-only build left --
+        // is not verified by that answer, however clean the challenge.
+        let get_only = "https://seller.example/get-only-alive";
+        health.mark_verified(get_only, ProbeMethod::Get).await;
+
+        let states = health.snapshot().await;
+        let status = |p: &str| states[&format!("https://seller.example{p}")].status;
+        assert_eq!(status("/auth"), HealthStatus::AuthGated);
+        assert_eq!(status("/degraded"), HealthStatus::Degraded);
+        assert_eq!(status("/dead"), HealthStatus::Quarantined);
+        assert_eq!(
+            status("/garbage"),
+            HealthStatus::Alive,
+            "alive by the old rule"
+        );
+        assert_eq!(status("/get-only-alive"), HealthStatus::Alive);
+
+        let exposed = vec![
+            "https://seller.example/get-alive".to_string(),
+            "https://seller.example/post-alive".to_string(),
+        ];
+        assert_eq!(walk(&registry).await, exposed);
+        let stats = registry.stats().await;
+        assert_eq!(stats["verifiedAlive"], 2);
+        assert_eq!(stats["visible"], 2);
+        assert_eq!(stats["total"], 2, "no public count of the rest");
+        assert_eq!(stats["byHealth"], json!({ "alive": 2 }));
+        // No parameter widens it.
+        for health_filter in ["any", "quarantined", "auth_gated", "degraded", "unknown"] {
+            let filters = crate::types_v2::DiscoveryFilters {
+                health: Some(health_filter.to_string()),
+                ..Default::default()
+            };
+            let page = registry.list(100, 0, Some(filters)).await;
+            assert!(
+                page.items
+                    .iter()
+                    .all(|r| exposed.contains(&r.url.to_string())),
+                "health={health_filter}"
+            );
+        }
+        // The rest is held, probed, and readable by the admin route only.
+        let pending = registry.list_pending(100, 0).await;
+        assert_eq!(pending.pagination.total, 6);
+        assert!(pending
+            .items
+            .iter()
+            .all(|r| !exposed.contains(&r.url.to_string())));
+        let mut exposed_set: Vec<String> = registry.exposed_urls().await.into_iter().collect();
+        exposed_set.sort();
+        assert_eq!(exposed_set, exposed);
+    }
+
+    /// A listing appears on the first probe that verifies it, and leaves on the
+    /// first that does not: verified alive is about the LAST probe.
+    #[tokio::test]
+    async fn a_listing_is_exposed_by_its_last_probe_not_its_best() {
+        let a = accepts();
+        let (base, _seller) =
+            serve(HashMap::from([("/flaky".to_string(), route(405, 402, &a))])).await;
+        let registry = DiscoveryRegistry::new();
+        registry
+            .register(listing_of("/flaky", Some("POST")))
+            .await
+            .unwrap();
+        let target = registry.probe_targets().await.remove(0);
+        let health = registry.health();
+        assert_eq!(registry.list(10, 0, None).await.pagination.total, 0);
+
+        probe_and_record(
+            &Loopback::serving(&base),
+            &registry,
+            &health,
+            target.clone(),
+        )
+        .await;
+        assert_eq!(registry.list(10, 0, None).await.pagination.total, 1);
+        let state = health.snapshot().await.remove(target.url.as_str()).unwrap();
+        assert!(state.verified_at.is_some());
+        assert_eq!(
+            serde_json::to_value(&state).unwrap()["verifiedAt"],
+            json!(state.verified_at.unwrap())
+        );
+
+        // Same seller, now answering a 402 with no challenge in it.
+        let (garbage, _s) = serve(HashMap::from([(
+            "/flaky".to_string(),
+            Route {
+                challenge: None,
+                ..route(405, 402, &a)
+            },
+        )]))
+        .await;
+        probe_and_record(
+            &Loopback::serving(&garbage),
+            &registry,
+            &health,
+            target.clone(),
+        )
+        .await;
+        let state = health.snapshot().await.remove(target.url.as_str()).unwrap();
+        assert_eq!(state.status, HealthStatus::Alive);
+        assert_eq!(
+            state.verified_at, None,
+            "cleared by a probe that read nothing"
+        );
+        assert_eq!(registry.list(10, 0, None).await.pagination.total, 0);
+    }
+
+    #[test]
+    fn verified_alive_is_the_declared_request_inside_the_window() {
+        let now = 10_000_000;
+        let window = 600;
+        let state = |status, verified_at, method: Option<&str>| HealthState {
+            status,
+            last_checked: Some(now),
+            http_status: Some(402),
+            latency_ms: None,
+            uptime_bps: None,
+            probe_count: None,
+            probe_method: method.map(str::to_string),
+            quarantine_reason: None,
+            verified_at,
+        };
+        let alive = HealthStatus::Alive;
+        let ok = |s: &HealthState, r: &ProbeRequest| is_verified_alive(s, r, None, now, window);
+
+        assert!(ok(&state(alive, Some(now - window), Some("GET")), &get()));
+        assert!(
+            !ok(&state(alive, Some(now - window - 1), Some("GET")), &get()),
+            "past the window"
+        );
+        assert!(
+            !ok(&state(alive, None, Some("GET")), &get()),
+            "never verified"
+        );
+        for status in [
+            HealthStatus::AuthGated,
+            HealthStatus::Degraded,
+            HealthStatus::Quarantined,
+            HealthStatus::Unprobeable,
+            HealthStatus::Unknown,
+        ] {
+            assert!(
+                !ok(&state(status, Some(now), Some("GET")), &get()),
+                "{status:?}"
+            );
+        }
+        assert!(
+            !ok(&state(alive, Some(now), Some("GET")), &post(None)),
+            "a GET answer to a POST listing"
+        );
+        assert!(ok(&state(alive, Some(now), Some("POST")), &post(None)));
+        assert!(
+            ok(
+                &state(alive, Some(now), Some("POST")),
+                &ProbeRequest::Undeclared
+            ),
+            "a listing that declares nothing counts what the fallback found"
+        );
+    }
+
+    /// A record from before `verifiedAt` existed is exposed on the overlay
+    /// reading of the SAME probe, and on nothing else -- and is probed again
+    /// at once, so that lasts one probe.
+    #[tokio::test]
+    async fn a_legacy_alive_record_keeps_its_listing_only_on_the_same_probes_reading() {
+        let url = "https://seller.example/legacy";
+        let t = HealthTracker::new();
+        t.record_probe(url, ProbeClass::Alive, Some(402), 1, None)
+            .await;
+        let state = t.snapshot().await.remove(url).unwrap();
+        let checked = state.last_checked.unwrap();
+        let window = 600;
+        let now = checked + 10;
+
+        assert_eq!(
+            legacy_verified_at(&state, Some(checked + 3)),
+            Some(checked + 3)
+        );
+        assert_eq!(
+            legacy_verified_at(&state, Some(checked - 3)),
+            Some(checked - 3)
+        );
+        assert_eq!(
+            legacy_verified_at(&state, Some(checked + LEGACY_OBSERVATION_SLACK_SECS + 1)),
+            None,
+            "another probe's reading"
+        );
+        assert_eq!(
+            legacy_verified_at(&state, None),
+            None,
+            "no readable challenge"
+        );
+        assert!(is_verified_alive(
+            &state,
+            &get(),
+            Some(checked),
+            now,
+            window
+        ));
+        assert!(!is_verified_alive(&state, &get(), None, now, window));
+        assert!(
+            !is_verified_alive(&state, &post(None), Some(checked), now, window),
+            "and a GET reading still does not verify a POST listing"
+        );
+        let other = |f: &dyn Fn(&mut HealthState)| {
+            let mut s = state.clone();
+            f(&mut s);
+            legacy_verified_at(&s, Some(checked))
+        };
+        assert_eq!(
+            other(&|s| s.probe_method = Some("GET".into())),
+            None,
+            "this build's"
+        );
+        assert_eq!(other(&|s| s.status = HealthStatus::AuthGated), None);
+        assert_eq!(other(&|s| s.http_status = Some(200)), None);
+
+        // Due now -- but not an MCP endpoint, which never records a method.
+        let http = target(url, get());
+        let mut mcp = target(url, get());
+        mcp.resource_type = "mcp".to_string();
+        assert!(tracker_due(&t, &http, checked + 1));
+        assert!(!tracker_due(&t, &mcp, checked + 1));
+        t.mark_verified(url, ProbeMethod::Get).await;
+        assert!(
+            !tracker_due(&t, &http, now_secs()),
+            "and once probed, it is not"
+        );
+    }
+
+    /// The re-probe of a verified listing lands inside the window it is
+    /// exposed on, under the window in force NOW.
+    #[tokio::test]
+    async fn a_verified_listing_is_reprobed_before_its_verification_expires() {
+        let window = crate::discovery_terms::freshness_window_secs();
+        assert!(alive_reprobe_secs() < window);
+        assert!(alive_reprobe_secs() <= HEALTHY_REPROBE_SECS);
+
+        let url = "https://seller.example/verified";
+        let t = HealthTracker::new();
+        t.mark_verified(url, ProbeMethod::Get).await;
+        let verified_at = t.snapshot().await[url].verified_at.unwrap();
+        let rec = t.records.read().await[url].clone();
+        assert!(
+            rec.next_probe_at + window / 8 <= verified_at + window,
+            "with an eighth of the window to spare"
+        );
+        let target = target(url, get());
+        assert!(!tracker_due(&t, &target, verified_at + 1));
+        // Scheduled under a longer window, then the window shortens: due by
+        // the verification's age, not by the old schedule.
+        t.records.write().await.get_mut(url).unwrap().next_probe_at = u64::MAX;
+        assert!(tracker_due(&t, &target, verified_at + alive_reprobe_secs()));
+    }
+
+    /// The attestation speaks only for what is exposed.
+    #[tokio::test]
+    async fn the_attested_uptime_counts_only_verified_listings() {
+        let t = HealthTracker::new();
+        let now = now_secs();
+        let window = 600;
+        assert_eq!(
+            t.uptime_prefix_verified("https://p.example/", now, window)
+                .await,
+            None
+        );
+        t.mark_verified("https://p.example/a", ProbeMethod::Get)
+            .await;
+        // Alive by the old rule (an unreadable 402): not verified.
+        t.record_probe(
+            "https://p.example/b",
+            ProbeClass::Alive,
+            Some(402),
+            1,
+            Some(ProbeMethod::Get),
+        )
+        .await;
+        t.record_probe(
+            "https://p.example/b",
+            ProbeClass::Alive,
+            Some(402),
+            1,
+            Some(ProbeMethod::Get),
+        )
+        .await;
+        assert_eq!(
+            t.uptime_prefix_verified("https://p.example/", now_secs(), window)
+                .await,
+            Some((10_000, 1, 1))
+        );
+        assert_eq!(
+            t.uptime_prefix_verified("https://other.example/", now_secs(), window)
+                .await,
+            None
+        );
     }
 }

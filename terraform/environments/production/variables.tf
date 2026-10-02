@@ -457,3 +457,40 @@ variable "fhe_request_timeout_secs" {
     error_message = "FHE request timeout must be between 3 and 900 seconds (matches src/fhe_proxy.rs)."
   }
 }
+
+# ----------------------------------------------------------------------------
+# Rate policy exemptions (decision 144, src/rate_policy.rs)
+# ----------------------------------------------------------------------------
+
+variable "ip_allowlist_secret_name" {
+  description = <<-EOT
+    Name of the Secrets Manager secret holding the IP allowlist: the client
+    addresses that skip the per-IP rate policy, as a stack identity does
+    (src/ip_allowlist.rs). Reaches the container as UVD_IP_ALLOWLIST_SECRET;
+    the task re-reads the secret every UVD_IP_ALLOWLIST_REFRESH_SECS (300 by
+    default), so a new address needs no deploy.
+
+    Only the NAME lives here. The secret is one for the whole stack, created
+    and loaded by hand outside Terraform (primary in us-east-2, the region
+    this facilitator reads it in); the addresses are never written into this
+    repository, a tfvars file or a log.
+  EOT
+  type        = string
+  default     = "uvd/allowlist/home"
+}
+
+variable "stack_key_emporium_loaded" {
+  description = <<-EOT
+    Set true once facilitator-stack-key-digest-emporium exists AND holds the
+    digest of Emporium's stack key (field sha256). Until then the task
+    definition and the execution role do not reference the secret: ECS refuses
+    to start a task whose valueFrom names a secret with no value. Emporium is
+    listed in GET /config as inactive meanwhile.
+
+    Flipping it changes aws_iam_role_policy.secrets_access, which the CI user
+    cannot write: apply that policy by hand before the merge that flips it
+    (scripts/drift_gate_iam.py prints the command).
+  EOT
+  type        = bool
+  default     = false
+}

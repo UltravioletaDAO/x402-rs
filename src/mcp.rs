@@ -2245,6 +2245,19 @@ mod tests {
         assert_eq!(seen, [key], "the stack key did not reach the lease holder");
     }
 
+    /// A third party's settle reaches the holder WITHOUT a stack key. The hop
+    /// carries the caller's own key when there is one and never adds one: the
+    /// exemption must not ride on somebody else's traffic.
+    #[tokio::test]
+    async fn a_third_partys_forwarded_settle_carries_no_stack_key() {
+        let (path, headers, _) = settle_through_a_recording_holder(&["203.0.113.43"]).await;
+        assert_eq!(path, "/settle");
+        assert!(
+            !headers.contains_key(crate::rate_policy::STACK_KEY_HEADER),
+            "a third party's forwarded settle carries a stack key"
+        );
+    }
+
     /// Runs an `x402_settle` whose outer request carries `xff`, on a task that
     /// does not hold the writer lease, against a local stand-in for the holder,
     /// and returns the path and headers the holder received plus the answer.

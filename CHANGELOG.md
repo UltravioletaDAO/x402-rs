@@ -115,6 +115,22 @@
 - Measured on a copy of the catalog as persisted on 2026-10-01: of its 2 000 listings, 470 aggregated copies are family duplicates (398 of them one data-pack template), so a full catalog can take 470 new services without losing a distinct one. The host share frees nothing there yet: every host above 100 listings registered them first-hand.
 - `GET /discovery/stats` adds `topHosts` (the ten hosts holding the most listings) and `GET /discovery/config` adds `catalog.maxHostSharePercent` and `catalog.maxPerHost`. The cap itself (`DISCOVERY_MAX_RESOURCES`, 2 000) is unchanged.
 
+### Rate policy: an IP allowlist next to the stack keys
+
+- A request whose client address is on the IP allowlist skips what a recognized `X-UVD-Stack-Key` skips: every per-IP budget and the per-address in-flight ceiling. Its response carries `x-ratelimit-exempt: ip-allowlist` and no `RateLimit-Policy` or `RateLimit`. The body deadline, the body size limit, the task's ceiling of concurrent requests and the ERC-8004 daily write cap still apply to it, as they do to a stack key.
+- The address is the one every budget keys on: the last `X-Forwarded-For` entry, the one the load balancer appends. An address written in front of it is never read.
+- The list lives in a Secrets Manager secret named by `UVD_IP_ALLOWLIST_SECRET` and is re-read every `UVD_IP_ALLOWLIST_REFRESH_SECS` (default 300, between 30 and 3600), so a new address takes effect without a deploy. Its form is a JSON array of strings; entries separated by commas, semicolons or white space are read too, and a document that starts like JSON but is not an array (an object, or JSON that does not parse) is an empty list. Entries are addresses or CIDR prefixes no broader than /24 (IPv4) or /48 (IPv6); addresses that are not public are refused. Unset, the list is disabled and nothing calls AWS; a secret that does not exist or holds no value is an empty list, and so is a document that is not a list, even over a list read before; a read with no answer within 10 seconds is a failed read, and after three failed reads in a row the list is emptied; a list not read for four refresh cycles counts as empty whatever happens to the refresher.
+- No address from the list reaches an application log, a response or `GET /config`. `/config` publishes `ipAllowlist`: whether it is on, how many entries are in force and how its last read went (`ok`, `unreadable`, `missing`, `failing`, `stale` or `never`), as it stands at each request. A rejected stack key sent from an allowlisted address is logged without the address.
+- `emporium` joins the stack services (`UVD_STACK_KEY_SHA256_EMPORIUM`), inactive until its digest is configured.
+- New dependency: `aws-sdk-secretsmanager` 1.101; no other crate in `Cargo.lock` changes.
+
+### Terraform (applied by hand, not by the image deploy)
+
+- `aws_secretsmanager_secret.stack_key_digest_emporium`, declared without a value. The allowlist secret (`var.ip_allowlist_secret_name`, default `uvd/allowlist/home`) is one for the whole stack, created and loaded by hand outside Terraform: no repository declares it.
+- `aws_iam_role_policy.ip_allowlist_read`: `secretsmanager:GetSecretValue` on the allowlist secret, by name, for the task role. Until it is applied the task cannot read the list and exempts no address.
+- The task definition gains `UVD_IP_ALLOWLIST_SECRET` (the secret's name, never its contents).
+- Emporium's digest reaches the task definition and the execution role only with `var.stack_key_emporium_loaded = true`.
+
 ## [2.46.1] - 2026-09-29
 
 - `POST /settle`: a successful x402r escrow settle (`escrow` / `commerce`) or `refund`-extension deposit is now kept under its `Idempotency-Key`, as an `exact` settle is: a retry with the same key and body gets the first response back, byte for byte, with `Idempotent-Replayed: true`, and the same key with another body gets `409 idempotency_key_conflict`. Only successes are kept, so a failed settle can still be retried.

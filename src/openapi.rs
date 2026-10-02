@@ -2292,11 +2292,11 @@ to nothing.
   costs at most this many US dollars (`0.01`). The comparison is in the token's atomic units at
   that deployment's decimals; digits past them round the limit down. An option in an asset we
   cannot value in dollars -- an unknown token, EURC -- does not count toward it.
-- `method` -- `GET`, `POST`, `PUT` or `PATCH`, as the listing declares it and the health prober
-  reads it: `extensions.bazaar.info.input.method`, else the method its `bazaar` JSON Schema input
-  names, else `POST` when it declares a body (a declared `HEAD` or `DELETE` reads as `GET`). An
-  HTTP listing that declares none is `GET`; MCP, A2A and facilitator listings have no method and
-  never match.
+- `method` -- `GET`, `POST`, `PUT` or `PATCH`, as the listing declares it, read the way the
+  health prober reads a declaration: `extensions.bazaar.info.input.method`, else the method its
+  `bazaar` JSON Schema input names, else `POST` when it declares a body (a declared `HEAD` or
+  `DELETE` reads as `GET`). An HTTP listing that declares none is `GET`; MCP, A2A and
+  facilitator listings have no method and never match.
 - `hasInputSchema` -- `true` keeps listings that say what to send: a non-empty
   `extensions.bazaar.info.input`, or a non-empty `input` property in `extensions.bazaar.schema`.
   `false`, the rest.
@@ -2306,20 +2306,23 @@ to nothing.
   scheme, path, port or credentials in a value is a 400.
 
 **Exposure:** only resources **verified alive** are listed: the last probe, made with the request
-the listing declares, read a valid x402 challenge in a 402 (`health.verifiedAt`), no longer ago
-than the observed-terms freshness window, and the resource is not quarantined. Auth-gated,
+the listing declares, read a valid x402 challenge in a 402 -- or, for an MCP endpoint, completed
+its handshake (`initialize`, then `tools/list`) and listed at least one tool -- no longer ago than
+the observed-terms freshness window, and the resource is not quarantined. `health.verifiedAt`
+says when and `health.verifiedBy` how (`x402_challenge` | `mcp_handshake`). Auth-gated,
 degraded, quarantined, unprobeable and never-probed resources are not listed, and no parameter
-lists them: they stay in the catalog and keep being probed until a challenge promotes them. So
-every listed resource has `health.status` `alive`, and `health` can only narrow what is exposed.
-A full offset walk returns exactly `GET /discovery/stats` `visible`.
+lists them: they stay in the catalog and keep being probed until a verification promotes them.
+So every listed resource has `health.status` `alive`, and `health` can only narrow what is
+exposed. A full offset walk returns exactly `GET /discovery/stats` `visible`.
 Each resource is probed, unpaid, with the method its `bazaar` extension declares (a body
 method is sent `{}`, and the listing's own example only when `{}` is refused with a 400 or
 422); one that declares none is probed with GET, and with one POST `{}` when that GET answers
-405, 400 or 404. `health.probeMethod` is the method of the last probe. While a resource is
-quarantined, `health.quarantineReason` says why: `fail_streak` (it stopped answering) or
-`pay_to_drift` (its live 402 paid a recipient the listing never declared). `health.uptimeBps`
-is the share of the `health.probeCount` probes recorded for the resource that found it up, in
-basis points.
+405, 400 or 404. An MCP endpoint is probed by its handshake: `initialize`, the `initialized`
+notification and `tools/list`, with the session the server assigns sent back to it.
+`health.probeMethod` is the method of the last probe of an HTTP listing. `health.uptimeBps` is
+the share of the `health.probeCount` probes recorded for the resource that found it up, in basis
+points. (`health.quarantineReason` -- `fail_streak` or `pay_to_drift` -- is only ever set on a
+quarantined resource, so it shows in the admin view of the pending queue, not here.)
 
 **Response:**
 ```json
@@ -2385,7 +2388,8 @@ basis points.
         "uptimeBps": 9977,
         "probeCount": 1312,
         "probeMethod": "POST",
-        "verifiedAt": 1784900000
+        "verifiedAt": 1784900000,
+        "verifiedBy": "x402_challenge"
       },
       "curation": {
         "tier": "first_party",
@@ -2783,9 +2787,11 @@ is not counted here either.
   `noDescription` and `noInputSchema` count those with an empty description, and with no declared
   input (`extensions.bazaar.info.input`, or an `input` property in `extensions.bazaar.schema`):
   what a router cannot use without guessing.
-- `topHosts` lists the ten hosts holding the most of what the listing shows, largest first,
-  so how listings spread over hosts (`/discovery/config` `catalog.maxPerHost`) can be read on a
-  running task. Like every count here, it counts only listings the default listing returns.
+- `topHosts` lists the ten hosts holding the most of what the listing shows, largest first: how
+  the public listing spreads over hosts, on a running task. Like every count here, it counts
+  only listings the default listing returns -- the per-host share of `/discovery/config`
+  (`catalog.maxPerHost`) applies to every listing held, exposed or not, so this is not a reading
+  of it.
 
 **Response:**
 ```json
@@ -2820,7 +2826,7 @@ is not counted here either.
                 "bySource": { "aggregated": 1823, "self_registered": 128 },
                 "bySourceFacilitator": { "payai": 1700, "thirdweb": 75, "coinbase": 48 },
                 "byNetwork": { "eip155:8453": 1930, "eip155:1": 21 },
-                "byTier": { "first_party": 10, "vip": 127, "verified": 1814 },
+                "byTier": { "first_party": 10, "verified": 1941 },
                 "byHealth": { "alive": 1951 },
                 "byKind": { "api": 1830, "content": 121 },
                 "byCategory": { "none": 1625, "data": 246, "finance": 80 },

@@ -326,6 +326,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         discovery_registry.count().await
     );
 
+    // What the Bazaar exposes -- and what a full catalog may evict to make room
+    // -- is read off the liveness overlay, which the prober attaches further
+    // down. Until it has been read, an import must not take its empty records
+    // for the truth (`HealthTracker::expect_overlay`).
+    let enable_health = std::env::var("DISCOVERY_ENABLE_HEALTH")
+        .map(|v| v != "false" && v != "0")
+        .unwrap_or(true);
+    if enable_health && std::env::var("DISCOVERY_S3_BUCKET").is_ok() {
+        discovery_registry.health().expect_overlay();
+    }
+
     // Start background aggregation task if enabled
     // Fetches resources from external facilitators (Coinbase, etc.) every hour
     let aggregation_interval_secs = std::env::var("DISCOVERY_AGGREGATION_INTERVAL")
@@ -406,9 +417,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Start the Bazaar health prober (WS-B). Probes registered URLs with the
     // SSRF-hardened connector; 402 = alive, dead endpoints are quarantined and
     // hidden from the default listing. Liveness lives in a separate S3 overlay.
-    let enable_health = std::env::var("DISCOVERY_ENABLE_HEALTH")
-        .map(|v| v != "false" && v != "0")
-        .unwrap_or(true);
     if enable_health {
         let health_tick = std::env::var("DISCOVERY_HEALTH_TICK")
             .ok()

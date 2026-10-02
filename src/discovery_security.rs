@@ -219,21 +219,11 @@ pub async fn safe_get(
     safe_request(user_agent, timeout, url, None).await
 }
 
-/// SSRF-hardened POST of a JSON body, with the same resolve-check-pin and
-/// manual-redirect handling as [`safe_get`]. Used for probing endpoints that
-/// only answer to POST (e.g. an MCP JSON-RPC handshake).
-pub async fn safe_post_json(
-    user_agent: &str,
-    timeout: Duration,
-    url: &Url,
-    body: String,
-) -> Result<reqwest::Response, SecurityReject> {
-    safe_send_json(user_agent, timeout, url, reqwest::Method::POST, body).await
-}
-
-/// [`safe_post_json`] with the method named: the health prober sends the
+/// SSRF-hardened request with a JSON body, with the same resolve-check-pin and
+/// manual-redirect handling as [`safe_get`]: the health prober sends the
 /// method a listing declares (POST, PUT or PATCH), and it gets exactly the
-/// connector a GET gets -- the same checks on every hop, the same timeout.
+/// connector a GET gets -- the same checks on every hop, the same timeout. (The
+/// MCP handshake goes through [`safe_send_mcp`].)
 pub async fn safe_send_json(
     user_agent: &str,
     timeout: Duration,
@@ -248,19 +238,88 @@ pub async fn safe_send_json(
 /// `content-type`. Nothing else is attached -- in particular no payment header.
 ///
 /// `pub(crate)` so the prober's loopback tests build their requests here too,
-/// and so test the shape production sends rather than a copy of it.
+/// and so test the shape production sends rather than a copy of it: production
+/// sends [`json_request_with`] with no extra header, which this is.
+#[cfg(test)]
 pub(crate) fn json_request(
     client: &reqwest::Client,
     url: &Url,
     body: Option<&(reqwest::Method, String)>,
 ) -> reqwest::RequestBuilder {
-    match body {
+    json_request_with(client, url, body, &[])
+}
+
+/// A header a request carries on top of [`json_request`]'s. Only what a
+/// protocol requires: the MCP handshake's ([`mcp_headers`]).
+pub(crate) type ExtraHeader = (reqwest::header::HeaderName, reqwest::header::HeaderValue);
+
+/// [`json_request`] plus `headers`.
+pub(crate) fn json_request_with(
+    client: &reqwest::Client,
+    url: &Url,
+    body: Option<&(reqwest::Method, String)>,
+    headers: &[ExtraHeader],
+) -> reqwest::RequestBuilder {
+    let mut request = match body {
         None => client.get(url.clone()),
         Some((method, b)) => client
             .request(method.clone(), url.clone())
             .header(reqwest::header::CONTENT_TYPE, "application/json")
             .body(b.clone()),
+    };
+    for (name, value) in headers {
+        request = request.header(name.clone(), value.clone());
     }
+    request
+}
+
+/// Longest MCP session id echoed back: the spec bounds its characters (visible
+/// ASCII), not its length, and an id is an opaque token, not a payload.
+const MAX_MCP_SESSION_ID: usize = 256;
+
+/// The headers of an MCP handshake request (Streamable HTTP): `accept` naming
+/// both JSON and an event stream -- a server may answer either, and some refuse
+/// a request that does not accept both -- and, after `initialize`, the session
+/// id that server assigned, sent back to it and nowhere else. An id that is not
+/// 1 to [`MAX_MCP_SESSION_ID`] visible ASCII characters (0x21-0x7E, what the
+/// spec allows) is not sent.
+pub(crate) fn mcp_headers(session: Option<&str>) -> Vec<ExtraHeader> {
+    use reqwest::header::{HeaderName, HeaderValue, ACCEPT};
+    let mut headers = vec![(
+        ACCEPT,
+        HeaderValue::from_static("application/json, text/event-stream"),
+    )];
+    let valid = |s: &&str| {
+        (1..=MAX_MCP_SESSION_ID).contains(&s.len()) && s.bytes().all(|b| (0x21..=0x7e).contains(&b))
+    };
+    if let Some(value) = session
+        .filter(valid)
+        .and_then(|s| HeaderValue::from_str(s).ok())
+    {
+        headers.push((HeaderName::from_static("mcp-session-id"), value));
+    }
+    headers
+}
+
+/// One MCP handshake message (a fixed JSON-RPC body of ours, never a listing's)
+/// POSTed through the same connector as [`safe_send_json`], with
+/// [`mcp_headers`]. The headers go only to the original host: a redirect to
+/// another host gets the request without them.
+pub async fn safe_send_mcp(
+    user_agent: &str,
+    timeout: Duration,
+    url: &Url,
+    body: String,
+    session: Option<&str>,
+) -> Result<reqwest::Response, SecurityReject> {
+    safe_request_with(
+        user_agent,
+        timeout,
+        url,
+        Some((reqwest::Method::POST, body)),
+        &mcp_headers(session),
+    )
+    .await
 }
 
 /// Shared implementation for [`safe_get`] / [`safe_send_json`]: `body = None`
@@ -271,6 +330,18 @@ async fn safe_request(
     timeout: Duration,
     url: &Url,
     body: Option<(reqwest::Method, String)>,
+) -> Result<reqwest::Response, SecurityReject> {
+    safe_request_with(user_agent, timeout, url, body, &[]).await
+}
+
+/// [`safe_request`] with `headers`, which every hop on the original host
+/// carries and no hop to another host does.
+async fn safe_request_with(
+    user_agent: &str,
+    timeout: Duration,
+    url: &Url,
+    body: Option<(reqwest::Method, String)>,
+    headers: &[ExtraHeader],
 ) -> Result<reqwest::Response, SecurityReject> {
     let mut body = body;
     let mut current = url.clone();
@@ -289,7 +360,12 @@ async fn safe_request(
             .build()
             .map_err(|e| SecurityReject::Http(e.to_string()))?;
 
-        let resp = json_request(&client, &current, body.as_ref())
+        let same_host = current
+            .host_str()
+            .zip(url.host_str())
+            .is_some_and(|(a, b)| a.eq_ignore_ascii_case(b));
+        let extra = if same_host { headers } else { &[] };
+        let resp = json_request_with(&client, &current, body.as_ref(), extra)
             .send()
             .await
             .map_err(|e| SecurityReject::Http(e.to_string()))?;

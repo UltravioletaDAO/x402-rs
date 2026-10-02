@@ -39,12 +39,12 @@ use crate::discovery_price::{
     normalize_declared_option, CatalogPaymentOption, DeclaredPaymentOption,
 };
 use crate::discovery_revalidation::RefreshReason;
-use crate::discovery_security::{safe_get, safe_post_json, safe_send_json, SecurityReject};
+use crate::discovery_security::{safe_get, safe_send_json, safe_send_mcp, SecurityReject};
 use crate::discovery_terms::{
     ObservationContext, ObservationPhase, ObservedTerms, TermsProvenance, TermsTransport,
     TransportReading,
 };
-use crate::types_v2::{HealthState, HealthStatus, QuarantineReason};
+use crate::types_v2::{HealthState, HealthStatus, QuarantineReason, VerifiedBy};
 
 /// Consecutive fail-class probes before a resource is quarantined.
 const QUARANTINE_AFTER_FAILS: u32 = 3;
@@ -171,10 +171,10 @@ pub struct ProbeTarget {
 
 impl ProbeTarget {
     /// Request slots one probe of this target may spend on its host. The MCP
-    /// handshake is always one request.
+    /// handshake is [`MCP_HANDSHAKE_REQUESTS`].
     fn slots(&self) -> usize {
         if self.resource_type == "mcp" {
-            1
+            MCP_HANDSHAKE_REQUESTS
         } else {
             self.request.slots()
         }
@@ -237,16 +237,31 @@ fn plan_tick(
 ///   listing that declares none -- whichever the probe sent (GET, or what the
 ///   fallback found). A POST-only listing that answered a GET does not count.
 ///
+/// An MCP endpoint (`mcp`) is verified by its own handshake instead -- the
+/// owner's rule of 2026-10-02: its last probe completed `initialize` and
+/// `tools/list` and listed at least one tool, within the same window, and it is
+/// not quarantined. Neither kind of evidence stands in for the other: a 402 to
+/// an MCP endpoint, or a handshake recorded for an HTTP listing, verifies
+/// nothing.
+///
 /// `observed_at` is when the observed-terms overlay last read this listing's
 /// challenge; it only matters for a record from before `verifiedAt` existed
 /// ([`legacy_verified_at`]).
 pub fn is_verified_alive(
     state: &HealthState,
     request: &ProbeRequest,
+    mcp: bool,
     observed_at: Option<u64>,
     now: u64,
     window: u64,
 ) -> bool {
+    if mcp {
+        return state.verified_by == Some(VerifiedBy::McpHandshake)
+            && verified_recently(state.status, state.verified_at, now, window);
+    }
+    if state.verified_by == Some(VerifiedBy::McpHandshake) {
+        return false;
+    }
     let verified_at = state
         .verified_at
         .or_else(|| legacy_verified_at(state, observed_at));
@@ -510,11 +525,22 @@ pub struct HealthRecord {
     /// probe of such a listing starts.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub learned_method: Option<String>,
-    /// When the LAST probe read a valid x402 challenge in a 402 and passed the
-    /// drift check; cleared by any probe that did not. What "verified alive"
-    /// is measured from ([`is_verified_alive`]).
+    /// When the LAST probe verified the resource: a valid x402 challenge in a
+    /// 402 that passed the drift check, or -- for an MCP endpoint -- a
+    /// handshake that listed at least one tool; cleared by any probe that did
+    /// not. What "verified alive" is measured from ([`is_verified_alive`]).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub verified_at: Option<u64>,
+    /// How `verified_at` was earned. Absent with it, and on a record verified
+    /// before this field existed, which only a challenge could verify.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verified_by: Option<VerifiedBy>,
+    /// Tools the last MCP handshake listed (0 when it listed none or did not
+    /// get that far). Written by every handshake of a build that asks
+    /// `tools/list`, so its absence on an MCP record means no such probe has
+    /// run yet ([`unverified_legacy_alive`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mcp_tools: Option<u32>,
 }
 
 impl HealthRecord {
@@ -554,6 +580,9 @@ impl HealthRecord {
             probe_method: self.probe_method.clone(),
             quarantine_reason: self.reason(),
             verified_at: self.verified_at,
+            verified_by: self
+                .verified_at
+                .map(|_| self.verified_by.unwrap_or(VerifiedBy::X402Challenge)),
         }
     }
 
@@ -605,6 +634,17 @@ pub struct HealthTracker {
     /// job lease exactly one task probes, so this is how the others learn what
     /// it found -- a HEAD, and a read of the 5 MB object only when it moved.
     etag: RwLock<Option<String>>,
+    /// Whether the records reflect the persisted overlay: true when there is
+    /// none to read, once it was read, or once it was found not to exist.
+    /// False from [`Self::expect_overlay`] until then.
+    ///
+    /// What is exposed is decided from these records, and a full catalog makes
+    /// room only from what is not exposed. An overlay that could not be read
+    /// would make everything look unexposed: the listing would be empty, an
+    /// import would evict verified copies as if they were pending, and the next
+    /// upload would overwrite the good overlay with an empty one. While it is
+    /// false none of that happens ([`Self::is_loaded`], [`Self::persist`]).
+    loaded: AtomicBool,
 }
 
 impl Default for HealthTracker {
@@ -621,42 +661,83 @@ impl HealthTracker {
             dirty: AtomicBool::new(false),
             last_persist: AtomicU64::new(0),
             etag: RwLock::new(None),
+            loaded: AtomicBool::new(true),
         }
     }
 
-    /// Attach an S3 overlay and load any existing records.
+    /// Declare that a persisted overlay will be attached ([`Self::configure_s3`]),
+    /// so that until it is read nothing treats the empty records as the truth.
+    /// Called at startup before anything that imports into the catalog runs.
+    pub fn expect_overlay(&self) {
+        self.loaded.store(false, Ordering::SeqCst);
+    }
+
+    /// Whether the records reflect the persisted overlay (see `loaded`).
+    pub fn is_loaded(&self) -> bool {
+        self.loaded.load(Ordering::SeqCst)
+    }
+
+    /// Attach an S3 overlay and load any existing records. A read that fails
+    /// for any reason other than the object not existing leaves the tracker
+    /// not loaded; [`Self::persist`] tries again before it would write.
     pub async fn configure_s3(&self, bucket: String, key: String) {
         let config = aws_config::load_defaults(aws_config::BehaviorVersion::latest()).await;
         let client = aws_sdk_s3::Client::new(&config);
-        // Load existing overlay (best-effort).
-        match client.get_object().bucket(&bucket).key(&key).send().await {
-            Ok(obj) => {
-                // Read the version BEFORE the body: `collect()` consumes the
-                // output, and an ETag taken afterwards would have to come from
-                // somewhere else.
-                let etag = obj.e_tag().map(str::to_string);
-                if let Ok(bytes) = obj.body.collect().await {
-                    let data = bytes.into_bytes();
-                    match serde_json::from_slice::<HashMap<String, HealthRecord>>(&data) {
-                        Ok(loaded) => {
-                            let n = loaded.len();
-                            *self.records.write().await = loaded;
-                            *self.etag.write().await = etag;
-                            info!(count = n, "Loaded health overlay from S3");
-                        }
-                        Err(e) => warn!(error = %e, "Health overlay parse failed; starting empty"),
-                    }
-                }
-            }
-            Err(e) => {
-                debug!(error = %e, "No existing health overlay (starting empty)");
-            }
-        }
-        *self.overlay.write().await = Some(S3Overlay {
+        let overlay = S3Overlay {
             client,
             bucket,
             key,
-        });
+        };
+        self.load_overlay(&overlay).await;
+        *self.overlay.write().await = Some(overlay);
+    }
+
+    /// Read the persisted overlay into the records, keeping any record this
+    /// process wrote since it started (those are newer). Sets `loaded` when the
+    /// object was read or does not exist; anything else leaves it as it was.
+    async fn load_overlay(&self, overlay: &S3Overlay) {
+        let obj = match overlay
+            .client
+            .get_object()
+            .bucket(&overlay.bucket)
+            .key(&overlay.key)
+            .send()
+            .await
+        {
+            Ok(obj) => obj,
+            Err(e) => {
+                if e.as_service_error().is_some_and(|s| s.is_no_such_key()) {
+                    info!("No existing health overlay (starting empty)");
+                    self.loaded.store(true, Ordering::SeqCst);
+                } else {
+                    warn!(
+                        error = %e,
+                        "Could not read the health overlay; nothing is exposed or evicted on an empty view until it is read"
+                    );
+                }
+                return;
+            }
+        };
+        // Read the version BEFORE the body: `collect()` consumes the output,
+        // and an ETag taken afterwards would have to come from somewhere else.
+        let etag = obj.e_tag().map(str::to_string);
+        let Ok(bytes) = obj.body.collect().await else {
+            warn!("Could not read the health overlay body; will retry");
+            return;
+        };
+        match serde_json::from_slice::<HashMap<String, HealthRecord>>(&bytes.into_bytes()) {
+            Ok(mut loaded) => {
+                let n = loaded.len();
+                let mut records = self.records.write().await;
+                loaded.extend(records.drain());
+                *records = loaded;
+                drop(records);
+                *self.etag.write().await = etag;
+                self.loaded.store(true, Ordering::SeqCst);
+                info!(count = n, "Loaded health overlay from S3");
+            }
+            Err(e) => warn!(error = %e, "Health overlay parse failed; will retry"),
+        }
     }
 
     /// Cumulative uptime for a URL as `(uptime_bps, total_probes, total_ok)`
@@ -735,7 +816,18 @@ impl HealthTracker {
     }
 
     /// Persist the overlay to S3 if it changed AND the debounce has elapsed.
+    ///
+    /// Never before the persisted overlay was read: an upload then would replace
+    /// it with whatever this process probed since it started. Until it is read,
+    /// this reads it instead.
     async fn persist(&self) {
+        if !self.is_loaded() {
+            let guard = self.overlay.read().await;
+            if let Some(overlay) = guard.as_ref() {
+                self.load_overlay(overlay).await;
+            }
+            return;
+        }
         if !self.dirty.load(Ordering::SeqCst) {
             return;
         }
@@ -848,6 +940,7 @@ impl HealthTracker {
                 let n = loaded.len();
                 *self.records.write().await = loaded;
                 *self.etag.write().await = etag;
+                self.loaded.store(true, Ordering::SeqCst);
                 info!(
                     count = n,
                     "Reloaded the health overlay published by the job owner"
@@ -902,6 +995,8 @@ impl HealthTracker {
             quarantine_reason: None,
             learned_method: None,
             verified_at: None,
+            verified_by: None,
+            mcp_tools: None,
         });
         // A record from before the reason was kept gets it now, read off its
         // signature while the last status code is still the one that set it.
@@ -1011,14 +1106,26 @@ impl HealthTracker {
         self.dirty.store(true, Ordering::SeqCst);
     }
 
-    /// Record whether the probe just recorded for `url` verified it: a 402 whose
-    /// challenge we could read, that passed the drift check. Any other outcome
-    /// clears it -- "verified alive" is about the LAST probe, not the best one.
-    async fn note_verified(&self, url: &str, verified: bool) {
+    /// Record whether the probe just recorded for `url` verified it, and how: a
+    /// 402 whose challenge we could read and that passed the drift check, or an
+    /// MCP handshake that listed a tool. `None` -- any other outcome -- clears
+    /// it: "verified alive" is about the LAST probe, not the best one.
+    async fn note_verified(&self, url: &str, by: Option<VerifiedBy>) {
         if let Some(rec) = self.records.write().await.get_mut(url) {
-            let at = verified.then(now_secs);
-            if rec.verified_at != at {
+            let at = by.map(|_| now_secs());
+            if rec.verified_at != at || rec.verified_by != by {
                 rec.verified_at = at;
+                rec.verified_by = by;
+                self.dirty.store(true, Ordering::SeqCst);
+            }
+        }
+    }
+
+    /// Record how many tools the MCP handshake just recorded for `url` listed.
+    async fn note_mcp_tools(&self, url: &str, tools: u32) {
+        if let Some(rec) = self.records.write().await.get_mut(url) {
+            if rec.mcp_tools != Some(tools) {
+                rec.mcp_tools = Some(tools);
                 self.dirty.store(true, Ordering::SeqCst);
             }
         }
@@ -1033,7 +1140,21 @@ impl HealthTracker {
     pub async fn mark_verified(&self, url: &str, method: ProbeMethod) {
         self.record_probe(url, ProbeClass::Alive, Some(402), 1, Some(method))
             .await;
-        self.note_verified(url, true).await;
+        self.note_verified(url, Some(VerifiedBy::X402Challenge))
+            .await;
+    }
+
+    /// Record an MCP handshake of `url` that listed `tools` tools, as the
+    /// prober does; verified when it listed at least one. For tests, like
+    /// [`Self::mark_verified`].
+    #[doc(hidden)]
+    #[allow(dead_code)]
+    pub async fn mark_mcp_handshake(&self, url: &str, tools: u32) {
+        self.record_probe(url, ProbeClass::Alive, Some(200), 1, None)
+            .await;
+        self.note_mcp_tools(url, tools).await;
+        self.note_verified(url, (tools > 0).then_some(VerifiedBy::McpHandshake))
+            .await;
     }
 
     /// Cumulative uptime aggregated over the URLs starting with `prefix` that
@@ -1080,36 +1201,153 @@ impl HealthTracker {
 /// POST-only JSON-RPC rather than a bare GET 402.
 const MCP_INITIALIZE: &str = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"uvd-bazaar-health","version":"1.0"}}}"#;
 
-/// Probe an MCP endpoint with a JSON-RPC `initialize`. A 2xx JSON-RPC reply (or
-/// a 402 challenge) means the server is live; anything else falls back to the
-/// standard classification.
-async fn probe_mcp(url: &url::Url) -> (ProbeClass, Option<u16>, u64) {
+/// The notification a client sends once `initialize` succeeded; a server may
+/// refuse other requests until it arrives.
+const MCP_INITIALIZED: &str = r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#;
+
+/// The read-only request whose answer verifies an MCP endpoint: the tools it
+/// serves. Nothing is called; listing is all.
+const MCP_TOOLS_LIST: &str = r#"{"jsonrpc":"2.0","id":2,"method":"tools/list"}"#;
+
+/// Requests one MCP handshake sends, what its probe reserves on its host and
+/// on the tick's budget ([`ProbeTarget::slots`]).
+const MCP_HANDSHAKE_REQUESTS: usize = 3;
+
+/// What an MCP endpoint's probe found.
+#[derive(Debug, Default)]
+struct McpProbe {
+    class: ProbeClass,
+    /// The status of the `initialize` answer: what the record shows.
+    http: Option<u16>,
+    latency_ms: u64,
+    /// Tools `tools/list` returned, when the handshake got that far and the
+    /// answer was a JSON-RPC result carrying a `tools` array; `None` otherwise.
+    tools: Option<u32>,
+}
+
+/// Probe an MCP endpoint by its handshake: `initialize`, the `initialized`
+/// notification, then `tools/list`, each a fixed JSON-RPC body of ours, with
+/// the session id the server assigned (if any) sent back to it.
+///
+/// Liveness is the `initialize` answer, classified as it always was (a 2xx
+/// JSON-RPC reply, or a 402, is live). VERIFIED is more: the owner's rule of
+/// 2026-10-02 -- `initialize` returned a JSON-RPC result and `tools/list`
+/// listed at least one tool. An answer is read up to
+/// [`MAX_PROBE_RESPONSE_BYTES`], as JSON or as an event stream.
+async fn probe_mcp<T: ProbeTransport + ?Sized>(transport: &T, url: &url::Url) -> McpProbe {
     let start = std::time::Instant::now();
-    let result = safe_post_json(PROBE_UA, PROBE_TIMEOUT, url, MCP_INITIALIZE.to_string()).await;
-    let latency = start.elapsed().as_millis() as u64;
-    match result {
-        Ok(resp) => {
-            let code = resp.status().as_u16();
-            let class = match code {
-                402 => ProbeClass::Alive,
-                // A JSON-RPC handshake that the server answers is a live MCP
-                // service — that is this resource type's healthy signal.
-                200 | 201 => ProbeClass::Alive,
-                401 | 403 | 405 | 415 => ProbeClass::AuthGated,
-                429 => ProbeClass::Degraded,
-                404 | 410 => ProbeClass::Fail,
-                c if (500..600).contains(&c) => ProbeClass::Fail,
-                _ => ProbeClass::Degraded,
-            };
-            (class, Some(code), latency)
-        }
+    let result = transport.send_mcp(url, MCP_INITIALIZE, None).await;
+    let latency_ms = start.elapsed().as_millis() as u64;
+    let resp = match result {
+        Ok(resp) => resp,
         Err(SecurityReject::DisallowedAddress(_))
         | Err(SecurityReject::Scheme(_))
         | Err(SecurityReject::Userinfo)
         | Err(SecurityReject::Port(_))
-        | Err(SecurityReject::NoHost) => (ProbeClass::Unprobeable, None, latency),
-        Err(_) => (ProbeClass::Fail, None, latency),
+        | Err(SecurityReject::NoHost) => {
+            return McpProbe {
+                class: ProbeClass::Unprobeable,
+                latency_ms,
+                ..McpProbe::default()
+            }
+        }
+        Err(_) => {
+            return McpProbe {
+                class: ProbeClass::Fail,
+                latency_ms,
+                ..McpProbe::default()
+            }
+        }
+    };
+    let code = resp.status().as_u16();
+    let class = match code {
+        402 => ProbeClass::Alive,
+        // A JSON-RPC handshake that the server answers is a live MCP
+        // service — that is this resource type's healthy signal.
+        200 | 201 => ProbeClass::Alive,
+        401 | 403 | 405 | 415 => ProbeClass::AuthGated,
+        429 => ProbeClass::Degraded,
+        404 | 410 => ProbeClass::Fail,
+        c if (500..600).contains(&c) => ProbeClass::Fail,
+        _ => ProbeClass::Degraded,
+    };
+    let tools = if matches!(code, 200 | 201) {
+        mcp_list_tools(transport, url, resp).await
+    } else {
+        None
+    };
+    McpProbe {
+        class,
+        http: Some(code),
+        latency_ms,
+        tools,
     }
+}
+
+/// The rest of the handshake, after an `initialize` that answered 2xx: how
+/// many tools `tools/list` returned, or `None` when any step did not give a
+/// JSON-RPC result.
+async fn mcp_list_tools<T: ProbeTransport + ?Sized>(
+    transport: &T,
+    url: &url::Url,
+    initialized: reqwest::Response,
+) -> Option<u32> {
+    let session = initialized
+        .headers()
+        .get("mcp-session-id")
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_string);
+    let content_type = response_content_type(&initialized);
+    let body = read_capped(initialized, MAX_PROBE_RESPONSE_BYTES).await?;
+    jsonrpc_result(&body, content_type.as_deref(), 1)?;
+
+    // A notification has no answer to read; whatever status it gets, the
+    // listing below says whether the server is serving.
+    let _ = transport
+        .send_mcp(url, MCP_INITIALIZED, session.as_deref())
+        .await;
+
+    let listed = transport
+        .send_mcp(url, MCP_TOOLS_LIST, session.as_deref())
+        .await
+        .ok()?;
+    if !listed.status().is_success() {
+        return None;
+    }
+    let content_type = response_content_type(&listed);
+    let body = read_capped(listed, MAX_PROBE_RESPONSE_BYTES).await?;
+    let result = jsonrpc_result(&body, content_type.as_deref(), 2)?;
+    let tools = result.get("tools")?.as_array()?;
+    Some(u32::try_from(tools.len()).unwrap_or(u32::MAX))
+}
+
+fn response_content_type(resp: &reqwest::Response) -> Option<String> {
+    resp.headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.to_ascii_lowercase())
+}
+
+/// The `result` object of the JSON-RPC response with `id`, from a body that is
+/// either one JSON message or an event stream (`text/event-stream`) whose
+/// `data:` lines carry messages. An `error` response, another id, or anything
+/// unreadable is `None`.
+fn jsonrpc_result(body: &str, content_type: Option<&str>, id: u64) -> Option<serde_json::Value> {
+    let answer = |message: serde_json::Value| -> Option<serde_json::Value> {
+        if message.get("id").and_then(|v| v.as_u64()) != Some(id) || message.get("error").is_some()
+        {
+            return None;
+        }
+        message.get("result").filter(|r| r.is_object()).cloned()
+    };
+    let streamed = content_type.is_some_and(|c| c.starts_with("text/event-stream"));
+    if !streamed {
+        return answer(serde_json::from_str(body.trim()).ok()?);
+    }
+    body.lines()
+        .filter_map(|line| line.strip_prefix("data:"))
+        .filter_map(|data| serde_json::from_str::<serde_json::Value>(data.trim()).ok())
+        .find_map(answer)
 }
 
 /// The payment terms a live 402 advertised, and -- separately -- whether we
@@ -1402,6 +1640,16 @@ trait ProbeTransport: Send + Sync {
         method: ProbeMethod,
         body: Option<&str>,
     ) -> Result<reqwest::Response, SecurityReject>;
+
+    /// One message of the MCP handshake: a POST of `body` (always one of ours,
+    /// [`MCP_INITIALIZE`] and its two followers) with
+    /// [`crate::discovery_security::mcp_headers`].
+    async fn send_mcp(
+        &self,
+        url: &url::Url,
+        body: &str,
+        session: Option<&str>,
+    ) -> Result<reqwest::Response, SecurityReject>;
 }
 
 /// What goes on the wire for `method`: nothing for a GET, else the method and
@@ -1429,6 +1677,15 @@ impl ProbeTransport for SafeTransport {
             None => safe_get(PROBE_UA, PROBE_TIMEOUT, url).await,
             Some((m, b)) => safe_send_json(PROBE_UA, PROBE_TIMEOUT, url, m, b).await,
         }
+    }
+
+    async fn send_mcp(
+        &self,
+        url: &url::Url,
+        body: &str,
+        session: Option<&str>,
+    ) -> Result<reqwest::Response, SecurityReject> {
+        safe_send_mcp(PROBE_UA, PROBE_TIMEOUT, url, body.to_string(), session).await
     }
 }
 
@@ -1807,12 +2064,14 @@ async fn probe_and_record<T: ProbeTransport + ?Sized>(
     // MCP endpoints answer a POST JSON-RPC handshake, not a GET
     // 402 — probing them with GET would mark our own first-party
     // MCP services dead.
+    let mut mcp_tools = None;
     let (outcome, method, fell_back) = if resource_type == "mcp" {
-        let (c, h, l) = probe_mcp(&u).await;
+        let probed = probe_mcp(transport, &u).await;
+        mcp_tools = Some(probed.tools.unwrap_or(0));
         let outcome = ProbeOutcome {
-            class: c,
-            http: h,
-            latency_ms: l,
+            class: probed.class,
+            http: probed.http,
+            latency_ms: probed.latency_ms,
             ..ProbeOutcome::default()
         };
         (outcome, None, false)
@@ -1913,10 +2172,18 @@ async fn probe_and_record<T: ProbeTransport + ?Sized>(
     }
 
     // Verified alive is earned by THIS probe or lost by it: a 402 whose
-    // challenge we read and whose recipients passed the drift check. An MCP
-    // handshake, an unreadable 402 or any other answer clears it.
-    let verified = class == ProbeClass::Alive && live.as_ref().is_some_and(|l| l.readable);
-    tracker.note_verified(u.as_str(), verified).await;
+    // challenge we read and whose recipients passed the drift check -- or, for
+    // an MCP endpoint, a handshake that listed at least one tool. An unreadable
+    // 402, a handshake that listed nothing, or any other answer clears it.
+    let verified_by = match mcp_tools {
+        Some(tools) => {
+            tracker.note_mcp_tools(u.as_str(), tools).await;
+            (class == ProbeClass::Alive && tools > 0).then_some(VerifiedBy::McpHandshake)
+        }
+        None => (class == ProbeClass::Alive && live.as_ref().is_some_and(|l| l.readable))
+            .then_some(VerifiedBy::X402Challenge),
+    };
+    tracker.note_verified(u.as_str(), verified_by).await;
 
     // Politeness feedback. A host that refuses us goes into
     // backoff -- its own `Retry-After` when it sent one, an
@@ -2060,13 +2327,20 @@ fn verification_due(rec: &HealthRecord, now: u64) -> bool {
 /// An `alive` record from before `verifiedAt` existed. It is probed now, so
 /// what it is exposed on is this build's own verification rather than an
 /// overlay reading ([`legacy_verified_at`]); afterwards it carries a method
-/// and this stops matching -- one probe per record, once. Not an MCP
-/// endpoint, which never records a method and would match forever.
+/// and this stops matching -- one probe per record, once.
+///
+/// An MCP endpoint never records a method; for it the mark is `mcp_tools`,
+/// which every handshake that asks `tools/list` writes: an `alive` MCP record
+/// without it was probed by `initialize` alone and cannot be exposed until its
+/// handshake runs, so it runs now, once.
 fn unverified_legacy_alive(rec: &HealthRecord, target: &ProbeTarget) -> bool {
-    target.resource_type != "mcp"
-        && rec.status == HealthStatus::Alive
-        && rec.probe_method.is_none()
-        && rec.verified_at.is_none()
+    if rec.status != HealthStatus::Alive || rec.verified_at.is_some() {
+        return false;
+    }
+    if target.resource_type == "mcp" {
+        return rec.mcp_tools.is_none();
+    }
+    rec.probe_method.is_none()
 }
 
 /// Whether a record's verdict came from a request this listing does not call
@@ -2678,6 +2952,29 @@ mod declared_method_tests {
                 &self.client,
                 &to,
                 wire_body(method, body).as_ref(),
+            )
+            .send()
+            .await
+            .map_err(|e| SecurityReject::Http(e.to_string()))
+        }
+
+        async fn send_mcp(
+            &self,
+            url: &url::Url,
+            body: &str,
+            session: Option<&str>,
+        ) -> Result<reqwest::Response, SecurityReject> {
+            let mut to = url.clone();
+            if let Some(base) = &self.serving {
+                let _ = to.set_scheme("http");
+                let _ = to.set_host(base.host_str());
+                let _ = to.set_port(base.port());
+            }
+            crate::discovery_security::json_request_with(
+                &self.client,
+                &to,
+                Some(&(reqwest::Method::POST, body.to_string())),
+                &crate::discovery_security::mcp_headers(session),
             )
             .send()
             .await
@@ -3452,7 +3749,18 @@ mod declared_method_tests {
         ));
         let mut mcp = target("https://mcp.example/mcp", ProbeRequest::Undeclared);
         mcp.resource_type = "mcp".to_string();
-        assert_eq!(mcp.slots(), 1, "the MCP handshake is one request");
+        assert_eq!(
+            mcp.slots(),
+            MCP_HANDSHAKE_REQUESTS,
+            "the MCP handshake is initialize, initialized and tools/list"
+        );
+        let mut crowded_mcp = target("https://quiet.example/mcp", ProbeRequest::Undeclared);
+        crowded_mcp.resource_type = "mcp".to_string();
+        assert!(
+            !admit(&mut per_host, &crowded_mcp),
+            "it does not fit a host that already spent a slot"
+        );
+        assert!(admit(&mut per_host, &mcp), "and it fits a fresh host whole");
     }
 
     #[tokio::test]
@@ -4114,6 +4422,7 @@ mod declared_method_tests {
                 is_verified_alive(
                     &state,
                     &target.request,
+                    false,
                     None,
                     now_secs(),
                     crate::discovery_terms::freshness_window_secs()
@@ -4358,7 +4667,7 @@ mod declared_method_tests {
     fn verified_alive_is_the_declared_request_inside_the_window() {
         let now = 10_000_000;
         let window = 600;
-        let state = |status, verified_at, method: Option<&str>| HealthState {
+        let state = |status, verified_at: Option<u64>, method: Option<&str>| HealthState {
             status,
             last_checked: Some(now),
             http_status: Some(402),
@@ -4368,9 +4677,11 @@ mod declared_method_tests {
             probe_method: method.map(str::to_string),
             quarantine_reason: None,
             verified_at,
+            verified_by: verified_at.map(|_| VerifiedBy::X402Challenge),
         };
         let alive = HealthStatus::Alive;
-        let ok = |s: &HealthState, r: &ProbeRequest| is_verified_alive(s, r, None, now, window);
+        let ok =
+            |s: &HealthState, r: &ProbeRequest| is_verified_alive(s, r, false, None, now, window);
 
         assert!(ok(&state(alive, Some(now - window), Some("GET")), &get()));
         assert!(
@@ -4442,13 +4753,14 @@ mod declared_method_tests {
         assert!(is_verified_alive(
             &state,
             &get(),
+            false,
             Some(checked),
             now,
             window
         ));
-        assert!(!is_verified_alive(&state, &get(), None, now, window));
+        assert!(!is_verified_alive(&state, &get(), false, None, now, window));
         assert!(
-            !is_verified_alive(&state, &post(None), Some(checked), now, window),
+            !is_verified_alive(&state, &post(None), false, Some(checked), now, window),
             "and a GET reading still does not verify a POST listing"
         );
         let other = |f: &dyn Fn(&mut HealthState)| {
@@ -4464,17 +4776,264 @@ mod declared_method_tests {
         assert_eq!(other(&|s| s.status = HealthStatus::AuthGated), None);
         assert_eq!(other(&|s| s.http_status = Some(200)), None);
 
-        // Due now -- but not an MCP endpoint, which never records a method.
+        // Due now. An MCP endpoint that only an `initialize`-only build probed
+        // is too: it carries no tool count, and its handshake decides now.
         let http = target(url, get());
         let mut mcp = target(url, get());
         mcp.resource_type = "mcp".to_string();
         assert!(tracker_due(&t, &http, checked + 1));
-        assert!(!tracker_due(&t, &mcp, checked + 1));
+        assert!(tracker_due(&t, &mcp, checked + 1));
         t.mark_verified(url, ProbeMethod::Get).await;
         assert!(
             !tracker_due(&t, &http, now_secs()),
             "and once probed, it is not"
         );
+    }
+
+    // ------------------------------------------------------------------------
+    // MCP endpoints: verified by their handshake (owner's rule, 2026-10-02)
+    // ------------------------------------------------------------------------
+
+    /// A local MCP server (Streamable HTTP). `initialize` answers a JSON-RPC
+    /// result -- or `init`, when set -- and, with `session`, assigns one that
+    /// `tools/list` then requires; `tools/list` lists `tools` tools. Answers are
+    /// JSON, or an event stream with `sse`.
+    #[derive(Clone, Default)]
+    struct McpServer {
+        tools: usize,
+        sse: bool,
+        session: bool,
+        init: Option<(u16, &'static str)>,
+        /// (JSON-RPC method, session header, accept header) of every request.
+        seen: Arc<Mutex<Vec<(String, Option<String>, Option<String>)>>>,
+    }
+
+    async fn mcp_answer(State(s): State<McpServer>, headers: HeaderMap, body: Bytes) -> Response {
+        let msg: Value = serde_json::from_slice(&body).unwrap_or(Value::Null);
+        let method = msg["method"].as_str().unwrap_or_default().to_string();
+        let header = |k: &str| {
+            headers
+                .get(k)
+                .and_then(|v| v.to_str().ok())
+                .map(str::to_string)
+        };
+        let session = header("mcp-session-id");
+        s.seen
+            .lock()
+            .unwrap()
+            .push((method.clone(), session.clone(), header("accept")));
+        let reply = |v: Value| -> Response {
+            if s.sse {
+                (
+                    [("content-type", "text/event-stream")],
+                    format!("event: message\ndata: {v}\n\n"),
+                )
+                    .into_response()
+            } else {
+                axum::Json(v).into_response()
+            }
+        };
+        match method.as_str() {
+            "initialize" => {
+                if let Some((code, raw)) = s.init {
+                    return (StatusCode::from_u16(code).unwrap(), raw).into_response();
+                }
+                let mut r = reply(json!({
+                    "jsonrpc": "2.0", "id": msg["id"],
+                    "result": {"protocolVersion": "2024-11-05", "capabilities": {"tools": {}},
+                               "serverInfo": {"name": "local", "version": "1"}}
+                }));
+                if s.session {
+                    r.headers_mut().insert(
+                        "mcp-session-id",
+                        axum::http::HeaderValue::from_static("s-123"),
+                    );
+                }
+                r
+            }
+            "notifications/initialized" => StatusCode::ACCEPTED.into_response(),
+            "tools/list" if !s.session || session.as_deref() == Some("s-123") => {
+                let tools: Vec<Value> = (0..s.tools)
+                    .map(|i| json!({"name": format!("tool{i}"), "inputSchema": {"type": "object"}}))
+                    .collect();
+                reply(json!({"jsonrpc": "2.0", "id": msg["id"], "result": {"tools": tools}}))
+            }
+            _ => (StatusCode::BAD_REQUEST, "no session").into_response(),
+        }
+    }
+
+    async fn serve_mcp(server: McpServer) -> String {
+        let app = axum::Router::new()
+            .fallback(mcp_answer)
+            .with_state(server);
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        format!("http://{addr}")
+    }
+
+    const MCP_URL: &str = "https://mcp.seller.example/mcp";
+
+    /// A registry holding one MCP listing, probed once against `server`.
+    async fn probed_mcp(server: &McpServer) -> DiscoveryRegistry {
+        let base = serve_mcp(server.clone()).await;
+        let registry = DiscoveryRegistry::new();
+        let mut listing = listing_of("/mcp", None);
+        listing.url = url::Url::parse(MCP_URL).unwrap();
+        listing.resource_type = "mcp".to_string();
+        registry.register(listing).await.unwrap();
+        let health = registry.health();
+        for t in registry.probe_targets().await {
+            probe_and_record(&Loopback::serving(&base), &registry, &health, t).await;
+        }
+        registry
+    }
+
+    /// The owner's rule, end to end: an MCP endpoint whose handshake lists at
+    /// least one tool is verified alive -- exposed, counted, and marked as
+    /// verified by its handshake, not by a 402 -- in either answer format, with
+    /// the session it assigned sent back and `accept` naming both.
+    #[tokio::test]
+    async fn an_mcp_server_that_lists_a_tool_is_verified_alive_by_its_handshake() {
+        for sse in [false, true] {
+            let server = McpServer {
+                tools: 2,
+                sse,
+                session: true,
+                ..McpServer::default()
+            };
+            let registry = probed_mcp(&server).await;
+            assert_eq!(walk(&registry).await, [MCP_URL], "sse={sse}");
+            let stats = registry.stats().await;
+            assert_eq!(stats["verifiedAlive"], 1, "sse={sse}");
+            let item = serde_json::to_value(&registry.list(10, 0, None).await.items[0]).unwrap();
+            assert_eq!(item["health"]["verifiedBy"], "mcp_handshake", "sse={sse}");
+            assert!(item["health"]["verifiedAt"].is_u64());
+
+            let seen = server.seen.lock().unwrap().clone();
+            let methods: Vec<&str> = seen.iter().map(|(m, _, _)| m.as_str()).collect();
+            assert_eq!(
+                methods,
+                ["initialize", "notifications/initialized", "tools/list"]
+            );
+            assert_eq!(seen[0].1, None, "no session before the server assigns one");
+            assert_eq!(seen[2].1.as_deref(), Some("s-123"), "its own session, back");
+            for (_, _, accept) in &seen {
+                let accept = accept.as_deref().unwrap_or_default();
+                assert!(
+                    accept.contains("application/json") && accept.contains("text/event-stream"),
+                    "{accept}"
+                );
+            }
+        }
+    }
+
+    /// The other path: a handshake that lists no tool, or does not complete,
+    /// verifies nothing. The endpoint may still be alive -- the vocabulary does
+    /// not change -- but it stays in the pending queue, out of every public
+    /// surface; and a server that stops listing tools loses its exposure on
+    /// that very probe.
+    #[tokio::test]
+    async fn an_mcp_handshake_that_lists_no_tool_or_breaks_stays_pending() {
+        let cases = [
+            ("no tool", McpServer::default(), HealthStatus::Alive),
+            (
+                "not JSON-RPC",
+                McpServer {
+                    tools: 3,
+                    init: Some((200, "hello")),
+                    ..McpServer::default()
+                },
+                HealthStatus::Alive,
+            ),
+            (
+                "a JSON-RPC error",
+                McpServer {
+                    tools: 3,
+                    init: Some((200, r#"{"jsonrpc":"2.0","id":1,"error":{"code":-32600}}"#)),
+                    ..McpServer::default()
+                },
+                HealthStatus::Alive,
+            ),
+            (
+                "auth at the door",
+                McpServer {
+                    tools: 3,
+                    init: Some((401, "")),
+                    ..McpServer::default()
+                },
+                HealthStatus::AuthGated,
+            ),
+        ];
+        for (name, server, status) in cases {
+            let registry = probed_mcp(&server).await;
+            let state = registry.health().snapshot().await[MCP_URL].clone();
+            assert_eq!(state.status, status, "{name}");
+            assert_eq!(state.verified_at, None, "{name}");
+            assert_eq!(state.verified_by, None, "{name}");
+            assert!(walk(&registry).await.is_empty(), "{name}");
+            assert_eq!(registry.stats().await["verifiedAlive"], 0, "{name}");
+            assert_eq!(
+                registry.list_pending(10, 0).await.pagination.total,
+                1,
+                "{name}: in the queue"
+            );
+            let target = &registry.probe_targets().await[0];
+            let rec = registry.health().records.read().await[MCP_URL].clone();
+            assert!(
+                !unverified_legacy_alive(&rec, target),
+                "{name}: this build's handshake ran, so it is not probed again at once"
+            );
+        }
+
+        // Verified, then the server stops listing tools: the next probe hides it.
+        let registry = probed_mcp(&McpServer {
+            tools: 1,
+            ..McpServer::default()
+        })
+        .await;
+        assert_eq!(walk(&registry).await, [MCP_URL]);
+        let base = serve_mcp(McpServer::default()).await;
+        let target = registry.probe_targets().await.remove(0);
+        probe_and_record(
+            &Loopback::serving(&base),
+            &registry,
+            &registry.health(),
+            target,
+        )
+        .await;
+        assert!(walk(&registry).await.is_empty());
+    }
+
+    /// Neither kind of evidence stands in for the other.
+    #[test]
+    fn a_challenge_does_not_verify_an_mcp_endpoint_nor_a_handshake_an_http_listing() {
+        let now = 10_000_000;
+        let window = 600;
+        let state = |by: VerifiedBy| HealthState {
+            status: HealthStatus::Alive,
+            last_checked: Some(now),
+            http_status: Some(200),
+            latency_ms: None,
+            uptime_bps: None,
+            probe_count: None,
+            probe_method: None,
+            quarantine_reason: None,
+            verified_at: Some(now),
+            verified_by: Some(by),
+        };
+        let undeclared = ProbeRequest::Undeclared;
+        let ok = |s: &HealthState, mcp: bool| is_verified_alive(s, &undeclared, mcp, None, now, window);
+        assert!(ok(&state(VerifiedBy::McpHandshake), true));
+        assert!(!ok(&state(VerifiedBy::X402Challenge), true));
+        assert!(ok(&state(VerifiedBy::X402Challenge), false));
+        assert!(!ok(&state(VerifiedBy::McpHandshake), false));
+        let mut stale = state(VerifiedBy::McpHandshake);
+        stale.verified_at = Some(now - window - 1);
+        assert!(!ok(&stale, true), "the same window");
+        let mut held = state(VerifiedBy::McpHandshake);
+        held.status = HealthStatus::Quarantined;
+        assert!(!ok(&held, true), "and never in quarantine");
     }
 
     /// The re-probe of a verified listing lands inside the window it is

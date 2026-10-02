@@ -1154,6 +1154,21 @@ pub enum QuarantineReason {
     PayToDrift,
 }
 
+/// How a resource's last probe verified it alive. Response-facing as
+/// `health.verifiedBy`, beside `verifiedAt`, so a router can tell a listing
+/// whose payment challenge was read from an MCP server that only showed it is
+/// up and serving tools.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum VerifiedBy {
+    /// A 402 to the request the listing declares carried a valid x402 challenge
+    /// that passed the payTo drift check.
+    X402Challenge,
+    /// An MCP endpoint completed its handshake (`initialize`, then `tools/list`)
+    /// and listed at least one tool.
+    McpHandshake,
+}
+
 /// Response-facing health snapshot for a resource. Set on list responses from
 /// the health overlay; never persisted onto the resource in S3.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1183,11 +1198,15 @@ pub struct HealthState {
     /// `quarantined`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub quarantine_reason: Option<QuarantineReason>,
-    /// When the last probe -- with the request the listing declares, or the
-    /// one its fallback found -- read a valid x402 challenge in a 402. Absent
-    /// when the last probe did not.
+    /// When the last probe verified the resource alive: with the request the
+    /// listing declares, or the one its fallback found, it read a valid x402
+    /// challenge in a 402 -- or, for an MCP endpoint, its handshake listed at
+    /// least one tool. Absent when the last probe did not.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub verified_at: Option<u64>,
+    /// How `verifiedAt` was earned; present exactly when it is.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verified_by: Option<VerifiedBy>,
 }
 
 /// Curated tier of a resource (WS-C). Orders the listing:

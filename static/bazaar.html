@@ -535,13 +535,19 @@
     async function loadFeatured(){
       const hosts = [];
       try {
-        for(const tier of ['first_party','vip']){
-          for(let page=0; page<10; page++){
-            const r = await (await fetch(`/discovery/resources?tier=${tier}&limit=100&offset=${page*100}`)).json();
-            const items = r.items||[];
-            for(const it of items) hosts.push(hostOf(it.url).toLowerCase());
-            if(items.length < 100 || (page+1)*100 >= ((r.pagination||{}).total||0)) break;
-          }
+        for(let page=0; page<10; page++){
+          const r = await (await fetch(`/discovery/resources?tier=first_party&limit=100&offset=${page*100}`)).json();
+          const items = r.items||[];
+          for(const it of items) hosts.push(hostOf(it.url).toLowerCase());
+          if(items.length < 100 || (page+1)*100 >= ((r.pagination||{}).total||0)) break;
+        }
+        // A partner's listings can show a lower tier than the partner holds
+        // (paid content never shows `vip`), so a product the pass above did not
+        // find is looked up by its own host: one request each.
+        for(const v of VIP){
+          if(hosts.some(h => h.includes(v.match))) continue;
+          const r = await (await fetch(`/discovery/resources?q=${encodeURIComponent(v.match)}&limit=5`)).json();
+          for(const it of (r.items||[])) hosts.push(hostOf(it.url).toLowerCase());
         }
       } catch(e){ /* a failed read shows no product rather than an unverified one */ }
       featured = new Set(VIP.filter(v => hosts.some(h => h.includes(v.match))).map(v => v.name));

@@ -302,10 +302,11 @@ fn the_fixture_has_the_shape_that_was_measured() {
 #[tokio::test]
 async fn twelve_intents_sent_as_written_find_services_that_do_the_job() {
     let registry = registry().await;
-    // The fixture's 379 paid essays are VIP through the shipped manifest, and
-    // twelve of them are titled with an intent's own words. Two more views
-    // separate that from the ranking: the essays without the VIP tier (content
-    // is not to take it), and a router that leaves the content host out.
+    // The fixture's 379 paid essays are under a VIP prefix of the shipped
+    // manifest, and twelve of them are titled with an intent's own words.
+    // Since 2.47.0 paid content never shows the VIP tier, so the view without
+    // that manifest entry ranks the same; it stays as a check that it does.
+    // The other view is a router that leaves the content host out.
     let no_vip_content = registry_without_curated("Tenjin").await;
     let (intents, _) = intents();
 
@@ -397,9 +398,9 @@ async fn requests_the_lexicon_was_not_written_against_are_found_too() {
 }
 
 #[tokio::test]
-async fn a_request_ranks_the_service_above_a_vip_essay_that_shares_one_word() {
-    // The VIP essay says "weather" and nothing else of the request; the
-    // service says what was asked. Tier is a boost, not the order.
+async fn a_request_ranks_the_service_above_an_essay_that_shares_one_word() {
+    // The essay says "weather" and nothing else of the request; the service
+    // says what was asked. Tier is a boost, not the order.
     let registry = registry().await;
     let page = registry
         .list(
@@ -414,11 +415,42 @@ async fn a_request_ranks_the_service_above_a_vip_essay_that_shares_one_word() {
     if let Some(pos) = urls.iter().position(|u| u == essay) {
         assert!(pos > 0, "{urls:?}");
     }
-    // ...and the old order, still available by name, puts the VIP first.
+    // ...and the old order, still available by name, is the catalog order
+    // over the substring matches. The essay used to lead it from the VIP
+    // tier; paid content no longer holds that tier, so it no longer jumps
+    // the queue.
     let page = registry
         .list(5, 0, Some(filters("weather", Some("tier"))))
         .await;
-    assert_eq!(page.items[0].url.as_str(), essay);
+    let by_tier: Vec<String> = page.items.iter().map(|r| r.url.to_string()).collect();
+    let mut catalog_order = Vec::new();
+    let mut offset = 0;
+    loop {
+        let walked = registry.list(100, offset, None).await;
+        if walked.items.is_empty() {
+            break;
+        }
+        offset += walked.items.len() as u32;
+        catalog_order.extend(walked.items.into_iter().filter(|r| {
+            let meta = r.metadata.as_ref();
+            let hay = format!(
+                "{} {} {} {} {}",
+                r.url,
+                r.description,
+                meta.and_then(|m| m.provider.clone()).unwrap_or_default(),
+                meta.and_then(|m| m.category.clone()).unwrap_or_default(),
+                meta.map(|m| m.tags.join(" ")).unwrap_or_default()
+            );
+            hay.to_ascii_lowercase().contains("weather")
+        }));
+    }
+    let expected: Vec<String> = catalog_order
+        .iter()
+        .take(5)
+        .map(|r| r.url.to_string())
+        .collect();
+    assert_eq!(by_tier, expected);
+    assert_ne!(by_tier[0], essay, "content no longer leads the old order");
 }
 
 #[tokio::test]

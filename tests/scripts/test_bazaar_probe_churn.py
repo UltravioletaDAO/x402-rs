@@ -225,6 +225,22 @@ class Exposure(unittest.TestCase):
         self.assertTrue(self.ok(rec("alive", 402, None, verifiedAt=now, probeMethod="POST")),
                         "a listing that declares nothing counts what the fallback found")
 
+    def test_an_mcp_endpoint_is_verified_by_its_handshake(self):
+        # Mirrors `a_challenge_does_not_verify_an_mcp_endpoint_nor_a_handshake_an_http_listing`.
+        now = self.NOW
+        mcp = dict(typ="mcp")
+        self.assertTrue(self.ok(rec("alive", 200, None, verifiedAt=now,
+                                    verifiedBy="mcp_handshake", **mcp)))
+        self.assertFalse(self.ok(rec("alive", 200, None, verifiedAt=now - 601,
+                                     verifiedBy="mcp_handshake", **mcp)), "the same window")
+        self.assertFalse(self.ok(rec("alive", 402, None, verifiedAt=now,
+                                     verifiedBy="x402_challenge", **mcp)),
+                         "a challenge does not verify an MCP endpoint")
+        self.assertFalse(self.ok(rec("alive", 200, None, **mcp)), "a handshake with no tool")
+        self.assertFalse(self.ok(rec("alive", 402, "GET", verifiedAt=now, probeMethod="GET",
+                                     verifiedBy="mcp_handshake")),
+                         "nor a handshake an HTTP listing")
+
     def test_a_legacy_record_needs_the_same_probes_reading(self):
         legacy = dict(lastChecked=self.NOW - 10)
         self.assertTrue(self.ok(rec("alive", 402, "GET", observedAt=self.NOW - 7, **legacy)))

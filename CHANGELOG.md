@@ -10,11 +10,17 @@
   declares, read a valid x402 challenge in a 402 within the observed-terms
   freshness window, and that are not quarantined. Auth-gated, degraded,
   quarantined, unprobeable and never-probed listings are no longer listed or
-  counted anywhere public, and no parameter lists them (`health` can only
+  counted on any public listing surface (`/discovery/config` still reports how
+  many records a task holds), and no parameter lists them (`health` can only
   narrow). They stay in the catalog and keep being probed; the first probe that
   verifies one promotes it. Every listing served is `alive`, and `stats.visible`
-  equals a full offset walk of the default listing. MCP endpoints, whose probe is
-  a handshake that reads no challenge, are not exposed.
+  equals a full offset walk of the default listing.
+- **An MCP endpoint is verified by its handshake.** Its probe sends
+  `initialize`, the `initialized` notification and `tools/list`, with the
+  session the server assigns sent back to it, and reads the answers as JSON or
+  as an event stream. It is verified alive when `tools/list` lists at least one
+  tool, within the same window and out of quarantine; nothing is called. A
+  handshake that lists nothing or does not complete leaves it pending.
 - The `/bazaar` page shows one number, the listings verified alive, and drops the
   health filter, the "Listed" tier and the catalog health, sources, networks and
   tiers sections. Featured products appear only while one of their listings is
@@ -26,7 +32,12 @@
   128 characters.
 - An alive listing is re-probed before its verification leaves the window. A
   record written before this release keeps its listing on the reading the
-  observed-terms overlay took in the same probe, and is re-probed at once.
+  observed-terms overlay took in the same probe, and is re-probed at once; an
+  alive MCP record from before this release is re-probed at once by its
+  handshake.
+- Until a task has read the persisted liveness overlay, an import protects every
+  listing it holds (a full catalog takes no newcomer) and the overlay is not
+  uploaded; a read that fails is retried.
 - **The Bazaar health prober asks each listing the way the listing says it is
   called.** The method comes from the `bazaar` extension
   (`info.input.method`, else the schema's method, else POST when a body is
@@ -61,12 +72,14 @@
 ### Added
 
 - `health.quarantineReason` (`fail_streak` | `pay_to_drift`) while a listing
-  is quarantined, `health.probeMethod`, and `health.uptimeBps` /
+  is quarantined (shown by the admin pending view, since a quarantined listing
+  is not public), `health.probeMethod`, and `health.uptimeBps` /
   `health.probeCount` (the figure the uptime attestation publishes). All new
   optional fields; nothing in the listing is renamed or retyped, and the health
   vocabulary is unchanged.
-- `health.verifiedAt`, when the last probe read a valid challenge, and
-  `verifiedAlive` in `GET /discovery/stats`.
+- `health.verifiedAt`, when the last probe verified the listing, and
+  `health.verifiedBy` (`x402_challenge` | `mcp_handshake`), how; `verifiedAlive`
+  in `GET /discovery/stats`.
 - `GET /discovery/admin/pending`: what is not exposed, with its health, behind
   `BAZAAR_ADMIN_TOKEN` like the other admin routes (404 when it is unset).
 - `scripts/bazaar_probe_churn.py methods`: an offline report, from a local
@@ -79,7 +92,7 @@
 - Listings aggregated from a feed in the x402 v1 shape now keep their description and their declared input and output: v1 publishes them on each payment option (`accepts[].description`, `accepts[].outputSchema`), and they are carried to `description` and `extensions.bazaar.info` verbatim, per the bazaar spec's v1 mapping. Only when the resource declares none of its own; nothing is rewritten into another shape.
 - When two sources publish the same listing, a copy without a description, a `bazaar` extension or tags no longer erases another copy's: descriptive fields are only ever filled, and only from a source at least as authoritative: a feed's copy never completes the owner's own registration. The terms still follow authority and date as before, and nothing is written that no source published.
 - `GET /discovery/resources`: every listing carries `kind` (`api` or `content`), `hasInputSchema`, and, when anything maps, `categories` from one closed list of twenty-one (`people`, `company`, `web-search`, `page-read`, `social/x`, `social/reddit`, `finance`, `crypto`, `weather`, `image`, `human-work`, and ten more the catalog uses) with `categorySource` (`declared`, `normalized` or `inferred`). All four are response-only, resolved from `config/bazaar_taxonomy.json`; `metadata.category` is still served exactly as the seller declared it. `?category=` also matches every listing that resolves to the given category, in any of its spellings, besides the exact seller spelling it matched before.
-- Paid content (`kind: content`) never holds the `first_party` or `vip` tier: it gets `verified` when alive and `listed` otherwise, and keeps its label. Pay-per-read essays published under `tenjin.blog/api/read/` are content, at their publisher's request.
+- Paid content (`kind: content`) never holds the `first_party` or `vip` tier: it gets `verified` when alive (`listed` otherwise, which only the pending queue shows), and keeps its label; the `/bazaar` page still features the publisher while one of its listings is exposed. Pay-per-read essays published under `tenjin.blog/api/read/` are content, at their publisher's request.
 - `GET /discovery/stats` adds `byKind`, `byCategory`, `noDescription` and `noInputSchema`, counted over exactly the listings `visible` counts; `byTier` counts the tier each listing shows.
 - `scripts/bazaar_audit.py` reports, per source, listings without a description or a declared input, and the `kind`/`category` counts.
 
@@ -93,7 +106,7 @@
 
 ### Bazaar catalog: a full catalog makes room from templated families and crowded hosts first
 
-- When the catalog is at its cap and a new aggregated listing has to displace one, every copy the public surface does not show (not verified alive) goes before any copy it does: a newcomer, never probed, can only take the place of another pending copy, never of an exposed one. Within each group, the duplicates of a templated family go first, keeping the family's newest member; then a host's copies beyond its share of the catalog (`DISCOVERY_MAX_HOST_SHARE_PCT`, default 5 %: 100 listings at the default cap, never fewer than 50); then the oldest copy, as before. A family is a host and a path whose variable segments -- a digit (`/packs/0042`, `/token/0x.../whales`), a ticker (`/stock-history/AAPL`), a placeholder, or a last segment that is a generated slug of four or more words (`/x402/demand-company-oracle-revenue`) -- are read as one template. Admission follows the same order, so nothing comes back as new every cycle. A catalog with room is never trimmed for it, and a first-hand listing is never evicted.
+- When the catalog is at its cap and a new aggregated listing has to displace one, every copy the public surface does not show (not verified alive) goes before any copy it does: a newcomer, never probed, can only take the place of another pending copy, never of an exposed one. Within each group, the duplicates of a templated family go first, keeping one member (an exposed one before the newest); then a host's copies beyond its share of the catalog (`DISCOVERY_MAX_HOST_SHARE_PCT`, default 5 %: 100 listings at the default cap, never fewer than 50); then the oldest copy, as before. A family is a host and a path whose variable segments -- a digit (`/packs/0042`, `/token/0x.../whales`), a ticker (`/stock-history/AAPL`), a placeholder, or a last segment that is a generated slug of four or more words (`/x402/demand-company-oracle-revenue`) -- are read as one template. Admission follows the same order, so nothing comes back as new every cycle. A catalog with room is never trimmed for it, and a first-hand listing is never evicted.
 - Measured on a copy of the catalog as persisted on 2026-10-01: of its 2 000 listings, 470 aggregated copies are family duplicates (398 of them one data-pack template), so a full catalog can take 470 new services without losing a distinct one. The host share frees nothing there yet: every host above 100 listings registered them first-hand.
 - `GET /discovery/stats` adds `topHosts` (the ten hosts holding the most listings) and `GET /discovery/config` adds `catalog.maxHostSharePercent` and `catalog.maxPerHost`. The cap itself (`DISCOVERY_MAX_RESOURCES`, 2 000) is unchanged.
 

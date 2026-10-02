@@ -1229,7 +1229,14 @@ impl DiscoveryRegistry {
             self.curation.probes_get_only(&r.url),
         );
         let observed_at = observed.get(r.url.as_str()).map(|t| t.observed_at);
-        crate::discovery_health::is_verified_alive(state, &request, observed_at, now, window)
+        crate::discovery_health::is_verified_alive(
+            state,
+            &request,
+            r.resource_type == "mcp",
+            observed_at,
+            now,
+            window,
+        )
     }
 
     /// The URLs exposed right now, for a caller that does not hold the catalog
@@ -1260,6 +1267,26 @@ impl DiscoveryRegistry {
             .filter(|r| self.is_exposed(r, health, observed, now, window))
             .map(|r| r.url.to_string())
             .collect()
+    }
+
+    /// What trimming and admission protect: [`Self::exposed_in`] -- but only on a
+    /// liveness overlay that has been read
+    /// ([`crate::discovery_health::HealthTracker::is_loaded`]). Before that the
+    /// records are empty, not a verdict, and every held copy counts as exposed:
+    /// a full catalog takes no newcomer and, over its cap, evicts by class and
+    /// age alone, as it did before exposure existed. Never verified copies
+    /// evicted as pending because one read failed.
+    fn protected_in(
+        &self,
+        resources: &HashMap<String, DiscoveryResource>,
+        health: &HashMap<String, HealthState>,
+        observed: &HashMap<String, crate::discovery_terms::ObservedTerms>,
+    ) -> std::collections::HashSet<String> {
+        if self.health.is_loaded() {
+            self.exposed_in(resources, health, observed)
+        } else {
+            resources.keys().cloned().collect()
+        }
     }
 
     /// What is NOT exposed, with its health, for the admin route only
@@ -1452,7 +1479,7 @@ impl DiscoveryRegistry {
         // this one can carry. Without this a follower re-inhales the oversized
         // catalog every time it moves, which is precisely the memory the 2.21.2
         // cap exists to bound.
-        let exposed = self.exposed_in(&fresh, &health, &observed);
+        let exposed = self.protected_in(&fresh, &health, &observed);
         let dropped = enforce_capacity(&mut fresh, max_resources(), &exposed);
         if dropped > 0 {
             warn!(
@@ -1976,7 +2003,7 @@ impl DiscoveryRegistry {
         // Computed once, against the catalog as it stands. A record that would
         // be evicted the instant it landed is refused at the door instead.
         let cap = max_resources();
-        let exposed = self.exposed_in(&cache, &health, &observed);
+        let exposed = self.protected_in(&cache, &health, &observed);
         let mut admission = Admission::new(&cache, cap, &exposed);
 
         for mut resource in resources {
@@ -2108,7 +2135,7 @@ impl DiscoveryRegistry {
         // gate -- rather than the every-cycle churn it was. Exposure is asked
         // again of the catalog as the import left it: a replaced record may
         // declare another request than the copy it replaced.
-        let exposed = self.exposed_in(&cache, &health, &observed);
+        let exposed = self.protected_in(&cache, &health, &observed);
         let evicted = enforce_capacity(&mut cache, cap, &exposed);
         if evicted > 0 {
             info!(
@@ -4668,6 +4695,93 @@ mod tests {
         assert_eq!(urls(&r), ["https://other.example.org/search"]);
     }
 
+    /// No search, order or router filter widens what is exposed: a pending
+    /// listing that matches every one of them is never returned nor counted,
+    /// while the exposed twin is.
+    #[tokio::test]
+    async fn no_search_or_router_filter_reaches_a_pending_listing() {
+        let registry = DiscoveryRegistry::new();
+        let declared = serde_json::json!({
+            "bazaar": {"info": {"input": {"type": "http", "method": "POST", "body": {"query": "x"}}}}
+        });
+        let shown_url = "https://shown.example.com/search";
+        let pending_url = "https://pending.example.org/search";
+        for (url, at) in [(shown_url, 2), (pending_url, 3)] {
+            let mut r = described(url, "Web search for agents, ranked results.", at);
+            r.extensions = Some(declared.clone());
+            registry.register(r).await.unwrap();
+        }
+        registry
+            .health()
+            .mark_verified(shown_url, crate::discovery_health::ProbeMethod::Post)
+            .await;
+
+        let f = |q: Option<&str>, sort: Option<&str>| DiscoveryFilters {
+            q: q.map(str::to_string),
+            sort: sort.map(str::to_string),
+            ..Default::default()
+        };
+        let variants: Vec<(&str, DiscoveryFilters)> = vec![
+            ("none", DiscoveryFilters::default()),
+            ("q one word", f(Some("search"), None)),
+            ("q request", f(Some("web search for agents"), None)),
+            ("q relevance", f(Some("search"), Some("relevance"))),
+            ("q tier", f(Some("web search"), Some("tier"))),
+            ("method", DiscoveryFilters { method: Some("POST".into()), ..Default::default() }),
+            ("kind", DiscoveryFilters { kind: Some("api".into()), ..Default::default() }),
+            ("hasInputSchema", DiscoveryFilters { has_input_schema: Some(true), ..Default::default() }),
+            ("maxPriceUsd", DiscoveryFilters { max_price_usd: Some("5".into()), ..Default::default() }),
+            ("excludeHost", DiscoveryFilters { exclude_host: Some(vec!["nothing.example".into()]), ..Default::default() }),
+            ("health any", DiscoveryFilters { health: Some("any".into()), ..Default::default() }),
+            ("tier", DiscoveryFilters { tier: Some("verified".into()), ..Default::default() }),
+            (
+                "all at once",
+                DiscoveryFilters {
+                    q: Some("web search for agents".into()),
+                    sort: Some("relevance".into()),
+                    method: Some("POST".into()),
+                    kind: Some("api".into()),
+                    has_input_schema: Some(true),
+                    max_price_usd: Some("5".into()),
+                    exclude_host: Some(vec!["nothing.example".into()]),
+                    health: Some("any".into()),
+                    ..Default::default()
+                },
+            ),
+        ];
+        for (name, filters) in variants {
+            let r = registry.list(100, 0, Some(filters)).await;
+            assert_eq!(urls(&r), [shown_url], "{name}");
+            assert_eq!(r.pagination.total, 1, "{name}: the pending one is not counted");
+        }
+    }
+
+    /// `kind` is the listing's own kind: the essay publisher's pay-per-read
+    /// listings are `content`, everything else `api`.
+    #[tokio::test]
+    async fn the_kind_filter_tells_content_from_apis() {
+        let registry = DiscoveryRegistry::new();
+        let essay = "https://tenjin.blog/api/read/an-essay";
+        let tool = "https://tool.example.com/x";
+        registry
+            .register(described(essay, "An essay.", 1))
+            .await
+            .unwrap();
+        registry
+            .register(described(tool, "A tool.", 2))
+            .await
+            .unwrap();
+        expose_all(&registry).await;
+        let kind = |k: &str| {
+            Some(DiscoveryFilters {
+                kind: Some(k.to_string()),
+                ..Default::default()
+            })
+        };
+        assert_eq!(urls(&registry.list(10, 0, kind("content")).await), [essay]);
+        assert_eq!(urls(&registry.list(10, 0, kind("api")).await), [tool]);
+    }
+
     /// A letters-only path segment for test URLs (`0 -> "a"`, `26 -> "ba"`):
     /// a digit would make every one of them a templated family.
     fn word(mut i: usize) -> String {
@@ -4995,15 +5109,25 @@ mod tests {
         assert_eq!(registry.count().await, 60);
     }
 
-    /// The exposure the listing applies is what an import protects: a full
-    /// catalog makes room from a pending copy before a verified-alive one, even
-    /// an older one, and when every evictable copy is verified it takes no
-    /// newcomer at all.
-    #[tokio::test]
-    async fn an_import_never_displaces_a_verified_alive_copy() {
-        std::env::set_var("DISCOVERY_MAX_RESOURCES", "3");
-        let registry = DiscoveryRegistry::new();
-        let base = now_secs() - 3_600;
+    /// Sets the catalog cap for one test and removes it when dropped, so a
+    /// failing assertion cannot leave it set for the tests after it.
+    struct CapGuard;
+
+    impl CapGuard {
+        fn set(cap: &str) -> Self {
+            std::env::set_var("DISCOVERY_MAX_RESOURCES", cap);
+            CapGuard
+        }
+    }
+
+    impl Drop for CapGuard {
+        fn drop(&mut self) {
+            std::env::remove_var("DISCOVERY_MAX_RESOURCES");
+        }
+    }
+
+    /// Three aggregated copies on three hosts, `a` the oldest.
+    async fn three_held(registry: &DiscoveryRegistry, base: u64) {
         let held: Vec<DiscoveryResource> = ["a", "b", "c"]
             .iter()
             .enumerate()
@@ -5013,6 +5137,18 @@ mod tests {
             .bulk_import(held, ImportPolicy::Filtered)
             .await
             .unwrap();
+    }
+
+    /// The exposure the listing applies is what an import protects: a full
+    /// catalog makes room from a pending copy before a verified-alive one, even
+    /// an older one, and when every evictable copy is verified it takes no
+    /// newcomer at all.
+    #[tokio::test]
+    async fn an_import_never_displaces_a_verified_alive_copy() {
+        let _cap = CapGuard::set("3");
+        let registry = DiscoveryRegistry::new();
+        let base = now_secs() - 3_600;
+        three_held(&registry, base).await;
         // The OLDEST copy is the verified one: by date alone it would go first.
         registry
             .health()
@@ -5045,10 +5181,33 @@ mod tests {
             .bulk_import(vec![newest], ImportPolicy::Filtered)
             .await
             .unwrap();
-        std::env::remove_var("DISCOVERY_MAX_RESOURCES");
         assert_eq!((added, skipped), (0, 1));
         assert!(registry.get("https://e.new.example/x").await.is_none());
         assert_eq!(registry.count().await, 3);
+    }
+
+    /// A liveness overlay that has not been read is not a verdict. A full
+    /// catalog then takes no newcomer, so no verified copy can be evicted as if
+    /// it were pending because one read failed; once read, the rule above holds.
+    #[tokio::test]
+    async fn an_unread_liveness_overlay_evicts_nothing_as_pending() {
+        let _cap = CapGuard::set("3");
+        let registry = DiscoveryRegistry::new();
+        let base = now_secs() - 3_600;
+        three_held(&registry, base).await;
+        registry.health().expect_overlay();
+        assert!(!registry.health().is_loaded());
+
+        let newer = aggregated_at("https://d.new.example/x", base + 10);
+        let (added, _, skipped) = registry
+            .bulk_import(vec![newer], ImportPolicy::Filtered)
+            .await
+            .unwrap();
+        assert_eq!((added, skipped), (0, 1));
+        for h in ["a", "b", "c"] {
+            let url = format!("https://{h}.held.example/x");
+            assert!(registry.get(&url).await.is_some(), "{url} was evicted");
+        }
     }
 
     /// The same protection when a task reloads a catalog another task wrote
@@ -5058,7 +5217,7 @@ mod tests {
         let store = Arc::new(FollowedStore::default());
         let base = now_secs() - 3_600;
         store.publish(vec![aggregated_at("https://a.held.example/x", base)]);
-        std::env::set_var("DISCOVERY_MAX_RESOURCES", "2");
+        let _cap = CapGuard::set("2");
         let registry = DiscoveryRegistry::with_store(Arc::clone(&store))
             .await
             .unwrap();
@@ -5076,7 +5235,6 @@ mod tests {
             aggregated_at("https://c.held.example/x", base + 2),
         ]);
         let reloaded = registry.refresh_from_store().await.unwrap();
-        std::env::remove_var("DISCOVERY_MAX_RESOURCES");
         assert!(reloaded.is_some(), "the newer object is loaded");
         assert_eq!(registry.count().await, 2);
         assert!(registry.get("https://a.held.example/x").await.is_some());

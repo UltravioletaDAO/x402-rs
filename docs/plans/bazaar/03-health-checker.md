@@ -111,9 +111,10 @@ The owner's rule, one definition for every public surface. A listing is **verifi
 
 - its last probe, made **with the request the listing declares** (or, for one that declares
   nothing, whichever request the probe sent), answered `alive`;
-- that probe read a **valid x402 challenge** in a 402 and passed the drift check -- the record
-  keeps when (`verified_at`, published as `health.verifiedAt`), and any probe that did not clears
-  it: it is about the LAST probe, not the best one;
+- that probe read a **valid x402 challenge** in a 402 and passed the drift check (for an MCP
+  endpoint: its handshake listed a tool, below) -- the record keeps when (`verified_at`, published
+  as `health.verifiedAt`, with `health.verifiedBy`), and any probe that did not clears it: it is
+  about the LAST probe, not the best one;
 - no longer ago than the observed-terms freshness window (`DISCOVERY_TERMS_FRESH_SECS`, 7 days);
 - and it is not quarantined, for any reason.
 
@@ -132,9 +133,21 @@ featured products only while one of their listings is exposed), and the uptime a
 its schedule, and is promoted by the first probe that verifies it. `GET /discovery/admin/pending`
 lists it, behind `BAZAAR_ADMIN_TOKEN` like the other admin routes (404 when unset).
 
-- **MCP endpoints are never exposed.** Their probe is the `initialize` handshake, which reads no
-  challenge, so nothing verifies them. Making them exposable needs a probe that reaches a paid
-  tool call -- a separate decision, not part of this change.
+- **MCP endpoints are verified by their handshake** (the owner's decision, 2026-10-02). An MCP
+  probe sends `initialize`, the `notifications/initialized` notification and `tools/list` (three
+  requests, reserved as three slots), with `accept: application/json, text/event-stream` and the
+  session id the server assigned, sent back to that server only; answers are read as JSON or as an
+  event stream, up to the probe's byte cap. It is verified alive when `initialize` returned a
+  JSON-RPC result and `tools/list` listed at least one tool -- `verified_by: mcp_handshake`,
+  published as `health.verifiedBy` -- within the same window and out of quarantine. Nothing is
+  called; listing is all. A handshake that lists nothing, or does not complete, verifies nothing,
+  and the listing stays pending. Neither kind of evidence counts for the other kind of listing.
+  An `alive` MCP record from the `initialize`-only build carries no tool count (`mcp_tools`) and
+  is probed at once, once.
+- **An unread overlay is not a verdict.** At startup the tracker expects its overlay
+  (`expect_overlay`) until it has been read or found absent. Until then an import protects every
+  held copy (a full catalog takes no newcomer) and the overlay is not uploaded; a failed read is
+  retried on the next persist tick.
 - **The re-probe lands inside the window.** An `alive` record is probed again after
   `min(7 days, window - window/8)` (`alive_reprobe_secs`), and a verification older than that is
   due whatever its schedule says (`verification_due`), so a shortened window cannot drop listings

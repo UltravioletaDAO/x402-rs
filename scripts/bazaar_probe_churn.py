@@ -270,6 +270,7 @@ def snapshot(base: str, pause: float) -> dict:
                     "quarantineReason": health.get("quarantineReason"),
                     "probeMethod": health.get("probeMethod"),
                     "verifiedAt": health.get("verifiedAt"),
+                    "verifiedBy": health.get("verifiedBy"),
                     "exposed": exposed,
                     "type": item.get("type"),
                     "method": method,
@@ -439,6 +440,8 @@ def load_records(path: str, health_path: str = None, terms_path: str = None) -> 
             "quarantineReason": h.get("quarantine_reason"),
             "probeMethod": h.get("probe_method"),
             "verifiedAt": h.get("verified_at"),
+            "verifiedBy": h.get("verified_by"),
+            "mcpTools": h.get("mcp_tools"),
             "observedAt": (terms.get(item["url"]) or {}).get("observedAt"),
             "type": item.get("type"),
             "method": method,
@@ -462,8 +465,16 @@ def verified_at_of(r: dict):
 
 def verified_alive(r: dict, now: int, window: int = FRESH_WINDOW_SECS) -> bool:
     """`is_verified_alive`: alive, a readable challenge no older than `window`,
-    to the request the listing declares (any, when it declares none)."""
+    to the request the listing declares (any, when it declares none) -- or, for
+    an MCP endpoint, a handshake that listed a tool (`verifiedBy`
+    `mcp_handshake`) no older than `window`. Neither counts for the other."""
     if r.get("status") != "alive":
+        return False
+    if r.get("type") == "mcp":
+        at = r.get("verifiedAt")
+        return (r.get("verifiedBy") == "mcp_handshake" and at is not None
+                and now - at <= window)
+    if r.get("verifiedBy") == "mcp_handshake":
         return False
     at = verified_at_of(r)
     if at is None or now - at > window:
@@ -479,6 +490,7 @@ def _why_pending(r: dict, now: int, window: int) -> str:
     if status != "alive":
         return status
     if r.get("type") == "mcp":
+        # Alive, but no handshake of this build listed a tool within the window.
         return "alive_mcp_handshake"
     at = verified_at_of(r)
     if at is None:
@@ -543,6 +555,10 @@ def methods_report(records: dict) -> dict:
         if drift_hold:
             drift_hosts[_host(url)] += 1
         if r.get("type") == "mcp":
+            # `unverified_legacy_alive`: an alive MCP record no handshake of
+            # this build ran on (no tool count) is probed at once, once.
+            first_cycle += (status == "alive" and r.get("verifiedAt") is None
+                            and r.get("mcpTools") is None)
             continue
         if method in BODY_METHODS:
             to_body[status] += 1

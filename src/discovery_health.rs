@@ -3619,6 +3619,36 @@ mod declared_method_tests {
     }
 
     #[tokio::test]
+    async fn a_legacy_drift_hold_stays_a_drift_hold_through_a_failure() {
+        // Read off its signature on the first probe by this build, and KEPT:
+        // once its last status code is a 404, the signature would say "fail
+        // streak", and a change of request would lift it with one 402.
+        let url = "https://hijacked.example/pay";
+        let old: HashMap<String, HealthRecord> = serde_json::from_value(json!({
+            "https://hijacked.example/pay": { "status": "quarantined", "http_status": 402 }
+        }))
+        .unwrap();
+        let t = HealthTracker::new();
+        *t.records.write().await = old;
+        t.record_probe(url, ProbeClass::Fail, Some(404), 1, Some(ProbeMethod::Get))
+            .await;
+        assert_eq!(reason_of(&t, url).await, Some(QuarantineReason::PayToDrift));
+        t.record_probe(
+            url,
+            ProbeClass::Alive,
+            Some(402),
+            1,
+            Some(ProbeMethod::Post),
+        )
+        .await;
+        assert_eq!(
+            status_of(&t, url).await,
+            HealthStatus::Quarantined,
+            "a new request does not lift a drift hold"
+        );
+    }
+
+    #[tokio::test]
     async fn the_quarantine_reason_is_kept_and_published() {
         let url = "https://seller.example/x";
         let t = HealthTracker::new();

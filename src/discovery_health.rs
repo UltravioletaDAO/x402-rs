@@ -715,6 +715,15 @@ impl HealthTracker {
             .collect()
     }
 
+    /// Test hook: leave a URL in `status`, as the prober would have. Built
+    /// through serde so it keeps compiling whatever fields the record gains.
+    #[cfg(test)]
+    pub(crate) async fn set_status_for_test(&self, url: &str, status: HealthStatus) {
+        let record: HealthRecord = serde_json::from_value(serde_json::json!({ "status": status }))
+            .expect("a health record needs only its status");
+        self.records.write().await.insert(url.to_string(), record);
+    }
+
     /// Minimum seconds between two uploads of the overlay.
     ///
     /// It was "every tick", i.e. every 60 seconds, because `dirty` is set by any

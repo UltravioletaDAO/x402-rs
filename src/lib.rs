@@ -32,6 +32,7 @@ pub mod discovery_price;
 pub mod discovery_revalidation;
 pub mod discovery_security;
 pub mod discovery_store;
+pub mod discovery_taxonomy;
 pub mod discovery_terms;
 pub mod dx402;
 pub mod erc8004;

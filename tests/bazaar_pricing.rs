@@ -326,6 +326,7 @@ fn two_amount_spellings_that_disagree_are_refused_not_averaged() {
         pay_to: Some("0x52E29e0d2Aa49bfBfC548C0A9F2196F4aa51f3ea".into()),
         max_timeout_seconds: Some(300),
         extra: None,
+        ..Default::default()
     };
     assert_eq!(
         normalize_declared_option(declared),
@@ -345,6 +346,7 @@ fn an_explicit_zero_is_not_a_parse_failure() {
         pay_to: Some("0x52E29e0d2Aa49bfBfC548C0A9F2196F4aa51f3ea".into()),
         max_timeout_seconds: Some(300),
         extra: None,
+        ..Default::default()
     };
     let option = normalize_declared_option(declared).expect("an explicit zero is a declaration");
     assert_eq!(option.amount, TokenAmount::from(0u64));
@@ -360,6 +362,7 @@ fn an_explicit_zero_is_not_a_parse_failure() {
         pay_to: Some("0x52E29e0d2Aa49bfBfC548C0A9F2196F4aa51f3ea".into()),
         max_timeout_seconds: Some(300),
         extra: None,
+        ..Default::default()
     };
     assert_eq!(
         normalize_declared_option(missing),
@@ -378,6 +381,7 @@ fn a_missing_scheme_is_refused_rather_than_assumed() {
         pay_to: Some("0x52E29e0d2Aa49bfBfC548C0A9F2196F4aa51f3ea".into()),
         max_timeout_seconds: Some(300),
         extra: None,
+        ..Default::default()
     };
     assert_eq!(
         normalize_declared_option(declared),
@@ -403,6 +407,7 @@ fn amounts_above_the_js_safe_integer_survive_exactly() {
         pay_to: Some("0x52E29e0d2Aa49bfBfC548C0A9F2196F4aa51f3ea".into()),
         max_timeout_seconds: Some(300),
         extra: None,
+        ..Default::default()
     };
     let option = normalize_declared_option(declared).expect("a large integer is a valid amount");
     assert_eq!(option.amount.to_string(), "123456789012345678901");
@@ -698,6 +703,7 @@ fn an_out_of_bounds_extra_is_dropped_not_fatal() {
         pay_to: Some("0x52E29e0d2Aa49bfBfC548C0A9F2196F4aa51f3ea".into()),
         max_timeout_seconds: Some(300),
         extra: serde_json::from_str(&serde_json::to_string(&deep).unwrap()).ok(),
+        ..Default::default()
     };
     let option = normalize_declared_option(declared).expect("the price survives");
     assert_eq!(option.amount, TokenAmount::from(10_000u64));

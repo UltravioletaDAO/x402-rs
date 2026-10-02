@@ -2625,9 +2625,10 @@ here.
 
 Groups follow what each one costs: `catalog` (how many records are held, how many are taken
 from one source per cycle, and `maxPerHost` -- `maxHostSharePercent` of `maxResources`, never
-fewer than 50, null when the share is off: when a full catalog has to make room, a host's
-aggregated copies beyond that number go first, right after the duplicates of a templated family;
-a catalog with room is never trimmed for it, and a first-hand listing never), `healthProber` (the probe budget -- `budgetPerTick` is
+fewer than 50, null when the share is off: when a full catalog has to make room, copies that are
+not verified alive go before any that are, and within each a host's aggregated copies beyond that
+number go right after the duplicates of a templated family; a catalog with room is never trimmed
+for it, and a first-hand listing never), `healthProber` (the probe budget -- `budgetPerTick` is
 `maxRps * tickSeconds` and is the number the revalidation queue spends from, never adds to),
 `revalidation`, `observedTerms`, and `runtime` (whether this replica owns the periodic jobs,
 the queue depth, and the catalog size right now).

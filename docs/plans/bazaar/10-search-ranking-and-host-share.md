@@ -60,9 +60,14 @@ the same rule as the `hasInputSchema` a listing reports, so the filter and the f
 ## 4. The host share: an order of eviction, not a cap
 
 When a FULL catalog has to make room (`enforce_capacity`, and admission mirroring it so nothing
-churns), aggregated copies go in this order: the duplicates of a templated family, newest member
-kept; then a host's copies beyond `DISCOVERY_MAX_HOST_SHARE_PCT` (default 5 %, 100 at the default
-cap, never fewer than 50); then the oldest copy, as before. A catalog with room is never trimmed
+churns), every aggregated copy the public surface does not show goes before any copy it does --
+the curated bazaar exposes only verified-alive listings, and a pending one (never probed, or not
+answering a valid 402 to its declared method) never displaces an exposed one; a newcomer is
+pending by definition. Within each group: the duplicates of a templated family, an exposed member
+kept over a pending one and then the newest; then a host's copies beyond
+`DISCOVERY_MAX_HOST_SHARE_PCT` (default 5 %, 100 at the default cap, never fewer than 50), pending
+ones first; then the oldest copy, as before. What counts as exposed is asked in one place,
+`discovery::exposed_urls`. A catalog with room is never trimmed
 for it, and a first-hand listing is never evicted. `GET /discovery/stats` `topHosts` and
 `GET /discovery/config` `catalog.maxPerHost` show it on a running task.
 
@@ -99,8 +104,10 @@ KarmaKadabra can run the same set. `tests/bazaar_search.rs` runs it; numbers in 
 
 ## 6. Measured
 
-Same fixture, same file, run against `ff0c6404` (2.46.1) and against this change; "does the job"
-is the fixture's strict judgement (top three, 36 places):
+Same fixture, same file, run against `ff0c6404` (2.46.1) and against this change, over the rows
+the curated bazaar exposes (the fixture marks the rest `pending`; the generator says how that is
+modelled, and the numbers are the same over the whole catalog); "does the job" is the fixture's
+strict judgement (top three, 36 places):
 
 | | 2.46.1 | 2.47.0 |
 |---|---|---|
@@ -116,8 +123,8 @@ lexically they match as well as the service does, and telling them apart is the 
 job, not ranking's. The held-out misses include a gap in the shared stopword list (no `what`,
 `how`, `get`), noted for the shared tokenizer rather than patched in the copy.
 
-Latency, debug build, same catalog: a search 5-7 ms p50 and 9-12 ms p95 (2.46.1: 1.5 ms); the
-first search after a catalog write ~65 ms (index rebuild); without `q` unchanged (24-31 ms).
+Latency, debug build, same catalog: a search 5-7 ms p50 and 9-12 ms p95 (2.46.1: 1.2-1.5 ms); the
+first search after a catalog write 50-70 ms (index rebuild); without `q` unchanged.
 
 On a copy of the real catalog (2026-10-01 20:03Z, health overlay absent) the 2.46.1 search
 returns nothing for 9 of the 12 intents as written, and paid essays for one of the other three;

@@ -11,9 +11,16 @@ nothing. The rows are compact so any consumer of the Bazaar (Paarce in Emporium,
 KarmaKadabra's bazaar client, this facilitator's own test) can load the same set:
 
   {"url": ..., "description": ..., "type": "mcp", "category": ..., "tags": [...],
-   "provider": ..., "method": "POST", "inputFields": [...]}
+   "provider": ..., "method": "POST", "inputFields": [...], "pending": true}
 
 Absent keys are empty. A row's position is its age: the first row is the newest.
+
+`pending: true` marks a listing the public surface does not show: not verified alive (a 402 to its
+declared method, fresh, not quarantined). Modelled, not measured, and stated here so nobody reads it
+as data: every service the partner found answering 402 is exposed, and so are the paid essays (they
+charge); the quote API's 86 templated endpoints are pending (the partner found the family quarantined
+and only /stock-quote live); 40 % of the long tail is pending. A benchmark over the exposed rows is
+what a router querying the curated bazaar sees.
 
 The catalog has the shape a router partner measured on the live catalog on
 2026-10-01 (1 999 listings, four hosts holding 1 043, about 40 % of the long tail
@@ -295,7 +302,7 @@ def catalog():
     losbeto = []
     for endpoint in ["stock-history", "options-chain", "earnings"]:
         for ticker in TICKERS:
-            losbeto.append(row(f"https://api.losbeto.xyz/{endpoint}/{ticker}"))
+            losbeto.append(row(f"https://api.losbeto.xyz/{endpoint}/{ticker}", pending=True))
     rows += losbeto[:86]
 
     # tenjin.blog: 379 paid essays, VIP through config/bazaar_curation.json.
@@ -329,7 +336,7 @@ def catalog():
         for k in range(23 if index < 12 else 22):
             prefix = ["/v1", "/v2", "/api"][k % 3]
             rows.append(row(f"https://{name}{k // 3}.x402.example{prefix}{path}",
-                            "" if i % 5 < 2 else description))
+                            "" if i % 5 < 2 else description, pending=i % 5 in (0, 3)))
             i += 1
     return rows
 

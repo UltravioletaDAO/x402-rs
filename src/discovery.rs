@@ -249,8 +249,32 @@ fn host_key(url: &url::Url) -> String {
         .to_ascii_lowercase()
 }
 
+/// The URLs the public surface shows, which a full catalog protects before any
+/// copy nobody has verified.
+///
+/// The one place eviction and admission ask. Today it reads the liveness
+/// overlay's `alive`; the verified-alive rule of the public surface (a valid 402
+/// to the declared method, fresh, not quarantined) is what belongs here, so the
+/// two can never disagree about what is exposed.
+fn exposed_urls(health: &HashMap<String, HealthState>) -> std::collections::HashSet<String> {
+    health
+        .iter()
+        .filter(|(_, h)| h.status == HealthStatus::Alive)
+        .map(|(url, _)| url.clone())
+        .collect()
+}
+
+/// One aggregated copy's place in the eviction order. Sorted ascending, the
+/// first is the first to go.
+///
+/// `exposed` is the first key: a copy the public surface shows is evicted only
+/// after every copy it does not, whatever their class or age. A pending listing
+/// -- not yet verified alive -- never displaces an exposed one.
+type EvictionKey = (bool, EvictionClass, u64, String);
+
 /// Every aggregated copy in `cache`, in the order a full catalog evicts them:
-/// by [`EvictionClass`], then oldest `last_updated`, then URL.
+/// pending before exposed, then by [`EvictionClass`], then oldest
+/// `last_updated`, then URL.
 ///
 /// The URL is the last key so that ties -- an undated feed stamps one fetch
 /// time on its whole page -- are broken the same way on every replica and after
@@ -258,15 +282,19 @@ fn host_key(url: &url::Url) -> String {
 ///
 /// The host share is counted AFTER the family duplicates are set aside: a host
 /// whose 388 listings are one template is one family, and collapsing it is what
-/// brings it under its share.
+/// brings it under its share. A family keeps an exposed member over a pending
+/// one, and a host over its share gives back its pending copies first.
 fn eviction_order(
     cache: &HashMap<String, DiscoveryResource>,
     per_host: Option<usize>,
-) -> Vec<(EvictionClass, u64, String)> {
+    exposed: &std::collections::HashSet<String>,
+) -> Vec<EvictionKey> {
     let aggregated = |r: &DiscoveryResource| matches!(r.source, DiscoverySource::Aggregated);
+    let shown = |url: &str| exposed.contains(url);
 
-    // 1. Families: the newest member stays (on a tie, the lowest URL), and
-    //    every other aggregated member is a duplicate.
+    // 1. Families: an exposed member stays over a pending one, then the newest
+    //    (on a tie, the lowest URL); every other aggregated member is a
+    //    duplicate.
     let mut families: HashMap<String, Vec<(&String, &DiscoveryResource)>> = HashMap::new();
     for (url, r) in cache {
         if let Some(family) = template_family(&r.url) {
@@ -278,8 +306,9 @@ fn eviction_order(
         let keeper = members
             .iter()
             .max_by(|a, b| {
-                a.1.last_updated
-                    .cmp(&b.1.last_updated)
+                shown(a.0)
+                    .cmp(&shown(b.0))
+                    .then_with(|| a.1.last_updated.cmp(&b.1.last_updated))
                     .then_with(|| b.0.cmp(a.0))
             })
             .map(|(url, _)| url.as_str());
@@ -291,11 +320,13 @@ fn eviction_order(
     }
 
     // 2. The host share, over what remains. First-hand records count toward
-    //    their host's share and are never the ones marked.
+    //    their host's share and are never the ones marked; pending copies are
+    //    marked before exposed ones.
     let mut over_share: std::collections::HashSet<&str> = std::collections::HashSet::new();
     if let Some(per_host) = per_host {
-        // Records a host holds, and its aggregated copies as `(last_updated, url)`.
-        type Held<'a> = (usize, Vec<(u64, &'a str)>);
+        // Records a host holds, and its aggregated copies as
+        // `(exposed, last_updated, url)`.
+        type Held<'a> = (usize, Vec<(bool, u64, &'a str)>);
         let mut by_host: HashMap<String, Held> = HashMap::new();
         for (url, r) in cache {
             if duplicates.contains(url.as_str()) {
@@ -304,7 +335,7 @@ fn eviction_order(
             let entry = by_host.entry(host_key(&r.url)).or_default();
             entry.0 += 1;
             if aggregated(r) {
-                entry.1.push((r.last_updated, url.as_str()));
+                entry.1.push((shown(url), r.last_updated, url.as_str()));
             }
         }
         for (held, mut copies) in by_host.into_values() {
@@ -312,12 +343,17 @@ fn eviction_order(
                 continue;
             }
             copies.sort_unstable();
-            over_share.extend(copies.into_iter().take(held - per_host).map(|(_, url)| url));
+            over_share.extend(
+                copies
+                    .into_iter()
+                    .take(held - per_host)
+                    .map(|(_, _, url)| url),
+            );
         }
     }
 
     // 3. One order over every aggregated copy.
-    let mut order: Vec<(EvictionClass, u64, String)> = cache
+    let mut order: Vec<EvictionKey> = cache
         .iter()
         .filter(|(_, r)| aggregated(r))
         .map(|(url, r)| {
@@ -328,7 +364,7 @@ fn eviction_order(
             } else {
                 EvictionClass::Oldest
             };
-            (class, r.last_updated, url.clone())
+            (shown(url), class, r.last_updated, url.clone())
         })
         .collect();
     order.sort_unstable();
@@ -361,13 +397,16 @@ fn eviction_order(
 ///
 /// # The rule, mirroring [`eviction_order`]
 ///
-/// A copy that would be the first thing evicted is refused at the door:
+/// A newcomer has never been probed, so it is pending, and it may only take the
+/// place of another pending copy. It is refused at the door when it would be the
+/// first thing evicted:
 ///
 /// - one of a templated family the catalog already holds (`template-family`);
 /// - one from a host already at its share (`host-share`);
-/// - otherwise, while the catalog holds family duplicates or copies over a
-///   host's share, it gets in and one of those makes room for it; once there
-///   are none, it has to be newer than the oldest copy, as before
+/// - otherwise, while the catalog holds pending family duplicates or pending
+///   copies over a host's share, it gets in and one of those makes room for it;
+///   once there are none, it has to be newer than the oldest pending copy, and
+///   when every evictable copy is exposed it does not get in at all
 ///   (`over-capacity`).
 ///
 /// A catalog with room takes everything; [`enforce_capacity`] then trims in
@@ -379,14 +418,20 @@ struct Admission {
     families: std::collections::HashSet<String>,
     /// Records per host, family duplicates aside.
     held_by_host: HashMap<String, usize>,
-    /// Copies that would be evicted ahead of the oldest one.
+    /// Pending copies that would be evicted ahead of the oldest pending one.
     displaceable: usize,
-    /// The oldest copy outside those: what a newcomer must beat once they are gone.
+    /// The oldest pending copy outside those: what a newcomer must beat once
+    /// they are gone. `u64::MAX` when there is none -- only exposed copies, or
+    /// nothing evictable at all -- which refuses every newcomer.
     oldest: u64,
 }
 
 impl Admission {
-    fn new(cache: &HashMap<String, DiscoveryResource>, cap: usize) -> Self {
+    fn new(
+        cache: &HashMap<String, DiscoveryResource>,
+        cap: usize,
+        exposed: &std::collections::HashSet<String>,
+    ) -> Self {
         let mut admission = Self {
             full: false,
             per_host: None,
@@ -399,11 +444,11 @@ impl Admission {
             return admission;
         }
         let per_host = crate::discovery_config::max_per_host(cap);
-        let order = eviction_order(cache, per_host);
+        let order = eviction_order(cache, per_host, exposed);
         let duplicates: std::collections::HashSet<&str> = order
             .iter()
-            .filter(|(class, _, _)| *class == EvictionClass::FamilyDuplicate)
-            .map(|(_, _, url)| url.as_str())
+            .filter(|(_, class, _, _)| *class == EvictionClass::FamilyDuplicate)
+            .map(|(_, _, _, url)| url.as_str())
             .collect();
         for (url, r) in cache {
             if let Some(family) = template_family(&r.url) {
@@ -415,16 +460,13 @@ impl Admission {
         }
         admission.full = true;
         admission.per_host = per_host;
-        admission.displaceable = order
-            .iter()
-            .filter(|(class, _, _)| *class != EvictionClass::Oldest)
+        let pending = || order.iter().filter(|(shown, _, _, _)| !shown);
+        admission.displaceable = pending()
+            .filter(|(_, class, _, _)| *class != EvictionClass::Oldest)
             .count();
-        // Nothing evictable at all: admitting more would only push us further
-        // over a cap we already cannot enforce, so `u64::MAX` refuses it.
-        admission.oldest = order
-            .iter()
-            .find(|(class, _, _)| *class == EvictionClass::Oldest)
-            .map(|(_, last_updated, _)| *last_updated)
+        admission.oldest = pending()
+            .find(|(_, class, _, _)| *class == EvictionClass::Oldest)
+            .map(|(_, _, last_updated, _)| *last_updated)
             .unwrap_or(u64::MAX);
         admission
     }
@@ -466,12 +508,17 @@ impl Admission {
 /// copy is, by construction, a copy of something still published elsewhere --
 /// dropping it costs a re-fetch, and the next cycle will offer it again.
 ///
-/// Within the aggregated tier, [`eviction_order`] decides: a templated family
-/// is collapsed first, then a host over its share gives back its oldest
+/// Within the aggregated tier, [`eviction_order`] decides: every copy the public
+/// surface does not show goes before any copy it does; within each, a templated
+/// family is collapsed first, then a host over its share gives back its oldest
 /// copies, and only then does the oldest `last_updated` go -- the registry's
 /// own write clock, so "least recently touched by us" is exactly the record
 /// whose absence we are least likely to notice. A catalog under its cap is
 /// never touched: the share is an order of eviction, not a second cap.
+///
+/// `exposed` is [`exposed_urls`] of the liveness overlay; at boot the overlay
+/// has not been read yet and it is empty, which protects nothing extra -- the
+/// snapshot being loaded was trimmed by a task that did know.
 ///
 /// # Why this names `Aggregated` instead of asking [`provenance_rank`]
 ///
@@ -484,29 +531,37 @@ impl Admission {
 /// ever added between them, this is the second place to look.
 ///
 /// Returns how many were dropped.
-fn enforce_capacity(cache: &mut HashMap<String, DiscoveryResource>, cap: usize) -> usize {
+fn enforce_capacity(
+    cache: &mut HashMap<String, DiscoveryResource>,
+    cap: usize,
+    exposed: &std::collections::HashSet<String>,
+) -> usize {
     if cap == 0 || cache.len() <= cap {
         return 0;
     }
-    let order = eviction_order(cache, crate::discovery_config::max_per_host(cap));
+    let order = eviction_order(cache, crate::discovery_config::max_per_host(cap), exposed);
 
     let over = cache.len() - cap;
     let mut dropped = 0;
     let mut by_class = [0usize; 3];
-    for (class, _, url) in order.into_iter().take(over) {
+    let mut exposed_dropped = 0;
+    for (shown, class, _, url) in order.into_iter().take(over) {
         cache.remove(&url);
         dropped += 1;
         by_class[class as usize] += 1;
+        exposed_dropped += usize::from(shown);
     }
     if by_class[EvictionClass::FamilyDuplicate as usize]
         + by_class[EvictionClass::OverHostShare as usize]
+        + exposed_dropped
         > 0
     {
         info!(
             family_duplicates = by_class[EvictionClass::FamilyDuplicate as usize],
             over_host_share = by_class[EvictionClass::OverHostShare as usize],
             oldest = by_class[EvictionClass::Oldest as usize],
-            "evicted to capacity: templated families and crowded hosts first"
+            exposed = exposed_dropped,
+            "evicted to capacity: pending copies first, then templated families and crowded hosts"
         );
     }
     if dropped < over {
@@ -1169,7 +1224,13 @@ impl DiscoveryRegistry {
         // every restart re-inhales the whole object and the fix never arrives.
         // This is also what makes the oversized object in S3 safe to deploy
         // against: the next snapshot this process writes is already trimmed.
-        let dropped = enforce_capacity(&mut cache, max_resources());
+        // The liveness overlay has not been read at this point, so nothing is
+        // known to be exposed; see `enforce_capacity`.
+        let dropped = enforce_capacity(
+            &mut cache,
+            max_resources(),
+            &std::collections::HashSet::new(),
+        );
         if dropped > 0 {
             warn!(
                 store_type = store_type,
@@ -1236,6 +1297,9 @@ impl DiscoveryRegistry {
         }
 
         let snapshot = self.store.load_snapshot().await?;
+        // What the public surface shows, read before the check below so no
+        // `.await` sits between that check and the replacement.
+        let exposed = exposed_urls(&self.health.snapshot().await);
 
         // Asked again: a registration can arrive while the object is in flight,
         // and the read that started before it would erase it.
@@ -1256,7 +1320,7 @@ impl DiscoveryRegistry {
         // this one can carry. Without this a follower re-inhales the oversized
         // catalog every time it moves, which is precisely the memory the 2.21.2
         // cap exists to bound.
-        let dropped = enforce_capacity(&mut fresh, max_resources());
+        let dropped = enforce_capacity(&mut fresh, max_resources(), &exposed);
         if dropped > 0 {
             warn!(
                 loaded = loaded,
@@ -1757,12 +1821,16 @@ impl DiscoveryRegistry {
         let mut skipped = 0;
         let mut reject_counts: HashMap<&'static str, usize> = HashMap::new();
         let now = now_secs();
+        // What the public surface shows, read before the catalog guard (the
+        // overlay is behind its own async lock): a full catalog makes room from
+        // pending copies only.
+        let exposed = exposed_urls(&self.health.snapshot().await);
 
         let mut cache = self.write_catalog().await;
         // Computed once, against the catalog as it stands. A record that would
         // be evicted the instant it landed is refused at the door instead.
         let cap = max_resources();
-        let mut admission = Admission::new(&cache, cap);
+        let mut admission = Admission::new(&cache, cap, &exposed);
 
         for mut resource in resources {
             // Response-only fields are resolved when a listing is composed.
@@ -1870,7 +1938,7 @@ impl DiscoveryRegistry {
         // place this is now a backstop -- it fires on the first cycle after a
         // cap change, and on records that entered by a path admission does not
         // gate -- rather than the every-cycle churn it was.
-        let evicted = enforce_capacity(&mut cache, cap);
+        let evicted = enforce_capacity(&mut cache, cap, &exposed);
         if evicted > 0 {
             info!(
                 evicted = evicted,
@@ -3192,7 +3260,7 @@ mod tests {
             aggregated_at("https://a.example/1", 100),
             aggregated_at("https://b.example/2", 200),
         ]);
-        assert_eq!(enforce_capacity(&mut cache, 10), 0);
+        assert_eq!(enforce_capacity(&mut cache, 10, &nothing_exposed()), 0);
         assert_eq!(cache.len(), 2);
     }
 
@@ -3203,7 +3271,7 @@ mod tests {
             aggregated_at("https://mid.example/2", 200),
             aggregated_at("https://new.example/3", 300),
         ]);
-        assert_eq!(enforce_capacity(&mut cache, 2), 1);
+        assert_eq!(enforce_capacity(&mut cache, 2, &nothing_exposed()), 1);
         assert!(
             !cache.contains_key("https://old.example/1"),
             "the least recently touched copy is the one we least miss"
@@ -3235,7 +3303,7 @@ mod tests {
             aggregated_at("https://copy.example/2", 9_001),
         ]);
 
-        let dropped = enforce_capacity(&mut cache, 3);
+        let dropped = enforce_capacity(&mut cache, 3, &nothing_exposed());
         assert_eq!(dropped, 2, "both copies go");
         assert!(cache.contains_key("https://owner.example/x"));
         assert!(cache.contains_key("https://settled.example/x"));
@@ -3249,7 +3317,7 @@ mod tests {
         let mut own_b = create_test_resource("https://owner.example/b", None);
         own_b.last_updated = 2;
         let mut cache = cache_of(vec![own_a, own_b]);
-        assert_eq!(enforce_capacity(&mut cache, 1), 0);
+        assert_eq!(enforce_capacity(&mut cache, 1, &nothing_exposed()), 0);
         assert_eq!(cache.len(), 2, "over capacity, but nothing is evictable");
     }
 
@@ -3259,7 +3327,7 @@ mod tests {
             aggregated_at("https://a.example/1", 100),
             aggregated_at("https://b.example/2", 200),
         ]);
-        assert_eq!(enforce_capacity(&mut cache, 0), 0);
+        assert_eq!(enforce_capacity(&mut cache, 0, &nothing_exposed()), 0);
         assert_eq!(cache.len(), 2);
     }
 
@@ -4393,10 +4461,11 @@ mod tests {
             aggregated_at("https://big.example/c", 30),
             aggregated_at("https://small.example/a", 5),
         ]);
-        let order: Vec<(EvictionClass, String)> = eviction_order(&cache, Some(2))
-            .into_iter()
-            .map(|(class, _, url)| (class, url))
-            .collect();
+        let order: Vec<(EvictionClass, String)> =
+            eviction_order(&cache, Some(2), &nothing_exposed())
+                .into_iter()
+                .map(|(_, class, _, url)| (class, url))
+                .collect();
         use EvictionClass::*;
         assert_eq!(
             order,
@@ -4415,13 +4484,118 @@ mod tests {
             ]
         );
         // The first-hand record is in no class at all.
-        assert!(!eviction_order(&cache, Some(2))
+        assert!(!eviction_order(&cache, Some(2), &nothing_exposed())
             .iter()
-            .any(|(_, _, url)| url == "https://big.example/own"));
+            .any(|(_, _, _, url)| url == "https://big.example/own"));
         // Without a share, only the family is set apart.
-        assert!(!eviction_order(&cache, None)
+        assert!(!eviction_order(&cache, None, &nothing_exposed())
             .iter()
-            .any(|(class, _, _)| *class == OverHostShare));
+            .any(|(_, class, _, _)| *class == OverHostShare));
+    }
+
+    fn nothing_exposed() -> std::collections::HashSet<String> {
+        std::collections::HashSet::new()
+    }
+
+    fn exposed(urls: &[&str]) -> std::collections::HashSet<String> {
+        urls.iter().map(|u| u.to_string()).collect()
+    }
+
+    #[test]
+    fn a_pending_copy_goes_before_any_exposed_one_whatever_its_class() {
+        // An exposed family duplicate and an exposed oldest copy still outlast
+        // a pending copy that is in no family and is the newest of all.
+        let cache = cache_of(vec![
+            aggregated_at("https://pack.example/p/1", 10),
+            aggregated_at("https://pack.example/p/2", 20),
+            aggregated_at("https://old.example/x", 1),
+            aggregated_at("https://new.example/x", 900),
+        ]);
+        let shown = exposed(&[
+            "https://pack.example/p/1",
+            "https://pack.example/p/2",
+            "https://old.example/x",
+        ]);
+        let order: Vec<(bool, EvictionClass, String)> = eviction_order(&cache, None, &shown)
+            .into_iter()
+            .map(|(shown, class, _, url)| (shown, class, url))
+            .collect();
+        use EvictionClass::*;
+        assert_eq!(
+            order,
+            [
+                (false, Oldest, "https://new.example/x".to_string()),
+                // Among the exposed, the family still collapses first.
+                (
+                    true,
+                    FamilyDuplicate,
+                    "https://pack.example/p/1".to_string()
+                ),
+                (true, Oldest, "https://old.example/x".to_string()),
+                (true, Oldest, "https://pack.example/p/2".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_family_keeps_its_exposed_member_and_a_host_gives_back_pending_copies_first() {
+        let cache = cache_of(vec![
+            aggregated_at("https://pack.example/p/1", 10), // exposed, older
+            aggregated_at("https://pack.example/p/2", 20), // pending, newer
+            aggregated_at("https://big.example/a", 1),     // exposed, oldest
+            aggregated_at("https://big.example/b", 2),     // pending
+            aggregated_at("https://big.example/c", 3),     // pending
+        ]);
+        let shown = exposed(&["https://pack.example/p/1", "https://big.example/a"]);
+        let order = eviction_order(&cache, Some(2), &shown);
+        let class_of = |url: &str| order.iter().find(|(_, _, _, u)| u == url).unwrap().1;
+        assert_eq!(
+            class_of("https://pack.example/p/2"),
+            EvictionClass::FamilyDuplicate
+        );
+        assert_eq!(class_of("https://pack.example/p/1"), EvictionClass::Oldest);
+        // big.example is one over its share of two: the copy marked is the
+        // oldest PENDING one, not the older exposed one.
+        assert_eq!(
+            class_of("https://big.example/b"),
+            EvictionClass::OverHostShare
+        );
+        assert_eq!(class_of("https://big.example/a"), EvictionClass::Oldest);
+        assert_eq!(class_of("https://big.example/c"), EvictionClass::Oldest);
+    }
+
+    #[test]
+    fn a_full_catalog_of_exposed_copies_takes_no_newcomer() {
+        // A newcomer has never been probed: it is pending, and a pending
+        // listing never takes the place of an exposed one, however new it is.
+        let cache = cache_of(vec![
+            aggregated_at("https://a.example/x", 10),
+            aggregated_at("https://b.example/x", 20),
+        ]);
+        let all = exposed(&["https://a.example/x", "https://b.example/x"]);
+        let mut admission = Admission::new(&cache, 2, &all);
+        assert_eq!(
+            admission.admit(&aggregated_at("https://new.example/x", 9_999)),
+            Err("over-capacity")
+        );
+        // With one of them pending, the newcomer displaces that one.
+        let one = exposed(&["https://a.example/x"]);
+        let mut admission = Admission::new(&cache, 2, &one);
+        assert_eq!(
+            admission.admit(&aggregated_at("https://new.example/x", 9_999)),
+            Ok(())
+        );
+        let mut cache = cache;
+        cache.insert(
+            "https://new.example/x".to_string(),
+            aggregated_at("https://new.example/x", 9_999),
+        );
+        assert_eq!(enforce_capacity(&mut cache, 2, &one), 1);
+        assert!(
+            cache.contains_key("https://a.example/x"),
+            "the exposed one stays"
+        );
+        assert!(!cache.contains_key("https://b.example/x"));
     }
 
     #[test]
@@ -4438,7 +4612,7 @@ mod tests {
                 .chain((0..80).map(|i| aggregated_at(&format!("https://fam.example/p/{i}"), 2_000)))
                 .collect(),
         );
-        assert_eq!(enforce_capacity(&mut cache, 1_000), 0);
+        assert_eq!(enforce_capacity(&mut cache, 1_000, &nothing_exposed()), 0);
         assert_eq!(cache.len(), 160);
     }
 
@@ -4453,9 +4627,9 @@ mod tests {
                     .map(|h| aggregated_at(&format!("https://{h}.tie.example/x"), 7))
                     .collect(),
             );
-            let order: Vec<String> = eviction_order(&cache, None)
+            let order: Vec<String> = eviction_order(&cache, None, &nothing_exposed())
                 .into_iter()
-                .map(|(_, _, url)| url)
+                .map(|(_, _, _, url)| url)
                 .collect();
             assert_eq!(
                 order,

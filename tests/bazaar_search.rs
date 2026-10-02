@@ -18,10 +18,13 @@
 //! script's docstring says what the catalog is shaped after and what "does the
 //! job" means.
 //!
-//! Every listing is registered first-hand, so no capacity rule of any build
-//! touches it: run against an older build, the same file measures the old
-//! search on the same 1 999 listings. Run with `--nocapture` for the table; the
-//! assertions are the floor this change must keep, not the score.
+//! The benchmark runs over the EXPOSED rows -- the curated bazaar shows only
+//! verified-alive listings, and the rows marked `pending` are the ones it would
+//! not show (the script says how that is modelled) -- each registered
+//! first-hand, so no capacity rule of any build touches them: run against an
+//! older build, the same file measures the old search on the same listings. Run
+//! with `--nocapture` for the table; the assertions are the floor this change
+//! must keep, not the score.
 
 use std::collections::HashMap;
 use std::time::Instant;
@@ -64,11 +67,28 @@ fn strings(v: &serde_json::Value) -> Vec<String> {
 
 /// The catalog rows as resources, dated by position.
 fn catalog() -> Vec<DiscoveryResource> {
+    catalog_rows().into_iter().map(|(r, _)| r).collect()
+}
+
+/// The rows the public surface shows: every one not marked `pending`.
+fn exposed_catalog() -> Vec<DiscoveryResource> {
+    catalog_rows()
+        .into_iter()
+        .filter_map(|(r, pending)| (!pending).then_some(r))
+        .collect()
+}
+
+/// Every row, with whether it is `pending` (not verified alive).
+fn catalog_rows() -> Vec<(DiscoveryResource, bool)> {
     let rows: Vec<serde_json::Value> =
         serde_json::from_str(CATALOG).expect("catalog fixture parses");
     rows.iter()
         .enumerate()
         .map(|(n, row)| {
+            let pending = row
+                .get("pending")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
             let text = |key: &str| row.get(key).and_then(|v| v.as_str()).map(str::to_string);
             let mut r = DiscoveryResource::new(
                 Url::parse(&text("url").expect("every row has a url")).expect("fixture url"),
@@ -101,7 +121,7 @@ fn catalog() -> Vec<DiscoveryResource> {
                     "bazaar": {"info": {"input": {"type": "http", "method": method, slot: fields}}}
                 }));
             }
-            r
+            (r, pending)
         })
         .collect()
 }
@@ -140,17 +160,30 @@ fn intents() -> (Vec<Intent>, Vec<(String, String)>) {
     (intents, held_out)
 }
 
-/// The catalog as a registry, every listing registered first-hand.
+/// The public surface of the catalog as a registry: the EXPOSED rows, every
+/// one registered first-hand (so no capacity rule touches them) and marked
+/// verified alive. A router querying the curated bazaar sees these and only
+/// these; the benchmark measures over them.
 async fn registry() -> DiscoveryRegistry {
     let registry = DiscoveryRegistry::new();
-    for r in catalog() {
+    for r in exposed_catalog() {
+        let url = r.url.to_string();
         registry
             .register(r)
             .await
             .expect("fixture listing registers");
+        expose(&registry, &url).await;
     }
     registry
 }
+
+/// Mark `url` verified alive, so the public surface shows it.
+///
+/// A no-op while the listing shows everything it does not hide as quarantined
+/// (a never-probed listing is visible). Where only verified-alive listings are
+/// shown, this is the one place that records the 402 that makes a fixture row
+/// visible; every listing test of this file goes through it.
+async fn expose(_registry: &DiscoveryRegistry, _url: &str) {}
 
 /// The same registry under the shipped curation manifest minus one entry:
 /// what the catalog ranks like once paid content no longer takes the VIP tier.
@@ -366,18 +399,37 @@ async fn a_request_ranks_the_service_above_a_vip_essay_that_shares_one_word() {
 
 #[tokio::test]
 async fn one_seller_does_not_fill_the_top_of_a_request() {
-    // 86 templated endpoints of one seller say "stock"; a request for a stock
-    // quote must still see other sellers in its first page.
+    // A data-pack host has 388 templated listings whose slugs say "company",
+    // "market", "ticker", "crypto"; the essays host has 379 that say almost
+    // anything. A request must still see other sellers in its first page.
     let registry = registry().await;
-    let page = registry
-        .list(10, 0, Some(filters("stock quote for a ticker", None)))
-        .await;
-    let losbeto = page
-        .items
-        .iter()
-        .filter(|r| r.url.host_str() == Some("api.losbeto.xyz"))
-        .count();
-    assert!(losbeto <= 2, "{losbeto} of the first 10 are one host");
+    for q in [
+        "stock quote for a ticker",
+        "company revenue",
+        "crypto market volume",
+        "agents payments",
+    ] {
+        // No host's third result comes before any other host's first two:
+        // once a third appears, everything after it is a third or later too.
+        let page = registry.list(100, 0, Some(filters(q, None))).await;
+        let mut by_host: HashMap<String, usize> = HashMap::new();
+        let mut overflow_started = None;
+        for (pos, r) in page.items.iter().enumerate() {
+            let seen = by_host
+                .entry(r.url.host_str().unwrap().to_string())
+                .or_default();
+            *seen += 1;
+            if *seen > 2 {
+                overflow_started.get_or_insert(pos);
+            } else if let Some(start) = overflow_started {
+                panic!(
+                    "{q:?}: {} at {pos} is a host's first or second result, after a third at {start}",
+                    r.url
+                );
+            }
+        }
+        assert!(page.items.len() > 3, "{q:?} found too little to test");
+    }
 }
 
 #[tokio::test]

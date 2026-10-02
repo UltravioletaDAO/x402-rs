@@ -3569,10 +3569,10 @@
             setInterval(refresh, 60000);
         })();
 
-        // Curated Bazaar counter: one number, the listings verified alive -- the
-        // same one /bazaar shows, and exactly what the catalog exposes. Served
-        // from the facilitator's own 60s-cached aggregate; on any failure the
-        // dash stays rather than showing a lie.
+        // Curated Bazaar counters. One since 2.47.0: the listings verified
+        // alive -- the same number /bazaar shows, and exactly what the catalog
+        // exposes. Served from the facilitator's own 60s-cached aggregate; on
+        // any failure the dash stays rather than showing a lie.
         (function loadBazaarStats() {
             fetch('/discovery/stats').then(r => r.json()).then(s => {
                 const v = s.verifiedAlive ?? s.visible;

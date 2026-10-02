@@ -1121,10 +1121,11 @@ impl DiscoveryRegistry {
                     .or_insert(0) += 1;
                 if status != HealthStatus::Quarantined {
                     visible += 1;
+                    // A public count describes only what the listing shows.
+                    *by_host.entry(host_key(&r.url)).or_insert(0) += 1;
                 }
 
                 *by_source.entry(r.source.to_string()).or_insert(0) += 1;
-                *by_host.entry(host_key(&r.url)).or_insert(0) += 1;
                 if let Some(sf) = r.source_facilitator.as_ref() {
                     *by_facilitator.entry(sf.clone()).or_insert(0) += 1;
                 }
@@ -1141,8 +1142,9 @@ impl DiscoveryRegistry {
             }
         }
 
-        // The hosts holding the most of the catalog, so the per-host share can
-        // be read off a running task rather than off a full dump.
+        // The hosts holding the most of what the listing shows, so how it
+        // spreads over hosts can be read off a running task rather than off a
+        // full dump.
         let mut top_hosts: Vec<(String, u64)> = by_host.into_iter().collect();
         top_hosts.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
         top_hosts.truncate(TOP_HOSTS_IN_STATS);

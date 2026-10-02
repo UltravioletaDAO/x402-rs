@@ -2702,8 +2702,9 @@ so counters can lag recent registrations or health probes by up to a minute.
 - `total` counts every resource in the catalog.
 - `visible` counts the resources returned by the default `GET /discovery/resources` listing
   (quarantined resources excluded).
-- `topHosts` lists the ten hosts holding the most of the catalog, largest first, so the
-  per-host share (`/discovery/config` `catalog.maxPerHost`) can be checked on a running task.
+- `topHosts` lists the ten hosts holding the most of what the listing shows, largest first,
+  so how listings spread over hosts (`/discovery/config` `catalog.maxPerHost`) can be read on a
+  running task. Like every count here, it counts only listings the default listing returns.
 
 **Response:**
 ```json

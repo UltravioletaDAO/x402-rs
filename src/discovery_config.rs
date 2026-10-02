@@ -64,6 +64,41 @@ pub fn max_items_per_source() -> usize {
     positive("DISCOVERY_MAX_ITEMS_PER_SOURCE", 1_000) as usize
 }
 
+/// Share of the catalog a host may hold before its copies are the ones a FULL
+/// catalog evicts first, in percent. `0` or `100` disables the rule.
+///
+/// An order of eviction, not a second cap: a catalog with room keeps whatever
+/// it is given, and a first-hand record is never evicted for it
+/// (`discovery::eviction_order`). Four hosts held 1 043 of the 2 000 slots on
+/// 2026-10-01, most of them templated families and paid essays, while whole
+/// kinds of service had no listing at all. 5 % is 100 listings per host at the
+/// default cap: room for every API we know of to list all of its endpoints,
+/// and twenty hosts before anyone is crowded out. On a copy of that catalog
+/// every host above 100 had registered first-hand, so the share frees nothing
+/// there yet -- collapsing templated families does -- and it stays as the rung
+/// for an aggregated host that crowds without a template
+/// (`docs/plans/bazaar/10-search-ranking-and-host-share.md`; fixture:
+/// `a_full_catalog_makes_room_from_families_and_crowded_hosts_first`).
+pub fn max_host_share_percent() -> u64 {
+    num("DISCOVERY_MAX_HOST_SHARE_PCT", 5).min(100)
+}
+
+/// No host is held to fewer listings than this, whatever the share works out
+/// to. A share of a small catalog rounds to a handful of records, and cutting
+/// one API's endpoint set in half is not what the rule is for.
+pub const MIN_PER_HOST: usize = 50;
+
+/// Records one host may hold in a full catalog of `cap` before its copies go
+/// first, or `None` when the rule is off (`cap` of 0, or a share of 0 or 100).
+pub fn max_per_host(cap: usize) -> Option<usize> {
+    let pct = max_host_share_percent();
+    if cap == 0 || pct == 0 || pct >= 100 {
+        return None;
+    }
+    let share = (cap as u64).saturating_mul(pct).div_ceil(100) as usize;
+    Some(share.max(MIN_PER_HOST))
+}
+
 // ============================================================================
 // Health prober. Every probe is a TLS handshake, so these are CPU.
 // ============================================================================
@@ -192,6 +227,8 @@ pub fn effective() -> serde_json::Value {
         "catalog": {
             "maxResources": max_resources(),
             "maxItemsPerSource": max_items_per_source(),
+            "maxHostSharePercent": max_host_share_percent(),
+            "maxPerHost": max_per_host(max_resources()),
         },
         "healthProber": {
             "tickSeconds": health_tick_secs(),
@@ -265,5 +302,19 @@ mod tests {
         assert_eq!(max_items_per_source(), 1_000);
         assert_eq!(health_max_rps(), 2);
         assert_eq!(health_concurrency(), 8);
+    }
+
+    #[test]
+    fn the_host_share_is_a_share_of_the_cap_with_a_floor() {
+        assert_eq!(max_host_share_percent(), 5);
+        assert_eq!(max_per_host(2_000), Some(100));
+        assert_eq!(max_per_host(10_000), Some(500));
+        // A share of a small catalog never cuts a host below the floor.
+        assert_eq!(max_per_host(10), Some(MIN_PER_HOST));
+        // No cap, no share of it.
+        assert_eq!(max_per_host(0), None);
+        let published = effective();
+        assert_eq!(published["catalog"]["maxPerHost"], 100);
+        assert_eq!(published["catalog"]["maxHostSharePercent"], 5);
     }
 }

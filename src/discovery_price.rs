@@ -616,11 +616,27 @@ pub fn settleability(
 /// Returns `None` when the deployment is not one we have registered, so a caller
 /// can print "unknown unit" instead of assuming six decimals and a dollar sign.
 pub fn known_asset(network: Network, asset: &MixedAddress) -> Option<(&'static str, u8)> {
+    known_deployment(network, asset).map(|(t, decimals)| (token_symbol(t), decimals))
+}
+
+/// Decimals of `asset` on `network` when it is a dollar stablecoin we have
+/// registered, so an amount can be compared with a price in dollars.
+///
+/// Same table and same answer outside it as [`known_asset`]: `None`, never an
+/// assumed six decimals. A euro amount is not a dollar amount, so EURC answers
+/// `None` as well.
+pub fn usd_pegged_decimals(network: Network, asset: &MixedAddress) -> Option<u8> {
+    known_deployment(network, asset)
+        .filter(|(t, _)| t.currency_symbol() == "$")
+        .map(|(_, decimals)| decimals)
+}
+
+fn known_deployment(network: Network, asset: &MixedAddress) -> Option<(TokenType, u8)> {
     let needle = asset.to_string().to_ascii_lowercase();
     TokenType::all().iter().find_map(|token_type| {
         let deployment = get_token_deployment(network, *token_type)?;
         (deployment.asset.address.to_string().to_ascii_lowercase() == needle)
-            .then_some((token_symbol(*token_type), deployment.decimals))
+            .then_some((*token_type, deployment.decimals))
     })
 }
 

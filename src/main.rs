@@ -67,6 +67,7 @@ mod discovery_health;
 mod discovery_owner;
 mod discovery_price;
 mod discovery_revalidation;
+mod discovery_search;
 mod discovery_security;
 mod discovery_store;
 mod discovery_terms;

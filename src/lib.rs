@@ -30,6 +30,7 @@ pub mod discovery_health;
 pub mod discovery_owner;
 pub mod discovery_price;
 pub mod discovery_revalidation;
+pub mod discovery_search;
 pub mod discovery_security;
 pub mod discovery_store;
 pub mod discovery_terms;

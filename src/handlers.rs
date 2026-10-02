@@ -2624,14 +2624,33 @@ pub struct DiscoveryQueryParams {
     /// Filter by curated tier: first_party|vip|verified|listed
     pub tier: Option<String>,
 
-    /// Free-text search over url / description / provider / category / tags.
-    /// Capped at `MAX_SEARCH_LEN` characters.
+    /// Search: a keyword, or a whole request in plain words, ranked by
+    /// relevance. Capped at `MAX_SEARCH_LEN` characters.
     pub q: Option<String>,
+
+    /// `relevance` | `tier`: how results with `q` are ordered.
+    pub sort: Option<String>,
+
+    /// Highest price in US dollars (a dollar-stablecoin option at or below it).
+    pub max_price_usd: Option<String>,
+
+    /// HTTP method the listing is called with: GET, POST, PUT, PATCH, DELETE.
+    pub method: Option<String>,
+
+    /// `true` | `false`: whether the listing declares its request.
+    pub has_input_schema: Option<String>,
+
+    /// `api` | `content`.
+    pub kind: Option<String>,
+
+    /// Comma-separated hosts to leave out, each with its subdomains.
+    pub exclude_host: Option<String>,
 }
 
-/// Maximum accepted length of the `q` search parameter. The scan is O(items),
-/// so an unbounded needle from an unauthenticated caller is a cheap CPU sink.
-pub const MAX_SEARCH_LEN: usize = 128;
+/// Maximum accepted length of the `q` search parameter: a whole agent
+/// request. Matching goes through an index, so the cost of a long `q` is the
+/// number of its terms, which `discovery_search` bounds.
+pub const MAX_SEARCH_LEN: usize = crate::discovery_search::MAX_QUERY_CHARS;
 
 /// Every query parameter `GET /discovery/resources` understands.
 ///
@@ -2653,6 +2672,12 @@ pub const DISCOVERY_QUERY_PARAMS: &[&str] = &[
     "health",
     "tier",
     "q",
+    "sort",
+    "maxPriceUsd",
+    "method",
+    "hasInputSchema",
+    "kind",
+    "excludeHost",
 ];
 
 /// Cap on how many rejected parameters are echoed back, and how much of each.
@@ -2675,6 +2700,13 @@ fn discovery_param_hint(unknown: &str) -> Option<&'static str> {
         "networks" | "chain" | "chain_id" | "chainid" => Some("network"),
         "tags" => Some("tag"),
         "categories" => Some("category"),
+        "order" | "orderby" | "order_by" | "sort_by" | "sortby" => Some("sort"),
+        "max_price_usd" | "maxprice" | "max_price" | "price" | "maxpriceusd" => Some("maxPriceUsd"),
+        "exclude_host" | "excludehosts" | "exclude_hosts" | "exclude" | "excludehost" => {
+            Some("excludeHost")
+        }
+        "has_input_schema" | "hasinputschema" | "schema" | "input_schema" => Some("hasInputSchema"),
+        "http_method" | "verb" => Some("method"),
         _ => None,
     }
 }
@@ -2729,39 +2761,109 @@ fn default_limit() -> u32 {
     10
 }
 
-impl From<DiscoveryQueryParams> for Option<DiscoveryFilters> {
-    fn from(params: DiscoveryQueryParams) -> Self {
-        if params.category.is_none()
-            && params.network.is_none()
-            && params.provider.is_none()
-            && params.tag.is_none()
-            && params.source.is_none()
-            && params.source_facilitator.is_none()
-            && params.health.is_none()
-            && params.tier.is_none()
-            && params.q.is_none()
-        {
-            None
-        } else {
-            Some(DiscoveryFilters {
-                category: params.category,
-                network: params.network,
-                provider: params.provider,
-                tag: params.tag,
-                source: params.source,
-                source_facilitator: params.source_facilitator,
-                health: params.health,
-                tier: params.tier,
-                q: params.q,
-            })
-        }
+/// Turn the query into filters, or into the 400 that says which value cannot
+/// mean anything.
+///
+/// Every router filter is parsed here with the same function `list` applies,
+/// so a value the listing could not apply is refused instead of quietly
+/// matching nothing -- the same reasoning as the 400 for unknown parameters.
+#[allow(clippy::result_large_err)]
+fn discovery_filters(params: DiscoveryQueryParams) -> Result<Option<DiscoveryFilters>, Response> {
+    use crate::discovery_search as search;
+
+    fn bad(parameter: &str, error: String) -> Response {
+        (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": error, "parameter": parameter })),
+        )
+            .into_response()
     }
+
+    // Bound the search text: its cost is the number of its terms, and the
+    // route is public and unauthenticated.
+    let q_chars = params.q.as_deref().map(|q| q.chars().count()).unwrap_or(0);
+    if q_chars > MAX_SEARCH_LEN {
+        return Err(bad(
+            "q",
+            format!("q must be at most {MAX_SEARCH_LEN} characters"),
+        ));
+    }
+    let sort = params
+        .sort
+        .as_deref()
+        .map(search::parse_sort)
+        .transpose()
+        .map_err(|e| bad("sort", e))?;
+    if sort == Some(search::SortOrder::Tier) && q_chars > search::LEGACY_SUBSTRING_MAX_CHARS {
+        return Err(bad(
+            "q",
+            format!(
+                "with sort=tier, q must be at most {} characters: that order is the substring match, which never took more",
+                search::LEGACY_SUBSTRING_MAX_CHARS
+            ),
+        ));
+    }
+    let max_price_usd = match params.max_price_usd.as_deref() {
+        Some(raw) => {
+            search::parse_max_price_usd(raw).map_err(|e| bad("maxPriceUsd", e))?;
+            Some(raw.trim().to_string())
+        }
+        None => None,
+    };
+    let method = params
+        .method
+        .as_deref()
+        .map(search::parse_method)
+        .transpose()
+        .map_err(|e| bad("method", e))?;
+    let has_input_schema = params
+        .has_input_schema
+        .as_deref()
+        .map(search::parse_has_input_schema)
+        .transpose()
+        .map_err(|e| bad("hasInputSchema", e))?;
+    let kind = params
+        .kind
+        .as_deref()
+        .map(search::parse_kind)
+        .transpose()
+        .map_err(|e| bad("kind", e))?;
+    let exclude_host = params
+        .exclude_host
+        .as_deref()
+        .map(search::parse_exclude_hosts)
+        .transpose()
+        .map_err(|e| bad("excludeHost", e))?;
+
+    let filters = DiscoveryFilters {
+        category: params.category,
+        network: params.network,
+        provider: params.provider,
+        tag: params.tag,
+        source: params.source,
+        source_facilitator: params.source_facilitator,
+        health: params.health,
+        tier: params.tier,
+        q: params.q,
+        sort: sort.map(|s| match s {
+            search::SortOrder::Relevance => "relevance".to_string(),
+            search::SortOrder::Tier => "tier".to_string(),
+        }),
+        max_price_usd,
+        method,
+        has_input_schema,
+        kind,
+        exclude_host,
+    };
+    Ok((!filters.is_empty()).then_some(filters))
 }
 
 /// `GET /discovery/resources`: List discoverable paid resources.
 ///
-/// Supports pagination via `limit` and `offset` query parameters.
-/// Supports filtering by `category`, `network`, `provider`, and `tag`.
+/// Supports pagination via `limit` and `offset` query parameters, the catalog
+/// filters (`category`, `network`, `provider`, `tag`, `source`,
+/// `sourceFacilitator`, `health`, `tier`), search (`q`, `sort`) and the router
+/// filters (`maxPriceUsd`, `method`, `hasInputSchema`, `kind`, `excludeHost`).
 ///
 /// Parameters outside `DISCOVERY_QUERY_PARAMS` are rejected with a 400 rather
 /// than ignored, so a caller can tell a filter that matched everything apart
@@ -2796,22 +2898,12 @@ pub async fn get_discovery_resources(
         "Discovery resources query"
     );
 
-    // Bound the free-text needle: the scan is O(catalog) per request on a
-    // public, unauthenticated route.
-    if let Some(q) = params.q.as_deref() {
-        if q.chars().count() > MAX_SEARCH_LEN {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(json!({
-                    "error": format!("q must be at most {MAX_SEARCH_LEN} characters")
-                })),
-            )
-                .into_response();
-        }
-    }
-
-    let filters: Option<DiscoveryFilters> = params.clone().into();
-    let response = registry.list(params.limit, params.offset, filters).await;
+    let (limit, offset) = (params.limit, params.offset);
+    let filters = match discovery_filters(params) {
+        Ok(filters) => filters,
+        Err(rejection) => return rejection,
+    };
+    let response = registry.list(limit, offset, filters).await;
 
     info!(
         total = response.pagination.total,
@@ -14449,15 +14541,30 @@ mod discovery_handler_tests {
             health: None,
             tier: None,
             q: None,
+            sort: None,
+            max_price_usd: None,
+            method: None,
+            has_input_schema: None,
+            kind: None,
+            exclude_host: None,
         }
     }
 
     async fn list(raw_query: &str) -> (StatusCode, serde_json::Value) {
+        list_with(raw_query, default_params()).await
+    }
+
+    /// The handler reads the values from `params` (axum's `Query`) and only
+    /// the names from `raw_query`; a test sets both.
+    async fn list_with(
+        raw_query: &str,
+        params: DiscoveryQueryParams,
+    ) -> (StatusCode, serde_json::Value) {
         let registry = Arc::new(DiscoveryRegistry::new());
         let response = get_discovery_resources(
             State(registry),
             RawQuery(Some(raw_query.to_string())),
-            Query(default_params()),
+            Query(params),
         )
         .await
         .into_response();
@@ -14520,6 +14627,128 @@ mod discovery_handler_tests {
         assert_eq!(body["error"], "unknown query parameters: search, page");
         // Ambiguous: two rejects with two different replacements, no hint.
         assert!(body["hint"].is_null());
+    }
+
+    /// A whole agent request fits; one character more does not.
+    #[tokio::test]
+    async fn q_takes_a_whole_request_and_no_more() {
+        let at_cap = DiscoveryQueryParams {
+            q: Some("a".repeat(MAX_SEARCH_LEN)),
+            ..default_params()
+        };
+        assert_eq!(MAX_SEARCH_LEN, 400);
+        assert_eq!(list_with("q=x", at_cap).await.0, StatusCode::OK);
+
+        let over = DiscoveryQueryParams {
+            q: Some("á".repeat(MAX_SEARCH_LEN + 1)),
+            ..default_params()
+        };
+        let (status, body) = list_with("q=x", over).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(body["parameter"], "q");
+    }
+
+    /// The old order is the substring match, which never took more than 128
+    /// characters; asking for it with more is a contradiction, said as such.
+    #[tokio::test]
+    async fn sort_tier_keeps_the_old_length_limit() {
+        let params = DiscoveryQueryParams {
+            q: Some("a".repeat(129)),
+            sort: Some("tier".to_string()),
+            ..default_params()
+        };
+        let (status, body) = list_with("q=x&sort=tier", params).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(body["parameter"], "q");
+
+        let params = DiscoveryQueryParams {
+            q: Some("a".repeat(128)),
+            sort: Some("TIER".to_string()),
+            ..default_params()
+        };
+        assert_eq!(list_with("q=x&sort=tier", params).await.0, StatusCode::OK);
+    }
+
+    /// Each router filter refuses a value it cannot apply, naming itself.
+    #[tokio::test]
+    async fn an_unreadable_router_filter_is_a_400_that_names_it() {
+        let cases: Vec<(&str, DiscoveryQueryParams)> = vec![
+            (
+                "sort",
+                DiscoveryQueryParams {
+                    sort: Some("newest".to_string()),
+                    ..default_params()
+                },
+            ),
+            (
+                "maxPriceUsd",
+                DiscoveryQueryParams {
+                    max_price_usd: Some("-1".to_string()),
+                    ..default_params()
+                },
+            ),
+            (
+                "method",
+                DiscoveryQueryParams {
+                    method: Some("BREW".to_string()),
+                    ..default_params()
+                },
+            ),
+            (
+                "hasInputSchema",
+                DiscoveryQueryParams {
+                    has_input_schema: Some("maybe".to_string()),
+                    ..default_params()
+                },
+            ),
+            (
+                "kind",
+                DiscoveryQueryParams {
+                    kind: Some("tool".to_string()),
+                    ..default_params()
+                },
+            ),
+            (
+                "excludeHost",
+                DiscoveryQueryParams {
+                    exclude_host: Some("https://example.com/x".to_string()),
+                    ..default_params()
+                },
+            ),
+        ];
+        for (name, params) in cases {
+            let (status, body) = list_with(&format!("{name}=x"), params).await;
+            assert_eq!(status, StatusCode::BAD_REQUEST, "{name}");
+            assert_eq!(body["parameter"], name);
+            assert!(body["error"].as_str().unwrap().contains(name), "{body}");
+        }
+    }
+
+    #[tokio::test]
+    async fn readable_router_filters_list() {
+        let params = DiscoveryQueryParams {
+            q: Some("find a person's work email".to_string()),
+            sort: Some("relevance".to_string()),
+            max_price_usd: Some("0.05".to_string()),
+            method: Some("post".to_string()),
+            has_input_schema: Some("true".to_string()),
+            kind: Some("API".to_string()),
+            exclude_host: Some("tenjin.blog, example.com".to_string()),
+            ..default_params()
+        };
+        let raw = "q=x&sort=x&maxPriceUsd=x&method=x&hasInputSchema=x&kind=x&excludeHost=x";
+        let (status, body) = list_with(raw, params).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert!(body["items"].is_array());
+    }
+
+    #[test]
+    fn the_new_parameters_have_hints_for_their_usual_misspellings() {
+        assert_eq!(discovery_param_hint("order_by"), Some("sort"));
+        assert_eq!(discovery_param_hint("max_price"), Some("maxPriceUsd"));
+        assert_eq!(discovery_param_hint("MaxPriceUSD"), Some("maxPriceUsd"));
+        assert_eq!(discovery_param_hint("exclude_hosts"), Some("excludeHost"));
+        assert_eq!(discovery_param_hint("input_schema"), Some("hasInputSchema"));
     }
 }
 

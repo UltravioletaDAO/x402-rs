@@ -1792,10 +1792,36 @@ pub struct DiscoveryFilters {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tier: Option<String>,
 
-    /// Free-text search over url / description / provider / category / tags.
-    /// Stored lowercased by `list()` so matching is a plain substring scan.
+    /// Search: a keyword or a whole request in plain words. See
+    /// `discovery_search` for how it matches and ranks.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub q: Option<String>,
+
+    /// `relevance` | `tier`: how results with `q` are ordered. Absent picks by
+    /// the shape of `q` (`discovery_search::SearchQuery::default_sort`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sort: Option<String>,
+
+    // ========== Router filters ==========
+    /// Highest price, in US dollars, of at least one dollar-stablecoin option.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_price_usd: Option<String>,
+
+    /// HTTP method the listing is called with (`GET` when it declares none).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub method: Option<String>,
+
+    /// Whether the listing declares its request in `extensions.bazaar`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub has_input_schema: Option<bool>,
+
+    /// `api` | `content`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
+
+    /// Hosts to leave out, each with its subdomains (comma-separated lists).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub exclude_host: Option<Vec<String>>,
 }
 
 impl DiscoveryFilters {
@@ -1809,6 +1835,12 @@ impl DiscoveryFilters {
             && self.health.is_none()
             && self.tier.is_none()
             && self.q.is_none()
+            && self.sort.is_none()
+            && self.max_price_usd.is_none()
+            && self.method.is_none()
+            && self.has_input_schema.is_none()
+            && self.kind.is_none()
+            && self.exclude_host.is_none()
     }
 }
 

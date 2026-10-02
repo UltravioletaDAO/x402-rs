@@ -90,7 +90,7 @@ Curated resource discovery for x402-enabled services. Entries carry a discovery 
 a liveness `health` status from periodic probing, and a curated `tier`
 (`first_party` > `vip` > `verified` > `listed`) which also drives listing order.
 
-- `GET /discovery/resources` - List curated resources (filters: category, provider, tag, network, source, sourceFacilitator, q, health, tier; any other parameter is a 400)
+- `GET /discovery/resources` - List curated resources (filters: category, provider, tag, network, source, sourceFacilitator, health, tier; search: q, sort; router filters: maxPriceUsd, method, hasInputSchema, kind, excludeHost; any other parameter is a 400)
 - `GET /discovery/stats` - Aggregate catalog metrics (60s cache)
 - `GET /bazaar` - HTML Bazaar explorer UI
 - `GET /discovery/attestation/{hash}` - ERC-8004 attestation evidence body
@@ -2249,9 +2249,55 @@ async fn path_identity_total_supply() {}
     description = r#"
 Lists x402-enabled resources known to the curated Bazaar catalog.
 
-**Ordering:** results are sorted by curated tier first (`first_party` > `vip` > `verified` > `listed`),
-then by liveness (`alive` resources first), then by `lastUpdated` descending. A settlement does
-not reorder the listing: it moves `lastSettledAt`, never `lastUpdated`.
+**Ordering:** without `q`, and with a one-word `q`, results are sorted by curated tier first
+(`first_party` > `vip` > `verified` > `listed`), then by liveness (`alive` resources first), then
+by `lastUpdated` descending, then by `url`, so a page walked by `offset` is the same page on every
+replica. A settlement does not reorder the listing: it moves `lastSettledAt`, never `lastUpdated`.
+A `q` in plain words is ordered by relevance (below).
+
+**Search (`q`, `sort`).** `q` takes a keyword or a whole request as an agent would phrase it,
+up to 400 characters: `q=find a person's work email`. Up to 2.46.1 the limit was 128, and
+`uvd-x402-sdk` for Python still checks `q` against 128 before sending; a longer request through
+that SDK needs a release of it that lifts the check. How `q` matches depends on `sort`:
+
+- `sort=relevance` ranks by BM25 over the listing's host and path, description, provider,
+  category, tags and the field names and descriptions it declares in `extensions.bazaar`. Case,
+  accents and plurals do not matter, English and Spanish function words are ignored, and a small
+  fixed vocabulary joins words that mean the same thing to a buyer (`weather` / `forecast` /
+  `clima`, `price` / `quote` / `precio`, `scrape` / `read` / `extract`, ...). Nothing is sent
+  anywhere to rank: no model, no embedding service. The curated tier **multiplies** relevance
+  (`first_party` x1.3, `vip` x1.2, `verified` x1.1); it never outranks a listing that matches the
+  request better. A `q` of up to 128 characters also keeps every listing the substring match
+  below would have kept, ranked after every listing a word scored. No host keeps more than two
+  places at the top: its further results follow every other host's, still in relevance order,
+  so a seller with a hundred templated endpoints cannot fill a page. Nothing is dropped.
+- `sort=tier` is the search this endpoint had through 2.46.1, unchanged: listings whose url,
+  description, provider, category or a tag **contain** `q` (ASCII case ignored), in the catalog
+  order above. It takes `q` of at most 128 characters.
+- Without `sort`, a `q` of two or more words, or longer than 128 characters, gets `relevance`, and
+  a one-word `q` gets `tier` -- so a caller that looks up a word and re-sorts the page keeps
+  getting exactly the page it got before. `total` counts every match either way.
+
+**Router filters.** Each one narrows the result and can be combined with any other parameter.
+A value that cannot mean anything is a 400 naming the parameter, never a filter quietly applied
+to nothing.
+
+- `maxPriceUsd` -- at least one payment option in a **dollar stablecoin** we have registered
+  costs at most this many US dollars (`0.01`). The comparison is in the token's atomic units at
+  that deployment's decimals; digits past them round the limit down. An option in an asset we
+  cannot value in dollars -- an unknown token, EURC -- does not count toward it.
+- `method` -- `GET`, `POST`, `PUT`, `PATCH` or `DELETE`, as the listing declares it in
+  `extensions.bazaar.info.input.method`. An HTTP listing that declares none is `GET`; MCP, A2A
+  and facilitator listings have no method and never match.
+- `hasInputSchema` -- `true` keeps listings that say what to send: a non-empty
+  `extensions.bazaar.info.input`, or a non-empty `input` property in `extensions.bazaar.schema`.
+  `false`, the rest.
+- `kind` -- `api` or `content`. A listing whose kind is not recorded counts as `api` when it is
+  an MCP, A2A or facilitator endpoint or declares its request; otherwise it has no kind and
+  matches neither value.
+- `excludeHost` -- comma-separated host names, at most 20, each removing that host and its
+  subdomains (`excludeHost=example.com` removes `api.example.com`, not `notexample.com`). A
+  scheme, path, port or credentials in a value is a 400.
 
 **Health visibility:** when `health` is omitted, quarantined resources are hidden.
 Pass `health=any` to return everything, or a specific status to filter to it.
@@ -2479,9 +2525,15 @@ so `?search=logs` fails loudly and points at `q` instead of quietly returning th
         ("network" = Option<String>, Query, description = "Exact CAIP-2 network match (e.g., eip155:8453, solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp)"),
         ("source" = Option<String>, Query, description = "Discovery source: self_registered | settlement | crawled | aggregated"),
         ("sourceFacilitator" = Option<String>, Query, description = "Facilitator the entry was aggregated from (e.g., coinbase, payai, thirdweb)"),
-        ("q" = Option<String>, Query, description = "Free-text search over url, description, provider and tags. Max 128 characters (longer returns 400)"),
+        ("q" = Option<String>, Query, description = "Search: a keyword or a whole request in plain words. Max 400 characters (128 with sort=tier); longer returns 400. See Search above"),
+        ("sort" = Option<String>, Query, description = "relevance | tier. How results with q are ordered. Default: relevance for a q of two or more words or over 128 characters, tier (the substring match and order of 2.46.1) for one word"),
         ("health" = Option<String>, Query, description = "Liveness filter: alive | degraded | auth_gated | quarantined | unknown | unprobeable | any. When omitted, quarantined resources are hidden; 'any' returns everything"),
-        ("tier" = Option<String>, Query, description = "Curated tier filter: first_party | vip | verified | listed")
+        ("tier" = Option<String>, Query, description = "Curated tier filter: first_party | vip | verified | listed"),
+        ("maxPriceUsd" = Option<String>, Query, description = "Highest price in US dollars (e.g. 0.01) of at least one dollar-stablecoin payment option"),
+        ("method" = Option<String>, Query, description = "GET | POST | PUT | PATCH | DELETE, as declared in extensions.bazaar.info.input.method; an HTTP listing that declares none is GET"),
+        ("hasInputSchema" = Option<bool>, Query, description = "true: only listings that declare their request (a non-empty extensions.bazaar.info.input, or an input property in extensions.bazaar.schema); false: only those that do not"),
+        ("kind" = Option<String>, Query, description = "api | content"),
+        ("excludeHost" = Option<String>, Query, description = "Comma-separated host names to leave out, each with its subdomains (max 20)")
     ),
     responses(
         (status = 200, description = "Curated resource listing", body = Object,
@@ -2538,13 +2590,14 @@ so `?search=logs` fails loudly and points at `q` instead of quietly returning th
                 "pagination": { "limit": 10, "offset": 0, "total": 21195 }
             })
         ),
-        (status = 400, description = "Invalid query: an unsupported parameter, or `q` longer than 128 characters", body = Object,
+        (status = 400, description = "Invalid query: an unsupported parameter (body lists `supported`), or a value that cannot be applied (body names the `parameter`): `q` too long, an unknown `sort`, `method` or `kind`, a `maxPriceUsd` that is not a plain decimal, a `hasInputSchema` that is not true/false, an `excludeHost` that is not a list of host names", body = Object,
             example = json!({
                 "error": "unknown query parameter: search",
                 "hint": "did you mean q?",
                 "supported": [
                     "limit", "offset", "category", "network", "provider", "tag",
-                    "source", "sourceFacilitator", "health", "tier", "q"
+                    "source", "sourceFacilitator", "health", "tier", "q", "sort",
+                    "maxPriceUsd", "method", "hasInputSchema", "kind", "excludeHost"
                 ]
             })
         )
@@ -2570,8 +2623,11 @@ could not be read from the source, and the whole point is that it can be read du
 incident. **No credential, endpoint or key is defined in this registry**, so none can appear
 here.
 
-Groups follow what each one costs: `catalog` (how many records are held, and how many are taken
-from one source per cycle), `healthProber` (the probe budget -- `budgetPerTick` is
+Groups follow what each one costs: `catalog` (how many records are held, how many are taken
+from one source per cycle, and `maxPerHost` -- `maxHostSharePercent` of `maxResources`, never
+fewer than 50, null when the share is off: when a full catalog has to make room, a host's
+aggregated copies beyond that number go first, right after the duplicates of a templated family;
+a catalog with room is never trimmed for it, and a first-hand listing never), `healthProber` (the probe budget -- `budgetPerTick` is
 `maxRps * tickSeconds` and is the number the revalidation queue spends from, never adds to),
 `revalidation`, `observedTerms`, and `runtime` (whether this replica owns the periodic jobs,
 the queue depth, and the catalog size right now).
@@ -2581,7 +2637,7 @@ A diagnostic, not a contract: names and groups follow the code.
     responses(
         (status = 200, description = "Resolved configuration", body = Object,
             example = json!({
-                "catalog": {"maxResources": 2000, "maxItemsPerSource": 1000},
+                "catalog": {"maxResources": 2000, "maxItemsPerSource": 1000, "maxHostSharePercent": 5, "maxPerHost": 100},
                 "healthProber": {
                     "tickSeconds": 60, "maxRps": 2, "concurrency": 8,
                     "budgetPerTick": 120, "overlayPersistSeconds": 300
@@ -2645,12 +2701,15 @@ so counters can lag recent registrations or health probes by up to a minute.
 - `total` counts every resource in the catalog.
 - `visible` counts the resources returned by the default `GET /discovery/resources` listing
   (quarantined resources excluded).
+- `topHosts` lists the ten hosts holding the most of the catalog, largest first, so the
+  per-host share (`/discovery/config` `catalog.maxPerHost`) can be checked on a running task.
 
 **Response:**
 ```json
 {
   "total": 21195,
   "visible": 19263,
+  "topHosts": [{ "host": "market.datapackvibe.com", "count": 100 }, { "host": "tenjin.blog", "count": 100 }],
   "bySource": { "aggregated": 21067, "self_registered": 128 },
   "bySourceFacilitator": { "payai": 19800, "thirdweb": 622, "coinbase": 336 },
   "byNetwork": { "eip155:8453": 20991, "eip155:1": 56 },
@@ -2665,6 +2724,10 @@ so counters can lag recent registrations or health probes by up to a minute.
             example = json!({
                 "total": 21195,
                 "visible": 19263,
+                "topHosts": [
+                    { "host": "market.datapackvibe.com", "count": 100 },
+                    { "host": "tenjin.blog", "count": 100 }
+                ],
                 "bySource": { "aggregated": 21067, "self_registered": 128 },
                 "bySourceFacilitator": { "payai": 19800, "thirdweb": 622, "coinbase": 336 },
                 "byNetwork": { "eip155:8453": 20991, "eip155:1": 56 },

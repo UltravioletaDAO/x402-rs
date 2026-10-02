@@ -810,7 +810,11 @@ impl DiscoveryRegistry {
                 *by_health
                     .entry(health_status_label(status).to_string())
                     .or_insert(0) += 1;
-                if status != HealthStatus::Quarantined {
+                // What the default listing returns. `visible` and the listing
+                // data counters below count exactly this set: a public count
+                // describes only listings the public can see.
+                let exposed = status != HealthStatus::Quarantined;
+                if exposed {
                     visible += 1;
                 }
 
@@ -830,20 +834,23 @@ impl DiscoveryRegistry {
                     .unwrap_or("listed");
                 *by_tier.entry(tier.to_string()).or_insert(0) += 1;
 
-                let class = crate::discovery_taxonomy::classify(r);
-                *by_kind.entry(class.kind.as_str()).or_insert(0) += 1;
-                if class.categories.is_empty() {
-                    *by_category.entry("none").or_insert(0) += 1;
-                }
-                for id in class.categories {
-                    *by_category.entry(id).or_insert(0) += 1;
-                }
-                // What a router cannot use without guessing.
-                if r.description.trim().is_empty() {
-                    no_description += 1;
-                }
-                if !r.has_input_schema() {
-                    no_input_schema += 1;
+                // Resolved for every listing, published only for the exposed.
+                if exposed {
+                    let class = crate::discovery_taxonomy::classify(r);
+                    *by_kind.entry(class.kind.as_str()).or_insert(0) += 1;
+                    if class.categories.is_empty() {
+                        *by_category.entry("none").or_insert(0) += 1;
+                    }
+                    for id in class.categories {
+                        *by_category.entry(id).or_insert(0) += 1;
+                    }
+                    // What a router cannot use without guessing.
+                    if r.description.trim().is_empty() {
+                        no_description += 1;
+                    }
+                    if !r.has_input_schema() {
+                        no_input_schema += 1;
+                    }
                 }
             }
         }
@@ -2210,6 +2217,58 @@ mod tests {
         registry.suppress("https://api.example.com/a").await;
         let s2 = registry.stats().await;
         assert_eq!(s2["total"], 1, "suppressed resources drop out of stats");
+    }
+
+    /// Kind, categories and schemas are resolved for every listing, and the
+    /// public counts of them describe only what the listing exposes: exactly
+    /// the set `visible` counts.
+    #[tokio::test]
+    async fn listing_data_counts_cover_only_what_is_exposed() {
+        let registry = DiscoveryRegistry::new();
+        let exposed = "https://api.example.com/exposed";
+        let hidden = "https://api.example.com/hidden-one";
+        let mut a = create_test_resource(exposed, Some("finance"));
+        a.description = String::new();
+        let b = create_test_resource(hidden, Some("weather"));
+        registry.register(a).await.unwrap();
+        registry.register(b).await.unwrap();
+        registry
+            .health()
+            .set_status_for_test(hidden, HealthStatus::Quarantined)
+            .await;
+
+        let s = registry.stats().await;
+        assert_eq!(s["total"], 2);
+        assert_eq!(s["visible"], 1);
+        let kinds: u64 = s["byKind"]
+            .as_object()
+            .unwrap()
+            .values()
+            .map(|v| v.as_u64().unwrap())
+            .sum();
+        assert_eq!(
+            kinds,
+            s["visible"].as_u64().unwrap(),
+            "byKind counts the exposed set"
+        );
+        assert_eq!(s["byCategory"]["finance"], 1);
+        assert!(
+            s["byCategory"].get("weather").is_none(),
+            "a hidden listing's category is not published"
+        );
+        assert_eq!(s["noDescription"], 1);
+        assert_eq!(s["noInputSchema"], 1);
+
+        // The listing itself: only the exposed one is served, with its fields.
+        let listed = registry.list(10, 0, None).await;
+        assert_eq!(listed.pagination.total, 1);
+        assert_eq!(listed.items[0].categories, vec!["finance".to_string()]);
+        // Still resolvable for the hidden one, for whatever works the queue.
+        let held = registry.get(hidden).await.unwrap();
+        assert_eq!(
+            crate::discovery_taxonomy::classify(&held).categories,
+            vec!["weather"]
+        );
     }
 
     fn junk_empty_accepts(url: &str) -> DiscoveryResource {

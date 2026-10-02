@@ -171,8 +171,11 @@ work, not here.
   own `metadata.category` as before (case-insensitive) **or** any spelling of a closed-list id
   against the listing's `categories` — a superset of the old match.
 - `GET /discovery/stats`: new `byKind`, `byCategory` (`none` for no category; a listing in two
-  categories counts under both), `noDescription` and `noInputSchema`; `byTier` counts the tier the
-  listing shows.
+  categories counts under both), `noDescription` and `noInputSchema`, counted over exactly the set
+  `visible` counts — a public count describes only what the listing exposes; `byTier` counts the
+  tier the listing shows.
+- `kind`, `categories`, `categorySource` and `hasInputSchema` are resolved for every listing (a
+  pure function of the record and the vocabulary) and published only on what the listing returns.
 - Nothing is renamed, retyped or removed; the health vocabulary is untouched.
 
 ## 4. Consumers

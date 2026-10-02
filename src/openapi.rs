@@ -2686,11 +2686,12 @@ so counters can lag recent registrations or health probes by up to a minute.
 - `visible` counts the resources returned by the default `GET /discovery/resources` listing
   (quarantined resources excluded).
 - `byTier` counts the tier each listing shows, so content is never counted as `vip`.
-- `byKind` and `byCategory` count the listings' `kind` and closed-list `categories` (a listing in
-  two categories counts under both; `none` when it resolves to none); see `GET /discovery/resources`.
-- `noDescription` and `noInputSchema` count the listings with an empty description, and with no
-  declared input (`extensions.bazaar.info.input`, or an `input` property in
-  `extensions.bazaar.schema`): what a router cannot use without guessing.
+- Over exactly the listings `visible` counts (what the default listing exposes): `byKind` and
+  `byCategory` count their `kind` and closed-list `categories` (a listing in two categories counts
+  under both; `none` when it resolves to none; see `GET /discovery/resources`), and
+  `noDescription` and `noInputSchema` count those with an empty description, and with no declared
+  input (`extensions.bazaar.info.input`, or an `input` property in `extensions.bazaar.schema`):
+  what a router cannot use without guessing.
 
 **Response:**
 ```json

@@ -2255,6 +2255,14 @@ not reorder the listing: it moves `lastSettledAt`, never `lastUpdated`.
 
 **Health visibility:** when `health` is omitted, quarantined resources are hidden.
 Pass `health=any` to return everything, or a specific status to filter to it.
+Each resource is probed, unpaid, with the method its `bazaar` extension declares (a body
+method is sent `{}`, and the listing's own example only when `{}` is refused with a 400 or
+422); one that declares none is probed with GET, and with one POST `{}` when that GET answers
+405, 400 or 404. `health.probeMethod` is the method of the last probe. While a resource is
+quarantined, `health.quarantineReason` says why: `fail_streak` (it stopped answering) or
+`pay_to_drift` (its live 402 paid a recipient the listing never declared). `health.uptimeBps`
+is the share of the `health.probeCount` probes recorded for the resource that found it up, in
+basis points.
 
 **Response:**
 ```json
@@ -2316,7 +2324,10 @@ Pass `health=any` to return everything, or a specific status to filter to it.
         "status": "alive",
         "lastChecked": 1784900000,
         "httpStatus": 402,
-        "latencyMs": 240
+        "latencyMs": 240,
+        "uptimeBps": 9977,
+        "probeCount": 1312,
+        "probeMethod": "GET"
       },
       "curation": {
         "tier": "first_party",
@@ -2520,7 +2531,10 @@ so `?search=logs` fails loudly and points at `q` instead of quietly returning th
                         "status": "alive",
                         "lastChecked": 1784900000,
                         "httpStatus": 402,
-                        "latencyMs": 240
+                        "latencyMs": 240,
+                        "uptimeBps": 9977,
+                        "probeCount": 1312,
+                        "probeMethod": "GET"
                     },
                     "curation": {
                         "tier": "first_party",

@@ -373,6 +373,24 @@ impl RevalidationQueue {
         chosen
     }
 
+    /// Put back work a tick took and could not spend: the probe it asked for did
+    /// not fit that tick's requests. [`Self::request`] would refuse it inside
+    /// the window it was first asked in, and losing it would drop somebody's
+    /// demand on the floor. Bounded by the queue's cap like everything else.
+    pub async fn requeue(&self, url: &str, reason: RefreshReason, now: u64) {
+        let mut pending = self.pending.write().await;
+        if pending.len() >= cfg::revalidation_queue_cap() && !pending.contains_key(url) {
+            return;
+        }
+        let entry = pending.entry(url.to_string()).or_insert_with(|| Pending {
+            url: url.to_string(),
+            reason,
+            demand: 0,
+            first_requested_at: now,
+        });
+        entry.reason = entry.reason.max(reason);
+    }
+
     /// Record that an origin refused us, and hold off its host.
     ///
     /// `retry_after` is the origin's own instruction and wins when it is present

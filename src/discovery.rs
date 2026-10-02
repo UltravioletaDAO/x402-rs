@@ -382,8 +382,10 @@ fn import_verdict(incoming: &DiscoveryResource, existing: &DiscoveryResource) ->
 
 /// Why this resource's price cannot be established by probing it.
 ///
-/// The prober issues one kind of request: an unauthenticated `GET` of the
-/// listing URL. Anything else is a different purchase, and the annex is explicit
+/// The prober issues one kind of request: an unauthenticated request of the
+/// listing URL with the method the listing declares -- a `GET`, or a
+/// `POST`/`PUT`/`PATCH` carrying the listing's own example body -- and never a
+/// payment. Anything else is a different purchase, and the annex is explicit
 /// that we do not fire a seller's real commercial operation to find out what it
 /// charges. So a resource that cannot be answered that way is reported as
 /// unverifiable rather than queued forever or, worse, probed anyway.
@@ -840,23 +842,28 @@ impl DiscoveryRegistry {
             .collect()
     }
 
-    /// Snapshot of probe targets: `(url, resource_type, expected_pay_to)`.
-    /// `expected_pay_to` is the set of recipients currently listed for the
-    /// resource, so the prober can detect a payTo swap in the live 402 body.
-    pub async fn probe_targets(&self) -> Vec<(url::Url, String, Vec<String>)> {
+    /// Snapshot of probe targets: url, resource type, expected payTo, and the
+    /// request the listing declares. `pay_to` is the set of recipients currently
+    /// listed for the resource, so the prober can detect a payTo swap in the
+    /// live 402 body.
+    pub async fn probe_targets(&self) -> Vec<crate::discovery_health::ProbeTarget> {
         self.resources
             .read()
             .await
             .values()
-            .map(|r| {
-                (
-                    r.url.clone(),
-                    r.resource_type.clone(),
-                    r.accepts
-                        .iter()
-                        .map(|a| a.pay_to.to_string().to_ascii_lowercase())
-                        .collect(),
-                )
+            .map(|r| crate::discovery_health::ProbeTarget {
+                url: r.url.clone(),
+                resource_type: r.resource_type.clone(),
+                pay_to: r
+                    .accepts
+                    .iter()
+                    .map(|a| a.pay_to.to_string().to_ascii_lowercase())
+                    .collect(),
+                request: crate::discovery_health::probe_request(
+                    &r.url,
+                    r.extensions.as_ref(),
+                    self.curation.probes_get_only(&r.url),
+                ),
             })
             .collect()
     }

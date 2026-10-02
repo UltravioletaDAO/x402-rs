@@ -54,5 +54,7 @@
   ],
   "suppressed": [
     { "host": "facilitator.ultravioletadao.xyz", "path": "/__bazaar_debug__", "reason": "internal debug entry" }
-  ]
+  ],
+  "$probeGetOnly": "Prefixes (host-exact + path-boundary, https) whose owners asked the health prober to send GET only: never the POST/PUT/PATCH their listing declares. Add an entry only on the owner's request, with the date and who asked.",
+  "probeGetOnly": []
 }

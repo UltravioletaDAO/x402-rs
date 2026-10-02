@@ -61,8 +61,26 @@ USAGE
   # which is a lower bound on probes/day from ONE call
   python scripts/bazaar_probe_churn.py snapshot /tmp/a.json --report
 
+GET-ONLY VERSUS THE DECLARED METHOD (offline, no network). Since 2.47.0 the
+prober sends the method a listing's `bazaar` extension declares
+(`info.input.method`, else the schema's, else POST when a body is declared),
+and a listing that declares none gets one POST `{}` when its GET answers 405,
+400 or 404. `snapshot` now records each listing's planned method, and
+`methods` reads a LOCAL file and says what the change touches before it ships:
+
+  # a snapshot taken BEFORE the deploy (the probes in it are all GET)
+  python scripts/bazaar_probe_churn.py methods /tmp/before.json
+
+  # or a copy of the catalog object plus the health overlay, no API at all
+  python scripts/bazaar_probe_churn.py methods resources.json --health health.json
+
+and, once it ships, the measured effect per declared method:
+
+  python scripts/bazaar_probe_churn.py compare /tmp/before.json /tmp/after.json --by-method
+
 NOTE. Aggregates only: the report never prints a resource URL, because the
 catalog lists third-party endpoints and this file lives in a public repo.
+`methods --hosts` prints host names (never paths) for the drift-hold count.
 """
 
 from __future__ import annotations
@@ -75,11 +93,117 @@ import os
 import sys
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 
 DEFAULT_BASE = "https://facilitator.ultravioletadao.xyz"
 PAGE = 100
 UA = "uvd-bazaar-probe-churn/1.0"
+
+# Mirrors `ProbeMethod::parse` in src/discovery_health.rs: HEAD and DELETE are
+# probed as GET, anything unrecognised is "declares nothing".
+_METHODS = {"GET": "GET", "HEAD": "GET", "DELETE": "GET",
+            "POST": "POST", "PUT": "PUT", "PATCH": "PATCH"}
+BODY_METHODS = ("POST", "PUT", "PATCH")
+# What the fallback answers when a listing declares nothing (`probe_listing`).
+FALLBACK_STATUSES = (405, 400, 404)
+# Marks a record from a snapshot taken before methods were captured.
+UNKNOWN = "unknown"
+# Health statuses a consumer that admits only live listings takes (Emporium,
+# `SALUDES_QUE_ENTRAN`).
+ADMISSIBLE = ("alive", "auth_gated")
+# `crate::interop::PUBLIC_URL`'s host: our own origin only ever gets a GET.
+OWN_HOST = "facilitator.ultravioletadao.xyz"
+MANIFEST = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..",
+                        "config", "bazaar_curation.json")
+
+
+def _parse_method(raw):
+    return _METHODS.get(raw.strip().upper()) if isinstance(raw, str) else None
+
+
+def _dig(value, *keys):
+    for key in keys:
+        if not isinstance(value, dict):
+            return None
+        value = value.get(key)
+    return value if isinstance(value, dict) else None
+
+
+def _schema_method(schema_input: dict):
+    if isinstance(schema_input.get("method"), str):
+        return _parse_method(schema_input["method"])
+    method = _dig(schema_input, "properties", "method")
+    if method is None:
+        return None
+    if isinstance(method.get("const"), str):
+        return _parse_method(method["const"])
+    enum = method.get("enum")
+    if isinstance(enum, list) and enum and isinstance(enum[0], str):
+        return _parse_method(enum[0])
+    return None
+
+
+def _declares_body(info_input, schema_input) -> bool:
+    def present(d, key):
+        return isinstance(d, dict) and d.get(key) is not None
+    props = _dig(schema_input, "properties") if schema_input else None
+    return (present(info_input, "body") or present(info_input, "bodyType")
+            or present(props, "body") or present(props, "bodyType"))
+
+
+def declared_probe(extensions) -> tuple:
+    """(method the prober sends first or None, whether an example body is declared).
+
+    Same order as `declared_request` in src/discovery_health.rs:
+    `info.input.method`, then the schema's method, then POST when a body is
+    declared without one. Whether the example fits the 8 KiB cap is not judged
+    here: it only decides whether the example retry can happen, never the
+    method.
+    """
+    bazaar = extensions.get("bazaar") if isinstance(extensions, dict) else None
+    info = _dig(bazaar, "info", "input")
+    schema = _dig(bazaar, "schema", "properties", "input")
+    method = _parse_method(info.get("method")) if info else None
+    if method is None and schema:
+        method = _schema_method(schema)
+    if method is None and _declares_body(info, schema):
+        method = "POST"
+    has_example = method in BODY_METHODS and bool(info) and info.get("body") is not None
+    return method, has_example
+
+
+def load_get_only(path: str = MANIFEST) -> list:
+    """`probeGetOnly` from the curation manifest, as (host, path) pairs."""
+    try:
+        with open(path, encoding="utf-8") as f:
+            entries = json.load(f).get("probeGetOnly") or []
+    except (OSError, ValueError):
+        return []
+    return [(e["host"].lower().rstrip("."), e["path"]) for e in entries]
+
+
+def _prefix_matches(url: str, host: str, path: str) -> bool:
+    """Host-exact + path-boundary, https only (`match_manifest_prefix`)."""
+    u = urllib.parse.urlsplit(url)
+    if u.scheme != "https" or u.username or u.password:
+        return False
+    if (u.hostname or "").rstrip(".") != host:
+        return False
+    p = u.path or "/"
+    if p == path:
+        return True
+    if path.endswith("/"):
+        return p.startswith(path)
+    return p.startswith(path + "/")
+
+
+def planned_probe(url: str, extensions, get_only=()) -> tuple:
+    """`probe_request`: our own origin and opted-out prefixes get a GET only."""
+    host = (urllib.parse.urlsplit(url).hostname or "").rstrip(".")
+    if host == OWN_HOST or any(_prefix_matches(url, h, p) for h, p in get_only):
+        return "GET", False
+    return declared_probe(extensions)
 
 
 def fetch_page(base: str, offset: int, retries: int = 5) -> dict:
@@ -100,6 +224,7 @@ def fetch_page(base: str, offset: int, retries: int = 5) -> dict:
 def snapshot(base: str, pause: float) -> dict:
     records: dict[str, dict] = {}
     offset, total = 0, None
+    get_only = load_get_only()
     while True:
         page = fetch_page(base, offset)
         total = page["pagination"]["total"]
@@ -108,10 +233,16 @@ def snapshot(base: str, pause: float) -> dict:
             break
         for item in items:
             health = item.get("health") or {}
+            method, has_example = planned_probe(item["url"], item.get("extensions"), get_only)
             records[item["url"]] = {
                 "status": health.get("status"),
                 "lastChecked": health.get("lastChecked"),
                 "httpStatus": health.get("httpStatus"),
+                "quarantineReason": health.get("quarantineReason"),
+                "probeMethod": health.get("probeMethod"),
+                "type": item.get("type"),
+                "method": method,
+                "hasExample": has_example,
             }
         offset += PAGE
         if offset >= total:
@@ -146,6 +277,45 @@ def compare(a: dict, b: dict) -> dict:
     transitions = collections.Counter(
         (A[u].get("httpStatus"), B[u].get("httpStatus")) for u in changed
     )
+    # Per declared method (taken from the newer snapshot): the health class
+    # each probed listing moved between. With a before-deploy snapshot and an
+    # after-deploy one, this IS the effect of probing with the declared method.
+    by_method: dict = collections.defaultdict(collections.Counter)
+    for u in probed:
+        method = B[u].get("method", UNKNOWN) or "none"
+        by_method[method][(A[u].get("status"), B[u].get("status"))] += 1
+    # The three groups a consumer of the catalog cares about. A host that had
+    # no visible listing before and has one now is new to anyone who queues
+    # hosts for review (Emporium's admission queue does).
+    groups = collections.Counter()
+    for u in probed:
+        before, after = A[u].get("status"), B[u].get("status")
+        if before == after:
+            groups["unchanged"] += 1
+        elif before == "auth_gated" and after == "alive":
+            groups["auth_gated -> alive"] += 1
+        elif before == "quarantined":
+            groups["quarantined -> visible"] += 1
+            # The part a consumer that admits only live listings picks up
+            # (Emporium: alive and auth_gated).
+            if after in ADMISSIBLE:
+                groups["quarantined -> alive/auth_gated"] += 1
+        else:
+            groups["other"] += 1
+
+    def hosts(records: dict, keep) -> set:
+        return {_host(u) for u, r in records.items() if keep(r.get("status"))}
+
+    def visible(status):
+        return status != "quarantined"
+
+    def admissible(status):
+        return status in ADMISSIBLE
+
+    before_c = {u: A[u] for u in common}
+    after_c = {u: B[u] for u in common}
+    new_hosts = hosts(after_c, visible) - hosts(before_c, visible)
+    new_admissible = hosts(after_c, admissible) - hosts(before_c, admissible)
     return {
         "window_secs": window,
         "common": len(common),
@@ -153,6 +323,10 @@ def compare(a: dict, b: dict) -> dict:
         "changed_http": len(changed),
         "changed_health_status": len(moved),
         "transitions": transitions,
+        "by_method": dict(by_method),
+        "groups": groups,
+        "newly_visible_hosts": len(new_hosts),
+        "newly_admissible_hosts": len(new_admissible),
     }
 
 
@@ -177,6 +351,145 @@ def print_comparison(c: dict) -> None:
         print("  transitions seen (prev -> now):")
         for (x, y), n in c["transitions"].most_common(20):
             print(f"    {x} -> {y} : {n}")
+    print("  probed listings, by what happened to them:")
+    for group in ("auth_gated -> alive", "quarantined -> visible",
+                  "quarantined -> alive/auth_gated", "unchanged", "other"):
+        print(f"    {group:32s}: {c['groups'].get(group, 0)}")
+    print(f"  hosts with a visible listing now and none before      : {c['newly_visible_hosts']}")
+    print(f"  hosts with an alive/auth_gated listing now, none before: "
+          f"{c['newly_admissible_hosts']}  (new to a queue that admits only those)")
+
+
+def print_by_method(c: dict) -> None:
+    print("  health class of the probed listings, by declared method (prev -> now):")
+    for method in sorted(c["by_method"]):
+        moves = c["by_method"][method]
+        print(f"    {method:8s} probed={sum(moves.values())}")
+        for (x, y), n in moves.most_common():
+            print(f"      {x} -> {y} : {n}")
+
+
+def load_records(path: str, health_path: str = None) -> dict:
+    """Records keyed by URL from a LOCAL file, in the snapshot's own shape.
+
+    Accepts a snapshot this script wrote (`{"records": {...}}`), or the catalog
+    object itself (`bazaar/resources.json`, a bare JSON array of resources)
+    optionally joined with the health overlay (`bazaar/health.json`, keyed by
+    URL, snake_case fields).
+    """
+    with open(path, encoding="utf-8") as f:
+        doc = json.load(f)
+    if isinstance(doc, dict) and "records" in doc:
+        return doc["records"]
+    if not isinstance(doc, list):
+        raise SystemExit(f"{path}: neither a snapshot nor a catalog array")
+    health = {}
+    if health_path:
+        with open(health_path, encoding="utf-8") as f:
+            health = json.load(f)
+    get_only = load_get_only()
+    records = {}
+    for item in doc:
+        h = health.get(item["url"]) or {}
+        method, has_example = planned_probe(item["url"], item.get("extensions"), get_only)
+        records[item["url"]] = {
+            "status": h.get("status"),
+            "lastChecked": h.get("last_checked"),
+            "httpStatus": h.get("http_status"),
+            "quarantineReason": h.get("quarantine_reason"),
+            "probeMethod": h.get("probe_method"),
+            "type": item.get("type"),
+            "method": method,
+            "hasExample": has_example,
+        }
+    return records
+
+
+def _host(url: str) -> str:
+    return urllib.parse.urlsplit(url).hostname or "?"
+
+
+def methods_report(records: dict) -> dict:
+    """What probing with the declared method changes, from one local view.
+
+    Every probe in a snapshot taken before the deploy is a GET, so its health
+    is the GET-only verdict. Against it this counts which listings the new
+    prober asks differently, and which of them it re-probes in its first cycle
+    (`probed_with_another_request` in src/discovery_health.rs). It cannot say
+    how many come back alive -- that takes the probe; `compare --by-method`
+    measures it after the deploy.
+    """
+    declared = collections.Counter()
+    to_body = collections.Counter()
+    to_body_http = collections.Counter()
+    fallback = collections.Counter()
+    drift_hosts = collections.Counter()
+    first_cycle = 0
+    for url, r in records.items():
+        if "method" not in r:
+            declared[UNKNOWN] += 1
+            continue
+        method, status, http = r["method"], r.get("status"), r.get("httpStatus")
+        declared[method or "none"] += 1
+        reason = r.get("quarantineReason")
+        # The reason when the record carries one; before it did, its signature:
+        # a fail never carries a 402, so quarantined on a 402 is a drift hold.
+        drift_hold = status == "quarantined" and (
+            reason == "pay_to_drift" or (reason is None and http == 402))
+        if drift_hold:
+            drift_hosts[_host(url)] += 1
+        if r.get("type") == "mcp":
+            continue
+        if method in BODY_METHODS:
+            to_body[status] += 1
+            to_body_http[http] += 1
+        elif method is None and http in FALLBACK_STATUSES:
+            fallback[status] += 1
+        # `probed_with_another_request`, record by record.
+        if status is None:
+            continue
+        legacy = r.get("probeMethod") is None
+        last = r.get("probeMethod") or "GET"
+        if drift_hold:
+            first_cycle += legacy  # looked at once, never lifted by it
+        elif method in BODY_METHODS or method == "GET":
+            first_cycle += last != method
+        elif method is None:
+            first_cycle += legacy and http in FALLBACK_STATUSES
+
+    def keyed(counter) -> dict:
+        # JSON keys are strings: a listing with no record has status `None`.
+        return {str(k): v for k, v in counter.items()}
+
+    return {
+        "records": len(records),
+        "declared": keyed(declared),
+        "get_to_body_method_by_status": keyed(to_body),
+        "get_to_body_method_by_http": keyed(to_body_http),
+        "fallback_candidates_by_status": keyed(fallback),
+        "reprobed_in_first_cycle": first_cycle,
+        "drift_hold": sum(drift_hosts.values()),
+        "drift_hold_hosts": dict(drift_hosts),
+    }
+
+
+def print_methods(m: dict, hosts: bool) -> None:
+    print(f"records={m['records']}")
+    print(f"  first request planned  : {m['declared']}  "
+          f"(declared, or GET on our origin / probeGetOnly; none = GET + fallback)")
+    if m["declared"].get(UNKNOWN):
+        print(f"  ({m['declared'][UNKNOWN]} records come from a snapshot that predates method capture)")
+    print(f"  probed with POST/PUT/PATCH instead of GET, by current status: "
+          f"{m['get_to_body_method_by_status']}")
+    print(f"    ... by the HTTP status their GET got : {m['get_to_body_method_by_http']}")
+    print(f"  no method declared and GET got 405/400/404 (one POST {{}} retry): "
+          f"{m['fallback_candidates_by_status']}")
+    print(f"  re-probed in the first cycle after the deploy: {m['reprobed_in_first_cycle']}")
+    print(f"  drift holds (quarantined for a payTo drift, not a liveness verdict): "
+          f"{m['drift_hold']} on {len(m['drift_hold_hosts'])} hosts")
+    if hosts:
+        for host, n in sorted(m["drift_hold_hosts"].items(), key=lambda kv: -kv[1])[:20]:
+            print(f"    {host}: {n}")
 
 
 def main() -> int:
@@ -194,6 +507,14 @@ def main() -> int:
     c = sub.add_parser("compare", help="compare two snapshots")
     c.add_argument("first")
     c.add_argument("second")
+    c.add_argument("--by-method", action="store_true",
+                   help="also break the health transitions down by declared method")
+
+    m = sub.add_parser("methods", help="offline: what probing with the declared method changes")
+    m.add_argument("path", help="a snapshot from this script, or the catalog object (JSON array)")
+    m.add_argument("--health", help="the health overlay, when PATH is the catalog object")
+    m.add_argument("--hosts", action="store_true", help="name the hosts holding drift holds")
+    m.add_argument("--json", action="store_true", help="print the report as JSON")
 
     w = sub.add_parser("watch", help="take N snapshots every M seconds, then report")
     w.add_argument("--count", type=int, default=6)
@@ -214,7 +535,18 @@ def main() -> int:
     if args.cmd == "compare":
         a = json.load(open(args.first))
         b = json.load(open(args.second))
-        print_comparison(compare(a, b))
+        c = compare(a, b)
+        print_comparison(c)
+        if args.by_method:
+            print_by_method(c)
+        return 0
+
+    if args.cmd == "methods":
+        report = methods_report(load_records(args.path, args.health))
+        if args.json:
+            print(json.dumps(report, indent=2, sort_keys=True, default=str))
+        else:
+            print_methods(report, args.hosts)
         return 0
 
     os.makedirs(args.dir, exist_ok=True)

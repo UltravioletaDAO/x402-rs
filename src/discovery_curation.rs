@@ -49,12 +49,17 @@ struct ManifestFile {
     entries: Vec<ManifestEntry>,
     #[serde(default)]
     suppressed: Vec<SuppressEntry>,
+    /// Prefixes whose owners asked to be probed with GET only: never a POST,
+    /// PUT or PATCH, whatever their listing declares.
+    #[serde(default, rename = "probeGetOnly")]
+    probe_get_only: Vec<Prefix>,
 }
 
 /// Loaded curation manifest.
 pub struct CurationManifest {
     entries: Vec<ManifestEntry>,
     suppressed: Vec<SuppressEntry>,
+    probe_get_only: Vec<Prefix>,
 }
 
 impl Default for CurationManifest {
@@ -80,6 +85,7 @@ impl CurationManifest {
                     Self {
                         entries: f.entries,
                         suppressed: f.suppressed,
+                        probe_get_only: f.probe_get_only,
                     }
                 }
                 Err(e) => {
@@ -106,6 +112,7 @@ impl CurationManifest {
         Self {
             entries: Vec::new(),
             suppressed: Vec::new(),
+            probe_get_only: Vec::new(),
         }
     }
 
@@ -114,6 +121,14 @@ impl CurationManifest {
         self.suppressed
             .iter()
             .any(|s| match_manifest_prefix(url, &s.host, &s.path))
+    }
+
+    /// Whether the URL's owner asked the health prober for GET only
+    /// (`probeGetOnly`): no body method is ever sent there.
+    pub fn probes_get_only(&self, url: &Url) -> bool {
+        self.probe_get_only
+            .iter()
+            .any(|p| match_manifest_prefix(url, &p.host, &p.path))
     }
 
     /// Resolve the curation tier. A manifest match wins; otherwise a
@@ -182,6 +197,7 @@ mod tests {
         CurationManifest {
             entries: f.entries,
             suppressed: f.suppressed,
+            probe_get_only: f.probe_get_only,
         }
     }
 
@@ -206,7 +222,33 @@ mod tests {
                 host: "facilitator.ultravioletadao.xyz".to_string(),
                 path: "/__bazaar_debug__".to_string(),
             }],
+            probe_get_only: Vec::new(),
         }
+    }
+
+    #[test]
+    fn an_owner_can_ask_for_get_only_probes_by_prefix() {
+        let f = CurationManifest::parse(
+            r#"{"entries":[],"probeGetOnly":[{"host":"api.seller.example","path":"/write/"}]}"#,
+        )
+        .unwrap();
+        let m = CurationManifest {
+            entries: f.entries,
+            suppressed: f.suppressed,
+            probe_get_only: f.probe_get_only,
+        };
+        let yes = Url::parse("https://api.seller.example/write/orders").unwrap();
+        assert!(m.probes_get_only(&yes));
+        for no in [
+            "https://api.seller.example/read/orders",
+            "https://api.seller.example.evil.com/write/orders",
+        ] {
+            assert!(!m.probes_get_only(&Url::parse(no).unwrap()), "{no}");
+        }
+        assert!(
+            !shipped().probes_get_only(&yes),
+            "the shipped manifest opts nobody out yet"
+        );
     }
 
     #[test]

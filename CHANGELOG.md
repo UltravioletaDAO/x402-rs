@@ -4,6 +4,24 @@
 
 ### Changed
 
+- **The Bazaar exposes only what is verified alive.** `GET /discovery/resources`,
+  `GET /discovery/stats`, the `/bazaar` page and the uptime attestation now
+  cover only listings whose last probe, made with the request the listing
+  declares, read a valid x402 challenge in a 402 within the observed-terms
+  freshness window, and that are not quarantined. Auth-gated, degraded,
+  quarantined, unprobeable and never-probed listings are no longer listed or
+  counted anywhere public, and no parameter lists them (`health` can only
+  narrow). They stay in the catalog and keep being probed; the first probe that
+  verifies one promotes it. Every listing served is `alive`, and `stats.visible`
+  equals a full offset walk of the default listing. MCP endpoints, whose probe is
+  a handshake that reads no challenge, are not exposed.
+- The `/bazaar` page shows one number, the listings verified alive, and drops the
+  health filter, the "Listed" tier and the catalog health, sources, networks and
+  tiers sections. Featured products appear only while one of their listings is
+  verified alive.
+- An alive listing is re-probed before its verification leaves the window. A
+  record written before this release keeps its listing on the reading the
+  observed-terms overlay took in the same probe, and is re-probed at once.
 - **The Bazaar health prober asks each listing the way the listing says it is
   called.** The method comes from the `bazaar` extension
   (`info.input.method`, else the schema's method, else POST when a body is
@@ -42,6 +60,10 @@
   `health.probeCount` (the figure the uptime attestation publishes). All new
   optional fields; nothing in the listing is renamed or retyped, and the health
   vocabulary is unchanged.
+- `health.verifiedAt`, when the last probe read a valid challenge, and
+  `verifiedAlive` in `GET /discovery/stats`.
+- `GET /discovery/admin/pending`: what is not exposed, with its health, behind
+  `BAZAAR_ADMIN_TOKEN` like the other admin routes (404 when it is unset).
 - `scripts/bazaar_probe_churn.py methods`: an offline report, from a local
   snapshot or the catalog object plus the health overlay, of which listings the
   change touches; `compare` now splits the probed listings into auth_gated ->

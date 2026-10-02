@@ -104,6 +104,52 @@ a GET and nothing else.
   `compare --by-method` (auth_gated -> alive, quarantined -> visible -- and how many of those came
   back alive/auth_gated --, unchanged; hosts newly visible, and newly alive/auth_gated).
 
+### 1.2 Only what is verified alive leaves the registry (2.47.0)
+
+The owner's rule, one definition for every public surface. A listing is **verified alive** when
+(`is_verified_alive`):
+
+- its last probe, made **with the request the listing declares** (or, for one that declares
+  nothing, whichever request the probe sent), answered `alive`;
+- that probe read a **valid x402 challenge** in a 402 and passed the drift check -- the record
+  keeps when (`verified_at`, published as `health.verifiedAt`), and any probe that did not clears
+  it: it is about the LAST probe, not the best one;
+- no longer ago than the observed-terms freshness window (`DISCOVERY_TERMS_FRESH_SECS`, 7 days);
+- and it is not quarantined, for any reason.
+
+`auth_gated`, `degraded`, `quarantined`, `unprobeable`, `unknown`, an `alive` 402 with no readable
+challenge, and an `alive` GET answer to a listing that declares POST do not count.
+
+**Exposure** (`DiscoveryRegistry::is_exposed`): `GET /discovery/resources` (no parameter widens
+it -- `health` can only narrow), `GET /discovery/stats` (`total`, `visible`, the new
+`verifiedAlive` and every `by*` breakdown count exposed records only, and `visible` equals a full
+offset walk of the default listing), the `/bazaar` page (one number in its header, and the
+featured products only while one of their listings is exposed), and the uptime attestation
+(`uptime_prefix_verified`). The status vocabulary is unchanged; an exposed listing is always
+`alive`.
+
+**The rest is a pending queue the prober keeps working on.** It stays in the catalog, is probed on
+its schedule, and is promoted by the first probe that verifies it. `GET /discovery/admin/pending`
+lists it, behind `BAZAAR_ADMIN_TOKEN` like the other admin routes (404 when unset).
+
+- **MCP endpoints are never exposed.** Their probe is the `initialize` handshake, which reads no
+  challenge, so nothing verifies them. Making them exposable needs a probe that reaches a paid
+  tool call -- a separate decision, not part of this change.
+- **The re-probe lands inside the window.** An `alive` record is probed again after
+  `min(7 days, window - window/8)` (`alive_reprobe_secs`), and a verification older than that is
+  due whatever its schedule says (`verification_due`), so a shortened window cannot drop listings
+  that were scheduled under the old one.
+- **The deploy does not empty the catalog.** A record from before `verified_at` existed (no method,
+  no `verified_at`) has no proof of a readable challenge -- the old rule called any 402 alive. It is
+  exposed on the observed-terms overlay instead: a challenge is recorded there only when it could
+  be read, by the same probe, so an `observedAt` within 60 s of `lastChecked` is that proof
+  (`legacy_verified_at`). Read-only, so every replica agrees at once. And it lasts one probe: those
+  records are due at once (`unverified_legacy_alive`), worked through under the usual budget and
+  per-host cap. The overlay keeps the newest 2,000 readings; an `alive` record whose reading was
+  evicted waits for that first probe, minutes to hours.
+- **Capacity trimming must never evict an exposed record to keep a pending one**
+  (`DiscoveryRegistry::exposed_urls`, for the per-host cap that rewrites `enforce_capacity`).
+
 **SSRF defense is a connector, not prose — see `08-security-hardening.md` §2/§3 (F2/F3) for the required implementation**: custom DNS resolver that rejects if ANY resolved A/AAAA is disallowed (mixed answers = attack), pins the socket to the checked IP (no re-resolve at connect), `redirect(Policy::none())` + manual ≤3-hop follow re-running the full check each hop, port allowlist {80,443,8080,8443} (F16). Extend `is_disallowed_target_ip` (`src/discovery.rs:652-722`) for `240.0.0.0/4`, `192.88.99.0/24`, and IPv4-mapped IPv6 (08 §2.3). The same hardened connector is **mandatory** (not "while we're there") for the aggregator + crawler clients (08 §15/F15).
 
 ## 2. State machine (hysteresis — never flip on one probe)

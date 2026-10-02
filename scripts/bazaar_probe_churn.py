@@ -78,6 +78,16 @@ and, once it ships, the measured effect per declared method:
 
   python scripts/bazaar_probe_churn.py compare /tmp/before.json /tmp/after.json --by-method
 
+ONLY VERIFIED ALIVE IS PUBLIC (2.47.0). The public listing serves only what is
+verified alive -- whatever `health=` says -- so a `snapshot` of a 2.47.0
+facilitator holds nothing else unless `BAZAAR_ADMIN_TOKEN` is set in the
+environment, in which case it also walks `GET /discovery/admin/pending` (the
+token is sent as a header and never printed). And, offline, what the default
+listing served before and what it serves at the deploy:
+
+  python scripts/bazaar_probe_churn.py exposure resources.json \\
+      --health health.json --terms terms.json
+
 NOTE. Aggregates only: the report never prints a resource URL, because the
 catalog lists third-party endpoints and this file lives in a public repo.
 `methods --hosts` prints host names (never paths) for the drift-hold count.
@@ -116,6 +126,10 @@ ADMISSIBLE = ("alive", "auth_gated")
 OWN_HOST = "facilitator.ultravioletadao.xyz"
 MANIFEST = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..",
                         "config", "bazaar_curation.json")
+# `DISCOVERY_TERMS_FRESH_SECS`' default: how old a verification may be.
+FRESH_WINDOW_SECS = 7 * 86400
+# `LEGACY_OBSERVATION_SLACK_SECS`: a probe and the reading it recorded.
+LEGACY_OBSERVATION_SLACK_SECS = 60
 
 
 def _parse_method(raw):
@@ -206,9 +220,15 @@ def planned_probe(url: str, extensions, get_only=()) -> tuple:
     return declared_probe(extensions)
 
 
-def fetch_page(base: str, offset: int, retries: int = 5) -> dict:
-    url = f"{base}/discovery/resources?limit={PAGE}&offset={offset}&health=any"
-    req = urllib.request.Request(url, headers={"User-Agent": UA})
+def fetch_page(base: str, offset: int, retries: int = 5, token: str = None) -> dict:
+    """One page of the public listing, or of the admin pending queue with `token`."""
+    if token:
+        url = f"{base}/discovery/admin/pending?limit={PAGE}&offset={offset}"
+        headers = {"User-Agent": UA, "Authorization": f"Bearer {token}"}
+    else:
+        url = f"{base}/discovery/resources?limit={PAGE}&offset={offset}&health=any"
+        headers = {"User-Agent": UA}
+    req = urllib.request.Request(url, headers=headers)
     for attempt in range(retries):
         try:
             with urllib.request.urlopen(req, timeout=40) as r:
@@ -223,32 +243,45 @@ def fetch_page(base: str, offset: int, retries: int = 5) -> dict:
 
 def snapshot(base: str, pause: float) -> dict:
     records: dict[str, dict] = {}
-    offset, total = 0, None
+    total = 0
     get_only = load_get_only()
-    while True:
-        page = fetch_page(base, offset)
-        total = page["pagination"]["total"]
-        items = page["items"]
-        if not items:
+    token = os.environ.get("BAZAAR_ADMIN_TOKEN") or None
+    if not token:
+        print("note: from 2.47.0 the public listing holds only verified-alive resources; "
+              "set BAZAAR_ADMIN_TOKEN to also read the pending queue", file=sys.stderr)
+    # The exposed listing, then -- with the token -- everything it does not show.
+    for exposed, page_token in ((True, None), (False, token)):
+        if not exposed and not page_token:
             break
-        for item in items:
-            health = item.get("health") or {}
-            method, has_example = planned_probe(item["url"], item.get("extensions"), get_only)
-            records[item["url"]] = {
-                "status": health.get("status"),
-                "lastChecked": health.get("lastChecked"),
-                "httpStatus": health.get("httpStatus"),
-                "quarantineReason": health.get("quarantineReason"),
-                "probeMethod": health.get("probeMethod"),
-                "type": item.get("type"),
-                "method": method,
-                "hasExample": has_example,
-            }
-        offset += PAGE
-        if offset >= total:
-            break
-        time.sleep(pause)
-    return {"capturedAt": int(time.time()), "base": base, "total": total, "records": records}
+        offset = 0
+        while True:
+            page = fetch_page(base, offset, token=page_token)
+            part = page["pagination"]["total"]
+            items = page["items"]
+            if not items:
+                break
+            for item in items:
+                health = item.get("health") or {}
+                method, has_example = planned_probe(item["url"], item.get("extensions"), get_only)
+                records[item["url"]] = {
+                    "status": health.get("status"),
+                    "lastChecked": health.get("lastChecked"),
+                    "httpStatus": health.get("httpStatus"),
+                    "quarantineReason": health.get("quarantineReason"),
+                    "probeMethod": health.get("probeMethod"),
+                    "verifiedAt": health.get("verifiedAt"),
+                    "exposed": exposed,
+                    "type": item.get("type"),
+                    "method": method,
+                    "hasExample": has_example,
+                }
+            offset += PAGE
+            if offset >= part:
+                break
+            time.sleep(pause)
+        total += part
+    return {"capturedAt": int(time.time()), "base": base, "total": total,
+            "pendingIncluded": bool(token), "records": records}
 
 
 def report_one(snap: dict) -> None:
@@ -369,13 +402,14 @@ def print_by_method(c: dict) -> None:
             print(f"      {x} -> {y} : {n}")
 
 
-def load_records(path: str, health_path: str = None) -> dict:
+def load_records(path: str, health_path: str = None, terms_path: str = None) -> dict:
     """Records keyed by URL from a LOCAL file, in the snapshot's own shape.
 
     Accepts a snapshot this script wrote (`{"records": {...}}`), or the catalog
     object itself (`bazaar/resources.json`, a bare JSON array of resources)
     optionally joined with the health overlay (`bazaar/health.json`, keyed by
-    URL, snake_case fields).
+    URL, snake_case fields) and the observed-terms overlay (`bazaar/terms.json`,
+    `{"version", "records": {url: {"observedAt", ...}}}` or the bare map).
     """
     with open(path, encoding="utf-8") as f:
         doc = json.load(f)
@@ -387,6 +421,12 @@ def load_records(path: str, health_path: str = None) -> dict:
     if health_path:
         with open(health_path, encoding="utf-8") as f:
             health = json.load(f)
+    terms = {}
+    if terms_path:
+        with open(terms_path, encoding="utf-8") as f:
+            terms = json.load(f)
+        if isinstance(terms.get("records"), dict) and "version" in terms:
+            terms = terms["records"]
     get_only = load_get_only()
     records = {}
     for item in doc:
@@ -398,11 +438,75 @@ def load_records(path: str, health_path: str = None) -> dict:
             "httpStatus": h.get("http_status"),
             "quarantineReason": h.get("quarantine_reason"),
             "probeMethod": h.get("probe_method"),
+            "verifiedAt": h.get("verified_at"),
+            "observedAt": (terms.get(item["url"]) or {}).get("observedAt"),
             "type": item.get("type"),
             "method": method,
             "hasExample": has_example,
         }
     return records
+
+
+def verified_at_of(r: dict):
+    """`verifiedAt`, or for a record written before it existed the reading the
+    observed-terms overlay took in the same probe (`legacy_verified_at`)."""
+    if r.get("verifiedAt") is not None:
+        return r["verifiedAt"]
+    checked, seen = r.get("lastChecked"), r.get("observedAt")
+    if (r.get("probeMethod") is None and r.get("status") == "alive"
+            and r.get("httpStatus") == 402 and checked is not None and seen is not None
+            and abs(seen - checked) <= LEGACY_OBSERVATION_SLACK_SECS):
+        return seen
+    return None
+
+
+def verified_alive(r: dict, now: int, window: int = FRESH_WINDOW_SECS) -> bool:
+    """`is_verified_alive`: alive, a readable challenge no older than `window`,
+    to the request the listing declares (any, when it declares none)."""
+    if r.get("status") != "alive":
+        return False
+    at = verified_at_of(r)
+    if at is None or now - at > window:
+        return False
+    method = r.get("method")
+    return method is None or (r.get("probeMethod") or "GET") == method
+
+
+def _why_pending(r: dict, now: int, window: int) -> str:
+    status = r.get("status")
+    if status is None:
+        return "never_probed"
+    if status != "alive":
+        return status
+    if r.get("type") == "mcp":
+        return "alive_mcp_handshake"
+    at = verified_at_of(r)
+    if at is None:
+        return "alive_no_readable_challenge"
+    if now - at > window:
+        return "alive_verified_too_long_ago"
+    return "alive_to_another_method"
+
+
+def exposure_report(records: dict, now: int, window: int = FRESH_WINDOW_SECS) -> dict:
+    """What the default listing served before 2.47.0 and what it serves at the deploy.
+
+    Before, it hid only `quarantined` (`health_visible`): everything else was
+    served, never-probed records included. From 2.47.0 it serves only what is
+    verified alive. Suppressed URLs are not in a local copy, so both sides count
+    them.
+    """
+    before = after = 0
+    pending = collections.Counter()
+    for r in records.values():
+        if r.get("status") != "quarantined":
+            before += 1
+        if verified_alive(r, now, window):
+            after += 1
+        else:
+            pending[_why_pending(r, now, window)] += 1
+    return {"records": len(records), "served_before": before, "served_after": after,
+            "pending_by_reason": dict(pending), "window_secs": window, "now": now}
 
 
 def _host(url: str) -> str:
@@ -516,6 +620,14 @@ def main() -> int:
     m.add_argument("--hosts", action="store_true", help="name the hosts holding drift holds")
     m.add_argument("--json", action="store_true", help="print the report as JSON")
 
+    e = sub.add_parser("exposure", help="offline: served by the default listing before and after 2.47.0")
+    e.add_argument("path", help="a snapshot from this script, or the catalog object (JSON array)")
+    e.add_argument("--health", help="the health overlay, when PATH is the catalog object")
+    e.add_argument("--terms", help="the observed-terms overlay, when PATH is the catalog object")
+    e.add_argument("--window", type=int, default=FRESH_WINDOW_SECS,
+                   help="DISCOVERY_TERMS_FRESH_SECS (seconds)")
+    e.add_argument("--now", type=int, help="evaluate at this unix time (default: the snapshot's, else now)")
+
     w = sub.add_parser("watch", help="take N snapshots every M seconds, then report")
     w.add_argument("--count", type=int, default=6)
     w.add_argument("--every", type=int, default=600)
@@ -532,9 +644,25 @@ def main() -> int:
             report_one(snap)
         return 0
 
+    if args.cmd == "exposure":
+        now = args.now
+        if now is None:
+            with open(args.path, encoding="utf-8") as f:
+                doc = json.load(f)
+            now = doc.get("capturedAt") if isinstance(doc, dict) else None
+            now = now or int(time.time())
+        report = exposure_report(load_records(args.path, args.health, args.terms), now, args.window)
+        print(json.dumps(report, indent=2, sort_keys=True))
+        return 0
+
     if args.cmd == "compare":
         a = json.load(open(args.first))
         b = json.load(open(args.second))
+        for name, snap in ((args.first, a), (args.second, b)):
+            if snap.get("pendingIncluded") is False:
+                print(f"note: {name} holds only the exposed listings (taken without "
+                      "BAZAAR_ADMIN_TOKEN); the groups compare what both snapshots hold",
+                      file=sys.stderr)
         c = compare(a, b)
         print_comparison(c)
         if args.by_method:

@@ -226,6 +226,98 @@ fn plan_tick(
     (due, overflow)
 }
 
+/// Whether a listing is **verified alive** -- the only thing the Bazaar exposes.
+///
+/// All of it, or nothing:
+/// * its last probe answered `alive` (not quarantined for any reason, not
+///   auth-gated, degraded, unprobeable or never probed);
+/// * that probe read a valid x402 challenge in a 402 and passed the drift
+///   check (`verifiedAt`), within the observed-terms freshness window;
+/// * and it was the RIGHT request: the method the listing declares, or -- for a
+///   listing that declares none -- whichever the probe sent (GET, or what the
+///   fallback found). A POST-only listing that answered a GET does not count.
+///
+/// `observed_at` is when the observed-terms overlay last read this listing's
+/// challenge; it only matters for a record from before `verifiedAt` existed
+/// ([`legacy_verified_at`]).
+pub fn is_verified_alive(
+    state: &HealthState,
+    request: &ProbeRequest,
+    observed_at: Option<u64>,
+    now: u64,
+    window: u64,
+) -> bool {
+    let verified_at = state
+        .verified_at
+        .or_else(|| legacy_verified_at(state, observed_at));
+    if !verified_recently(state.status, verified_at, now, window) {
+        return false;
+    }
+    match request {
+        ProbeRequest::Declared { method, .. } => {
+            state
+                .probe_method
+                .as_deref()
+                .and_then(ProbeMethod::parse)
+                .unwrap_or(ProbeMethod::Get)
+                == *method
+        }
+        ProbeRequest::Undeclared => true,
+    }
+}
+
+/// Alive, and verified by a challenge no older than `window`.
+fn verified_recently(
+    status: HealthStatus,
+    verified_at: Option<u64>,
+    now: u64,
+    window: u64,
+) -> bool {
+    status == HealthStatus::Alive && verified_at.is_some_and(|t| now.saturating_sub(t) <= window)
+}
+
+/// Most seconds between a probe and the observation it recorded. Both are
+/// stamped inside one `probe_and_record`, a few awaits apart.
+const LEGACY_OBSERVATION_SLACK_SECS: u64 = 60;
+
+/// The verification a record written before `verifiedAt` existed can still
+/// show, so a deploy does not empty the catalog until each record is probed
+/// again.
+///
+/// Such a record (no `verifiedAt`, no method: every probe then was a GET)
+/// said `alive` for any 402, readable or not. The observed-terms overlay tells
+/// the two apart: a challenge is recorded there only when it could be read,
+/// and by the same probe, so its `observedAt` sits beside `lastChecked`. One
+/// recorded long before or after belongs to another probe and proves nothing
+/// about this one. A drift is not a risk here: it quarantines, and only
+/// `alive` is ever exposed.
+///
+/// Read-only, so every replica agrees the moment it loads both overlays. It
+/// lasts one probe: [`tracker_due`] probes these records at once, and that
+/// probe records a method and its own `verifiedAt`, which ends this.
+pub fn legacy_verified_at(state: &HealthState, observed_at: Option<u64>) -> Option<u64> {
+    if state.verified_at.is_some()
+        || state.probe_method.is_some()
+        || state.status != HealthStatus::Alive
+        || state.http_status != Some(402)
+    {
+        return None;
+    }
+    let (checked, seen) = (state.last_checked?, observed_at?);
+    (checked.abs_diff(seen) <= LEGACY_OBSERVATION_SLACK_SECS).then_some(seen)
+}
+
+/// When an alive record is probed again: the healthy cadence, but never later
+/// than its verification would expire. Exposure needs a verification no older
+/// than the observed-terms window, so the re-probe lands inside it, with an
+/// eighth of the window to spare for a full tick or a host at its cap.
+fn alive_reprobe_secs() -> u64 {
+    let window = crate::discovery_terms::freshness_window_secs();
+    HEALTHY_REPROBE_SECS
+        .min(window.saturating_sub(window / 8))
+        .max(1)
+}
+
 /// Take `target`'s request slots on its host for this tick, if they fit under
 /// [`MAX_PER_HOST_PER_TICK`].
 ///
@@ -418,6 +510,11 @@ pub struct HealthRecord {
     /// probe of such a listing starts.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub learned_method: Option<String>,
+    /// When the LAST probe read a valid x402 challenge in a 402 and passed the
+    /// drift check; cleared by any probe that did not. What "verified alive"
+    /// is measured from ([`is_verified_alive`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verified_at: Option<u64>,
 }
 
 impl HealthRecord {
@@ -456,6 +553,7 @@ impl HealthRecord {
             probe_count: (self.total_probes > 0).then_some(self.total_probes),
             probe_method: self.probe_method.clone(),
             quarantine_reason: self.reason(),
+            verified_at: self.verified_at,
         }
     }
 
@@ -571,26 +669,6 @@ impl HealthTracker {
         }
         let bps = ((r.total_ok as u128 * 10_000) / r.total_probes as u128) as u16;
         Some((bps, r.total_probes, r.total_ok))
-    }
-
-    /// Cumulative uptime aggregated over every probed URL starting with
-    /// `prefix` — a curated product usually owns many resource URLs (all of
-    /// MeshRelay's channels, every Tenjin article), so its attested uptime is
-    /// the aggregate rather than one representative URL.
-    pub async fn uptime_prefix(&self, prefix: &str) -> Option<(u16, u64, u64)> {
-        let records = self.records.read().await;
-        let (mut probes, mut oks) = (0u64, 0u64);
-        for (url, r) in records.iter() {
-            if url.starts_with(prefix) {
-                probes = probes.saturating_add(r.total_probes);
-                oks = oks.saturating_add(r.total_ok);
-            }
-        }
-        if probes == 0 {
-            return None;
-        }
-        let bps = ((oks as u128 * 10_000) / probes as u128) as u16;
-        Some((bps, probes, oks))
     }
 
     /// Drop records for URLs the catalog no longer holds.
@@ -814,6 +892,7 @@ impl HealthTracker {
             probe_method: None,
             quarantine_reason: None,
             learned_method: None,
+            verified_at: None,
         });
         // A record from before the reason was kept gets it now, read off its
         // signature while the last status code is still the one that set it.
@@ -869,7 +948,7 @@ impl HealthTracker {
                 {
                     rec.status = HealthStatus::Alive;
                     rec.quarantined_at = None;
-                    rec.next_probe_at = now + HEALTHY_REPROBE_SECS;
+                    rec.next_probe_at = now + alive_reprobe_secs();
                 } else {
                     // Still quarantined but recovering — re-probe soon to confirm.
                     rec.next_probe_at = now + BACKOFF_SECS[0];
@@ -923,9 +1002,60 @@ impl HealthTracker {
         self.dirty.store(true, Ordering::SeqCst);
     }
 
+    /// Record whether the probe just recorded for `url` verified it: a 402 whose
+    /// challenge we could read, that passed the drift check. Any other outcome
+    /// clears it -- "verified alive" is about the LAST probe, not the best one.
+    async fn note_verified(&self, url: &str, verified: bool) {
+        if let Some(rec) = self.records.write().await.get_mut(url) {
+            let at = verified.then(now_secs);
+            if rec.verified_at != at {
+                rec.verified_at = at;
+                self.dirty.store(true, Ordering::SeqCst);
+            }
+        }
+    }
+
+    /// Record a verified-alive probe of `url` with `method`, as the prober does
+    /// when a 402 with a readable challenge answers the right request. For
+    /// tests (this crate's and the integration suite) that need a listing to be
+    /// exposed without a network round trip.
+    #[doc(hidden)]
+    #[allow(dead_code)]
+    pub async fn mark_verified(&self, url: &str, method: ProbeMethod) {
+        self.record_probe(url, ProbeClass::Alive, Some(402), 1, Some(method))
+            .await;
+        self.note_verified(url, true).await;
+    }
+
+    /// Cumulative uptime aggregated over the URLs starting with `prefix` that
+    /// are verified alive right now -- a curated product usually owns many
+    /// resource URLs (all of MeshRelay's channels, every Tenjin article), so its
+    /// attested uptime is the aggregate rather than one representative URL --
+    /// and `None` when none is: an attestation, like every other public surface
+    /// of the Bazaar, speaks only for what is exposed.
+    pub async fn uptime_prefix_verified(
+        &self,
+        prefix: &str,
+        now: u64,
+        window: u64,
+    ) -> Option<(u16, u64, u64)> {
+        let records = self.records.read().await;
+        let (mut probes, mut oks) = (0u64, 0u64);
+        for (url, r) in records.iter() {
+            if url.starts_with(prefix) && verified_recently(r.status, r.verified_at, now, window) {
+                probes = probes.saturating_add(r.total_probes);
+                oks = oks.saturating_add(r.total_ok);
+            }
+        }
+        if probes == 0 {
+            return None;
+        }
+        let bps = ((oks as u128 * 10_000) / probes as u128) as u16;
+        Some((bps, probes, oks))
+    }
+
     /// Remember the method this origin's own challenge names, for a listing
-    /// whose catalog record declares none.
-    /// Forget it with `None`.
+    /// whose catalog record declares none. Forget it with `None`.
     async fn learn_method(&self, url: &str, method: Option<ProbeMethod>) {
         let learned = method.map(|m| m.as_str().to_string());
         if let Some(rec) = self.records.write().await.get_mut(url) {
@@ -1773,6 +1903,12 @@ async fn probe_and_record<T: ProbeTransport + ?Sized>(
         }
     }
 
+    // Verified alive is earned by THIS probe or lost by it: a 402 whose
+    // challenge we read and whose recipients passed the drift check. An MCP
+    // handshake, an unreadable 402 or any other answer clears it.
+    let verified = class == ProbeClass::Alive && live.as_ref().is_some_and(|l| l.readable);
+    tracker.note_verified(u.as_str(), verified).await;
+
     // Politeness feedback. A host that refuses us goes into
     // backoff -- its own `Retry-After` when it sent one, an
     // exponential schedule with jitter when it did not -- so a
@@ -1893,10 +2029,35 @@ fn tracker_due(tracker: &HealthTracker, target: &ProbeTarget, now: u64) -> bool 
     match tracker.records.try_read() {
         Ok(records) => records
             .get(target.url.as_str())
-            .map(|r| r.next_probe_at <= now || probed_with_another_request(r, target))
+            .map(|r| {
+                r.next_probe_at <= now
+                    || verification_due(r, now)
+                    || unverified_legacy_alive(r, target)
+                    || probed_with_another_request(r, target)
+            })
             .unwrap_or(true),
         Err(_) => false,
     }
+}
+
+/// A verification about to leave the window it is exposed on, under the
+/// CURRENT window: a record scheduled before the window was shortened would
+/// otherwise wait out the old cadence and drop out of the catalog first.
+fn verification_due(rec: &HealthRecord, now: u64) -> bool {
+    rec.verified_at
+        .is_some_and(|t| now >= t.saturating_add(alive_reprobe_secs()))
+}
+
+/// An `alive` record from before `verifiedAt` existed. It is probed now, so
+/// what it is exposed on is this build's own verification rather than an
+/// overlay reading ([`legacy_verified_at`]); afterwards it carries a method
+/// and this stops matching -- one probe per record, once. Not an MCP
+/// endpoint, which never records a method and would match forever.
+fn unverified_legacy_alive(rec: &HealthRecord, target: &ProbeTarget) -> bool {
+    target.resource_type != "mcp"
+        && rec.status == HealthStatus::Alive
+        && rec.probe_method.is_none()
+        && rec.verified_at.is_none()
 }
 
 /// Whether a record's verdict came from a request this listing does not call
@@ -3940,6 +4101,17 @@ mod declared_method_tests {
             let expect_visible = expect["visibleAfterOneProbe"].as_bool().unwrap();
             assert_eq!(due_now, expect_visible, "{name}: re-probed this cycle");
             assert_eq!(visible, expect_visible, "{name}: visible after one probe");
+            assert_eq!(
+                is_verified_alive(
+                    &state,
+                    &target.request,
+                    None,
+                    now_secs(),
+                    crate::discovery_terms::freshness_window_secs()
+                ),
+                expect_visible,
+                "{name}: and exposed, by the rule every public surface applies"
+            );
             if visible {
                 assert_eq!(state.status, HealthStatus::Alive, "{name}: same vocabulary");
             } else {
@@ -3970,6 +4142,396 @@ mod declared_method_tests {
         assert_eq!(
             seller.methods("/payments/access/alpha-test"),
             ["GET", "POST"]
+        );
+    }
+
+    // ------------------------------------------------------------------------
+    // Exposure: only what is verified alive leaves the registry
+    // ------------------------------------------------------------------------
+
+    /// A listing of `path` on `seller.example` paying Tavily's options,
+    /// declaring `method` when given, imported the way the aggregator does.
+    fn listing_of(path: &str, method: Option<&str>) -> crate::types_v2::DiscoveryResource {
+        let mut listing = json!({
+            "resource": format!("https://seller.example{path}"),
+            "type": "http",
+            "x402Version": 2,
+            "description": "exposure fixture",
+            "accepts": accepts(),
+        });
+        if let Some(m) = method {
+            listing["extensions"] =
+                json!({ "bazaar": { "info": { "input": { "type": "http", "method": m } } } });
+        }
+        let (mut imported, _) = crate::discovery_aggregator::convert_resources(
+            vec![serde_json::from_value(listing).unwrap()],
+            "coinbase",
+        );
+        imported.remove(0)
+    }
+
+    /// Every exposed URL, by walking the default listing page by page, as a
+    /// consumer does (Emporium's `bazar.rs` walks it by offset).
+    async fn walk(registry: &DiscoveryRegistry) -> Vec<String> {
+        let mut urls = Vec::new();
+        loop {
+            let page = registry.list(2, urls.len() as u32, None).await;
+            if page.items.is_empty() {
+                break;
+            }
+            urls.extend(page.items.into_iter().map(|r| r.url.to_string()));
+        }
+        urls.sort();
+        urls
+    }
+
+    /// The owner's rule, end to end through real probes of a local seller: a
+    /// listing is exposed only once a probe with the request it declares has
+    /// read a valid challenge in a 402. Auth-gated, degraded, quarantined, an
+    /// unreadable 402, a GET answer to a POST listing, and never probed: none
+    /// of those reach the listing, the stats or a full walk, and the stats
+    /// count exactly what the walk returns.
+    #[tokio::test]
+    async fn only_a_verified_challenge_exposes_a_listing_anywhere() {
+        let a = accepts();
+        let (base, _seller) = serve(HashMap::from([
+            ("/get-alive".to_string(), route(402, 405, &a)),
+            ("/post-alive".to_string(), route(405, 402, &a)),
+            ("/auth".to_string(), route(401, 401, &a)),
+            ("/degraded".to_string(), route(200, 200, &a)),
+            ("/dead".to_string(), route(404, 404, &a)),
+            (
+                "/garbage".to_string(),
+                Route {
+                    challenge: None,
+                    ..route(402, 402, &a)
+                },
+            ),
+            ("/get-only-alive".to_string(), route(402, 404, &a)),
+        ]))
+        .await;
+        let registry = DiscoveryRegistry::new();
+        for (path, method) in [
+            ("/get-alive", None),
+            ("/post-alive", Some("POST")),
+            ("/auth", Some("GET")),
+            ("/degraded", Some("GET")),
+            ("/dead", Some("GET")),
+            ("/garbage", Some("GET")),
+            ("/get-only-alive", Some("POST")),
+            ("/never-probed", Some("GET")),
+        ] {
+            registry.register(listing_of(path, method)).await.unwrap();
+        }
+        assert!(walk(&registry).await.is_empty(), "nothing before a probe");
+
+        let lo = Loopback::serving(&base);
+        let health = registry.health();
+        for t in registry.probe_targets().await {
+            let rounds = if t.url.path() == "/dead" { 3 } else { 1 };
+            if t.url.path() == "/never-probed" {
+                continue;
+            }
+            for _ in 0..rounds {
+                probe_and_record(&lo, &registry, &health, t.clone()).await;
+            }
+        }
+        // A POST listing a GET found alive -- what the GET-only build left --
+        // is not verified by that answer, however clean the challenge.
+        let get_only = "https://seller.example/get-only-alive";
+        health.mark_verified(get_only, ProbeMethod::Get).await;
+
+        let states = health.snapshot().await;
+        let status = |p: &str| states[&format!("https://seller.example{p}")].status;
+        assert_eq!(status("/auth"), HealthStatus::AuthGated);
+        assert_eq!(status("/degraded"), HealthStatus::Degraded);
+        assert_eq!(status("/dead"), HealthStatus::Quarantined);
+        assert_eq!(
+            status("/garbage"),
+            HealthStatus::Alive,
+            "alive by the old rule"
+        );
+        assert_eq!(status("/get-only-alive"), HealthStatus::Alive);
+
+        let exposed = vec![
+            "https://seller.example/get-alive".to_string(),
+            "https://seller.example/post-alive".to_string(),
+        ];
+        assert_eq!(walk(&registry).await, exposed);
+        let stats = registry.stats().await;
+        assert_eq!(stats["verifiedAlive"], 2);
+        assert_eq!(stats["visible"], 2);
+        assert_eq!(stats["total"], 2, "no public count of the rest");
+        assert_eq!(stats["byHealth"], json!({ "alive": 2 }));
+        // No parameter widens it.
+        for health_filter in ["any", "quarantined", "auth_gated", "degraded", "unknown"] {
+            let filters = crate::types_v2::DiscoveryFilters {
+                health: Some(health_filter.to_string()),
+                ..Default::default()
+            };
+            let page = registry.list(100, 0, Some(filters)).await;
+            assert!(
+                page.items
+                    .iter()
+                    .all(|r| exposed.contains(&r.url.to_string())),
+                "health={health_filter}"
+            );
+        }
+        // The rest is held, probed, and readable by the admin route only.
+        let pending = registry.list_pending(100, 0).await;
+        assert_eq!(pending.pagination.total, 6);
+        assert!(pending
+            .items
+            .iter()
+            .all(|r| !exposed.contains(&r.url.to_string())));
+        let mut exposed_set: Vec<String> = registry.exposed_urls().await.into_iter().collect();
+        exposed_set.sort();
+        assert_eq!(exposed_set, exposed);
+    }
+
+    /// A listing appears on the first probe that verifies it, and leaves on the
+    /// first that does not: verified alive is about the LAST probe.
+    #[tokio::test]
+    async fn a_listing_is_exposed_by_its_last_probe_not_its_best() {
+        let a = accepts();
+        let (base, _seller) =
+            serve(HashMap::from([("/flaky".to_string(), route(405, 402, &a))])).await;
+        let registry = DiscoveryRegistry::new();
+        registry
+            .register(listing_of("/flaky", Some("POST")))
+            .await
+            .unwrap();
+        let target = registry.probe_targets().await.remove(0);
+        let health = registry.health();
+        assert_eq!(registry.list(10, 0, None).await.pagination.total, 0);
+
+        probe_and_record(
+            &Loopback::serving(&base),
+            &registry,
+            &health,
+            target.clone(),
+        )
+        .await;
+        assert_eq!(registry.list(10, 0, None).await.pagination.total, 1);
+        let state = health.snapshot().await.remove(target.url.as_str()).unwrap();
+        assert!(state.verified_at.is_some());
+        assert_eq!(
+            serde_json::to_value(&state).unwrap()["verifiedAt"],
+            json!(state.verified_at.unwrap())
+        );
+
+        // Same seller, now answering a 402 with no challenge in it.
+        let (garbage, _s) = serve(HashMap::from([(
+            "/flaky".to_string(),
+            Route {
+                challenge: None,
+                ..route(405, 402, &a)
+            },
+        )]))
+        .await;
+        probe_and_record(
+            &Loopback::serving(&garbage),
+            &registry,
+            &health,
+            target.clone(),
+        )
+        .await;
+        let state = health.snapshot().await.remove(target.url.as_str()).unwrap();
+        assert_eq!(state.status, HealthStatus::Alive);
+        assert_eq!(
+            state.verified_at, None,
+            "cleared by a probe that read nothing"
+        );
+        assert_eq!(registry.list(10, 0, None).await.pagination.total, 0);
+    }
+
+    #[test]
+    fn verified_alive_is_the_declared_request_inside_the_window() {
+        let now = 10_000_000;
+        let window = 600;
+        let state = |status, verified_at, method: Option<&str>| HealthState {
+            status,
+            last_checked: Some(now),
+            http_status: Some(402),
+            latency_ms: None,
+            uptime_bps: None,
+            probe_count: None,
+            probe_method: method.map(str::to_string),
+            quarantine_reason: None,
+            verified_at,
+        };
+        let alive = HealthStatus::Alive;
+        let ok = |s: &HealthState, r: &ProbeRequest| is_verified_alive(s, r, None, now, window);
+
+        assert!(ok(&state(alive, Some(now - window), Some("GET")), &get()));
+        assert!(
+            !ok(&state(alive, Some(now - window - 1), Some("GET")), &get()),
+            "past the window"
+        );
+        assert!(
+            !ok(&state(alive, None, Some("GET")), &get()),
+            "never verified"
+        );
+        for status in [
+            HealthStatus::AuthGated,
+            HealthStatus::Degraded,
+            HealthStatus::Quarantined,
+            HealthStatus::Unprobeable,
+            HealthStatus::Unknown,
+        ] {
+            assert!(
+                !ok(&state(status, Some(now), Some("GET")), &get()),
+                "{status:?}"
+            );
+        }
+        assert!(
+            !ok(&state(alive, Some(now), Some("GET")), &post(None)),
+            "a GET answer to a POST listing"
+        );
+        assert!(ok(&state(alive, Some(now), Some("POST")), &post(None)));
+        assert!(
+            ok(
+                &state(alive, Some(now), Some("POST")),
+                &ProbeRequest::Undeclared
+            ),
+            "a listing that declares nothing counts what the fallback found"
+        );
+    }
+
+    /// A record from before `verifiedAt` existed is exposed on the overlay
+    /// reading of the SAME probe, and on nothing else -- and is probed again
+    /// at once, so that lasts one probe.
+    #[tokio::test]
+    async fn a_legacy_alive_record_keeps_its_listing_only_on_the_same_probes_reading() {
+        let url = "https://seller.example/legacy";
+        let t = HealthTracker::new();
+        t.record_probe(url, ProbeClass::Alive, Some(402), 1, None)
+            .await;
+        let state = t.snapshot().await.remove(url).unwrap();
+        let checked = state.last_checked.unwrap();
+        let window = 600;
+        let now = checked + 10;
+
+        assert_eq!(
+            legacy_verified_at(&state, Some(checked + 3)),
+            Some(checked + 3)
+        );
+        assert_eq!(
+            legacy_verified_at(&state, Some(checked - 3)),
+            Some(checked - 3)
+        );
+        assert_eq!(
+            legacy_verified_at(&state, Some(checked + LEGACY_OBSERVATION_SLACK_SECS + 1)),
+            None,
+            "another probe's reading"
+        );
+        assert_eq!(
+            legacy_verified_at(&state, None),
+            None,
+            "no readable challenge"
+        );
+        assert!(is_verified_alive(
+            &state,
+            &get(),
+            Some(checked),
+            now,
+            window
+        ));
+        assert!(!is_verified_alive(&state, &get(), None, now, window));
+        assert!(
+            !is_verified_alive(&state, &post(None), Some(checked), now, window),
+            "and a GET reading still does not verify a POST listing"
+        );
+        let other = |f: &dyn Fn(&mut HealthState)| {
+            let mut s = state.clone();
+            f(&mut s);
+            legacy_verified_at(&s, Some(checked))
+        };
+        assert_eq!(
+            other(&|s| s.probe_method = Some("GET".into())),
+            None,
+            "this build's"
+        );
+        assert_eq!(other(&|s| s.status = HealthStatus::AuthGated), None);
+        assert_eq!(other(&|s| s.http_status = Some(200)), None);
+
+        // Due now -- but not an MCP endpoint, which never records a method.
+        let http = target(url, get());
+        let mut mcp = target(url, get());
+        mcp.resource_type = "mcp".to_string();
+        assert!(tracker_due(&t, &http, checked + 1));
+        assert!(!tracker_due(&t, &mcp, checked + 1));
+        t.mark_verified(url, ProbeMethod::Get).await;
+        assert!(
+            !tracker_due(&t, &http, now_secs()),
+            "and once probed, it is not"
+        );
+    }
+
+    /// The re-probe of a verified listing lands inside the window it is
+    /// exposed on, under the window in force NOW.
+    #[tokio::test]
+    async fn a_verified_listing_is_reprobed_before_its_verification_expires() {
+        let window = crate::discovery_terms::freshness_window_secs();
+        assert!(alive_reprobe_secs() < window);
+        assert!(alive_reprobe_secs() <= HEALTHY_REPROBE_SECS);
+
+        let url = "https://seller.example/verified";
+        let t = HealthTracker::new();
+        t.mark_verified(url, ProbeMethod::Get).await;
+        let verified_at = t.snapshot().await[url].verified_at.unwrap();
+        let rec = t.records.read().await[url].clone();
+        assert!(
+            rec.next_probe_at + window / 8 <= verified_at + window,
+            "with an eighth of the window to spare"
+        );
+        let target = target(url, get());
+        assert!(!tracker_due(&t, &target, verified_at + 1));
+        // Scheduled under a longer window, then the window shortens: due by
+        // the verification's age, not by the old schedule.
+        t.records.write().await.get_mut(url).unwrap().next_probe_at = u64::MAX;
+        assert!(tracker_due(&t, &target, verified_at + alive_reprobe_secs()));
+    }
+
+    /// The attestation speaks only for what is exposed.
+    #[tokio::test]
+    async fn the_attested_uptime_counts_only_verified_listings() {
+        let t = HealthTracker::new();
+        let now = now_secs();
+        let window = 600;
+        assert_eq!(
+            t.uptime_prefix_verified("https://p.example/", now, window)
+                .await,
+            None
+        );
+        t.mark_verified("https://p.example/a", ProbeMethod::Get)
+            .await;
+        // Alive by the old rule (an unreadable 402): not verified.
+        t.record_probe(
+            "https://p.example/b",
+            ProbeClass::Alive,
+            Some(402),
+            1,
+            Some(ProbeMethod::Get),
+        )
+        .await;
+        t.record_probe(
+            "https://p.example/b",
+            ProbeClass::Alive,
+            Some(402),
+            1,
+            Some(ProbeMethod::Get),
+        )
+        .await;
+        assert_eq!(
+            t.uptime_prefix_verified("https://p.example/", now_secs(), window)
+                .await,
+            Some((10_000, 1, 1))
+        );
+        assert_eq!(
+            t.uptime_prefix_verified("https://other.example/", now_secs(), window)
+                .await,
+            None
         );
     }
 }

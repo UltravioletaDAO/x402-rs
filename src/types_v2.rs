@@ -1183,6 +1183,11 @@ pub struct HealthState {
     /// `quarantined`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub quarantine_reason: Option<QuarantineReason>,
+    /// When the last probe -- with the request the listing declares, or the
+    /// one its fallback found -- read a valid x402 challenge in a 402. Absent
+    /// when the last probe did not.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verified_at: Option<u64>,
 }
 
 /// Curated tier of a resource (WS-C). Orders the listing:

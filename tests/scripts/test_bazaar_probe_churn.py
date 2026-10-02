@@ -201,5 +201,74 @@ class Compare(unittest.TestCase):
         self.assertEqual(c["newly_admissible_hosts"], 1, "only b: d came back degraded")
 
 
+class Exposure(unittest.TestCase):
+    # Mirrors `verified_alive_is_the_declared_request_inside_the_window` and
+    # `a_legacy_alive_record_keeps_its_listing_only_on_the_same_probes_reading`
+    # in src/discovery_health.rs.
+    NOW, WINDOW = 10_000_000, 600
+
+    def ok(self, r):
+        return churn.verified_alive(r, self.NOW, self.WINDOW)
+
+    def test_the_owners_rule(self):
+        now = self.NOW
+        get = dict(probeMethod="GET")
+        self.assertTrue(self.ok(rec("alive", 402, "GET", verifiedAt=now - 600, **get)))
+        self.assertFalse(self.ok(rec("alive", 402, "GET", verifiedAt=now - 601, **get)),
+                         "past the window")
+        self.assertFalse(self.ok(rec("alive", 402, "GET", **get)), "never verified")
+        for status in ("auth_gated", "degraded", "quarantined", "unprobeable", "unknown", None):
+            self.assertFalse(self.ok(rec(status, 402, "GET", verifiedAt=now, **get)), status)
+        self.assertFalse(self.ok(rec("alive", 402, "POST", verifiedAt=now, **get)),
+                         "a GET answer to a POST listing")
+        self.assertTrue(self.ok(rec("alive", 402, "POST", verifiedAt=now, probeMethod="POST")))
+        self.assertTrue(self.ok(rec("alive", 402, None, verifiedAt=now, probeMethod="POST")),
+                        "a listing that declares nothing counts what the fallback found")
+
+    def test_a_legacy_record_needs_the_same_probes_reading(self):
+        legacy = dict(lastChecked=self.NOW - 10)
+        self.assertTrue(self.ok(rec("alive", 402, "GET", observedAt=self.NOW - 7, **legacy)))
+        self.assertFalse(self.ok(rec("alive", 402, "GET", observedAt=self.NOW - 71, **legacy)),
+                         "another probe's reading")
+        self.assertFalse(self.ok(rec("alive", 402, "GET", **legacy)), "no readable challenge")
+        self.assertFalse(self.ok(rec("alive", 402, "POST", observedAt=self.NOW - 7, **legacy)))
+        self.assertFalse(
+            self.ok(rec("alive", 402, "GET", observedAt=self.NOW - 7, probeMethod="GET", **legacy)),
+            "a record this build wrote carries verifiedAt or nothing")
+        self.assertFalse(self.ok(rec("alive", 200, "GET", observedAt=self.NOW - 7, **legacy)))
+
+    def test_counts_served_before_and_after(self):
+        now = self.NOW
+        records = {
+            "https://a.example/verified": rec("alive", 402, "GET", verifiedAt=now, probeMethod="GET"),
+            "https://a.example/garbage": rec("alive", 402, "GET", probeMethod="GET"),
+            "https://a.example/mcp": rec("alive", 200, None, typ="mcp"),
+            "https://a.example/wrong": rec("alive", 402, "POST", verifiedAt=now, probeMethod="GET"),
+            "https://b.example/auth": rec("auth_gated", 405, "GET"),
+            "https://b.example/q": rec("quarantined", 404, "GET"),
+            "https://b.example/new": rec(None, None, "GET"),
+        }
+        e = churn.exposure_report(records, now, self.WINDOW)
+        self.assertEqual(e["served_before"], 6, "everything but the quarantined one")
+        self.assertEqual(e["served_after"], 1)
+        self.assertEqual(e["pending_by_reason"], {
+            "alive_no_readable_challenge": 1, "alive_mcp_handshake": 1,
+            "alive_to_another_method": 1, "auth_gated": 1, "quarantined": 1, "never_probed": 1,
+        })
+
+    def test_reads_the_three_overlays(self):
+        catalog = [{"url": "https://a.example/x", "type": "http"}]
+        health = {"https://a.example/x": {"status": "alive", "http_status": 402, "last_checked": 100}}
+        terms = {"version": 2, "records": {"https://a.example/x": {"observedAt": 101}}}
+        with tempfile.TemporaryDirectory() as d:
+            paths = {}
+            for name, doc in (("resources", catalog), ("health", health), ("terms", terms)):
+                paths[name] = pathlib.Path(d) / f"{name}.json"
+                paths[name].write_text(json.dumps(doc), encoding="utf-8")
+            records = churn.load_records(*(str(paths[n]) for n in ("resources", "health", "terms")))
+        self.assertEqual(records["https://a.example/x"]["observedAt"], 101)
+        self.assertEqual(churn.exposure_report(records, 200, 600)["served_after"], 1)
+
+
 if __name__ == "__main__":
     unittest.main()

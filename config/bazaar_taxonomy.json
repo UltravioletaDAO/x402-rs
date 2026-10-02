@@ -1,0 +1,98 @@
+{
+  "$comment": "Closed vocabulary for Bazaar listings: what KIND of thing a listing sells and which categories of ONE list it belongs to. Compiled into the binary (src/discovery_taxonomy.rs) and resolved per listing at read time into the response-only `kind`, `categories` and `categorySource`, never stored on the record. `categories` below is the whole list: nothing outside it is ever published. A seller's own spelling stays in metadata.category untouched; `aliases` only maps spellings that mean the same thing (keys are compared after lowercasing and turning `_` and spaces into `-`). A raw value with no entry here stays unmapped rather than guessed. `contentCategories` are seller spellings that mean the listing sells content (an article, an essay) rather than a call to a tool. `overrides` is the operator's curation for listings whose own data says nothing usable: host-exact + path-boundary on the parsed https URL (discovery_security::match_manifest_prefix, the matcher the curation manifest uses), each with its evidence. Do not add entries from memory. See docs/plans/bazaar/10-listing-data-and-taxonomy.md.",
+  "kinds": {
+    "api": "A tool: a paid call that does something or returns data for the request you send.",
+    "content": "A paid piece of content (an article, an essay, a report) that is the same for every buyer. Never boosted above tools by a curated tier."
+  },
+  "categories": {
+    "people": "Information about a person: profiles, work email, phone and identity lookups. Returns personal data: whoever buys it answers for having a lawful basis to process it.",
+    "company": "Information about a company: records by domain, firmographics, who works there.",
+    "web-search": "Search the open web and get ranked results.",
+    "page-read": "Fetch, scrape or extract the content of a page you name.",
+    "social/x": "Read or search X (Twitter).",
+    "social/reddit": "Read or search Reddit.",
+    "finance": "Markets and money outside crypto: stock quotes, FX, financial statements, market data.",
+    "crypto": "Blockchain and token data: prices, balances, on-chain activity, DeFi.",
+    "weather": "Weather conditions and forecasts.",
+    "image": "Generate, edit or analyse images.",
+    "human-work": "Work done by people on request, with evidence of it: physical errands, on-site checks, data collection.",
+    "ai": "Model inference and AI agents: completions, embeddings, agent tasks.",
+    "data": "Datasets and data utilities that fit no narrower category.",
+    "developer-tools": "Tools for software developers: code, repositories, packages, documentation audits.",
+    "security": "Security checks, scanning, threat and risk data.",
+    "research": "Research and analysis produced on request.",
+    "reputation": "Reputation and trust scores for wallets, agents and services.",
+    "communication": "Messaging, notifications and channels.",
+    "compliance": "Regulatory and payroll compliance checks.",
+    "advertising": "Advertising and promotion placements.",
+    "infrastructure": "Infrastructure for agents and apps: payment facilitation, databases, hosting."
+  },
+  "aliases": {
+    "data-processing": "data",
+    "data-enrichment": "data",
+    "dataset": "data",
+    "datasets": "data",
+    "inference": "ai",
+    "llm": "ai",
+    "developer": "developer-tools",
+    "dev-tools": "developer-tools",
+    "devtools": "developer-tools",
+    "payroll-compliance": "compliance",
+    "payment-facilitator": "infrastructure",
+    "messaging": "communication",
+    "notification": "communication",
+    "notifications": "communication",
+    "search": "web-search",
+    "websearch": "web-search",
+    "scraping": "page-read",
+    "scraper": "page-read",
+    "web-scraping": "page-read",
+    "twitter": "social/x",
+    "x": "social/x",
+    "reddit": "social/reddit",
+    "stocks": "finance",
+    "stock-market": "finance",
+    "blockchain": "crypto",
+    "chain-data": "crypto",
+    "onchain": "crypto",
+    "on-chain": "crypto",
+    "defi": "crypto",
+    "image-generation": "image",
+    "images": "image",
+    "person": "people",
+    "people-search": "people",
+    "companies": "company",
+    "firmographics": "company"
+  },
+  "contentCategories": [
+    "content",
+    "article",
+    "articles",
+    "essay",
+    "essays",
+    "blog",
+    "blog-post",
+    "ebook",
+    "newsletter"
+  ],
+  "overrides": [
+    {
+      "host": "mcp.execution.market",
+      "path": "/mcp",
+      "category": "human-work",
+      "$evidence": "Execution Market, a first-party product (config/bazaar_curation.json): a marketplace where agents pay people to do tasks and return evidence. Its listing in the 2026-10-01T20:03Z catalog snapshot declares metadata.category `execution`, which names the product rather than a category and is left unmapped by the aliases."
+    },
+    {
+      "host": "api.execution.market",
+      "path": "/api/v1/tasks",
+      "category": "human-work",
+      "$evidence": "Execution Market's task API, the route an agent pays to have a person do a task (config/bazaar_curation.json: bounty-model, ERC-8004-gated)."
+    },
+    {
+      "host": "tenjin.blog",
+      "path": "/api/read/",
+      "kind": "content",
+      "$evidence": "Paid essays, one per URL. Catalog snapshot of 2026-10-01T20:03Z: 379 listings under this prefix, all self_registered, none declaring a category; the publisher's two other listings on this host (/api/answer, /api/phone-lookup) are tools, outside the prefix, and stay api. The publisher asked, in its Bazaar feedback of 2026-10-01, for the essays to be tagged as content and not as tools; the owner of this facilitator approved it on 2026-10-02."
+    }
+  ]
+}

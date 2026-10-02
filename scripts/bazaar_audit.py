@@ -121,6 +121,47 @@ def analyze(items):
     }
 
 
+def has_input_schema(item):
+    """Same rule as DiscoveryResource::has_input_schema (src/types_v2.rs): the
+    bazaar extension's info.input, or an input property in its JSON Schema,
+    as a non-empty object."""
+    bazaar = (item.get("extensions") or {}).get("bazaar")
+    if not isinstance(bazaar, dict):
+        return False
+
+    def declared(v):
+        return isinstance(v, dict) and bool(v)
+
+    info = bazaar.get("info") if isinstance(bazaar.get("info"), dict) else {}
+    schema = bazaar.get("schema") if isinstance(bazaar.get("schema"), dict) else {}
+    props = schema.get("properties") if isinstance(schema.get("properties"), dict) else {}
+    return declared(info.get("input")) or declared(props.get("input"))
+
+
+def listing_data(items):
+    """What a router needs besides the price, per source: a description and a
+    declared input. Plus the response-only kind/category, when the listing
+    carries them (a stored snapshot does not: it shows as `unresolved`)."""
+    per_source = defaultdict(lambda: {"n": 0, "no_description": 0, "no_input_schema": 0})
+    kind, category = Counter(), Counter()
+    for i in items:
+        ps = per_source[i.get("sourceFacilitator") or i.get("source") or "?"]
+        ps["n"] += 1
+        if not (i.get("description") or "").strip():
+            ps["no_description"] += 1
+        if not has_input_schema(i):
+            ps["no_input_schema"] += 1
+        kind[i.get("kind") or "unresolved"] += 1
+        category[i.get("category") or ("none" if i.get("kind") else "unresolved")] += 1
+    return {
+        "no_description": sum(v["no_description"] for v in per_source.values()),
+        "no_input_schema": sum(v["no_input_schema"] for v in per_source.values()),
+        "per_source": {k: dict(v) for k, v in per_source.items()},
+        "kind": dict(kind.most_common()),
+        "category": dict(category.most_common()),
+    }
+
+
 def stratified_sample(items, n):
     """Proportional per-source sample, min 10 / max 60 per source, clean URLs only."""
     by_source = defaultdict(list)
@@ -170,6 +211,7 @@ def main():
         items = fetch_all(args.base)
 
     report = analyze(items)
+    report["listingData"] = listing_data(items)
 
     if args.probe:
         sample = stratified_sample(items, args.probe)
@@ -197,6 +239,13 @@ def main():
     print("\nper-source quality:")
     for s, v in sorted(r["per_source"].items(), key=lambda kv: -kv[1]["n"]):
         print(f"  {s:24} n={v['n']:6}  empty={v['empty']:5}  junk={v['junk']:5}  non_tls={v['non_tls']:5}")
+    ld = r["listingData"]
+    print(f"\nno description       : {ld['no_description']} ({pct(ld['no_description'], r['total'])})")
+    print(f"no input schema      : {ld['no_input_schema']} ({pct(ld['no_input_schema'], r['total'])})")
+    for s, v in sorted(ld["per_source"].items(), key=lambda kv: -kv[1]["n"]):
+        print(f"  {s:24} n={v['n']:6}  no_description={v['no_description']:5}  no_input_schema={v['no_input_schema']:5}")
+    print(f"kind                 : {ld['kind']}")
+    print(f"category             : {ld['category']}")
     if "probe" in r:
         print(f"\nprobe: {r['probe']['classes']}  alive_x402_rate={r['probe']['alive_x402_rate']}")
 

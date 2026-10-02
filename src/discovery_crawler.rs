@@ -303,6 +303,10 @@ impl DiscoveryCrawler {
             observed_terms: None,
             health: None,
             curation: None,
+            kind: None,
+            categories: Vec::new(),
+            category_source: None,
+            has_input_schema: None,
         }
     }
 

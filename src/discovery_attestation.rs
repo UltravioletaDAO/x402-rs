@@ -356,9 +356,16 @@ where
             // Snapshot cumulative uptime per target (async) so run_cycle's
             // closure stays synchronous.
             let mut up: HashMap<String, (u16, u64, u64)> = HashMap::new();
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(0);
+            let window = crate::discovery_terms::freshness_window_secs();
             for t in &targets {
-                // Aggregate across every probed URL under the product's prefix.
-                if let Some(u) = health.uptime_prefix(&t.url).await {
+                // Aggregate across the product's URLs that are verified alive
+                // right now -- what the Bazaar exposes -- and attest nothing
+                // for a product that has none.
+                if let Some(u) = health.uptime_prefix_verified(&t.url, now, window).await {
                     up.insert(t.url.clone(), u);
                 }
             }

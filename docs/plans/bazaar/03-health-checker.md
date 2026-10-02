@@ -20,7 +20,153 @@ Per x402scan's proven implementation and the protocol's own logic: an x402 resou
 | URL has routeTemplate placeholders (R6-tagged), or `type=a2a` GET-unfriendly | `unprobeable` | never quarantined by probing; **excluded from the 15-min schedule**; visibility governed by static filters + settlement activity only |
 | `type=mcp` (Streamable HTTP) | probe via **MCP handshake** | GET/POST won't 402; instead POST a JSON-RPC `initialize` — a valid MCP response counts as `alive`. Covers Execution Market + 402Milly's listed MCP endpoints (else our own flagships show forever-grey — completeness #8). If handshake unimplemented, fall back to `unprobeable` + manifest `expectedStatus` |
 
-Method: **GET first, then POST with `Content-Type: application/json` and empty-object body ONLY if GET yields 404/405** (never speculative — F7). x402scan probes GET then POST; many payable routes are POST-only (402Milly's `/purchase`). Never HEAD. Never attach payment. Timeouts: 5s connect / 12s total. UA: `uvd-bazaar-health/1.0 (+https://facilitator.ultravioletadao.xyz)`. **Manifest first-party/VIP entries may declare `expectedStatus: auth_gated|alive|mcp`** so the UI renders their known-healthy state (Execution Market REST is auth-before-402 → `auth_gated` is its healthy state, not a failure).
+Method (as planned; **what shipped is §1.1**): **GET first, then POST with `Content-Type: application/json` and empty-object body ONLY if GET yields 404/405** (never speculative — F7). x402scan probes GET then POST; many payable routes are POST-only (402Milly's `/purchase`). Never HEAD. Never attach payment. Timeouts: 5s connect / 12s total. UA: `uvd-bazaar-health/1.0 (+https://facilitator.ultravioletadao.xyz)`. **Manifest first-party/VIP entries may declare `expectedStatus: auth_gated|alive|mcp`** so the UI renders their known-healthy state (Execution Market REST is auth-before-402 → `auth_gated` is its healthy state, not a failure).
+
+### 1.1 The request is the one the listing declares (2.47.0)
+
+Until 2.46.x the prober sent a bare GET to every non-MCP listing; the GET-then-POST step above
+was never built. A POST-only endpoint answers a GET with 405 (filed as `auth_gated`) or 404
+(three of those quarantine it), and neither says whether the service is up. An external router
+measured it on 2026-10-01 with unpaid POSTs: 14 of 18 sampled `auth_gated` listings and 15 of 25
+`quarantined` ones answered a proper 402. Since 2.47.0 (`src/discovery_health.rs`):
+
+**Where the method comes from**, first match wins (`declared_request`):
+
+1. `extensions.bazaar.info.input.method` -- the x402 Bazaar spelling, what the Coinbase feed carries;
+2. the extension's JSON Schema: `schema.properties.input.method` (the HTTP shape `uvd-x402-sdk`
+   writes) or the `const` / first `enum` of `schema.properties.input.properties.method`;
+3. POST, when either half declares a body (`body` / `bodyType`) without a method -- the body shape
+   `uvd-x402-sdk` writes, and MeshRelay's;
+4. the `resource.method` an origin puts in its own 402: never in the catalog record (`ResourceInfo`
+   has no such field), so it is learned from the live challenge of a listing that declares nothing
+   (`learned_method`) and the next probe starts there.
+
+GET / HEAD / DELETE are probed as GET. Our own origin (`interop::PUBLIC_URL`) and any prefix in
+`probeGetOnly` of `config/bazaar_curation.json` -- an owner's opt-out, added only on request -- get
+a GET and nothing else.
+
+| Listing | Probe |
+|---|---|
+| declares GET | one GET |
+| declares POST / PUT / PATCH | that method with `{}`. Only if `{}` gets a 400 or 422 and the listing declared a JSON example of at most 8 KiB, the same method once more with the example |
+| declares nothing | GET (or the method it last named or answered with). On a 405, 400 or 404, one POST `{}`; a remembered POST answering anything but a 402 gets one GET |
+
+- **One extra request at most, and it has to prove itself**: it replaces the first answer only when
+  it is a 402 with a challenge we can read. The method that worked is stored on the record
+  (`probe_method`, published as `health.probeMethod`).
+- **The extra request counts, in requests, against both caps.** A probe that may send one reserves
+  two of the host's `MAX_PER_HOST_PER_TICK` (3) slots and two of the tick's `max_per_tick` budget
+  before it runs (`plan_tick` / `admit`), on-demand revalidation included -- what does not fit goes
+  back to the revalidation queue (`requeue`). Cost: a host whose listings declare nothing is probed
+  at one listing per tick instead of three.
+- Every body probe goes through `safe_send_json`: the same resolve-check-pin connector and timeout
+  as `safe_get`. No payment header; `queryParams` and `headers` from the listing are never sent;
+  nothing of ours goes in the body. **Redirects with a body** (`redirect_hop`): 307/308 keep the
+  method and body only on the original request's host, 301/302/303 become a GET without the body,
+  anything else is not followed -- so no origin can bounce our POST, with a stranger's JSON, at a
+  third party or at this facilitator. A 402 body is read up to 256 KiB (`read_capped`); past that it
+  is dropped and the header, where sellers put the challenge, still counts.
+- A remembered body method is retried with GET only after a 405, 400, 404 or 422 -- never after a
+  429, a 5xx or a timeout, which is the origin asking to be left alone. `resource.method` is learned
+  only as POST, only from a clean challenge whose `resource.url` is on the listing's own host, and is
+  forgotten as soon as the fallback has to answer instead.
+- **A 405 to the method a listing declares** (or answered with last time) is `degraded`: the
+  endpoint is up and refuses the very request it is listed for. A 405 to a guessed GET stays
+  `auth_gated`, as before.
+- **Evidence about one request says nothing about another.** When the request a record was
+  probed with changes, its streaks restart, and a fail-streak quarantine the old request built is
+  lifted by the first 402 the new one gets. A record whose verdict came from another request is due
+  at once: the first cycle after the deploy re-probes every listing that declares a body method,
+  and every one that declares nothing and got a 405/400/404 from a build without the fallback --
+  through the per-host cap, so a host with many is worked through over several ticks.
+- **Why a listing is quarantined is kept** (`quarantine_reason`, published as
+  `health.quarantineReason`: `fail_streak` or `pay_to_drift`). A payTo-drift hold is a security
+  hold: no 402 lifts it early, whatever the request, and an answer that is not a challenge (401,
+  405, 400, a hop to a private address) does not lift it at all -- it resets the clean streak and
+  keeps the 72 h schedule. Only two clean challenges in a row do. Records from before the reason was
+  kept are read by their signature (quarantined, last `httpStatus` 402, no alive streak = drift,
+  since a fail never carries a 402 and a drift zeroes the streak); those legacy holds are looked at
+  once after the deploy, which lifts nothing by itself.
+- The drift check compares every live recipient **except a URN** (`drift_recipient`). A payTo like
+  `urn:x402:agent-pay:see-quote` names a quote, cannot receive a transfer, and the import drops that
+  option -- comparing it reported its seller as hijacked and quarantined every listing that
+  challenge guards at once. Everything else is compared, including spellings and chains this build
+  cannot parse and a `payTo` that is not a string: the check fails closed.
+- The observed terms record the request that drew them: `context.method` is `POST` for a price read
+  from a POST.
+- `health.uptimeBps` / `health.probeCount` on each listing: the share of recorded probes that found
+  it up (alive, auth-gated or degraded), the same number the uptime attestation publishes.
+  Cumulative per URL, so it includes the probes made before the request was the declared one.
+- The health vocabulary is unchanged (`alive`, `auth_gated`, `degraded`, `quarantined`, `unknown`,
+  `unprobeable`); every new field is optional.
+- Measure before and after a deploy, offline: `scripts/bazaar_probe_churn.py methods` (what the
+  change touches, from a local snapshot or the catalog object plus `bazaar/health.json`) and
+  `compare --by-method` (auth_gated -> alive, quarantined -> visible -- and how many of those came
+  back alive/auth_gated --, unchanged; hosts newly visible, and newly alive/auth_gated).
+
+### 1.2 Only what is verified alive leaves the registry (2.47.0)
+
+The owner's rule, one definition for every public surface. A listing is **verified alive** when
+(`is_verified_alive`):
+
+- its last probe, made **with the request the listing declares** (or, for one that declares
+  nothing, whichever request the probe sent), answered `alive`;
+- that probe read a **valid x402 challenge** in a 402 and passed the drift check (for an MCP
+  endpoint: its handshake listed a tool, below) -- the record keeps when (`verified_at`, published
+  as `health.verifiedAt`, with `health.verifiedBy`), and any probe that did not clears it: it is
+  about the LAST probe, not the best one;
+- no longer ago than the observed-terms freshness window (`DISCOVERY_TERMS_FRESH_SECS`, 7 days);
+- and it is not quarantined, for any reason.
+
+`auth_gated`, `degraded`, `quarantined`, `unprobeable`, `unknown`, an `alive` 402 with no readable
+challenge, and an `alive` GET answer to a listing that declares POST do not count.
+
+**Exposure** (`DiscoveryRegistry::is_exposed`): `GET /discovery/resources` (no parameter widens
+it -- `health` can only narrow), `GET /discovery/stats` (`total`, `visible`, the new
+`verifiedAlive` and every `by*` breakdown count exposed records only, and `visible` equals a full
+offset walk of the default listing), the `/bazaar` page (one number in its header, and the
+featured products only while one of their listings is exposed), and the uptime attestation
+(`uptime_prefix_verified`). The status vocabulary is unchanged; an exposed listing is always
+`alive`.
+
+**The rest is a pending queue the prober keeps working on.** It stays in the catalog, is probed on
+its schedule, and is promoted by the first probe that verifies it. `GET /discovery/admin/pending`
+lists it, behind `BAZAAR_ADMIN_TOKEN` like the other admin routes (404 when unset).
+
+- **MCP endpoints are verified by their handshake** (the owner's decision, 2026-10-02). An MCP
+  probe sends `initialize`, the `notifications/initialized` notification and `tools/list` (three
+  requests, reserved as three slots), with `accept: application/json, text/event-stream` and the
+  session id the server assigned, sent back only on requests to the listing's own host; answers are read as JSON or as an
+  event stream, up to the probe's byte cap. It is verified alive when `initialize` returned a
+  JSON-RPC result and `tools/list` listed at least one tool -- `verified_by: mcp_handshake`,
+  published as `health.verifiedBy` -- within the same window and out of quarantine. Nothing is
+  called; listing is all (a tool is an object with a non-empty `name`). A handshake that lists
+  nothing, or does not complete, verifies nothing, and the listing stays pending. Neither kind of
+  evidence counts for the other kind of listing. The handshake carries no payment terms, so it
+  cannot run the payTo drift check an HTTP challenge gets: an MCP listing under a curated
+  product's URL is exposed only if every `payTo` it declares is one of that product's
+  `expectedPayTo` (`CurationManifest::pay_to_backed`); one under no curated product is exposed on
+  its handshake alone, with the terms it was registered with.
+  An `alive` MCP record from the `initialize`-only build carries no tool count (`mcp_tools`) and
+  is probed at once, once.
+- **An unread overlay is not a verdict.** At startup the tracker expects its overlay
+  (`expect_overlay`) until it has been read or found absent. Until then an import protects every
+  held copy (a full catalog takes no newcomer) and the overlay is not uploaded; a failed read is
+  retried on the next persist tick.
+- **The re-probe lands inside the window.** An `alive` record is probed again after
+  `min(7 days, window - window/8)` (`alive_reprobe_secs`), and a verification older than that is
+  due whatever its schedule says (`verification_due`), so a shortened window cannot drop listings
+  that were scheduled under the old one.
+- **The deploy does not empty the catalog.** A record from before `verified_at` existed (no method,
+  no `verified_at`) has no proof of a readable challenge -- the old rule called any 402 alive. It is
+  exposed on the observed-terms overlay instead: a challenge is recorded there only when it could
+  be read, by the same probe, so an `observedAt` within 60 s of `lastChecked` is that proof
+  (`legacy_verified_at`). Read-only, so every replica agrees at once. And it lasts one probe: those
+  records are due at once (`unverified_legacy_alive`), worked through under the usual budget and
+  per-host cap. The overlay keeps the newest 2,000 readings; an `alive` record whose reading was
+  evicted waits for that first probe, minutes to hours.
+- **Capacity trimming must never evict an exposed record to keep a pending one**
+  (`DiscoveryRegistry::exposed_urls`, for the per-host cap that rewrites `enforce_capacity`).
 
 **SSRF defense is a connector, not prose — see `08-security-hardening.md` §2/§3 (F2/F3) for the required implementation**: custom DNS resolver that rejects if ANY resolved A/AAAA is disallowed (mixed answers = attack), pins the socket to the checked IP (no re-resolve at connect), `redirect(Policy::none())` + manual ≤3-hop follow re-running the full check each hop, port allowlist {80,443,8080,8443} (F16). Extend `is_disallowed_target_ip` (`src/discovery.rs:652-722`) for `240.0.0.0/4`, `192.88.99.0/24`, and IPv4-mapped IPv6 (08 §2.3). The same hardened connector is **mandatory** (not "while we're there") for the aggregator + crawler clients (08 §15/F15).
 

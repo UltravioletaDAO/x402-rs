@@ -90,8 +90,12 @@ Curated resource discovery for x402-enabled services. Entries carry a discovery 
 a liveness `health` status from periodic probing, and a curated `tier`
 (`first_party` > `vip` > `verified` > `listed`) which also drives listing order.
 
-- `GET /discovery/resources` - List curated resources (filters: category, provider, tag, network, source, sourceFacilitator, q, health, tier; any other parameter is a 400)
-- `GET /discovery/stats` - Aggregate catalog metrics (60s cache)
+Every public Bazaar surface exposes only what is **verified alive**: the last probe, made with
+the request the listing declares, read a valid x402 challenge in a 402 within the observed-terms
+freshness window. Everything else stays in the catalog and keeps being probed, unseen.
+
+- `GET /discovery/resources` - List verified-alive resources (filters: category, provider, tag, network, source, sourceFacilitator, health, tier; search: q, sort; router filters: maxPriceUsd, method, hasInputSchema, kind, excludeHost; any other parameter is a 400)
+- `GET /discovery/stats` - Aggregate metrics of what is exposed (60s cache)
 - `GET /bazaar` - HTML Bazaar explorer UI
 - `GET /discovery/attestation/{hash}` - ERC-8004 attestation evidence body
 - `GET /discovery/config` - The tuning this task resolved, and what it is spending
@@ -103,6 +107,7 @@ a liveness `health` status from periodic probing, and a curated `tier`
 - `DELETE /discovery/resources?url=...` - Permanently unregister a resource
 - `POST /discovery/admin/suppress` - Hide a resource from listings without deleting it
 - `POST /discovery/admin/release` - Un-suppress a resource
+- `GET /discovery/admin/pending` - What is not exposed (not verified alive), with its health
 
 ## Errors
 
@@ -183,8 +188,10 @@ Ultravioleta DAO's own services present an `X-UVD-Stack-Key` and are not
 charged to their address by any bucket or by the per-address ceiling (the
 response carries `x-ratelimit-exempt` instead of the rate-limit headers above:
 there is no bucket to report on); the body deadline, the task's ceiling and the
-daily write limit still apply to them. Every value in force is published at
-`GET /config`, each bucket under the name its `RateLimit-Policy` carries.
+daily write limit still apply to them. The same holds for a client address on
+the operator's IP allowlist (`x-ratelimit-exempt: ip-allowlist`). Every value in
+force is published at `GET /config`, each bucket under the name its
+`RateLimit-Policy` carries.
 
 ## Content negotiation
 
@@ -272,6 +279,7 @@ constraint rather than as grounds for a `406`.
         path_bazaar_admin_delete,
         path_bazaar_admin_suppress,
         path_bazaar_admin_release,
+        path_bazaar_admin_pending,
         // DX402 durable-evidence
         path_dx402_anchor,
         path_dx402_evidence,
@@ -2249,12 +2257,76 @@ async fn path_identity_total_supply() {}
     description = r#"
 Lists x402-enabled resources known to the curated Bazaar catalog.
 
-**Ordering:** results are sorted by curated tier first (`first_party` > `vip` > `verified` > `listed`),
-then by liveness (`alive` resources first), then by `lastUpdated` descending. A settlement does
-not reorder the listing: it moves `lastSettledAt`, never `lastUpdated`.
+**Ordering:** without `q`, and with a one-word `q`, results are sorted by curated tier first
+(`first_party` > `vip` > `verified` > `listed`), then by liveness (`alive` resources first), then
+by `lastUpdated` descending, then by `url`, so a page walked by `offset` is the same page on every
+replica. A settlement does not reorder the listing: it moves `lastSettledAt`, never `lastUpdated`.
+A `q` in plain words is ordered by relevance (below).
 
-**Health visibility:** when `health` is omitted, quarantined resources are hidden.
-Pass `health=any` to return everything, or a specific status to filter to it.
+**Search (`q`, `sort`).** `q` takes a keyword or a whole request as an agent would phrase it,
+up to 400 characters: `q=find a person's work email`. Up to 2.46.1 the limit was 128, and
+`uvd-x402-sdk` for Python still checks `q` against 128 before sending; a longer request through
+that SDK needs a release of it that lifts the check. How `q` matches depends on `sort`:
+
+- `sort=relevance` ranks by BM25 over the listing's host and path, description, provider,
+  category, tags and the field names and descriptions it declares in `extensions.bazaar`. Case,
+  accents and plurals do not matter, English and Spanish function words are ignored, and a small
+  fixed vocabulary joins words that mean the same thing to a buyer (`weather` / `forecast` /
+  `clima`, `price` / `quote` / `precio`, `scrape` / `read` / `extract`, ...). Nothing is sent
+  anywhere to rank: no model, no embedding service. The curated tier **multiplies** relevance
+  (`first_party` x1.3, `vip` x1.2, `verified` x1.1); it never outranks a listing that matches the
+  request better. A `q` of up to 128 characters also keeps every listing the substring match
+  below would have kept, ranked after every listing a word scored. No host keeps more than two
+  places at the top: its further results follow every other host's, still in relevance order,
+  so a seller with a hundred templated endpoints cannot fill a page. Nothing is dropped.
+- `sort=tier` is the search this endpoint had through 2.46.1, unchanged: listings whose url,
+  description, provider, category or a tag **contain** `q` (ASCII case ignored), in the catalog
+  order above. It takes `q` of at most 128 characters.
+- Without `sort`, a `q` of two or more words, or longer than 128 characters, gets `relevance`, and
+  a one-word `q` gets `tier` -- so a caller that looks up a word and re-sorts the page keeps
+  getting exactly the page it got before. `total` counts every match either way.
+
+**Router filters.** Each one narrows the result and can be combined with any other parameter.
+A value that cannot mean anything is a 400 naming the parameter, never a filter quietly applied
+to nothing.
+
+- `maxPriceUsd` -- at least one payment option in a **dollar stablecoin** we have registered
+  costs at most this many US dollars (`0.01`). The comparison is in the token's atomic units at
+  that deployment's decimals; digits past them round the limit down. An option in an asset we
+  cannot value in dollars -- an unknown token, EURC -- does not count toward it.
+- `method` -- `GET`, `POST`, `PUT` or `PATCH`, as the listing declares it, read the way the
+  health prober reads a declaration: `extensions.bazaar.info.input.method`, else the method its
+  `bazaar` JSON Schema input names, else `POST` when it declares a body (a declared `HEAD` or
+  `DELETE` reads as `GET`). An HTTP listing that declares none is `GET`; MCP, A2A and
+  facilitator listings have no method and never match.
+- `hasInputSchema` -- `true` keeps listings that say what to send: a non-empty
+  `extensions.bazaar.info.input`, or a non-empty `input` property in `extensions.bazaar.schema`.
+  `false`, the rest.
+- `kind` -- `api` or `content`: the listing's own `kind` field (below).
+- `excludeHost` -- comma-separated host names, at most 20, each removing that host and its
+  subdomains (`excludeHost=example.com` removes `api.example.com`, not `notexample.com`). A
+  scheme, path, port or credentials in a value is a 400.
+
+**Exposure:** only resources **verified alive** are listed: the last probe, made with the request
+the listing declares, read a valid x402 challenge in a 402 -- or, for an MCP endpoint, completed
+its handshake (`initialize`, then `tools/list`) and listed at least one tool -- no longer ago than
+the observed-terms freshness window, and the resource is not quarantined. `health.verifiedAt`
+says when and `health.verifiedBy` how (`x402_challenge` | `mcp_handshake`). A handshake shows the
+MCP server is up and reads no payment terms, so an MCP listing under a curated product's URL is
+listed only when it declares that product's own recipients. Auth-gated,
+degraded, quarantined, unprobeable and never-probed resources are not listed, and no parameter
+lists them: they stay in the catalog and keep being probed until a verification promotes them.
+So every listed resource has `health.status` `alive`, and `health` can only narrow what is
+exposed. A full offset walk returns exactly `GET /discovery/stats` `visible`.
+Each resource is probed, unpaid, with the method its `bazaar` extension declares (a body
+method is sent `{}`, and the listing's own example only when `{}` is refused with a 400 or
+422); one that declares none is probed with GET, and with one POST `{}` when that GET answers
+405, 400 or 404. An MCP endpoint is probed by its handshake: `initialize`, the `initialized`
+notification and `tools/list`, with the session the server assigns sent back to it.
+`health.probeMethod` is the method of the last probe of an HTTP listing. `health.uptimeBps` is
+the share of the `health.probeCount` probes recorded for the resource that found it up, in basis
+points. (`health.quarantineReason` -- `fail_streak` or `pay_to_drift` -- is only ever set on a
+quarantined resource, so it shows in the admin view of the pending queue, not here.)
 
 **Response:**
 ```json
@@ -2316,7 +2388,12 @@ Pass `health=any` to return everything, or a specific status to filter to it.
         "status": "alive",
         "lastChecked": 1784900000,
         "httpStatus": 402,
-        "latencyMs": 240
+        "latencyMs": 240,
+        "uptimeBps": 9977,
+        "probeCount": 1312,
+        "probeMethod": "POST",
+        "verifiedAt": 1784900000,
+        "verifiedBy": "x402_challenge"
       },
       "curation": {
         "tier": "first_party",
@@ -2329,10 +2406,14 @@ Pass `health=any` to return everything, or a specific status to filter to it.
           "feedbackCount": 0,
           "uptime": 99.77
         }
-      }
+      },
+      "kind": "api",
+      "categories": ["communication"],
+      "categorySource": "declared",
+      "hasInputSchema": false
     }
   ],
-  "pagination": { "limit": 10, "offset": 0, "total": 21195 }
+  "pagination": { "limit": 10, "offset": 0, "total": 1951 }
 }
 ```
 
@@ -2466,6 +2547,38 @@ computed when the listing is composed and are never stored, so they cannot go st
 `bazaar` extension's declared input and output schema). Two prices are not comparable without
 knowing what each one buys.
 
+**What a listing sells is kept from every source.** A source that speaks x402 v1 publishes the
+description and the `outputSchema` (the declared input and output) on each payment option; they
+are carried to `description` and `extensions.bazaar.info` (`input`, `output`) verbatim, per the
+bazaar spec's v1 mapping, and only when the resource declares none of its own. When two sources
+publish the same listing, the terms follow authority and date as before, but a copy with an empty
+description, no `bazaar` extension or no tags never erases another copy's: descriptive fields are
+only ever filled, never blanked, and only from a source at least as authoritative (a feed's copy
+never completes the owner's own registration). Nothing is written that no source published.
+
+**`kind`** is `api` (a paid call to a tool) or `content` (a paid piece of content, the same for
+every buyer, such as an essay). Content never holds the `first_party` or `vip` tier: it is
+`verified` when alive and `listed` otherwise, and keeps its `curation.label`.
+
+**`categories`** lists ids from one closed list: `people`, `company`, `web-search`, `page-read`,
+`social/x`, `social/reddit`, `finance`, `crypto`, `weather`, `image`, `human-work`, `ai`, `data`,
+`developer-tools`, `security`, `research`, `reputation`, `communication`, `compliance`,
+`advertising`, `infrastructure`. They come from what the seller declared (`metadata.category`,
+then `extensions.bazaar.category`, then a `bazaar.category` inside an option's `extra`), each one
+once, with known spellings of the same thing mapped to one id (`Data` and `data_processing` are
+`data`, `twitter` is `social/x`); a spelling the list does not know adds nothing rather than a
+guess, and `categories` is absent when nothing maps. A `people` listing returns personal data about
+a person. **`categorySource`** says how they were obtained: `declared` (the seller's own value,
+spelled as the id), `normalized` (the seller's value in another spelling) or `inferred` (assigned
+by the operator's curation to a listing whose own data names no category).
+**`metadata.category` is never rewritten**: it is what the seller declared, and the ids travel
+beside it.
+
+**`hasInputSchema`** is `true` when `extensions.bazaar` declares the input (`info.input`, or an
+`input` property in `schema`); the declaration itself stays in `extensions.bazaar`, with the input
+and the output apart. `kind`, `categories`, `categorySource` and `hasInputSchema` are
+response-only, like `health` and `curation`.
+
 **Unknown parameters are rejected with a 400**, listing the ones supported. A parameter the
 server accepted and ignored would be indistinguishable from a filter that matched everything,
 so `?search=logs` fails loudly and points at `q` instead of quietly returning the whole catalog.
@@ -2473,15 +2586,21 @@ so `?search=logs` fails loudly and points at `q` instead of quietly returning th
     params(
         ("limit" = Option<u32>, Query, description = "Maximum number of resources to return (default: 10, max: 100)"),
         ("offset" = Option<u32>, Query, description = "Number of resources to skip (default: 0)"),
-        ("category" = Option<String>, Query, description = "Filter by metadata category (e.g., finance, communication)"),
+        ("category" = Option<String>, Query, description = "Filter by category: the seller's own metadata.category (case-insensitive), or any spelling of a closed-list id, which matches every listing that resolves to it (e.g., finance, social/x, twitter)"),
         ("provider" = Option<String>, Query, description = "Filter by metadata provider name"),
         ("tag" = Option<String>, Query, description = "Filter by metadata tag"),
         ("network" = Option<String>, Query, description = "Exact CAIP-2 network match (e.g., eip155:8453, solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp)"),
         ("source" = Option<String>, Query, description = "Discovery source: self_registered | settlement | crawled | aggregated"),
         ("sourceFacilitator" = Option<String>, Query, description = "Facilitator the entry was aggregated from (e.g., coinbase, payai, thirdweb)"),
-        ("q" = Option<String>, Query, description = "Free-text search over url, description, provider and tags. Max 128 characters (longer returns 400)"),
-        ("health" = Option<String>, Query, description = "Liveness filter: alive | degraded | auth_gated | quarantined | unknown | unprobeable | any. When omitted, quarantined resources are hidden; 'any' returns everything"),
-        ("tier" = Option<String>, Query, description = "Curated tier filter: first_party | vip | verified | listed")
+        ("q" = Option<String>, Query, description = "Search: a keyword or a whole request in plain words. Max 400 characters (128 with sort=tier); longer returns 400. See Search above"),
+        ("sort" = Option<String>, Query, description = "relevance | tier. How results with q are ordered. Default: relevance for a q of two or more words or over 128 characters, tier (the substring match and order of 2.46.1) for one word"),
+        ("health" = Option<String>, Query, description = "Liveness filter: alive | degraded | auth_gated | quarantined | unknown | unprobeable | any. It narrows what is exposed and never widens it: only verified-alive resources are listed, so 'alive' and 'any' return them and every other value returns none"),
+        ("tier" = Option<String>, Query, description = "Curated tier filter: first_party | vip | verified | listed"),
+        ("maxPriceUsd" = Option<String>, Query, description = "Highest price in US dollars (e.g. 0.01) of at least one dollar-stablecoin payment option"),
+        ("method" = Option<String>, Query, description = "GET | POST | PUT | PATCH, as the listing declares it and the health prober reads it (extensions.bazaar.info.input.method, else the method of its JSON Schema input, else POST when it declares a body); an HTTP listing that declares none is GET"),
+        ("hasInputSchema" = Option<bool>, Query, description = "true: only listings that declare their request (a non-empty extensions.bazaar.info.input, or an input property in extensions.bazaar.schema); false: only those that do not"),
+        ("kind" = Option<String>, Query, description = "api | content"),
+        ("excludeHost" = Option<String>, Query, description = "Comma-separated host names to leave out, each with its subdomains (max 20)")
     ),
     responses(
         (status = 200, description = "Curated resource listing", body = Object,
@@ -2520,7 +2639,10 @@ so `?search=logs` fails loudly and points at `q` instead of quietly returning th
                         "status": "alive",
                         "lastChecked": 1784900000,
                         "httpStatus": 402,
-                        "latencyMs": 240
+                        "latencyMs": 240,
+                        "uptimeBps": 9977,
+                        "probeCount": 1312,
+                        "probeMethod": "GET"
                     },
                     "curation": {
                         "tier": "first_party",
@@ -2533,18 +2655,23 @@ so `?search=logs` fails loudly and points at `q` instead of quietly returning th
                             "feedbackCount": 0,
                             "uptime": 99.77
                         }
-                    }
+                    },
+                    "kind": "api",
+                    "categories": ["communication"],
+                    "categorySource": "declared",
+                    "hasInputSchema": false
                 }],
                 "pagination": { "limit": 10, "offset": 0, "total": 21195 }
             })
         ),
-        (status = 400, description = "Invalid query: an unsupported parameter, or `q` longer than 128 characters", body = Object,
+        (status = 400, description = "Invalid query: an unsupported parameter (body lists `supported`), or a value that cannot be applied (body names the `parameter`): `q` too long, an unknown `sort`, `method` or `kind`, a `maxPriceUsd` that is not a plain decimal, a `hasInputSchema` that is not true/false, an `excludeHost` that is not a list of host names", body = Object,
             example = json!({
                 "error": "unknown query parameter: search",
                 "hint": "did you mean q?",
                 "supported": [
                     "limit", "offset", "category", "network", "provider", "tag",
-                    "source", "sourceFacilitator", "health", "tier", "q"
+                    "source", "sourceFacilitator", "health", "tier", "q", "sort",
+                    "maxPriceUsd", "method", "hasInputSchema", "kind", "excludeHost"
                 ]
             })
         )
@@ -2570,18 +2697,24 @@ could not be read from the source, and the whole point is that it can be read du
 incident. **No credential, endpoint or key is defined in this registry**, so none can appear
 here.
 
-Groups follow what each one costs: `catalog` (how many records are held, and how many are taken
-from one source per cycle), `healthProber` (the probe budget -- `budgetPerTick` is
+Groups follow what each one costs: `catalog` (how many records are held, how many are taken
+from one source per cycle, and `maxPerHost` -- `maxHostSharePercent` of `maxResources`, never
+fewer than 50, null when the share is off: when a full catalog has to make room, copies that are
+not verified alive go before any that are, and within each a host's aggregated copies beyond that
+number go right after the duplicates of a templated family; a catalog with room is never trimmed
+for it, and a first-hand listing never), `healthProber` (the probe budget -- `budgetPerTick` is
 `maxRps * tickSeconds` and is the number the revalidation queue spends from, never adds to),
-`revalidation`, `observedTerms`, and `runtime` (whether this replica owns the periodic jobs,
-the queue depth, and the catalog size right now).
+`revalidation`, `observedTerms`, `search` (`maxQueryChars`, the longest `q` that
+`GET /discovery/resources` accepts, which the `/bazaar` page reads instead of typing it), and
+`runtime` (whether this replica owns the periodic jobs, the queue depth, and the catalog size
+right now).
 
 A diagnostic, not a contract: names and groups follow the code.
 "#,
     responses(
         (status = 200, description = "Resolved configuration", body = Object,
             example = json!({
-                "catalog": {"maxResources": 2000, "maxItemsPerSource": 1000},
+                "catalog": {"maxResources": 2000, "maxItemsPerSource": 1000, "maxHostSharePercent": 5, "maxPerHost": 100},
                 "healthProber": {
                     "tickSeconds": 60, "maxRps": 2, "concurrency": 8,
                     "budgetPerTick": 120, "overlayPersistSeconds": 300
@@ -2592,6 +2725,7 @@ A diagnostic, not a contract: names and groups follow the code.
                     "perHostPerTick": 2, "backoffBaseSeconds": 60, "backoffMaxSeconds": 3600
                 },
                 "observedTerms": {"freshnessWindowSeconds": 604800, "maxRecords": 2000},
+                "search": {"maxQueryChars": 400},
                 "runtime": {"ownsPeriodicJobs": true, "revalidationQueueDepth": 12, "catalogHeld": 2000}
             })
         )
@@ -2642,34 +2776,66 @@ async fn path_bazaar_refresh() {}
 Aggregate metrics for the curated Bazaar catalog. Served from a 60-second in-process cache,
 so counters can lag recent registrations or health probes by up to a minute.
 
-- `total` counts every resource in the catalog.
-- `visible` counts the resources returned by the default `GET /discovery/resources` listing
-  (quarantined resources excluded).
+Every count is over what the Bazaar EXPOSES -- resources verified alive, the same set
+`GET /discovery/resources` lists -- like every other public surface; what is not verified alive
+is not counted here either.
+
+- `verifiedAlive` is the number of exposed resources.
+- `visible` and `total` are the same number, kept for the clients that read them: `visible` is
+  exactly what a full offset walk of the default `GET /discovery/resources` returns.
+- The `by*` breakdowns split that same set, so `byHealth` holds only `alive`.
+- `byTier` counts the tier each listing shows, so content is never counted as `vip`.
+- Over exactly the listings `visible` counts (what the default listing exposes): `byKind` and
+  `byCategory` count their `kind` and closed-list `categories` (a listing in two categories counts
+  under both; `none` when it resolves to none; see `GET /discovery/resources`), and
+  `noDescription` and `noInputSchema` count those with an empty description, and with no declared
+  input (`extensions.bazaar.info.input`, or an `input` property in `extensions.bazaar.schema`):
+  what a router cannot use without guessing.
+- `topHosts` lists the ten hosts holding the most of what the listing shows, largest first: how
+  the public listing spreads over hosts, on a running task. Like every count here, it counts
+  only listings the default listing returns -- the per-host share of `/discovery/config`
+  (`catalog.maxPerHost`) applies to every listing held, exposed or not, so this is not a reading
+  of it.
 
 **Response:**
 ```json
 {
-  "total": 21195,
-  "visible": 19263,
-  "bySource": { "aggregated": 21067, "self_registered": 128 },
-  "bySourceFacilitator": { "payai": 19800, "thirdweb": 622, "coinbase": 336 },
-  "byNetwork": { "eip155:8453": 20991, "eip155:1": 56 },
-  "byTier": { "first_party": 10, "vip": 127, "verified": 1814, "listed": 19244 },
-  "byHealth": { "alive": 1814, "quarantined": 1932, "auth_gated": 263, "unknown": 17029 },
+  "total": 1951,
+  "visible": 1951,
+  "verifiedAlive": 1951,
+  "topHosts": [{ "host": "market.datapackvibe.com", "count": 100 }, { "host": "tenjin.blog", "count": 100 }],
+  "bySource": { "aggregated": 1823, "self_registered": 128 },
+  "bySourceFacilitator": { "payai": 1700, "thirdweb": 75, "coinbase": 48 },
+  "byNetwork": { "eip155:8453": 1930, "eip155:1": 21 },
+  "byTier": { "first_party": 10, "vip": 127, "verified": 1814 },
+  "byHealth": { "alive": 1951 },
+  "byKind": { "api": 1830, "content": 121 },
+  "byCategory": { "none": 1625, "data": 246, "finance": 80 },
+  "noDescription": 412,
+  "noInputSchema": 1120,
   "generatedAt": 1784900000
 }
 ```
 "#,
     responses(
-        (status = 200, description = "Catalog metrics", body = Object,
+        (status = 200, description = "Metrics of the exposed catalog", body = Object,
             example = json!({
-                "total": 21195,
-                "visible": 19263,
-                "bySource": { "aggregated": 21067, "self_registered": 128 },
-                "bySourceFacilitator": { "payai": 19800, "thirdweb": 622, "coinbase": 336 },
-                "byNetwork": { "eip155:8453": 20991, "eip155:1": 56 },
-                "byTier": { "first_party": 10, "vip": 127, "verified": 1814, "listed": 19244 },
-                "byHealth": { "alive": 1814, "quarantined": 1932, "auth_gated": 263, "unknown": 17029 },
+                "total": 1951,
+                "visible": 1951,
+                "verifiedAlive": 1951,
+                "topHosts": [
+                    { "host": "market.datapackvibe.com", "count": 100 },
+                    { "host": "tenjin.blog", "count": 100 }
+                ],
+                "bySource": { "aggregated": 1823, "self_registered": 128 },
+                "bySourceFacilitator": { "payai": 1700, "thirdweb": 75, "coinbase": 48 },
+                "byNetwork": { "eip155:8453": 1930, "eip155:1": 21 },
+                "byTier": { "first_party": 10, "verified": 1941 },
+                "byHealth": { "alive": 1951 },
+                "byKind": { "api": 1830, "content": 121 },
+                "byCategory": { "none": 1625, "data": 246, "finance": 80 },
+                "noDescription": 412,
+                "noInputSchema": 1120,
                 "generatedAt": 1784900000
             })
         )
@@ -2932,6 +3098,37 @@ Rate limited to roughly 5 requests per minute per IP.
 )]
 async fn path_bazaar_admin_release() {}
 
+#[utoipa::path(
+    get,
+    path = "/discovery/admin/pending",
+    tag = "Bazaar",
+    summary = "Resources not exposed (admin)",
+    description = r#"
+**Admin only.** Every resource the Bazaar does NOT expose -- not verified alive -- with its
+`health`, ordered by URL so an offset walk is stable. The public routes serve verified alive
+only and no parameter widens them; this is the one way to see the rest while the prober works
+on it.
+
+Requires an `Authorization: Bearer <BAZAAR_ADMIN_TOKEN>` header. When the server has no admin
+token configured the whole admin surface is absent and this route returns **404**.
+
+Rate limited like the other admin routes. `limit` is capped at 100.
+
+**Response:** the same shape as `GET /discovery/resources`.
+"#,
+    params(
+        ("limit" = Option<u32>, Query, description = "Page size (default 100, at most 100)"),
+        ("offset" = Option<u32>, Query, description = "Records to skip (default 0)"),
+        ("Authorization" = String, Header, description = "Bearer <BAZAAR_ADMIN_TOKEN>")
+    ),
+    responses(
+        (status = 200, description = "A page of the resources not exposed", body = Object),
+        (status = 401, description = "Missing or invalid bearer token", body = Object),
+        (status = 404, description = "Admin surface disabled (no admin token configured)", body = Object)
+    )
+)]
+async fn path_bazaar_admin_pending() {}
+
 // ============================================================================
 // Compliance Endpoints
 // ============================================================================
@@ -3098,7 +3295,10 @@ budget (`rateLimits.budgets`: its routes, the period of one token, the burst, th
 the two variables that override them; `name` is the one its `RateLimit-Policy` header carries, and \
 the same budgets are `rate_limits` of `/.well-known/uvd-stack.json`), the stack identities that skip \
 those budgets (by service \
-name, with how many credentials each holds -- never a key or a digest), admission (the per-address \
+name, with how many credentials each holds -- never a key or a digest), the IP allowlist that skips \
+them too (`ipAllowlist`: how many entries are in force and how its last read went -- `ok`, \
+`unreadable`, `missing`, `failing`, `stale` or `never` -- as it stands at this request; never an \
+address), admission (the per-address \
 ceiling behind `429 too_many_concurrent_requests`, the body deadline behind `408 request_timeout`, \
 the task's ceiling behind `503 overloaded`), and the ERC-8004 daily write limit per network.
 
@@ -3106,7 +3306,9 @@ the task's ceiling behind `503 overloaded`), and the ERC-8004 daily write limit 
 address by any budget nor by the per-address ceiling, and is answered with \
 `x-ratelimit-exempt: <service>` and no `RateLimit-Policy` or `RateLimit`; an absent, malformed, \
 unknown or revoked key is charged like any \
-other caller. Neither the body deadline, nor the task's ceiling of concurrent requests (`503`, every \
+other caller. A request whose client address (the last `X-Forwarded-For` entry, the one the load \
+balancer appends) is on the IP allowlist skips the same, answered with `x-ratelimit-exempt: \
+ip-allowlist`. Neither the body deadline, nor the task's ceiling of concurrent requests (`503`, every \
 caller), nor the daily write limit (`429 erc8004_daily_write_limit`, it protects the gas the \
 facilitator pays) is skipped.
 
@@ -3131,6 +3333,12 @@ Rate limited per IP like the other cheap reads.",
                         { "name": "execution-market", "active": true, "credentials": 1 },
                         { "name": "karmakadabra", "active": false, "credentials": 0 }
                     ],
+                    "exemptFrom": ["every budget under rateLimits", "overload.perClient"],
+                    "notExemptFrom": ["overload (the global ceiling)", "overload.bodyDeadlineMs", "erc8004DailyWriteCap", "the RPC provider throttle"]
+                },
+                "ipAllowlist": {
+                    "enabled": true, "entries": 1, "lastRead": "ok",
+                    "refreshSecs": 300, "exemptHeader": "x-ratelimit-exempt: ip-allowlist",
                     "exemptFrom": ["every budget under rateLimits", "overload.perClient"],
                     "notExemptFrom": ["overload (the global ceiling)", "overload.bodyDeadlineMs", "erc8004DailyWriteCap", "the RPC provider throttle"]
                 },

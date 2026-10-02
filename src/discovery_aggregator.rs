@@ -926,6 +926,12 @@ impl DiscoveryAggregator {
         let url = Url::parse(&cb.url)
             .map_err(|e| AggregatorError::InvalidUrl(format!("{}: {}", cb.url, e)))?;
 
+        // What is being sold, in whichever protocol version the feed speaks.
+        // Read before the options are consumed: a v1 feed keeps it on them.
+        let mut description = cb.description.unwrap_or_default();
+        let mut extensions = sanitize_extensions(cb.extensions);
+        lift_v1_resource_fields(&mut description, &mut extensions, &cb.accepts);
+
         // Normalize payment options through the one shared rule. An option we
         // cannot read is dropped and counted; it is never turned into a price.
         let accepts: Vec<CatalogPaymentOption> = cb
@@ -945,13 +951,13 @@ impl DiscoveryAggregator {
         let mut resource = DiscoveryResource::from_aggregation(
             url,
             cb.resource_type.unwrap_or_else(|| "http".to_string()),
-            cb.description.unwrap_or_default(),
+            description,
             accepts,
             facilitator_id.to_string(),
             cb.last_updated,
         );
 
-        resource.extensions = sanitize_extensions(cb.extensions);
+        resource.extensions = extensions;
 
         // Convert metadata if present
         if let Some(meta) = cb.metadata {
@@ -996,6 +1002,87 @@ pub fn convert_resources(
         }
     }
     (converted, rejected)
+}
+
+/// Carry an x402 v1 listing's description and input/output declaration up to
+/// the resource, where x402 v2 and this catalog keep them.
+///
+/// v1 had no resource object: `description` and `outputSchema` were fields of
+/// every payment option. A feed in the v1 `DiscoveredResource` shape therefore
+/// publishes both only inside `accepts`, and reading the resource level alone
+/// threw them away. (All 873 thirdweb listings in the 2026-10-01 catalog
+/// snapshot were stored in exactly that state: empty description, no
+/// `extensions`, `metadata: {}`.) The mapping is the bazaar spec's own for v1
+/// data:
+/// `accepts[].description` -> `description`, `accepts[].outputSchema` ->
+/// `extensions.bazaar`.
+///
+/// Fill-only and verbatim. What the resource declares itself always wins, which
+/// is the CDP case: its options repeat v1 leftovers next to a v2 resource that
+/// already carries both. Nothing is rewritten into another shape -- a v1
+/// `bodyFields` stays `bodyFields`, because turning a field list into an
+/// example body would be inventing a request. A description longer than the
+/// ingestion cap is not lifted rather than truncated, so the listing keeps the
+/// empty description it had instead of being refused for one it never sent.
+fn lift_v1_resource_fields(
+    description: &mut String,
+    extensions: &mut Option<serde_json::Value>,
+    accepts: &[CoinbasePaymentRequirement],
+) {
+    if description.trim().is_empty() {
+        if let Some(text) = accepts
+            .iter()
+            .filter_map(|option| option.description.as_deref())
+            .map(str::trim)
+            .find(|text| {
+                !text.is_empty() && text.len() <= crate::discovery_security::MAX_DESCRIPTION_LEN
+            })
+        {
+            *description = text.to_string();
+        }
+    }
+
+    let declares_bazaar = extensions
+        .as_ref()
+        .is_some_and(|ext| ext.get("bazaar").is_some());
+    let other_shape = extensions.as_ref().is_some_and(|ext| !ext.is_object());
+    if declares_bazaar || other_shape {
+        return;
+    }
+    let Some(schema) = accepts
+        .iter()
+        .filter_map(|option| option.output_schema.as_ref())
+        .find_map(|schema| schema.as_object())
+    else {
+        return;
+    };
+    // The v1 bazaar convention nests the two halves under `input`/`output`. A
+    // bare object is what the field's name says it is: the response schema.
+    let mut info = serde_json::Map::new();
+    if schema.contains_key("input") || schema.contains_key("output") {
+        for half in ["input", "output"] {
+            if let Some(value) = schema.get(half).filter(|v| !v.is_null()) {
+                info.insert(half.to_string(), value.clone());
+            }
+        }
+    } else {
+        info.insert(
+            "output".to_string(),
+            serde_json::Value::Object(schema.clone()),
+        );
+    }
+    if info.is_empty() {
+        return;
+    }
+    let before = extensions.clone();
+    let mut merged = match extensions.take() {
+        Some(serde_json::Value::Object(map)) => map,
+        _ => serde_json::Map::new(),
+    };
+    merged.insert("bazaar".to_string(), serde_json::json!({ "info": info }));
+    // The lifted declaration is held to the same bound as one published at the
+    // resource level. Over it, the resource keeps exactly what it had.
+    *extensions = sanitize_extensions(Some(serde_json::Value::Object(merged))).or(before);
 }
 
 // ============================================================================
@@ -1136,6 +1223,94 @@ mod tests {
         // `MixedAddress::Offchain` fallback is not accepted from a feed.
         assert!(parse_catalog_address("invalid").is_none());
         assert!(parse_catalog_address("0x123").is_none()); // Too short
+    }
+
+    fn v1_option(
+        description: Option<&str>,
+        output_schema: Option<serde_json::Value>,
+    ) -> DeclaredPaymentOption {
+        DeclaredPaymentOption {
+            description: description.map(str::to_string),
+            output_schema,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn a_v1_description_fills_only_an_empty_resource_description() {
+        let options = [v1_option(Some("from the option"), None)];
+
+        let mut blank = "   ".to_string();
+        let mut ext = None;
+        lift_v1_resource_fields(&mut blank, &mut ext, &options);
+        assert_eq!(blank, "from the option", "whitespace is not a description");
+
+        let mut own = "the resource's own".to_string();
+        lift_v1_resource_fields(&mut own, &mut ext, &options);
+        assert_eq!(own, "the resource's own");
+    }
+
+    #[test]
+    fn an_oversized_v1_description_is_not_lifted_rather_than_truncated() {
+        let long = "x".repeat(crate::discovery_security::MAX_DESCRIPTION_LEN + 1);
+        let fits = "y".repeat(crate::discovery_security::MAX_DESCRIPTION_LEN);
+
+        let mut d = String::new();
+        lift_v1_resource_fields(&mut d, &mut None, &[v1_option(Some(&long), None)]);
+        assert_eq!(
+            d, "",
+            "lifting it would get the listing refused at ingestion"
+        );
+
+        // The next option's text is taken when it fits.
+        let mut d = String::new();
+        lift_v1_resource_fields(
+            &mut d,
+            &mut None,
+            &[v1_option(Some(&long), None), v1_option(Some(&fits), None)],
+        );
+        assert_eq!(d, fits);
+    }
+
+    #[test]
+    fn a_v1_schema_joins_other_extensions_and_never_replaces_a_bazaar_one() {
+        let schema = serde_json::json!({ "input": { "method": "POST" } });
+        let options = [v1_option(None, Some(schema))];
+
+        let mut ext = Some(serde_json::json!({ "builder-code": { "code": "abc" } }));
+        lift_v1_resource_fields(&mut String::new(), &mut ext, &options);
+        let ext = ext.unwrap();
+        assert_eq!(ext["builder-code"]["code"], "abc");
+        assert_eq!(ext["bazaar"]["info"]["input"]["method"], "POST");
+
+        let declared =
+            serde_json::json!({ "bazaar": { "info": { "input": { "method": "GET" } } } });
+        let mut ext = Some(declared.clone());
+        lift_v1_resource_fields(&mut String::new(), &mut ext, &options);
+        assert_eq!(ext, Some(declared), "the resource's own declaration stands");
+
+        // Not an object: there is nowhere to put it without discarding it.
+        let mut ext = Some(serde_json::json!("opaque"));
+        lift_v1_resource_fields(&mut String::new(), &mut ext, &options);
+        assert_eq!(ext, Some(serde_json::json!("opaque")));
+    }
+
+    #[test]
+    fn a_v1_schema_that_would_break_the_bound_leaves_the_extensions_as_they_were() {
+        // Each half fits on its own; together, with the resource's own blob,
+        // they do not.
+        let half = "z".repeat(crate::discovery_price::MAX_EXTENSIONS_BYTES / 2);
+        let options = [v1_option(
+            None,
+            Some(serde_json::json!({ "input": { "d": half.clone() }, "output": { "d": half } })),
+        )];
+        let mut ext = Some(serde_json::json!({ "other": {} }));
+        lift_v1_resource_fields(&mut String::new(), &mut ext, &options);
+        assert_eq!(ext, Some(serde_json::json!({ "other": {} })));
+
+        let mut none = None;
+        lift_v1_resource_fields(&mut String::new(), &mut none, &options);
+        assert_eq!(none, None);
     }
 
     #[test]

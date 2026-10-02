@@ -140,6 +140,21 @@ where
     ))
 }
 
+/// `serde` shim for a free-text field a feed may get wrong: a string is kept,
+/// anything else (a number, an object, `null`) is dropped, never an error. One
+/// entry that types its description as a number must not fail the whole page.
+pub fn deserialize_tolerant_text<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    Ok(
+        match Option::<serde_json::Value>::deserialize(deserializer)? {
+            Some(serde_json::Value::String(s)) => Some(s),
+            _ => None,
+        },
+    )
+}
+
 /// Default `maxTimeoutSeconds` for a source that declares none.
 const DEFAULT_MAX_TIMEOUT_SECS: u64 = 300;
 
@@ -601,11 +616,27 @@ pub fn settleability(
 /// Returns `None` when the deployment is not one we have registered, so a caller
 /// can print "unknown unit" instead of assuming six decimals and a dollar sign.
 pub fn known_asset(network: Network, asset: &MixedAddress) -> Option<(&'static str, u8)> {
+    known_deployment(network, asset).map(|(t, decimals)| (token_symbol(t), decimals))
+}
+
+/// Decimals of `asset` on `network` when it is a dollar stablecoin we have
+/// registered, so an amount can be compared with a price in dollars.
+///
+/// Same table and same answer outside it as [`known_asset`]: `None`, never an
+/// assumed six decimals. A euro amount is not a dollar amount, so EURC answers
+/// `None` as well.
+pub fn usd_pegged_decimals(network: Network, asset: &MixedAddress) -> Option<u8> {
+    known_deployment(network, asset)
+        .filter(|(t, _)| t.currency_symbol() == "$")
+        .map(|(_, decimals)| decimals)
+}
+
+fn known_deployment(network: Network, asset: &MixedAddress) -> Option<(TokenType, u8)> {
     let needle = asset.to_string().to_ascii_lowercase();
     TokenType::all().iter().find_map(|token_type| {
         let deployment = get_token_deployment(network, *token_type)?;
         (deployment.asset.address.to_string().to_ascii_lowercase() == needle)
-            .then_some((token_symbol(*token_type), deployment.decimals))
+            .then_some((*token_type, deployment.decimals))
     })
 }
 
@@ -664,6 +695,29 @@ pub struct DeclaredPaymentOption {
     /// see [`deserialize_tolerant_extra`].
     #[serde(default, deserialize_with = "deserialize_tolerant_extra")]
     pub extra: Option<serde_json::Value>,
+    /// x402 v1 only: what the resource is, which v1 published on every payment
+    /// option instead of once on the resource.
+    ///
+    /// Not part of the catalogued option. The aggregator lifts it to the
+    /// resource when the resource has no description of its own, which is the
+    /// whole of a v1 feed: without it every listing imported from one is
+    /// published with an empty description. A non-string is dropped.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_tolerant_text"
+    )]
+    pub description: Option<String>,
+    /// x402 v1 only: the `bazaar` input/output declaration (what to send, what
+    /// comes back), carried per option the same way. The aggregator lifts it to
+    /// `extensions.bazaar`, the x402 v2 home of the same data. Bounded like any
+    /// `extensions` blob; out of bounds it is dropped, never fatal.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_tolerant_extensions"
+    )]
+    pub output_schema: Option<serde_json::Value>,
 }
 
 /// Why a declared option could not be catalogued.

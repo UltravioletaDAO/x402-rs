@@ -117,6 +117,9 @@ subtle = { version = "2.6" }          # constant-time small-order check (RFC 774
 aws-config = { version = "1.5" }
 aws-sdk-s3 = { version = "1.65" }
 aws-sdk-dynamodb = { version = "1.54" }
+# The IP allowlist (src/ip_allowlist.rs) is re-read from its secret while the
+# task runs. 1.101 needs exactly the smithy runtime the lock already carries.
+aws-sdk-secretsmanager = { version = "1.101" }
 
 # Swagger/OpenAPI Documentation
 utoipa = { version = "5", features = ["axum_extras"] }

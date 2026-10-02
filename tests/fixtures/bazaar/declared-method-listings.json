@@ -1,0 +1,169 @@
+{
+  "about": "The five listings an external router (Tenjin) reported live but hidden or mislabelled by the GET-only prober, plus the first-party family the catalog operator measured the same day, measured 2026-10-01 against v2.46.1 with unpaid probes. Shapes only: no test calls these hosts. `seller` is how each origin answers an unpaid request per method, served by a local test server. `reported` is the label the catalog carried. `provenance` says which parts are captured and which are modelled.",
+  "cases": [
+    {
+      "name": "tavily-search",
+      "reported": "quarantined",
+      "provenance": "Listing captured verbatim from the Coinbase CDP feed (cdp-pricing-page.json, 2026-09-10), including its agent-pay option whose payTo is a quote reference, not an address. The GET answer is modelled: quarantine takes three fail-class probes, and 404 is the dominant one.",
+      "capturedIn": "cdp-pricing-page.json",
+      "resource": "https://x402.tavily.com/search",
+      "seller": { "GET": 404, "POST": 402 },
+      "expect": { "method": "POST", "visibleAfterOneProbe": true }
+    },
+    {
+      "name": "glim-twitter-search",
+      "reported": "quarantined",
+      "provenance": "URL and method from the report. Example body, amount and payTo are illustrative; the GET answer is modelled as for tavily-search.",
+      "listing": {
+        "resource": "https://glim.sh/api/v1/twitter/search",
+        "type": "http",
+        "x402Version": 2,
+        "description": "X / Twitter search (modelled shape)",
+        "accepts": [
+          {
+            "scheme": "exact",
+            "network": "eip155:8453",
+            "asset": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+            "amount": "10000",
+            "payTo": "0x1111111111111111111111111111111111111111",
+            "maxTimeoutSeconds": 300,
+            "extra": { "name": "USD Coin", "version": "2" }
+          }
+        ],
+        "extensions": {
+          "bazaar": {
+            "info": {
+              "input": {
+                "type": "http",
+                "method": "POST",
+                "bodyType": "json",
+                "body": { "query": "x402", "max_results": 10 }
+              }
+            }
+          }
+        }
+      },
+      "seller": { "GET": 404, "POST": 402 },
+      "expect": { "method": "POST", "visibleAfterOneProbe": true }
+    },
+    {
+      "name": "bitrefill-invoice-create",
+      "reported": "quarantined",
+      "provenance": "URL and method from the report. Example body, amount and payTo are illustrative; the GET answer is modelled as for tavily-search.",
+      "listing": {
+        "resource": "https://api.bitrefill.com/x402/invoice/create",
+        "type": "http",
+        "x402Version": 2,
+        "description": "Gift card invoice (modelled shape)",
+        "accepts": [
+          {
+            "scheme": "exact",
+            "network": "eip155:8453",
+            "asset": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+            "amount": "50000",
+            "payTo": "0x2222222222222222222222222222222222222222",
+            "maxTimeoutSeconds": 300,
+            "extra": { "name": "USD Coin", "version": "2" }
+          }
+        ],
+        "extensions": {
+          "bazaar": {
+            "info": {
+              "input": {
+                "type": "http",
+                "method": "POST",
+                "bodyType": "json",
+                "body": { "products": [{ "product_id": "example", "value": 10 }] }
+              }
+            }
+          }
+        }
+      },
+      "seller": { "GET": 404, "POST": 402 },
+      "expect": { "method": "POST", "visibleAfterOneProbe": true }
+    },
+    {
+      "name": "losbeto-stock-quote",
+      "reported": "quarantined",
+      "provenance": "URL and the live GET from the report (all 87 listings of the host quarantined, GET /stock-quote answering 402). Query parameters, amount and payTo are illustrative. The report does not say why the family is quarantined, and a live GET means the method is not the cause: this case pins that the change leaves a GET listing on the ordinary hysteresis.",
+      "listing": {
+        "resource": "https://api.losbeto.xyz/stock-quote",
+        "type": "http",
+        "x402Version": 2,
+        "description": "Stock quote (modelled shape)",
+        "accepts": [
+          {
+            "scheme": "exact",
+            "network": "eip155:8453",
+            "asset": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+            "amount": "1000",
+            "payTo": "0x3333333333333333333333333333333333333333",
+            "maxTimeoutSeconds": 300,
+            "extra": { "name": "USD Coin", "version": "2" }
+          }
+        ],
+        "extensions": {
+          "bazaar": {
+            "info": {
+              "input": {
+                "type": "http",
+                "method": "GET",
+                "queryParams": { "symbol": "AAPL" }
+              }
+            }
+          }
+        }
+      },
+      "seller": { "GET": 402, "POST": 405 },
+      "expect": { "method": "GET", "visibleAfterOneProbe": false }
+    },
+    {
+      "name": "tenjin-phone-lookup",
+      "reported": "auth_gated",
+      "provenance": "URL and both answers measured in the report (GET 405, POST 402). Whether the listing declares a method is not known; it is modelled with no declaration, the case only the fallback can find. Amount and payTo are illustrative.",
+      "listing": {
+        "resource": "https://tenjin.sh/api/phone-lookup",
+        "type": "http",
+        "x402Version": 2,
+        "description": "Phone number lookup (modelled shape)",
+        "accepts": [
+          {
+            "scheme": "exact",
+            "network": "eip155:8453",
+            "asset": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+            "amount": "20000",
+            "payTo": "0x4444444444444444444444444444444444444444",
+            "maxTimeoutSeconds": 300,
+            "extra": { "name": "USD Coin", "version": "2" }
+          }
+        ]
+      },
+      "seller": { "GET": 405, "POST": 402 },
+      "expect": { "method": "POST", "visibleAfterOneProbe": true }
+    },
+    {
+      "name": "meshrelay-payments-access",
+      "reported": "quarantined",
+      "provenance": "Not in the report: measured by the catalog operator on 2026-10-02 -- the 7 first-party listings under this prefix (config/bazaar_curation.json) quarantined with a last GET of 404, the default answer of an Express app to a method it has no route for. The POST 402 is modelled from that service's source; the path and amount are illustrative, the payTo is the one the curation manifest expects. No method declared: only the fallback can find it, and only if it covers a 404.",
+      "listing": {
+        "resource": "https://api.meshrelay.xyz/payments/access/alpha-test",
+        "type": "http",
+        "x402Version": 2,
+        "description": "Channel access (modelled shape)",
+        "accepts": [
+          {
+            "scheme": "exact",
+            "network": "eip155:8453",
+            "asset": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+            "amount": "100000",
+            "payTo": "0xe4dc963c56979E0260fc146b87eE24F18220e545",
+            "maxTimeoutSeconds": 300,
+            "extra": { "name": "USD Coin", "version": "2" }
+          }
+        ]
+      },
+      "seller": { "GET": 404, "POST": 402 },
+      "expect": { "method": "POST", "visibleAfterOneProbe": true }
+    }
+  ]
+}

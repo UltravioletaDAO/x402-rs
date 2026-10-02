@@ -827,6 +827,29 @@ resource "aws_iam_role_policy" "s3_discovery_access" {
   })
 }
 
+# The task reads the IP allowlist itself, at runtime and again every refresh
+# (src/ip_allowlist.rs), so the permission is the TASK role's, not the
+# execution role's. Granted by name -- the six characters Secrets Manager
+# appends to an ARN are matched by `??????` -- because the secret is created by
+# hand outside Terraform (secrets.tf says why), and nothing here waits for it to
+# exist. Until this is applied the task answers AccessDenied to itself, logs it
+# without any address, and exempts nobody: it fails closed.
+resource "aws_iam_role_policy" "ip_allowlist_read" {
+  name = "IpAllowlistRead"
+  role = aws_iam_role.ecs_task.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect   = "Allow"
+        Action   = ["secretsmanager:GetSecretValue"]
+        Resource = "arn:aws:secretsmanager:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:secret:${var.ip_allowlist_secret_name}-??????"
+      }
+    ]
+  })
+}
+
 # ============================================================================
 # ECS Cluster
 # ============================================================================
@@ -1209,6 +1232,13 @@ resource "aws_ecs_task_definition" "facilitator" {
           # than an unbounded table nobody chose; aggregates never expire.
           name  = "TRANSACTIONS_TTL_DAYS"
           value = "90"
+        },
+        {
+          # The NAME of the IP allowlist secret, never its contents: the task
+          # reads the addresses itself and re-reads them every 300s
+          # (src/ip_allowlist.rs, aws_iam_role_policy.ip_allowlist_read).
+          name  = "UVD_IP_ALLOWLIST_SECRET"
+          value = var.ip_allowlist_secret_name
         }
         ], local.arc_rpc_environment, var.enable_dx402 ? [
         # ============================================================

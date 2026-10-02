@@ -181,9 +181,11 @@ pub struct ObservationContext {
 }
 
 impl ObservationContext {
-    /// An unauthenticated GET of the listing URL. Test shorthand: the prober
-    /// records the method it actually sent, through [`Self::anonymous`].
-    #[cfg(test)]
+    /// An unauthenticated GET of the listing URL. The prober records the method
+    /// it actually sent, through [`Self::anonymous`]; this shorthand stays for
+    /// the library's callers (`tests/bazaar_freshness.rs` among them), so the
+    /// binary alone does not use it.
+    #[allow(dead_code)]
     pub fn anonymous_get(resource_type: &str) -> Self {
         Self::anonymous("GET", resource_type)
     }

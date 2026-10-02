@@ -19,8 +19,13 @@
   `initialize`, the `initialized` notification and `tools/list`, with the
   session the server assigns sent back to it, and reads the answers as JSON or
   as an event stream. It is verified alive when `tools/list` lists at least one
-  tool, within the same window and out of quarantine; nothing is called. A
-  handshake that lists nothing or does not complete leaves it pending.
+  named tool, within the same window and out of quarantine; nothing is called. A
+  handshake that lists nothing or does not complete leaves it pending. The
+  handshake shows the server is up; it reads no payment terms. So an MCP listing
+  under a curated product's URL is shown only when it declares that product's
+  own recipients (`expectedPayTo` in `config/bazaar_curation.json`).
+- The persisted liveness overlay is read record by record: a record a build
+  cannot read is left out instead of the whole overlay.
 - The `/bazaar` page shows one number, the listings verified alive, and drops the
   health filter, the "Listed" tier and the catalog health, sources, networks and
   tiers sections. Featured products appear only while one of their listings is

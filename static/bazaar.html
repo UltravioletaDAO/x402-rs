@@ -533,24 +533,28 @@
     // manifest alone, only on a listing the catalog itself exposes.
     let featured = null;
     async function loadFeatured(){
-      const hosts = [];
+      // A product is shown by the curation label of an exposed listing, which
+      // the server assigns from the manifest by exact host and path -- never by
+      // a host that merely contains the product's name.
+      const labels = new Set();
+      const take = items => { for(const it of items) if(it.curation && it.curation.label) labels.add(it.curation.label); };
       try {
         for(let page=0; page<10; page++){
           const r = await (await fetch(`/discovery/resources?tier=first_party&limit=100&offset=${page*100}`)).json();
           const items = r.items||[];
-          for(const it of items) hosts.push(hostOf(it.url).toLowerCase());
+          take(items);
           if(items.length < 100 || (page+1)*100 >= ((r.pagination||{}).total||0)) break;
         }
         // A partner's listings can show a lower tier than the partner holds
-        // (paid content never shows `vip`), so a product the pass above did not
-        // find is looked up by its own host: one request each.
+        // (paid content never shows `vip`, and keeps its label), so a product
+        // the pass above did not find is looked up by its host: one request each.
         for(const v of VIP){
-          if(hosts.some(h => h.includes(v.match))) continue;
-          const r = await (await fetch(`/discovery/resources?q=${encodeURIComponent(v.match)}&limit=5`)).json();
-          for(const it of (r.items||[])) hosts.push(hostOf(it.url).toLowerCase());
+          if(labels.has(v.name)) continue;
+          const r = await (await fetch(`/discovery/resources?q=${encodeURIComponent(v.match)}&limit=20`)).json();
+          take(r.items||[]);
         }
       } catch(e){ /* a failed read shows no product rather than an unverified one */ }
-      featured = new Set(VIP.filter(v => hosts.some(h => h.includes(v.match))).map(v => v.name));
+      featured = new Set(VIP.filter(v => labels.has(v.name)).map(v => v.name));
       renderVip();
     }
 

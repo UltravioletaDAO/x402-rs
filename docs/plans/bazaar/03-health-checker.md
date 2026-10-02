@@ -136,12 +136,17 @@ lists it, behind `BAZAAR_ADMIN_TOKEN` like the other admin routes (404 when unse
 - **MCP endpoints are verified by their handshake** (the owner's decision, 2026-10-02). An MCP
   probe sends `initialize`, the `notifications/initialized` notification and `tools/list` (three
   requests, reserved as three slots), with `accept: application/json, text/event-stream` and the
-  session id the server assigned, sent back to that server only; answers are read as JSON or as an
+  session id the server assigned, sent back only on requests to the listing's own host; answers are read as JSON or as an
   event stream, up to the probe's byte cap. It is verified alive when `initialize` returned a
   JSON-RPC result and `tools/list` listed at least one tool -- `verified_by: mcp_handshake`,
   published as `health.verifiedBy` -- within the same window and out of quarantine. Nothing is
-  called; listing is all. A handshake that lists nothing, or does not complete, verifies nothing,
-  and the listing stays pending. Neither kind of evidence counts for the other kind of listing.
+  called; listing is all (a tool is an object with a non-empty `name`). A handshake that lists
+  nothing, or does not complete, verifies nothing, and the listing stays pending. Neither kind of
+  evidence counts for the other kind of listing. The handshake carries no payment terms, so it
+  cannot run the payTo drift check an HTTP challenge gets: an MCP listing under a curated
+  product's URL is exposed only if every `payTo` it declares is one of that product's
+  `expectedPayTo` (`CurationManifest::pay_to_backed`); one under no curated product is exposed on
+  its handshake alone, with the terms it was registered with.
   An `alive` MCP record from the `initialize`-only build carries no tool count (`mcp_tools`) and
   is probed at once, once.
 - **An unread overlay is not a verdict.** At startup the tracker expects its overlay

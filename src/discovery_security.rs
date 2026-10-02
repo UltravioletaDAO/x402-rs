@@ -280,7 +280,8 @@ const MAX_MCP_SESSION_ID: usize = 256;
 /// The headers of an MCP handshake request (Streamable HTTP): `accept` naming
 /// both JSON and an event stream -- a server may answer either, and some refuse
 /// a request that does not accept both -- and, after `initialize`, the session
-/// id that server assigned, sent back to it and nowhere else. An id that is not
+/// id the server assigned, sent back only on requests to the listing's own host
+/// ([`hop_headers`]). An id that is not
 /// 1 to [`MAX_MCP_SESSION_ID`] visible ASCII characters (0x21-0x7E, what the
 /// spec allows) is not sent.
 pub(crate) fn mcp_headers(session: Option<&str>) -> Vec<ExtraHeader> {
@@ -750,12 +751,9 @@ mod tests {
                 .map(|(k, v)| format!("{}={}", k.as_str(), v.to_str().unwrap()))
                 .collect()
         };
-        let accept = "accept=application/json, text/event-stream".to_string();
-        assert_eq!(names(None), [accept.clone()]);
-        assert_eq!(
-            names(Some("s-123")),
-            [accept.clone(), "mcp-session-id=s-123".to_string()]
-        );
+        let accept = "accept=application/json, text/event-stream";
+        assert_eq!(names(None), vec![accept]);
+        assert_eq!(names(Some("s-123")), vec![accept, "mcp-session-id=s-123"]);
         for bad in [
             String::new(),
             "with space".to_string(),
@@ -763,7 +761,7 @@ mod tests {
             "x".repeat(257),
             "caf\u{e9}".to_string(),
         ] {
-            assert_eq!(names(Some(&bad)), [accept.clone()], "{bad:?}");
+            assert_eq!(names(Some(&bad)), vec![accept], "{bad:?}");
         }
         assert_eq!(names(Some(&"x".repeat(256))).len(), 2, "256 is allowed");
     }

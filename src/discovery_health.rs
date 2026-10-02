@@ -487,6 +487,27 @@ fn example_body(input: &serde_json::Value) -> Option<String> {
         .then_some(serialized)
 }
 
+/// Read the persisted overlay record by record. A record this build cannot
+/// read -- one written by a newer build with a value it does not know -- is
+/// left out and counted, rather than costing every other record; only a body
+/// that is not a JSON object of records at all is an error.
+fn parse_overlay(bytes: &[u8]) -> Result<HashMap<String, HealthRecord>, serde_json::Error> {
+    let raw: HashMap<String, serde_json::Value> = serde_json::from_slice(bytes)?;
+    let total = raw.len();
+    let records: HashMap<String, HealthRecord> = raw
+        .into_iter()
+        .filter_map(|(url, v)| serde_json::from_value(v).ok().map(|r| (url, r)))
+        .collect();
+    if records.len() < total {
+        warn!(
+            skipped = total - records.len(),
+            kept = records.len(),
+            "health overlay records this build cannot read were left out"
+        );
+    }
+    Ok(records)
+}
+
 /// Persisted per-resource liveness record (overlay `bazaar/health.json`).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HealthRecord {
@@ -640,10 +661,10 @@ pub struct HealthTracker {
     ///
     /// What is exposed is decided from these records, and a full catalog makes
     /// room only from what is not exposed. An overlay that could not be read
-    /// would make everything look unexposed: the listing would be empty, an
-    /// import would evict verified copies as if they were pending, and the next
-    /// upload would overwrite the good overlay with an empty one. While it is
-    /// false none of that happens ([`Self::is_loaded`], [`Self::persist`]).
+    /// makes everything look unexposed. The listing is then empty until it is
+    /// read -- nothing unverified is shown -- but while this is false an import
+    /// does not evict verified copies as if they were pending, and no upload
+    /// overwrites the good overlay ([`Self::is_loaded`], [`Self::persist`]).
     loaded: AtomicBool,
 }
 
@@ -725,7 +746,7 @@ impl HealthTracker {
             warn!("Could not read the health overlay body; will retry");
             return;
         };
-        match serde_json::from_slice::<HashMap<String, HealthRecord>>(&bytes.into_bytes()) {
+        match parse_overlay(&bytes.into_bytes()) {
             Ok(mut loaded) => {
                 let n = loaded.len();
                 let mut records = self.records.write().await;
@@ -935,7 +956,7 @@ impl HealthTracker {
         let Ok(bytes) = obj.body.collect().await else {
             return;
         };
-        match serde_json::from_slice::<HashMap<String, HealthRecord>>(&bytes.into_bytes()) {
+        match parse_overlay(&bytes.into_bytes()) {
             Ok(loaded) => {
                 let n = loaded.len();
                 *self.records.write().await = loaded;
@@ -1292,6 +1313,8 @@ async fn mcp_list_tools<T: ProbeTransport + ?Sized>(
     url: &url::Url,
     initialized: reqwest::Response,
 ) -> Option<u32> {
+    // Whatever answered `initialize` assigned it; it is sent back only on
+    // requests to the listing's own host (`discovery_security::hop_headers`).
     let session = initialized
         .headers()
         .get("mcp-session-id")
@@ -1317,8 +1340,18 @@ async fn mcp_list_tools<T: ProbeTransport + ?Sized>(
     let content_type = response_content_type(&listed);
     let body = read_capped(listed, MAX_PROBE_RESPONSE_BYTES).await?;
     let result = jsonrpc_result(&body, content_type.as_deref(), 2)?;
-    let tools = result.get("tools")?.as_array()?;
-    Some(u32::try_from(tools.len()).unwrap_or(u32::MAX))
+    // A tool is an object with a name; anything else in the array is not one.
+    let tools = result
+        .get("tools")?
+        .as_array()?
+        .iter()
+        .filter(|t| {
+            t.get("name")
+                .and_then(|n| n.as_str())
+                .is_some_and(|n| !n.trim().is_empty())
+        })
+        .count();
+    Some(u32::try_from(tools).unwrap_or(u32::MAX))
 }
 
 fn response_content_type(resp: &reqwest::Response) -> Option<String> {
@@ -4801,12 +4834,17 @@ mod declared_method_tests {
     #[derive(Clone, Default)]
     struct McpServer {
         tools: usize,
+        /// Tools listed as objects with no `name`.
+        nameless: bool,
         sse: bool,
         session: bool,
         init: Option<(u16, &'static str)>,
-        /// (JSON-RPC method, session header, accept header) of every request.
-        seen: Arc<Mutex<Vec<(String, Option<String>, Option<String>)>>>,
+        /// Every request the server saw.
+        seen: Arc<Mutex<Vec<McpSeen>>>,
     }
+
+    /// (JSON-RPC method, session header, accept header) of one request.
+    type McpSeen = (String, Option<String>, Option<String>);
 
     async fn mcp_answer(State(s): State<McpServer>, headers: HeaderMap, body: Bytes) -> Response {
         let msg: Value = serde_json::from_slice(&body).unwrap_or(Value::Null);
@@ -4854,7 +4892,13 @@ mod declared_method_tests {
             "notifications/initialized" => StatusCode::ACCEPTED.into_response(),
             "tools/list" if !s.session || session.as_deref() == Some("s-123") => {
                 let tools: Vec<Value> = (0..s.tools)
-                    .map(|i| json!({"name": format!("tool{i}"), "inputSchema": {"type": "object"}}))
+                    .map(|i| {
+                        if s.nameless {
+                            json!({"inputSchema": {"type": "object"}})
+                        } else {
+                            json!({"name": format!("tool{i}"), "inputSchema": {"type": "object"}})
+                        }
+                    })
                     .collect();
                 reply(json!({"jsonrpc": "2.0", "id": msg["id"], "result": {"tools": tools}}))
             }
@@ -4863,9 +4907,7 @@ mod declared_method_tests {
     }
 
     async fn serve_mcp(server: McpServer) -> String {
-        let app = axum::Router::new()
-            .fallback(mcp_answer)
-            .with_state(server);
+        let app = axum::Router::new().fallback(mcp_answer).with_state(server);
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
@@ -4938,6 +4980,15 @@ mod declared_method_tests {
         let cases = [
             ("no tool", McpServer::default(), HealthStatus::Alive),
             (
+                "tools without a name",
+                McpServer {
+                    tools: 3,
+                    nameless: true,
+                    ..McpServer::default()
+                },
+                HealthStatus::Alive,
+            ),
+            (
                 "not JSON-RPC",
                 McpServer {
                     tools: 3,
@@ -5005,6 +5056,20 @@ mod declared_method_tests {
         assert!(walk(&registry).await.is_empty());
     }
 
+    /// The overlay is read record by record: one this build cannot read is left
+    /// out, never the whole overlay with it.
+    #[test]
+    fn an_unreadable_overlay_record_costs_only_itself() {
+        let body = json!({
+            "https://a.example/x": {"status": "alive", "http_status": 402},
+            "https://b.example/x": {"status": "some_future_status"},
+        });
+        let records = parse_overlay(body.to_string().as_bytes()).unwrap();
+        assert_eq!(records.len(), 1);
+        assert!(records.contains_key("https://a.example/x"));
+        assert!(parse_overlay(b"[1, 2]").is_err(), "not records at all");
+    }
+
     /// A JSON-RPC answer is the `result` object of the message with the id
     /// asked, from one JSON message or from an event stream; an error, another
     /// id or a non-object result is no answer.
@@ -5053,7 +5118,8 @@ mod declared_method_tests {
             verified_by: Some(by),
         };
         let undeclared = ProbeRequest::Undeclared;
-        let ok = |s: &HealthState, mcp: bool| is_verified_alive(s, &undeclared, mcp, None, now, window);
+        let ok =
+            |s: &HealthState, mcp: bool| is_verified_alive(s, &undeclared, mcp, None, now, window);
         assert!(ok(&state(VerifiedBy::McpHandshake), true));
         assert!(!ok(&state(VerifiedBy::X402Challenge), true));
         assert!(ok(&state(VerifiedBy::X402Challenge), false));

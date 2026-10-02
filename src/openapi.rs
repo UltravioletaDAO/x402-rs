@@ -2309,7 +2309,9 @@ to nothing.
 the listing declares, read a valid x402 challenge in a 402 -- or, for an MCP endpoint, completed
 its handshake (`initialize`, then `tools/list`) and listed at least one tool -- no longer ago than
 the observed-terms freshness window, and the resource is not quarantined. `health.verifiedAt`
-says when and `health.verifiedBy` how (`x402_challenge` | `mcp_handshake`). Auth-gated,
+says when and `health.verifiedBy` how (`x402_challenge` | `mcp_handshake`). A handshake shows the
+MCP server is up and reads no payment terms, so an MCP listing under a curated product's URL is
+listed only when it declares that product's own recipients. Auth-gated,
 degraded, quarantined, unprobeable and never-probed resources are not listed, and no parameter
 lists them: they stay in the catalog and keep being probed until a verification promotes them.
 So every listed resource has `health.status` `alive`, and `health` can only narrow what is

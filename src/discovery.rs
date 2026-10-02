@@ -1223,20 +1223,20 @@ impl DiscoveryRegistry {
         let Some(state) = health.get(r.url.as_str()) else {
             return false;
         };
+        // An MCP handshake verifies the server, not the listing's terms: under a
+        // curated product's URL, the listing has to declare that product's own
+        // recipients to be shown at all.
+        let mcp = r.resource_type == "mcp";
+        if mcp && !self.curation.pay_to_backed(r) {
+            return false;
+        }
         let request = crate::discovery_health::probe_request(
             &r.url,
             r.extensions.as_ref(),
             self.curation.probes_get_only(&r.url),
         );
         let observed_at = observed.get(r.url.as_str()).map(|t| t.observed_at);
-        crate::discovery_health::is_verified_alive(
-            state,
-            &request,
-            r.resource_type == "mcp",
-            observed_at,
-            now,
-            window,
-        )
+        crate::discovery_health::is_verified_alive(state, &request, mcp, observed_at, now, window)
     }
 
     /// The URLs exposed right now, for a caller that does not hold the catalog
@@ -4727,13 +4727,55 @@ mod tests {
             ("q request", f(Some("web search for agents"), None)),
             ("q relevance", f(Some("search"), Some("relevance"))),
             ("q tier", f(Some("web search"), Some("tier"))),
-            ("method", DiscoveryFilters { method: Some("POST".into()), ..Default::default() }),
-            ("kind", DiscoveryFilters { kind: Some("api".into()), ..Default::default() }),
-            ("hasInputSchema", DiscoveryFilters { has_input_schema: Some(true), ..Default::default() }),
-            ("maxPriceUsd", DiscoveryFilters { max_price_usd: Some("5".into()), ..Default::default() }),
-            ("excludeHost", DiscoveryFilters { exclude_host: Some(vec!["nothing.example".into()]), ..Default::default() }),
-            ("health any", DiscoveryFilters { health: Some("any".into()), ..Default::default() }),
-            ("tier", DiscoveryFilters { tier: Some("verified".into()), ..Default::default() }),
+            (
+                "method",
+                DiscoveryFilters {
+                    method: Some("POST".into()),
+                    ..Default::default()
+                },
+            ),
+            (
+                "kind",
+                DiscoveryFilters {
+                    kind: Some("api".into()),
+                    ..Default::default()
+                },
+            ),
+            (
+                "hasInputSchema",
+                DiscoveryFilters {
+                    has_input_schema: Some(true),
+                    ..Default::default()
+                },
+            ),
+            (
+                "maxPriceUsd",
+                DiscoveryFilters {
+                    max_price_usd: Some("5".into()),
+                    ..Default::default()
+                },
+            ),
+            (
+                "excludeHost",
+                DiscoveryFilters {
+                    exclude_host: Some(vec!["nothing.example".into()]),
+                    ..Default::default()
+                },
+            ),
+            (
+                "health any",
+                DiscoveryFilters {
+                    health: Some("any".into()),
+                    ..Default::default()
+                },
+            ),
+            (
+                "tier",
+                DiscoveryFilters {
+                    tier: Some("verified".into()),
+                    ..Default::default()
+                },
+            ),
             (
                 "all at once",
                 DiscoveryFilters {
@@ -4752,8 +4794,53 @@ mod tests {
         for (name, filters) in variants {
             let r = registry.list(100, 0, Some(filters)).await;
             assert_eq!(urls(&r), [shown_url], "{name}");
-            assert_eq!(r.pagination.total, 1, "{name}: the pending one is not counted");
+            assert_eq!(
+                r.pagination.total, 1,
+                "{name}: the pending one is not counted"
+            );
         }
+    }
+
+    /// An MCP handshake verifies a server, not the terms of a listing somebody
+    /// registered for it: under a curated product's URL, the listing has to
+    /// declare that product's own recipients (`expectedPayTo`) to be shown. An
+    /// MCP endpoint under no curated product is shown on its handshake alone.
+    #[tokio::test]
+    async fn an_mcp_listing_under_a_product_must_declare_the_products_recipients() {
+        let describe = "https://api.describe.net/mcp";
+        let mcp_registry = |pay_to: Option<&'static str>, url: &'static str| async move {
+            let registry = DiscoveryRegistry::new();
+            let mut r = create_test_resource(url, None);
+            r.resource_type = "mcp".to_string();
+            if let Some(p) = pay_to {
+                r.accepts[0].pay_to = MixedAddress::Evm(p.parse().unwrap());
+            }
+            registry.register(r).await.unwrap();
+            registry.health().mark_mcp_handshake(url, 3).await;
+            registry
+        };
+
+        // Somebody else's recipient under describe.net's URL: not shown.
+        let registry = mcp_registry(None, describe).await;
+        assert_eq!(registry.list(10, 0, None).await.pagination.total, 0);
+        assert_eq!(registry.stats().await["verifiedAlive"], 0);
+
+        // The product's own recipient: shown, under its label.
+        let registry =
+            mcp_registry(Some("0xe4dc963c56979E0260fc146b87eE24F18220e545"), describe).await;
+        let listed = registry.list(10, 0, None).await;
+        assert_eq!(urls(&listed), [describe]);
+        assert_eq!(
+            listed.items[0]
+                .curation
+                .as_ref()
+                .and_then(|c| c.label.as_deref()),
+            Some("describe.net")
+        );
+
+        // No curated product at that URL: the handshake is enough.
+        let registry = mcp_registry(None, "https://mcp.other.example/mcp").await;
+        assert_eq!(registry.list(10, 0, None).await.pagination.total, 1);
     }
 
     /// `kind` is the listing's own kind: the essay publisher's pay-per-read

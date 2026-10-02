@@ -35,6 +35,9 @@ struct ManifestEntry {
     prefixes: Vec<Prefix>,
     #[serde(default)]
     erc8004: Option<Erc8004Ref>,
+    /// The recipients the curated product is paid at, as measured.
+    #[serde(default, rename = "expectedPayTo")]
+    expected_pay_to: Vec<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -129,6 +132,35 @@ impl CurationManifest {
         self.probe_get_only
             .iter()
             .any(|p| match_manifest_prefix(url, &p.host, &p.path))
+    }
+
+    /// Whether a listing's declared recipients are ones the curated product it
+    /// sits under is paid at (`expectedPayTo`): every declared `payTo`, compared
+    /// without case. True for a listing under no curated prefix, or under an
+    /// entry that declares no recipients.
+    ///
+    /// What ties an MCP listing to its product. An HTTP listing's terms are
+    /// checked against its own live challenge (the payTo drift check); an MCP
+    /// endpoint is verified by its handshake, which carries no terms, so a
+    /// listing anybody registered under a curated product's URL would otherwise
+    /// be shown with that product's name and the registrant's recipients.
+    pub fn pay_to_backed(&self, r: &crate::types_v2::DiscoveryResource) -> bool {
+        let entry = self.entries.iter().find(|e| {
+            e.prefixes
+                .iter()
+                .any(|p| match_manifest_prefix(&r.url, &p.host, &p.path))
+        });
+        let Some(entry) = entry.filter(|e| !e.expected_pay_to.is_empty()) else {
+            return true;
+        };
+        !r.accepts.is_empty()
+            && r.accepts.iter().all(|a| {
+                let declared = a.pay_to.to_string();
+                entry
+                    .expected_pay_to
+                    .iter()
+                    .any(|e| e.eq_ignore_ascii_case(&declared))
+            })
     }
 
     /// Resolve the curation tier. A manifest match wins; otherwise a
@@ -239,6 +271,7 @@ mod tests {
                     path: "/payments/access/".to_string(),
                 }],
                 erc8004: None,
+                expected_pay_to: Vec::new(),
             }],
             suppressed: vec![SuppressEntry {
                 host: "facilitator.ultravioletadao.xyz".to_string(),

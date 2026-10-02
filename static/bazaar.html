@@ -50,7 +50,7 @@
 </section>
 <nav aria-label="On this page" class="page-toc"><span data-i18n="ui.onpage">On this page</span><ul><li><a data-i18n="browse_title" href="#browse-title">Browse APIs</a></li><li><a data-i18n="fp_title" href="#fp-title">Featured services</a></li><li><a data-i18n="rutas.discovery" href="#rutas-discovery">The discovery routes</a></li></ul></nav>
 <div class="cards" id="stats">
-<div class="card"><div class="v" id="s-alive">—</div><div class="k" data-i18n="s_alive">Verified alive</div><div class="muted" data-i18n="s_alive_note">Each one answered a 402 payment challenge to its own request, GET or POST, at its last check.</div></div>
+<div class="card"><div class="v" id="s-alive">—</div><div class="k" data-i18n="s_alive">Verified alive</div><div class="muted" data-i18n="s_alive_note">Each one answered a 402 payment challenge to its own request, GET or POST (an MCP server: its handshake listed its tools), at its last check.</div></div>
 </div>
 <section class="content-section" id="browse-title"><h2 data-i18n="browse_title">Browse APIs</h2>
 <div class="controls">
@@ -63,7 +63,7 @@
 <select id="f-source"><option data-i18n="f.source.all" value="">All sources</option><option data-i18n="f.source.native" value="self_registered">Ultravioleta natives</option><option data-i18n="f.source.aggregated" value="aggregated">Aggregated</option></select>
 </div><div class="cards" id="grid"></div><div class="controls" id="pager"></div></section>
 <section class="content-section" id="fp-title"><h2 data-i18n="fp_title">Featured services</h2>
-<div class="muted" data-i18n="fp_sub">Our products and curated partners, shown while they answer a payment challenge.</div><div class="vip-grid" id="vip"></div></section>
+<div class="muted" data-i18n="fp_sub">Our products and curated partners, shown while one of their listings is verified alive.</div><div class="vip-grid" id="vip"></div></section>
 <details class="product-detail" id="rutas-discovery">
 <summary><h2 data-i18n="rutas.discovery">The discovery routes</h2>
 </summary>
@@ -204,9 +204,9 @@
     "title": "Find an API your agent can use.",
     "subtitle": "Search paid APIs across the x402 ecosystem. Compare their capabilities and payment options, then check the endpoint’s current terms before buying.",
     "s_alive": "Verified alive",
-    "s_alive_note": "Each one answered a 402 payment challenge to its own request, GET or POST, at its last check.",
+    "s_alive_note": "Each one answered a 402 payment challenge to its own request, GET or POST (an MCP server: its handshake listed its tools), at its last check.",
     "fp_title": "Featured services",
-    "fp_sub": "Our products and curated partners, shown while they answer a payment challenge.",
+    "fp_sub": "Our products and curated partners, shown while one of their listings is verified alive.",
     "fp_none": "None of them answered a payment challenge at the last check.",
     "browse_title": "Browse APIs",
     "search": "Search url / description…",
@@ -311,9 +311,9 @@
     "title": "Encuentra una API para tu agente.",
     "subtitle": "Busca APIs de pago en el ecosistema x402. Compara sus capacidades y opciones de pago, y consulta las condiciones actuales del endpoint antes de comprar.",
     "s_alive": "Verificados vivos",
-    "s_alive_note": "Cada uno contestó un desafío de pago 402 a su propia petición, GET o POST, en su último chequeo.",
+    "s_alive_note": "Cada uno contestó un desafío de pago 402 a su propia petición, GET o POST (un servidor MCP: su handshake listó sus herramientas), en su último chequeo.",
     "fp_title": "Servicios destacados",
-    "fp_sub": "Nuestros productos y socios curados, mientras contesten un desafío de pago.",
+    "fp_sub": "Nuestros productos y socios curados, mientras alguno de sus listings esté verificado vivo.",
     "fp_none": "Ninguno contestó un desafío de pago en el último chequeo.",
     "browse_title": "Explora las APIs",
     "search": "Buscar url / descripción…",

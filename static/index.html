@@ -2219,8 +2219,8 @@
                     </div>
                     <p style="color: var(--text-muted); margin: 0.75rem 0 1.5rem; max-width: 720px;" data-i18n="bazaar.description">
                         We aggregate paid endpoints from a dozen x402 facilitators, filter the junk and probe each one
-                        with the request it declares, GET or POST. Only the endpoints that answer a valid 402 payment
-                        challenge are shown.
+                        with the request it declares, GET or POST, or an MCP server by its handshake. Only the endpoints
+                        verified alive are shown.
                     </p>
                     <div class="stats" style="margin: 0 0 1.5rem;">
                         <div class="stat-card">
@@ -3085,7 +3085,7 @@
                 "endpoints.registerNote": "<strong style='color: #8b5cf6;'>Gasless registration:</strong> The facilitator wallet pays all gas fees. Without <code style='color: var(--accent); font-size: 0.75rem;'>recipient</code>, the NFT stays with the facilitator. With <code style='color: var(--accent); font-size: 0.75rem;'>recipient</code>, the NFT is minted then transferred via ERC-721 <code style='color: var(--accent); font-size: 0.75rem;'>safeTransferFrom</code> (2 transactions, both paid by facilitator). Note: <code style='color: var(--accent); font-size: 0.75rem;'>agentWallet</code> is cleared on transfer and must be re-set by the new owner.",
                 "bazaar.title": "The Curated Bazaar",
                 "bazaar.badge": "Live",
-                "bazaar.description": "We aggregate paid endpoints from a dozen x402 facilitators, filter the junk and probe each one with the request it declares, GET or POST. Only the endpoints that answer a valid 402 payment challenge are shown.",
+                "bazaar.description": "We aggregate paid endpoints from a dozen x402 facilitators, filter the junk and probe each one with the request it declares, GET or POST, or an MCP server by its handshake. Only the endpoints verified alive are shown.",
                 "bazaar.alive": "Verified alive",
                 "bazaar.cta": "Explore the Bazaar",
                 "header.subtitle": "Payment infrastructure for autonomous agents",
@@ -3265,7 +3265,7 @@
                 "endpoints.registerNote": "<strong style='color: #8b5cf6;'>Registro sin gas:</strong> La wallet del facilitador paga todo el gas. Sin <code style='color: var(--accent); font-size: 0.75rem;'>recipient</code>, el NFT se queda con el facilitador. Con <code style='color: var(--accent); font-size: 0.75rem;'>recipient</code>, el NFT se acuña y luego se transfiere vía ERC-721 <code style='color: var(--accent); font-size: 0.75rem;'>safeTransferFrom</code> (2 transacciones, ambas pagadas por el facilitador). Nota: <code style='color: var(--accent); font-size: 0.75rem;'>agentWallet</code> se borra al transferir y el nuevo dueño debe volver a fijarlo.",
                 "bazaar.title": "El Bazar Curado",
                 "bazaar.badge": "En vivo",
-                "bazaar.description": "Agregamos endpoints de pago de una docena de facilitadores x402, filtramos la basura y sondeamos cada uno con la petición que declara, GET o POST. Solo se muestran los que contestan un desafío de pago 402 válido.",
+                "bazaar.description": "Agregamos endpoints de pago de una docena de facilitadores x402, filtramos la basura y sondeamos cada uno con la petición que declara, GET o POST, o un servidor MCP por su handshake. Solo se muestran los verificados vivos.",
                 "bazaar.alive": "Verificados vivos",
                 "bazaar.cta": "Explorar el Bazar",
                 "header.subtitle": "Infraestructura de pagos para agentes autónomos",

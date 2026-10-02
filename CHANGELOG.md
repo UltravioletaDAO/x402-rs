@@ -124,10 +124,10 @@
 - `emporium` joins the stack services (`UVD_STACK_KEY_SHA256_EMPORIUM`), inactive until its digest is configured.
 - New dependency: `aws-sdk-secretsmanager` 1.101; no other crate in `Cargo.lock` changes.
 
-### Terraform (applied by hand, not by the image deploy)
+### Terraform
 
-- `aws_secretsmanager_secret.stack_key_digest_emporium`, declared without a value. The allowlist secret (`var.ip_allowlist_secret_name`, default `uvd/allowlist/home`) is one for the whole stack, created and loaded by hand outside Terraform: no repository declares it.
-- `aws_iam_role_policy.ip_allowlist_read`: `secretsmanager:GetSecretValue` on the allowlist secret, by name, for the task role. Until it is applied the task cannot read the list and exempts no address.
+- `aws_secretsmanager_secret.stack_key_digest_emporium`, declared without a value, applied by hand (the pipeline cannot create secrets). The allowlist secret (`var.ip_allowlist_secret_name`, default `uvd/allowlist/home`) is one for the whole stack, created and loaded by hand outside Terraform: no repository declares it.
+- `aws_iam_role_policy.ip_allowlist_read`: `secretsmanager:GetSecretValue` on the allowlist secret, by name, for the task role. The image deploy applies it with the other task-role policy (the only role whose inline policies the pipeline may write). Until it is applied the task cannot read the list and exempts no address.
 - The task definition gains `UVD_IP_ALLOWLIST_SECRET` (the secret's name, never its contents).
 - Emporium's digest reaches the task definition and the execution role only with `var.stack_key_emporium_loaded = true`.
 

@@ -106,7 +106,7 @@ El facilitador no tiene llave propia (ninguna lectura de `UVD_STACK_KEY`, la var
 | Recurso | Qué | ¿Lo aplica el deploy de imagen? |
 |---|---|---|
 | (ninguno) `uvd/allowlist/home` | **no se declara**: lo crea y lo carga c0der fuera de terraform (regla única del stack) | — |
-| `aws_iam_role_policy.ip_allowlist_read` | `secretsmanager:GetSecretValue` para el **rol de la tarea**, por nombre (`<nombre>-??????`, us-east-2) | no |
+| `aws_iam_role_policy.ip_allowlist_read` | `secretsmanager:GetSecretValue` para el **rol de la tarea**, por nombre (`<nombre>-??????`, us-east-2) | sí, desde la tanda X4-BAZAAR-TANDA: va en el `-target` del deploy de imagen (CI puede escribir las políticas inline del rol de la tarea; el drift gate la pedía cubierta) |
 | `UVD_IP_ALLOWLIST_SECRET` en la task definition | el **nombre** del secreto, nunca su contenido | sí |
 | `aws_secretsmanager_secret.stack_key_digest_emporium` | digest de Emporium, **sin valor** | no |
 | `data.aws_secretsmanager_secret.stack_key_digest_emporium` + mapeo `UVD_STACK_KEY_SHA256_EMPORIUM` | solo con `var.stack_key_emporium_loaded = true` (default `false`) | no, mientras sea `false` |
@@ -127,7 +127,8 @@ El facilitador no tiene llave propia (ninguna lectura de `UVD_STACK_KEY`, la var
     sus clientes quedarían exentos, incluido el techo en vuelo por dirección;
   - preferir la dirección exacta a un /24: un prefijo exime también a los vecinos del mismo bloque.
 - **Orden para c0der:**
-  1. `terraform apply -target=aws_iam_role_policy.ip_allowlist_read -target=aws_secretsmanager_secret.stack_key_digest_emporium`.
+  1. `terraform apply -target=aws_secretsmanager_secret.stack_key_digest_emporium` (a mano: CI no puede crear
+     secretos). `aws_iam_role_policy.ip_allowlist_read` lo aplica el deploy de imagen.
   2. El secreto `uvd/allowlist/home` (fuera de terraform, como dice el aviso): cargarlo desde un archivo, sin
      imprimirlo, p. ej. `aws secretsmanager put-secret-value --secret-id uvd/allowlist/home --secret-string file://<archivo>`.
   3. Sondas (no muestran ninguna IP):
@@ -138,8 +139,9 @@ El facilitador no tiene llave propia (ninguna lectura de `UVD_STACK_KEY`, la var
   4. Emporium: `scripts/stack_key.py generate --service emporium`, cargar `{"sha256": ...}`, y en el mismo cambio
      que pone `stack_key_emporium_loaded = true` aplicar a mano `aws_iam_role_policy.secrets_access` (el CI no
      puede escribir el rol de ejecución; `scripts/drift_gate_iam.py` imprime el comando).
-- El drift gate (`ci.yaml`, job `plan`) va a listar los recursos de la tabla como no desplegados hasta el paso 1.
-  No bloquea el deploy.
+- El drift gate (`ci.yaml`, job `plan`) da rojo con `aws_secretsmanager_secret.stack_key_digest_emporium` hasta
+  el paso 1: el deploy no depende de ese job, pero el run queda rojo. La política de lectura ya no aparece ahí
+  porque el deploy la cubre.
 - **Emporium (para su worker):** la llave exime al bazar de la cuota por IP. Si Emporium reenviara una a una al
   bazar las consultas de sus propios usuarios con su llave, la exención heredaría su superficie pública. Que la
   use solo para sus lecturas propias (caché, crawler) o que tenga su propio límite por cliente antes.

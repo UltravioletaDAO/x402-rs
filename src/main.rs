@@ -69,6 +69,7 @@ mod discovery_price;
 mod discovery_revalidation;
 mod discovery_security;
 mod discovery_store;
+mod discovery_taxonomy;
 mod discovery_terms;
 mod dx402;
 mod erc8004;

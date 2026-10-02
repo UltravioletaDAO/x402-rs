@@ -2329,7 +2329,11 @@ Pass `health=any` to return everything, or a specific status to filter to it.
           "feedbackCount": 0,
           "uptime": 99.77
         }
-      }
+      },
+      "kind": "api",
+      "categories": ["communication"],
+      "categorySource": "declared",
+      "hasInputSchema": false
     }
   ],
   "pagination": { "limit": 10, "offset": 0, "total": 21195 }
@@ -2466,6 +2470,38 @@ computed when the listing is composed and are never stored, so they cannot go st
 `bazaar` extension's declared input and output schema). Two prices are not comparable without
 knowing what each one buys.
 
+**What a listing sells is kept from every source.** A source that speaks x402 v1 publishes the
+description and the `outputSchema` (the declared input and output) on each payment option; they
+are carried to `description` and `extensions.bazaar.info` (`input`, `output`) verbatim, per the
+bazaar spec's v1 mapping, and only when the resource declares none of its own. When two sources
+publish the same listing, the terms follow authority and date as before, but a copy with an empty
+description, no `bazaar` extension or no tags never erases another copy's: descriptive fields are
+only ever filled, never blanked, and only from a source at least as authoritative (a feed's copy
+never completes the owner's own registration). Nothing is written that no source published.
+
+**`kind`** is `api` (a paid call to a tool) or `content` (a paid piece of content, the same for
+every buyer, such as an essay). Content never holds the `first_party` or `vip` tier: it is
+`verified` when alive and `listed` otherwise, and keeps its `curation.label`.
+
+**`categories`** lists ids from one closed list: `people`, `company`, `web-search`, `page-read`,
+`social/x`, `social/reddit`, `finance`, `crypto`, `weather`, `image`, `human-work`, `ai`, `data`,
+`developer-tools`, `security`, `research`, `reputation`, `communication`, `compliance`,
+`advertising`, `infrastructure`. They come from what the seller declared (`metadata.category`,
+then `extensions.bazaar.category`, then a `bazaar.category` inside an option's `extra`), each one
+once, with known spellings of the same thing mapped to one id (`Data` and `data_processing` are
+`data`, `twitter` is `social/x`); a spelling the list does not know adds nothing rather than a
+guess, and `categories` is absent when nothing maps. A `people` listing returns personal data about
+a person. **`categorySource`** says how they were obtained: `declared` (the seller's own value,
+spelled as the id), `normalized` (the seller's value in another spelling) or `inferred` (assigned
+by the operator's curation to a listing whose own data names no category).
+**`metadata.category` is never rewritten**: it is what the seller declared, and the ids travel
+beside it.
+
+**`hasInputSchema`** is `true` when `extensions.bazaar` declares the input (`info.input`, or an
+`input` property in `schema`); the declaration itself stays in `extensions.bazaar`, with the input
+and the output apart. `kind`, `categories`, `categorySource` and `hasInputSchema` are
+response-only, like `health` and `curation`.
+
 **Unknown parameters are rejected with a 400**, listing the ones supported. A parameter the
 server accepted and ignored would be indistinguishable from a filter that matched everything,
 so `?search=logs` fails loudly and points at `q` instead of quietly returning the whole catalog.
@@ -2473,7 +2509,7 @@ so `?search=logs` fails loudly and points at `q` instead of quietly returning th
     params(
         ("limit" = Option<u32>, Query, description = "Maximum number of resources to return (default: 10, max: 100)"),
         ("offset" = Option<u32>, Query, description = "Number of resources to skip (default: 0)"),
-        ("category" = Option<String>, Query, description = "Filter by metadata category (e.g., finance, communication)"),
+        ("category" = Option<String>, Query, description = "Filter by category: the seller's own metadata.category (case-insensitive), or any spelling of a closed-list id, which matches every listing that resolves to it (e.g., finance, social/x, twitter)"),
         ("provider" = Option<String>, Query, description = "Filter by metadata provider name"),
         ("tag" = Option<String>, Query, description = "Filter by metadata tag"),
         ("network" = Option<String>, Query, description = "Exact CAIP-2 network match (e.g., eip155:8453, solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp)"),
@@ -2533,7 +2569,11 @@ so `?search=logs` fails loudly and points at `q` instead of quietly returning th
                             "feedbackCount": 0,
                             "uptime": 99.77
                         }
-                    }
+                    },
+                    "kind": "api",
+                    "categories": ["communication"],
+                    "categorySource": "declared",
+                    "hasInputSchema": false
                 }],
                 "pagination": { "limit": 10, "offset": 0, "total": 21195 }
             })
@@ -2645,6 +2685,12 @@ so counters can lag recent registrations or health probes by up to a minute.
 - `total` counts every resource in the catalog.
 - `visible` counts the resources returned by the default `GET /discovery/resources` listing
   (quarantined resources excluded).
+- `byTier` counts the tier each listing shows, so content is never counted as `vip`.
+- `byKind` and `byCategory` count the listings' `kind` and closed-list `categories` (a listing in
+  two categories counts under both; `none` when it resolves to none); see `GET /discovery/resources`.
+- `noDescription` and `noInputSchema` count the listings with an empty description, and with no
+  declared input (`extensions.bazaar.info.input`, or an `input` property in
+  `extensions.bazaar.schema`): what a router cannot use without guessing.
 
 **Response:**
 ```json
@@ -2656,6 +2702,10 @@ so counters can lag recent registrations or health probes by up to a minute.
   "byNetwork": { "eip155:8453": 20991, "eip155:1": 56 },
   "byTier": { "first_party": 10, "vip": 127, "verified": 1814, "listed": 19244 },
   "byHealth": { "alive": 1814, "quarantined": 1932, "auth_gated": 263, "unknown": 17029 },
+  "byKind": { "api": 20816, "content": 379 },
+  "byCategory": { "none": 20869, "data": 246, "finance": 80 },
+  "noDescription": 412,
+  "noInputSchema": 3120,
   "generatedAt": 1784900000
 }
 ```
@@ -2670,6 +2720,10 @@ so counters can lag recent registrations or health probes by up to a minute.
                 "byNetwork": { "eip155:8453": 20991, "eip155:1": 56 },
                 "byTier": { "first_party": 10, "vip": 127, "verified": 1814, "listed": 19244 },
                 "byHealth": { "alive": 1814, "quarantined": 1932, "auth_gated": 263, "unknown": 17029 },
+                "byKind": { "api": 20816, "content": 379 },
+                "byCategory": { "none": 20869, "data": 246, "finance": 80 },
+                "noDescription": 412,
+                "noInputSchema": 3120,
                 "generatedAt": 1784900000
             })
         )

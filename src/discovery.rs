@@ -300,6 +300,18 @@ fn provenance_rank(source: DiscoverySource) -> u8 {
     }
 }
 
+/// Whether `donor` may fill `target`'s missing description, schema or tags.
+///
+/// Only a source at least as authoritative as the record it completes. Two
+/// aggregated copies complete each other; the origin's own document completes
+/// an aggregated copy. A third party's copy never completes an owner's own
+/// declaration: what the owner left unsaid is not somebody else's to say on its
+/// behalf, and a feed must not be able to put words, or a request schema, on a
+/// listing it does not own.
+fn may_fill(target: &DiscoveryResource, donor: &DiscoveryResource) -> bool {
+    provenance_rank(donor.source) >= provenance_rank(target.source)
+}
+
 /// Whether an incoming import should replace the record already held.
 ///
 /// # Why this is not `incoming.last_updated > existing.last_updated`
@@ -776,6 +788,9 @@ impl DiscoveryRegistry {
         let mut by_network: HashMap<String, u64> = HashMap::new();
         let mut by_tier: HashMap<String, u64> = HashMap::new();
         let mut by_health: HashMap<String, u64> = HashMap::new();
+        let mut by_kind: HashMap<&'static str, u64> = HashMap::new();
+        let mut by_category: HashMap<&'static str, u64> = HashMap::new();
+        let (mut no_description, mut no_input_schema) = (0u64, 0u64);
         let (mut total, mut visible) = (0u64, 0u64);
 
         {
@@ -807,12 +822,29 @@ impl DiscoveryRegistry {
                     *by_network.entry(a.network.to_string()).or_insert(0) += 1;
                 }
 
+                // The tier the listing itself shows, content cap included.
                 let tier = self
                     .curation
-                    .resolve(&r.url, status == HealthStatus::Alive)
+                    .resolve_listing(r, status == HealthStatus::Alive)
                     .map(|c| tier_label(c.tier))
                     .unwrap_or("listed");
                 *by_tier.entry(tier.to_string()).or_insert(0) += 1;
+
+                let class = crate::discovery_taxonomy::classify(r);
+                *by_kind.entry(class.kind.as_str()).or_insert(0) += 1;
+                if class.categories.is_empty() {
+                    *by_category.entry("none").or_insert(0) += 1;
+                }
+                for id in class.categories {
+                    *by_category.entry(id).or_insert(0) += 1;
+                }
+                // What a router cannot use without guessing.
+                if r.description.trim().is_empty() {
+                    no_description += 1;
+                }
+                if !r.has_input_schema() {
+                    no_input_schema += 1;
+                }
             }
         }
 
@@ -824,6 +856,10 @@ impl DiscoveryRegistry {
             "byNetwork": by_network,
             "byTier": by_tier,
             "byHealth": by_health,
+            "byKind": by_kind,
+            "byCategory": by_category,
+            "noDescription": no_description,
+            "noInputSchema": no_input_schema,
             "generatedAt": now,
         });
         *self.stats_cache.write().await = Some((now, payload.clone()));
@@ -1194,7 +1230,7 @@ impl DiscoveryRegistry {
                     .get(r.url.as_str())
                     .map(|h| h.status == HealthStatus::Alive)
                     .unwrap_or(false);
-                let mut cur = self.curation.resolve(&r.url, alive);
+                let mut cur = self.curation.resolve_listing(r, alive);
                 if let Some(c) = cur.as_mut() {
                     // The verification cache is keyed by manifest label, so the
                     // annotation joins regardless of URL variants.
@@ -1239,6 +1275,13 @@ impl DiscoveryRegistry {
                 let mut c = r.clone();
                 c.health = health.get(r.url.as_str()).cloned();
                 c.curation = cur;
+                // What it sells and where it belongs, from the closed vocabulary,
+                // beside (never instead of) what the seller declared.
+                let class = crate::discovery_taxonomy::classify(r);
+                c.kind = Some(class.kind);
+                c.categories = class.categories.iter().map(|id| id.to_string()).collect();
+                c.category_source = class.source;
+                c.has_input_schema = Some(r.has_input_schema());
                 // Price semantics are resolved here, on the response copy only,
                 // for the same reason health and curation are: settleability and
                 // a token's decimals are properties of THIS build and the
@@ -1426,6 +1469,14 @@ impl DiscoveryRegistry {
             }
 
             if let Some(existing) = cache.get(&url_key) {
+                // What the listing IS never depends on which copy wins the
+                // terms: a copy that carries no description, schema or tags
+                // takes them from the one held. Done before the verdict, so an
+                // empty re-download of an enriched record compares as the same
+                // offer instead of rewriting it every cycle.
+                if may_fill(&resource, existing) {
+                    resource.fill_descriptive_gaps_from(existing);
+                }
                 match import_verdict(&resource, existing) {
                     ImportVerdict::Replace => {
                         // Field-preserving merge: incoming wins for content, but
@@ -1469,8 +1520,21 @@ impl DiscoveryRegistry {
                         skipped += 1;
                     }
                     ImportVerdict::Keep => {
-                        *reject_counts.entry("superseded").or_insert(0) += 1;
-                        skipped += 1;
+                        // The held terms stand. If the losing copy is the one
+                        // that says what is being sold, that still lands: a
+                        // newer copy with an empty description must not keep
+                        // another source's text out.
+                        let mut kept = existing.clone();
+                        if may_fill(existing, &resource)
+                            && kept.fill_descriptive_gaps_from(&resource)
+                        {
+                            cache.insert(url_key, kept);
+                            *reject_counts.entry("enriched").or_insert(0) += 1;
+                            updated += 1;
+                        } else {
+                            *reject_counts.entry("superseded").or_insert(0) += 1;
+                            skipped += 1;
+                        }
                     }
                 }
             } else {
@@ -1602,15 +1666,24 @@ impl DiscoveryRegistry {
             return true;
         };
 
-        // Filter by category
+        // Filter by category: the seller's own spelling, exactly as before, or
+        // a closed-list category the listing resolves to -- so `social/x`,
+        // `twitter` and `X` find the same listings. A superset of the old
+        // match: nothing it returned stops being returned.
         if let Some(ref category) = f.category {
-            let matches = resource
+            let declared = resource
                 .metadata
                 .as_ref()
                 .and_then(|m| m.category.as_ref())
                 .map(|c| c.eq_ignore_ascii_case(category))
                 .unwrap_or(false);
-            if !matches {
+            let resolved = || {
+                let taxonomy = crate::discovery_taxonomy::taxonomy();
+                taxonomy
+                    .canonical(category)
+                    .is_some_and(|wanted| taxonomy.classify(resource).categories.contains(&wanted))
+            };
+            if !(declared || resolved()) {
                 return false;
             }
         }

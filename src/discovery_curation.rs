@@ -13,7 +13,7 @@ use serde::Deserialize;
 use url::Url;
 
 use crate::discovery_security::match_manifest_prefix;
-use crate::types_v2::{CurationInfo, Tier};
+use crate::types_v2::{CurationInfo, DiscoveryResource, Tier};
 
 #[derive(Debug, Clone, Deserialize)]
 struct Prefix {
@@ -142,6 +142,28 @@ impl CurationManifest {
         } else {
             None
         }
+    }
+
+    /// [`Self::resolve`] for a whole listing: a curated tier ranks tools, so a
+    /// listing that sells content never holds `first_party` or `vip`.
+    ///
+    /// It keeps the tier any other listing earns on its own -- `verified` when
+    /// alive, `listed` otherwise -- and keeps its label, so the publisher is
+    /// still named. On the 2026-10-01 catalog the 379 essays under one
+    /// publisher's prefix resolved to `vip` and sorted above every API, and
+    /// their publisher asked for exactly this.
+    pub fn resolve_listing(&self, r: &DiscoveryResource, alive: bool) -> Option<CurationInfo> {
+        let resolved = self.resolve(&r.url, alive);
+        if crate::discovery_taxonomy::classify(r).kind != crate::discovery_taxonomy::Kind::Content {
+            return resolved;
+        }
+        resolved.map(|c| match c.tier {
+            Tier::FirstParty | Tier::Vip => CurationInfo {
+                tier: if alive { Tier::Verified } else { Tier::Listed },
+                ..c
+            },
+            _ => c,
+        })
     }
 
     /// Manifest entries that carry an ERC-8004 identity, as

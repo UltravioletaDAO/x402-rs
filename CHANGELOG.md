@@ -1,5 +1,16 @@
 # Changelog
 
+## [Unreleased]
+
+### Bazaar: what a listing sells, from every source
+
+- Listings aggregated from a feed in the x402 v1 shape now keep their description and their declared input and output: v1 publishes them on each payment option (`accepts[].description`, `accepts[].outputSchema`), and they are carried to `description` and `extensions.bazaar.info` verbatim, per the bazaar spec's v1 mapping. Only when the resource declares none of its own; nothing is rewritten into another shape.
+- When two sources publish the same listing, a copy without a description, a `bazaar` extension or tags no longer erases another copy's: descriptive fields are only ever filled, and only from a source at least as authoritative: a feed's copy never completes the owner's own registration. The terms still follow authority and date as before, and nothing is written that no source published.
+- `GET /discovery/resources`: every listing carries `kind` (`api` or `content`), `hasInputSchema`, and, when anything maps, `categories` from one closed list of twenty-one (`people`, `company`, `web-search`, `page-read`, `social/x`, `social/reddit`, `finance`, `crypto`, `weather`, `image`, `human-work`, and ten more the catalog uses) with `categorySource` (`declared`, `normalized` or `inferred`). All four are response-only, resolved from `config/bazaar_taxonomy.json`; `metadata.category` is still served exactly as the seller declared it. `?category=` also matches every listing that resolves to the given category, in any of its spellings, besides the exact seller spelling it matched before.
+- Paid content (`kind: content`) never holds the `first_party` or `vip` tier: it gets `verified` when alive and `listed` otherwise, and keeps its label. Pay-per-read essays published under `tenjin.blog/api/read/` are content, at their publisher's request.
+- `GET /discovery/stats` adds `byKind`, `byCategory`, `noDescription` and `noInputSchema`; `byTier` counts the tier each listing shows.
+- `scripts/bazaar_audit.py` reports, per source, listings without a description or a declared input, and the `kind`/`category` counts.
+
 ## [2.46.1] - 2026-09-29
 
 - `POST /settle`: a successful x402r escrow settle (`escrow` / `commerce`) or `refund`-extension deposit is now kept under its `Idempotency-Key`, as an `exact` settle is: a retry with the same key and body gets the first response back, byte for byte, with `Idempotent-Replayed: true`, and the same key with another body gets `409 idempotency_key_conflict`. Only successes are kept, so a failed settle can still be retried.

@@ -1,0 +1,222 @@
+{
+  "$comment": "One discovery page per aggregated source, in the shape each one publishes, for tests/bazaar_listing_data.rs. Hosts are synthetic (.test); the shapes are the measured ones. thirdweb: the x402 v1 DiscoveredResource -- no resource-level description, metadata {}, and description/outputSchema on every payment option (the 873 thirdweb listings of the 2026-10-01 catalog snapshot were all stored with an empty description and no extensions). coinbase: x402 v2 with the resource-level description and extensions.bazaar, plus the v1 leftovers its options still carry. payai: v2 with metadata tags.",
+  "thirdweb": {
+    "x402Version": 1,
+    "items": [
+      {
+        "resource": "https://market.datapack.test/x402/demand-company-acme-revenue",
+        "type": "http",
+        "x402Version": 1,
+        "accepts": [
+          {
+            "scheme": "exact",
+            "network": "base",
+            "maxAmountRequired": "10000",
+            "resource": "https://market.datapack.test/x402/demand-company-acme-revenue",
+            "description": "  Quarterly revenue for ACME Corp, as reported in its filings.  ",
+            "mimeType": "application/json",
+            "payTo": "0x52E29e0d2Aa49bfBfC548C0A9F2196F4aa51f3ea",
+            "maxTimeoutSeconds": 120,
+            "asset": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+            "outputSchema": {
+              "input": {
+                "type": "http",
+                "method": "GET",
+                "discoverable": true,
+                "queryParams": { "quarter": { "type": "string", "description": "e.g. 2026Q2" } }
+              },
+              "output": {
+                "type": "object",
+                "properties": { "revenueUsd": { "type": "number" } }
+              }
+            },
+            "extra": { "name": "USD Coin", "version": "2" }
+          }
+        ],
+        "lastUpdated": "2026-10-01T18:00:00.000Z",
+        "metadata": {}
+      },
+      {
+        "resource": "https://search.v1seller.test/api/search",
+        "type": "http",
+        "x402Version": 1,
+        "accepts": [
+          {
+            "scheme": "exact",
+            "network": "base",
+            "maxAmountRequired": "5000",
+            "resource": "https://search.v1seller.test/api/search",
+            "description": "",
+            "mimeType": "application/json",
+            "payTo": "0x52E29e0d2Aa49bfBfC548C0A9F2196F4aa51f3ea",
+            "maxTimeoutSeconds": 60,
+            "asset": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+            "extra": { "name": "USD Coin", "version": "2" }
+          },
+          {
+            "scheme": "exact",
+            "network": "base",
+            "maxAmountRequired": "5000",
+            "resource": "https://search.v1seller.test/api/search",
+            "description": "Web search over a fresh index; POST a query, get ranked results.",
+            "mimeType": "application/json",
+            "payTo": "0x52E29e0d2Aa49bfBfC548C0A9F2196F4aa51f3ea",
+            "maxTimeoutSeconds": 60,
+            "asset": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+            "outputSchema": {
+              "input": {
+                "type": "http",
+                "method": "POST",
+                "bodyType": "json",
+                "bodyFields": { "query": { "type": "string", "required": true } }
+              }
+            },
+            "extra": { "name": "USD Coin", "version": "2" }
+          }
+        ],
+        "lastUpdated": "2026-10-01T18:00:00.000Z",
+        "metadata": {}
+      },
+      {
+        "resource": "https://bare.v1seller.test/quote",
+        "type": "http",
+        "x402Version": 1,
+        "accepts": [
+          {
+            "scheme": "exact",
+            "network": "base",
+            "maxAmountRequired": "2000",
+            "resource": "https://bare.v1seller.test/quote",
+            "description": "A quote, with a response schema that is not split into input and output.",
+            "mimeType": "application/json",
+            "payTo": "0x52E29e0d2Aa49bfBfC548C0A9F2196F4aa51f3ea",
+            "maxTimeoutSeconds": 60,
+            "asset": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+            "outputSchema": {
+              "type": "object",
+              "properties": { "price": { "type": "string" } }
+            }
+          }
+        ],
+        "lastUpdated": "2026-10-01T18:00:00.000Z",
+        "metadata": {}
+      },
+      {
+        "resource": "https://untyped.v1seller.test/x",
+        "type": "http",
+        "x402Version": 1,
+        "accepts": [
+          {
+            "scheme": "exact",
+            "network": "base",
+            "maxAmountRequired": "2000",
+            "resource": "https://untyped.v1seller.test/x",
+            "description": 42,
+            "mimeType": "application/json",
+            "payTo": "0x52E29e0d2Aa49bfBfC548C0A9F2196F4aa51f3ea",
+            "maxTimeoutSeconds": 60,
+            "asset": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+            "outputSchema": "not an object"
+          }
+        ],
+        "lastUpdated": "2026-10-01T18:00:00.000Z",
+        "metadata": {}
+      }
+    ],
+    "pagination": { "limit": 100, "offset": 0, "total": 4 }
+  },
+  "coinbase": {
+    "items": [
+      {
+        "resource": "https://api.v2seller.test/balance",
+        "type": "http",
+        "x402Version": 2,
+        "description": "ERC-20 balance of any wallet, read live from chain.",
+        "accepts": [
+          {
+            "scheme": "exact",
+            "network": "eip155:8453",
+            "asset": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+            "amount": "3000",
+            "payTo": "0x52E29e0d2Aa49bfBfC548C0A9F2196F4aa51f3ea",
+            "maxTimeoutSeconds": 300,
+            "description": "a v1 leftover the resource level supersedes",
+            "outputSchema": { "input": { "type": "http", "method": "POST" } },
+            "extra": { "name": "USD Coin", "version": "2" }
+          }
+        ],
+        "lastUpdated": "2026-09-30T12:00:00.000Z",
+        "extensions": {
+          "bazaar": {
+            "info": {
+              "input": { "type": "http", "method": "GET", "queryParams": { "address": "0x0000000000000000000000000000000000000001" } },
+              "output": { "type": "json", "example": { "balance": "1234567890" } }
+            },
+            "schema": { "type": "object", "properties": { "input": { "type": "object" } } },
+            "category": "Inference",
+            "tags": ["balances", "erc20"]
+          },
+          "builder-code": { "code": "abc" }
+        }
+      },
+      {
+        "resource": "https://market.datapack.test/x402/demand-company-acme-revenue",
+        "type": "http",
+        "x402Version": 2,
+        "description": "ACME Corp quarterly revenue, from its filings.",
+        "accepts": [
+          {
+            "scheme": "exact",
+            "network": "eip155:8453",
+            "asset": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+            "amount": "10000",
+            "payTo": "0x52E29e0d2Aa49bfBfC548C0A9F2196F4aa51f3ea",
+            "maxTimeoutSeconds": 120,
+            "extra": { "name": "USD Coin", "version": "2" }
+          }
+        ],
+        "lastUpdated": "2026-09-20T12:00:00.000Z",
+        "extensions": {
+          "bazaar": {
+            "info": {
+              "input": { "type": "http", "method": "GET" },
+              "output": { "type": "json", "example": { "revenueUsd": 1 } }
+            }
+          }
+        }
+      }
+    ]
+  },
+  "payai": {
+    "x402Version": 2,
+    "items": [
+      {
+        "resource": "https://tools.payaiseller.test/weather",
+        "type": "http",
+        "x402Version": 2,
+        "description": "Current conditions for a city.",
+        "accepts": [
+          {
+            "scheme": "exact",
+            "network": "eip155:8453",
+            "asset": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+            "amount": "1000",
+            "payTo": "0x52E29e0d2Aa49bfBfC548C0A9F2196F4aa51f3ea",
+            "maxTimeoutSeconds": 60,
+            "extra": { "name": "USD Coin", "version": "2" }
+          }
+        ],
+        "lastUpdated": 1790000000,
+        "metadata": { "category": "Weather", "provider": "PayAI Seller", "tags": ["weather", "forecast"] },
+        "extensions": {
+          "bazaar": {
+            "info": {
+              "input": { "type": "http", "method": "GET", "queryParams": { "city": "Medellin" } },
+              "output": { "type": "json", "example": { "tempC": 24 } }
+            }
+          }
+        }
+      }
+    ]
+  }
+}

@@ -143,3 +143,74 @@ El facilitador no tiene llave propia (ninguna lectura de `UVD_STACK_KEY`, la var
 - **Emporium (para su worker):** la llave exime al bazar de la cuota por IP. Si Emporium reenviara una a una al
   bazar las consultas de sus propios usuarios con su llave, la exención heredaría su superficie pública. Que la
   use solo para sus lecturas propias (caché, crawler) o que tenga su propio límite por cliente antes.
+
+## 5. Tests y auto-refutación
+
+Todos con la red cerrada; el único socket es el `127.0.0.1` de los tests de MCP. Lo que pide el encargo:
+
+| Pedido | Test |
+|---|---|
+| con llave válida no hay 429 de política | `rate_policy::a_stack_identity_is_never_refused_by_any_budget` (ya estaba) |
+| sin llave o con llave inválida, el límite de siempre | `a_malformed_or_false_key_is_a_third_party_not_a_500`, `a_revoked_key_is_a_third_party_again` (ya estaban) |
+| una IP de documentación en la lista pasa | `an_allowlisted_address_is_never_refused_by_any_budget` (los 8 presupuestos al burst de producción; la vecina, 429) |
+| suplantarla en `X-Forwarded-For` no sirve | `naming_an_allowlisted_address_in_forwarded_for_buys_nothing` |
+| un pedido reenviado de un tercero no lleva la llave | `mcp::a_third_partys_forwarded_settle_carries_no_stack_key`, `rate_policy::the_facilitator_holds_no_stack_key_to_send` |
+| los límites anti-abuso siguen | `an_allowlisted_address_skips_the_per_address_ceiling_but_no_protection` (techo global 503, 408, 413), `handlers::…::an_allowlisted_address_still_spends_the_daily_gas_cap`, `the_gas_cap_knows_nothing_of_the_stack` |
+| ninguna IP en logs ni respuestas | `an_allowlisted_address_never_reaches_a_log_or_a_response`, `ip_allowlist::nothing_prints_an_address`, `the_config_document_publishes_the_allowlist_by_count_only` |
+| la lista falla cerrado | `ip_allowlist::` `a_document_that_starts_like_json_and_is_no_array_exempts_nobody`, `a_failing_read_keeps_the_list_briefly_then_empties_it`, `a_read_that_never_answers_is_a_failed_read`, `a_list_nobody_re_reads_goes_stale_and_exempts_nobody`, `what_is_refused_and_why` |
+| la IP cambia sin redeploy | `a_new_read_replaces_the_list_and_a_missing_secret_empties_it`, `the_refresher_picks_up_a_new_address_without_a_restart` |
+
+**Bordes revisados:** varias líneas de `X-Forwarded-For`, entradas escritas delante de la del ALB, IPv6 entre
+corchetes, IPv4 mapeada en IPv6 (entrada y cliente), prefijos `/0`, `/16`, `/23`, `/47`, `/+24`, `/33`, `/129`,
+`a/b/c`, rangos no públicos y sus bordes (100.64/10, fc00::/7, fe80::/10), JSON roto, objeto JSON, ítems que no
+son texto, más de 64 entradas, secreto vacío o inexistente, lecturas que fallan o no responden, refresco muerto,
+llave y lista a la vez.
+
+**Gate de CI local** (red cerrada, features de CI, LF en ext4): base `ff0c6404` y cabeza, 0 fallos en las dos;
+lib 1498 → 1518 y bin 1563 → 1584 tests; integración, doctests, crates del workspace, pasos de Python y Node,
+`terraform validate`: verdes en las dos. El último ajuste (datos de test con direcciones de documentación) se
+verificó aparte sobre el árbol commiteado: 61 tests de `rate_policy`, `ip_allowlist` y `erc8004_write_rate_tests`,
+0 fallos.
+
+**Mutaciones** (cada una sobre la cabeza exportada a ext4, con los tests de `rate_policy`, `ip_allowlist` y
+`erc8004_write_rate_tests`; restaurada byte a byte después; al final el árbol, idéntico al original). 24 de 24 en
+ROJO:
+
+| # | Mutación | Resultado |
+|---|---|---|
+| K1 | cualquier llave bien formada coincide (`ct_eq(..) \|\| true`) | ROJO (9 tests) |
+| K2 | se aceptan varias líneas del header | ROJO (`a_malformed_or_false_key_…`) |
+| K3 | una llave corta está bien formada | ROJO (`a_short_key_never_authenticates_…`) |
+| A1 | cualquier IP exenta en cuanto la lista no está vacía | ROJO (presupuestos, suplantación) |
+| A2 | cuenta cualquier entrada de `X-Forwarded-For`, no la del ALB | ROJO (suplantación) |
+| A3 | la lista sujeta al techo en vuelo por dirección | ROJO (`…_but_no_protection`) |
+| A4 | la lista se salta el techo global | ROJO (`…_but_no_protection`) |
+| A6 | una llave rechazada desde una IP de la lista loguea la IP | ROJO (logs) |
+| A7 | `/config` publica la lista como estaba al arrancar | ROJO (`/config`) |
+| A8 | la dirección gana sobre una llave reconocida | ROJO (presupuestos) |
+| W1 | producción nunca lee la lista (`IpAllowlist::disabled()` en `from_env`) | ROJO (`production_reads_the_allowlist_…`) |
+| S1 | código de producción lee una llave propia (`UVD_STACK_KEY`) | ROJO (`the_facilitator_holds_no_stack_key_…`) |
+| S3 | código de producción de `handlers.rs`, después de su primer módulo de test, nombra el header | ROJO (`the_facilitator_holds_no_stack_key_to_send`); la primera corrida no compiló (la línea quedó entre `#[instrument]` y su función) y se repitió |
+| L1 | sin piso de prefijo | ROJO (`what_is_refused_and_why`) |
+| L2 | se aceptan direcciones no públicas | ROJO (`what_is_refused_and_why`) |
+| L3 | un cliente IPv4 mapeado no es su IPv4 | ROJO (bordes de prefijo) |
+| L4 | una lectura nueva no reemplaza la lista | ROJO (4 tests) |
+| L5 | una lista que no se puede releer se queda para siempre | ROJO (2 tests) |
+| L6 | el resumen imprime una dirección | ROJO (3 tests) |
+| L7 | un objeto JSON se lee como texto | ROJO |
+| L8 | el piso IPv6 más ancho que /48 | ROJO |
+| L9 | un documento que no es lista deja en vigor la lista vieja | ROJO |
+| L10 | una lectura sin respuesta se espera para siempre | ROJO (`a_read_that_never_answers_…`) |
+| L12 | una lista que nadie relee nunca vence | ROJO (`a_list_nobody_re_reads_…`) |
+
+No corridas, por duplicar una guarda que otra mutación ya cubre (sin medir, así que no cuentan): K4 (recortar
+la llave antes del hash; es la M2d de X4-STACK-429, que mataban los casos de espacio de
+`a_malformed_or_false_key_…`), A5 (saltarse el plazo del cuerpo; el test de A4 también exige el 408), L11 (subir
+el 3; el test fija el literal) y S2 (el tope de gas nombra la lista; el test de fuente busca `allowlist`).
+
+Refutador adversarial (un agente, opus), sobre el diff, el encargo y este documento: **CONDITIONAL**, sin P1.
+Los dos P2 (garantías de falla cerrada sin test; el escaneo de fuente cortaba `handlers.rs` en su primer módulo
+de test) quedan cerrados con los tests que matan L9, L10, L12 y S3, más el literal 3 en el test de fallos. De los P3 se aplicaron: test de "gana la llave",
+test del cableado de producción, bordes de `is_public`, redacción neutra y `/config` sin el nombre del secreto,
+"ningún log de la aplicación", y el respaldo por vencimiento cuando el refresco muere. Los que son precondición
+operativa están en §4.

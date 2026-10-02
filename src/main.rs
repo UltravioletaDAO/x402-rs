@@ -81,6 +81,7 @@ mod from_env;
 mod handlers;
 mod idempotency_store;
 mod interop;
+mod ip_allowlist;
 mod receipts;
 mod json_depth;
 mod lease;
@@ -599,7 +600,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // tower_governor's `x-ratelimit-limit` and `x-ratelimit-remaining`, and
     // `/.well-known/uvd-stack.json` lists every bucket `policy.layer` mounted.
     // A recognized stack identity gets `x-ratelimit-exempt` instead.
+    //
+    // So does a client address on the IP allowlist (decision 144: the
+    // operator's own tests carry no key). The list lives in a Secrets Manager
+    // secret and is re-read while the task runs, so a new address needs no
+    // deploy; it never reaches an application log (src/ip_allowlist.rs).
+    // Disabled, and no AWS call made, without UVD_IP_ALLOWLIST_SECRET.
     let policy = rate_policy::RatePolicy::from_env();
+    if let Some(secret) = policy.allowlist().source().map(str::to_owned) {
+        let config = aws_config::load_defaults(aws_config::BehaviorVersion::latest()).await;
+        let client = aws_sdk_secretsmanager::Client::new(&config);
+        policy.allowlist().spawn_refresher(move || {
+            let client = client.clone();
+            let secret = secret.clone();
+            async move { ip_allowlist::read_secret(&client, &secret).await }
+        });
+    }
     let admission = rate_policy::Admission::from_env(&policy);
     for budget in rate_policy::BUDGETS {
         let limit = budget.limit();
@@ -696,16 +712,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         )
         // `GET /config`: the policy in force, for an operator or a stack
         // client checking that its identity is recognized (the response to a
-        // recognized key carries `x-ratelimit-exempt`). Computed once: nothing
-        // it reports changes while the process runs.
+        // recognized key carries `x-ratelimit-exempt`). Computed once, save the
+        // IP allowlist's count and last read, which change while the process
+        // runs and are read at each request.
         .merge(
-            rate_policy::config_routes(rate_policy::document(
+            rate_policy::config_routes(
+                rate_policy::document(
+                    &policy,
+                    &admission,
+                    erc8004_writes_enabled
+                        .then(erc8004::daily_cap::global)
+                        .as_deref(),
+                ),
                 &policy,
-                &admission,
-                erc8004_writes_enabled
-                    .then(erc8004::daily_cap::global)
-                    .as_deref(),
-            ))
+            )
             .layer(policy.layer(&secondary_read_config)),
         );
     if erc8004_writes_enabled {

@@ -20836,6 +20836,49 @@ mod erc8004_write_rate_tests {
         assert_eq!(refusal["code"], "erc8004_daily_write_limit");
     }
 
+    /// Nor does an address on the IP allowlist skip it: what the list exempts
+    /// from is the write budget, never the gas.
+    #[tokio::test]
+    async fn an_allowlisted_address_still_spends_the_daily_gas_cap() {
+        use crate::erc8004::daily_cap::{self, DailyWriteCap};
+        let listed = "198.51.100.93";
+        let cap = Arc::new(DailyWriteCap::new(
+            1000,
+            std::collections::HashMap::from([(crate::network::Network::Base, 1)]),
+            Box::new(|| 0),
+        ));
+        let sends = Router::new()
+            .route(
+                "/feedback/evm/submit",
+                post(|| async {
+                    daily_cap::mark_sent();
+                    "sent"
+                }),
+            )
+            .layer(axum::middleware::from_fn_with_state(
+                cap,
+                daily_cap::enforce_with,
+            ));
+        let policy = crate::rate_policy::RatePolicy::none().with_allowlist(listed);
+        let router = erc8004_write_governed(&policy, sends);
+        let body = r#"{"network":"base"}"#;
+
+        let first = post_as(&router, "/feedback/evm/submit", listed, None, body).await;
+        assert_eq!(first.status(), StatusCode::OK);
+        assert_eq!(
+            first.headers()["x-ratelimit-exempt"],
+            crate::ip_allowlist::EXEMPT_AS
+        );
+
+        let second = post_as(&router, "/feedback/evm/submit", listed, None, body).await;
+        assert_eq!(second.status(), StatusCode::TOO_MANY_REQUESTS);
+        let bytes = axum::body::to_bytes(second.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let refusal: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(refusal["code"], "erc8004_daily_write_limit");
+    }
+
     /// `main.rs` mounts the governed write router, never the bare one, and the
     /// bazar keeps its own budget: `discovery_register_config` still carries
     /// 1 token every 12s with burst 250 and meters exactly the bazar's register

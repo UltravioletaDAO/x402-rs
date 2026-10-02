@@ -183,8 +183,10 @@ Ultravioleta DAO's own services present an `X-UVD-Stack-Key` and are not
 charged to their address by any bucket or by the per-address ceiling (the
 response carries `x-ratelimit-exempt` instead of the rate-limit headers above:
 there is no bucket to report on); the body deadline, the task's ceiling and the
-daily write limit still apply to them. Every value in force is published at
-`GET /config`, each bucket under the name its `RateLimit-Policy` carries.
+daily write limit still apply to them. The same holds for a client address on
+the operator's IP allowlist (`x-ratelimit-exempt: ip-allowlist`). Every value in
+force is published at `GET /config`, each bucket under the name its
+`RateLimit-Policy` carries.
 
 ## Content negotiation
 
@@ -3098,7 +3100,10 @@ budget (`rateLimits.budgets`: its routes, the period of one token, the burst, th
 the two variables that override them; `name` is the one its `RateLimit-Policy` header carries, and \
 the same budgets are `rate_limits` of `/.well-known/uvd-stack.json`), the stack identities that skip \
 those budgets (by service \
-name, with how many credentials each holds -- never a key or a digest), admission (the per-address \
+name, with how many credentials each holds -- never a key or a digest), the IP allowlist that skips \
+them too (`ipAllowlist`: how many entries are in force and how its last read went -- `ok`, \
+`unreadable`, `missing`, `failing`, `stale` or `never` -- as it stands at this request; never an \
+address), admission (the per-address \
 ceiling behind `429 too_many_concurrent_requests`, the body deadline behind `408 request_timeout`, \
 the task's ceiling behind `503 overloaded`), and the ERC-8004 daily write limit per network.
 
@@ -3106,7 +3111,9 @@ the task's ceiling behind `503 overloaded`), and the ERC-8004 daily write limit 
 address by any budget nor by the per-address ceiling, and is answered with \
 `x-ratelimit-exempt: <service>` and no `RateLimit-Policy` or `RateLimit`; an absent, malformed, \
 unknown or revoked key is charged like any \
-other caller. Neither the body deadline, nor the task's ceiling of concurrent requests (`503`, every \
+other caller. A request whose client address (the last `X-Forwarded-For` entry, the one the load \
+balancer appends) is on the IP allowlist skips the same, answered with `x-ratelimit-exempt: \
+ip-allowlist`. Neither the body deadline, nor the task's ceiling of concurrent requests (`503`, every \
 caller), nor the daily write limit (`429 erc8004_daily_write_limit`, it protects the gas the \
 facilitator pays) is skipped.
 
@@ -3131,6 +3138,12 @@ Rate limited per IP like the other cheap reads.",
                         { "name": "execution-market", "active": true, "credentials": 1 },
                         { "name": "karmakadabra", "active": false, "credentials": 0 }
                     ],
+                    "exemptFrom": ["every budget under rateLimits", "overload.perClient"],
+                    "notExemptFrom": ["overload (the global ceiling)", "overload.bodyDeadlineMs", "erc8004DailyWriteCap", "the RPC provider throttle"]
+                },
+                "ipAllowlist": {
+                    "enabled": true, "entries": 1, "lastRead": "ok",
+                    "refreshSecs": 300, "exemptHeader": "x-ratelimit-exempt: ip-allowlist",
                     "exemptFrom": ["every budget under rateLimits", "overload.perClient"],
                     "notExemptFrom": ["overload (the global ceiling)", "overload.bodyDeadlineMs", "erc8004DailyWriteCap", "the RPC provider throttle"]
                 },

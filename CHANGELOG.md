@@ -18,7 +18,12 @@
 - The `/bazaar` page shows one number, the listings verified alive, and drops the
   health filter, the "Listed" tier and the catalog health, sources, networks and
   tiers sections. Featured products appear only while one of their listings is
-  verified alive.
+  verified alive. The landing page's Bazaar block shows that same single number
+  (it showed listed endpoints, alive, first-party + VIP and aggregated
+  facilitators).
+- The `/bazaar` search box sends `q` up to the cap the server publishes in
+  `GET /discovery/config` (`search.maxQueryChars`, 400) instead of cutting it at
+  128 characters.
 - An alive listing is re-probed before its verification leaves the window. A
   record written before this release keeps its listing on the reading the
   observed-terms overlay took in the same probe, and is re-probed at once.

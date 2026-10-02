@@ -255,6 +255,10 @@ pub fn effective() -> serde_json::Value {
             "overlayPersistSeconds": terms_persist_secs(),
             "maxRecords": terms_max_records(),
         },
+        // The `/bazaar` page reads its `q` cap here instead of typing one.
+        "search": {
+            "maxQueryChars": crate::discovery_search::MAX_QUERY_CHARS,
+        },
     })
 }
 
@@ -265,7 +269,13 @@ mod tests {
     #[test]
     fn the_published_view_lists_every_group() {
         let v = effective();
-        for group in ["catalog", "healthProber", "revalidation", "observedTerms"] {
+        for group in [
+            "catalog",
+            "healthProber",
+            "revalidation",
+            "observedTerms",
+            "search",
+        ] {
             assert!(
                 v.get(group).is_some(),
                 "{group} missing from /discovery/config"
@@ -316,5 +326,25 @@ mod tests {
         let published = effective();
         assert_eq!(published["catalog"]["maxPerHost"], 100);
         assert_eq!(published["catalog"]["maxHostSharePercent"], 5);
+    }
+
+    /// The `q` cap is defined once (`MAX_QUERY_CHARS`, which the handler
+    /// enforces); the `/bazaar` page reads it from here and types none of its
+    /// own, so the page and the server cannot disagree about it again.
+    #[test]
+    fn the_bazaar_page_reads_the_query_cap_it_does_not_type_one() {
+        assert_eq!(
+            effective()["search"]["maxQueryChars"],
+            crate::discovery_search::MAX_QUERY_CHARS
+        );
+        let page = include_str!("../static/bazaar.html");
+        assert!(
+            page.contains("search.maxQueryChars"),
+            "the page must read the cap from /discovery/config"
+        );
+        assert!(
+            !page.contains("slice(0, 128)") && !page.contains("slice(0, 400)"),
+            "the page must not cut `q` at a number of its own"
+        );
     }
 }

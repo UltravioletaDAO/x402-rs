@@ -2218,26 +2218,14 @@
                         <span style="font-size: 0.65rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.08em; color: var(--accent); border: 1px solid rgba(0, 212, 255, 0.4); border-radius: 999px; padding: 0.15rem 0.6rem;" data-i18n="bazaar.badge">Live</span>
                     </div>
                     <p style="color: var(--text-muted); margin: 0.75rem 0 1.5rem; max-width: 720px;" data-i18n="bazaar.description">
-                        We aggregate paid endpoints from a dozen x402 facilitators — then filter the junk, sweep the dead
-                        links with a live 402 health probe, and rank our own products first. Only payable, reachable
-                        endpoints are shown by default.
+                        We aggregate paid endpoints from a dozen x402 facilitators, filter the junk and probe each one
+                        with the request it declares, GET or POST. Only the endpoints that answer a valid 402 payment
+                        challenge are shown.
                     </p>
                     <div class="stats" style="margin: 0 0 1.5rem;">
                         <div class="stat-card">
-                            <div class="stat-value" id="bz-visible">—</div>
-                            <div class="stat-label" data-i18n="bazaar.listed">Listed endpoints</div>
-                        </div>
-                        <div class="stat-card">
                             <div class="stat-value" id="bz-alive" style="color: var(--success);">—</div>
-                            <div class="stat-label" data-i18n="bazaar.alive">Verified alive (402)</div>
-                        </div>
-                        <div class="stat-card">
-                            <div class="stat-value" id="bz-curated">—</div>
-                            <div class="stat-label" data-i18n="bazaar.curated">First-party + VIP</div>
-                        </div>
-                        <div class="stat-card">
-                            <div class="stat-value" id="bz-sources">—</div>
-                            <div class="stat-label" data-i18n="bazaar.sources">Aggregated facilitators</div>
+                            <div class="stat-label" data-i18n="bazaar.alive">Verified alive</div>
                         </div>
                     </div>
                     <a href="/bazaar" style="display: inline-flex; align-items: center; gap: 0.5rem; background: var(--accent); color: #06121a; font-weight: 700; text-decoration: none; padding: 0.7rem 1.4rem; border-radius: 10px;">
@@ -3097,11 +3085,8 @@
                 "endpoints.registerNote": "<strong style='color: #8b5cf6;'>Gasless registration:</strong> The facilitator wallet pays all gas fees. Without <code style='color: var(--accent); font-size: 0.75rem;'>recipient</code>, the NFT stays with the facilitator. With <code style='color: var(--accent); font-size: 0.75rem;'>recipient</code>, the NFT is minted then transferred via ERC-721 <code style='color: var(--accent); font-size: 0.75rem;'>safeTransferFrom</code> (2 transactions, both paid by facilitator). Note: <code style='color: var(--accent); font-size: 0.75rem;'>agentWallet</code> is cleared on transfer and must be re-set by the new owner.",
                 "bazaar.title": "The Curated Bazaar",
                 "bazaar.badge": "Live",
-                "bazaar.description": "We aggregate paid endpoints from a dozen x402 facilitators — then filter the junk, sweep the dead links with a live 402 health probe, and rank our own products first. Only payable, reachable endpoints are shown by default.",
-                "bazaar.listed": "Listed endpoints",
-                "bazaar.alive": "Verified alive (402)",
-                "bazaar.curated": "First-party + VIP",
-                "bazaar.sources": "Aggregated facilitators",
+                "bazaar.description": "We aggregate paid endpoints from a dozen x402 facilitators, filter the junk and probe each one with the request it declares, GET or POST. Only the endpoints that answer a valid 402 payment challenge are shown.",
+                "bazaar.alive": "Verified alive",
                 "bazaar.cta": "Explore the Bazaar",
                 "header.subtitle": "Payment infrastructure for autonomous agents",
                 "hero.title": "Payment infrastructure for autonomous agents",
@@ -3280,11 +3265,8 @@
                 "endpoints.registerNote": "<strong style='color: #8b5cf6;'>Registro sin gas:</strong> La wallet del facilitador paga todo el gas. Sin <code style='color: var(--accent); font-size: 0.75rem;'>recipient</code>, el NFT se queda con el facilitador. Con <code style='color: var(--accent); font-size: 0.75rem;'>recipient</code>, el NFT se acuña y luego se transfiere vía ERC-721 <code style='color: var(--accent); font-size: 0.75rem;'>safeTransferFrom</code> (2 transacciones, ambas pagadas por el facilitador). Nota: <code style='color: var(--accent); font-size: 0.75rem;'>agentWallet</code> se borra al transferir y el nuevo dueño debe volver a fijarlo.",
                 "bazaar.title": "El Bazar Curado",
                 "bazaar.badge": "En vivo",
-                "bazaar.description": "Agregamos endpoints de pago de una docena de facilitadores x402 — luego filtramos la basura, barremos los enlaces muertos con un probe de salud 402 en vivo, y ponemos nuestros productos de primeros. Por defecto solo se muestran endpoints pagables y alcanzables.",
-                "bazaar.listed": "Endpoints listados",
-                "bazaar.alive": "Verificados vivos (402)",
-                "bazaar.curated": "Propios + VIP",
-                "bazaar.sources": "Facilitadores agregados",
+                "bazaar.description": "Agregamos endpoints de pago de una docena de facilitadores x402, filtramos la basura y sondeamos cada uno con la petición que declara, GET o POST. Solo se muestran los que contestan un desafío de pago 402 válido.",
+                "bazaar.alive": "Verificados vivos",
                 "bazaar.cta": "Explorar el Bazar",
                 "header.subtitle": "Infraestructura de pagos para agentes autónomos",
                 "hero.title": "Infraestructura de pagos para agentes autónomos",
@@ -3587,20 +3569,16 @@
             setInterval(refresh, 60000);
         })();
 
-        // Curated Bazaar counters. Served from the facilitator's own 60s-cached
-        // aggregate; on any failure the dashes stay rather than showing a lie.
+        // Curated Bazaar counter: one number, the listings verified alive -- the
+        // same one /bazaar shows, and exactly what the catalog exposes. Served
+        // from the facilitator's own 60s-cached aggregate; on any failure the
+        // dash stays rather than showing a lie.
         (function loadBazaarStats() {
             fetch('/discovery/stats').then(r => r.json()).then(s => {
-                const tier = s.byTier || {}, health = s.byHealth || {};
-                const set = (id, v) => {
-                    const el = document.getElementById(id);
-                    if (el && Number.isFinite(v)) el.textContent = v.toLocaleString();
-                };
-                set('bz-visible', s.visible ?? s.total);
-                set('bz-alive', health.alive || 0);
-                set('bz-curated', (tier.first_party || 0) + (tier.vip || 0));
-                set('bz-sources', Object.keys(s.bySourceFacilitator || {}).length);
-            }).catch(() => { /* leave the dashes */ });
+                const v = s.verifiedAlive ?? s.visible;
+                const el = document.getElementById('bz-alive');
+                if (el && Number.isFinite(v)) el.textContent = v.toLocaleString();
+            }).catch(() => { /* leave the dash */ });
         })();
 
         // The shared switcher is the only thing on the page carrying

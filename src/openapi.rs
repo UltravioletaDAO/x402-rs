@@ -2696,8 +2696,10 @@ not verified alive go before any that are, and within each a host's aggregated c
 number go right after the duplicates of a templated family; a catalog with room is never trimmed
 for it, and a first-hand listing never), `healthProber` (the probe budget -- `budgetPerTick` is
 `maxRps * tickSeconds` and is the number the revalidation queue spends from, never adds to),
-`revalidation`, `observedTerms`, and `runtime` (whether this replica owns the periodic jobs,
-the queue depth, and the catalog size right now).
+`revalidation`, `observedTerms`, `search` (`maxQueryChars`, the longest `q` that
+`GET /discovery/resources` accepts, which the `/bazaar` page reads instead of typing it), and
+`runtime` (whether this replica owns the periodic jobs, the queue depth, and the catalog size
+right now).
 
 A diagnostic, not a contract: names and groups follow the code.
 "#,
@@ -2715,6 +2717,7 @@ A diagnostic, not a contract: names and groups follow the code.
                     "perHostPerTick": 2, "backoffBaseSeconds": 60, "backoffMaxSeconds": 3600
                 },
                 "observedTerms": {"freshnessWindowSeconds": 604800, "maxRecords": 2000},
+                "search": {"maxQueryChars": 400},
                 "runtime": {"ownsPeriodicJobs": true, "revalidationQueueDepth": 12, "catalogHeld": 2000}
             })
         )

@@ -495,12 +495,27 @@
       if(state.network) p.set('network', state.network);
       if(state.source) p.set('source', state.source);
       // Server-side search: the whole catalog is searched, not just this page.
-      if(state.q) p.set('q', state.q.slice(0, 128));
+      // Cut in characters, as the server counts them, at the cap it publishes.
+      if(state.q) p.set('q', maxQueryChars ? [...state.q].slice(0, maxQueryChars).join('') : state.q);
       if(extra) for(const k in extra) p.set(k, extra[k]);
       return p.toString();
     }
 
     async function fetchJSON(url){ const r = await fetch(url, inflight ? {signal: inflight.signal} : {}); if(!r.ok) throw new Error(r.status); return r.json(); }
+
+    // The server's cap on `q`, read from GET /discovery/config (`search.maxQueryChars`)
+    // so the page never types a number of its own. Until it is read, or if it
+    // cannot be, nothing is cut here: the server answers an over-long `q` itself.
+    let maxQueryChars = null;
+    async function loadQueryCap(){
+      try {
+        const r = await fetch('/discovery/config');
+        if(!r.ok) return;
+        const c = await r.json();
+        const n = c && c.search && c.search.maxQueryChars;
+        if(Number.isInteger(n) && n > 0){ maxQueryChars = n; document.getElementById('q').maxLength = n; }
+      } catch(e){ /* the server still enforces it */ }
+    }
 
     async function loadStats(){
       // One number: what the catalog exposes, which is exactly what the list
@@ -721,6 +736,7 @@
     applyLang(storedLang());
     loadStats();
     loadFeatured();
+    loadQueryCap();
   </script>
 
 <script>

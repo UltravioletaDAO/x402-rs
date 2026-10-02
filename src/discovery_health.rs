@@ -5005,6 +5005,36 @@ mod declared_method_tests {
         assert!(walk(&registry).await.is_empty());
     }
 
+    /// A JSON-RPC answer is the `result` object of the message with the id
+    /// asked, from one JSON message or from an event stream; an error, another
+    /// id or a non-object result is no answer.
+    #[test]
+    fn a_jsonrpc_answer_is_read_by_its_id_from_json_or_an_event_stream() {
+        let ok = r#"{"jsonrpc":"2.0","id":2,"result":{"tools":[]}}"#;
+        assert!(jsonrpc_result(ok, Some("application/json"), 2).is_some());
+        assert!(jsonrpc_result(ok, None, 1).is_none(), "another id");
+        assert!(
+            jsonrpc_result(
+                r#"{"jsonrpc":"2.0","id":2,"error":{"code":-1},"result":{}}"#,
+                None,
+                2
+            )
+            .is_none(),
+            "an error is not a result"
+        );
+        assert!(
+            jsonrpc_result(r#"{"jsonrpc":"2.0","id":2,"result":[]}"#, None, 2).is_none(),
+            "a result is an object"
+        );
+        let stream = "event: message\r\ndata: {\"jsonrpc\":\"2.0\",\"method\":\"notifications/progress\"}\r\n\r\ndata:{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{}}\r\n\r\ndata: {\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"tools\":[{}]}}\r\n\r\n";
+        let answer = jsonrpc_result(stream, Some("text/event-stream; charset=utf-8"), 2).unwrap();
+        assert_eq!(answer["tools"].as_array().unwrap().len(), 1);
+        assert!(
+            jsonrpc_result(stream, Some("application/json"), 2).is_none(),
+            "a stream is read as one only when it says it is one"
+        );
+    }
+
     /// Neither kind of evidence stands in for the other.
     #[test]
     fn a_challenge_does_not_verify_an_mcp_endpoint_nor_a_handshake_an_http_listing() {

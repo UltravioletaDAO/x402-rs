@@ -334,8 +334,27 @@ async fn safe_request(
     safe_request_with(user_agent, timeout, url, body, &[]).await
 }
 
+/// The extra headers one hop carries: all of them on the original request's
+/// host, none on any other. A session id one server assigned is not handed to
+/// a host it redirects to.
+pub(crate) fn hop_headers<'a>(
+    origin: &Url,
+    current: &Url,
+    headers: &'a [ExtraHeader],
+) -> &'a [ExtraHeader] {
+    let same_host = current
+        .host_str()
+        .zip(origin.host_str())
+        .is_some_and(|(a, b)| a.eq_ignore_ascii_case(b));
+    if same_host {
+        headers
+    } else {
+        &[]
+    }
+}
+
 /// [`safe_request`] with `headers`, which every hop on the original host
-/// carries and no hop to another host does.
+/// carries and no hop to another host does ([`hop_headers`]).
 async fn safe_request_with(
     user_agent: &str,
     timeout: Duration,
@@ -360,11 +379,7 @@ async fn safe_request_with(
             .build()
             .map_err(|e| SecurityReject::Http(e.to_string()))?;
 
-        let same_host = current
-            .host_str()
-            .zip(url.host_str())
-            .is_some_and(|(a, b)| a.eq_ignore_ascii_case(b));
-        let extra = if same_host { headers } else { &[] };
+        let extra = hop_headers(url, &current, headers);
         let resp = json_request_with(&client, &current, body.as_ref(), extra)
             .send()
             .await
@@ -723,6 +738,45 @@ mod tests {
             redirect_hop(307, &origin, ours.clone(), None),
             Some((ours.clone(), None))
         );
+    }
+
+    /// The MCP handshake's headers: `accept` naming both answer formats, and the
+    /// server's own session id only when it is 1 to 256 visible ASCII characters.
+    #[test]
+    fn an_mcp_session_id_goes_back_only_when_it_is_a_token() {
+        let names = |s: Option<&str>| -> Vec<String> {
+            mcp_headers(s)
+                .into_iter()
+                .map(|(k, v)| format!("{}={}", k.as_str(), v.to_str().unwrap()))
+                .collect()
+        };
+        let accept = "accept=application/json, text/event-stream".to_string();
+        assert_eq!(names(None), [accept.clone()]);
+        assert_eq!(
+            names(Some("s-123")),
+            [accept.clone(), "mcp-session-id=s-123".to_string()]
+        );
+        for bad in [
+            String::new(),
+            "with space".to_string(),
+            "tab\there".to_string(),
+            "x".repeat(257),
+            "caf\u{e9}".to_string(),
+        ] {
+            assert_eq!(names(Some(&bad)), [accept.clone()], "{bad:?}");
+        }
+        assert_eq!(names(Some(&"x".repeat(256))).len(), 2, "256 is allowed");
+    }
+
+    /// Those headers never ride a redirect to another host.
+    #[test]
+    fn extra_headers_stay_on_the_original_host() {
+        let origin = Url::parse("https://mcp.seller.example/mcp").unwrap();
+        let headers = mcp_headers(Some("s-123"));
+        let same = Url::parse("https://MCP.seller.example/other").unwrap();
+        let other = Url::parse("https://elsewhere.example/mcp").unwrap();
+        assert_eq!(hop_headers(&origin, &same, &headers).len(), 2);
+        assert!(hop_headers(&origin, &other, &headers).is_empty());
     }
 
     #[test]

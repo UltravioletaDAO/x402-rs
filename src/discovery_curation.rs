@@ -13,7 +13,7 @@ use serde::Deserialize;
 use url::Url;
 
 use crate::discovery_security::match_manifest_prefix;
-use crate::types_v2::{CurationInfo, Tier};
+use crate::types_v2::{CurationInfo, DiscoveryResource, Tier};
 
 #[derive(Debug, Clone, Deserialize)]
 struct Prefix {
@@ -35,6 +35,9 @@ struct ManifestEntry {
     prefixes: Vec<Prefix>,
     #[serde(default)]
     erc8004: Option<Erc8004Ref>,
+    /// The recipients the curated product is paid at, as measured.
+    #[serde(default, rename = "expectedPayTo")]
+    expected_pay_to: Vec<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -49,12 +52,17 @@ struct ManifestFile {
     entries: Vec<ManifestEntry>,
     #[serde(default)]
     suppressed: Vec<SuppressEntry>,
+    /// Prefixes whose owners asked to be probed with GET only: never a POST,
+    /// PUT or PATCH, whatever their listing declares.
+    #[serde(default, rename = "probeGetOnly")]
+    probe_get_only: Vec<Prefix>,
 }
 
 /// Loaded curation manifest.
 pub struct CurationManifest {
     entries: Vec<ManifestEntry>,
     suppressed: Vec<SuppressEntry>,
+    probe_get_only: Vec<Prefix>,
 }
 
 impl Default for CurationManifest {
@@ -80,6 +88,7 @@ impl CurationManifest {
                     Self {
                         entries: f.entries,
                         suppressed: f.suppressed,
+                        probe_get_only: f.probe_get_only,
                     }
                 }
                 Err(e) => {
@@ -106,6 +115,7 @@ impl CurationManifest {
         Self {
             entries: Vec::new(),
             suppressed: Vec::new(),
+            probe_get_only: Vec::new(),
         }
     }
 
@@ -114,6 +124,47 @@ impl CurationManifest {
         self.suppressed
             .iter()
             .any(|s| match_manifest_prefix(url, &s.host, &s.path))
+    }
+
+    /// Whether the URL's owner asked the health prober for GET only
+    /// (`probeGetOnly`): no body method is ever sent there.
+    pub fn probes_get_only(&self, url: &Url) -> bool {
+        self.probe_get_only
+            .iter()
+            .any(|p| match_manifest_prefix(url, &p.host, &p.path))
+    }
+
+    /// Whether a listing's declared recipients are ones the curated products
+    /// on its HOST are paid at (`expectedPayTo`): every declared `payTo`,
+    /// compared without case. True for a listing on a host no curated entry
+    /// names, or whose entries declare no recipients.
+    ///
+    /// What ties an MCP listing to its product. An HTTP listing's terms are
+    /// checked against its own live challenge (the payTo drift check); an MCP
+    /// endpoint is verified by its handshake, which carries no terms, so a
+    /// listing anybody registered on a curated product's host would otherwise
+    /// be shown on that host with the registrant's recipients.
+    ///
+    /// By host, not by prefix: one endpoint can be named by more than one URL.
+    pub fn pay_to_backed(&self, r: &crate::types_v2::DiscoveryResource) -> bool {
+        let Some(host) = r.url.host_str() else {
+            return true;
+        };
+        let host = normalized_host(host);
+        let expected: Vec<&String> = self
+            .entries
+            .iter()
+            .filter(|e| e.prefixes.iter().any(|p| normalized_host(&p.host) == host))
+            .flat_map(|e| e.expected_pay_to.iter())
+            .collect();
+        if expected.is_empty() {
+            return true;
+        }
+        !r.accepts.is_empty()
+            && r.accepts.iter().all(|a| {
+                let declared = a.pay_to.to_string();
+                expected.iter().any(|e| e.eq_ignore_ascii_case(&declared))
+            })
     }
 
     /// Resolve the curation tier. A manifest match wins; otherwise a
@@ -144,6 +195,28 @@ impl CurationManifest {
         }
     }
 
+    /// [`Self::resolve`] for a whole listing: a curated tier ranks tools, so a
+    /// listing that sells content never holds `first_party` or `vip`.
+    ///
+    /// It keeps the tier any other listing earns on its own -- `verified` when
+    /// alive, `listed` otherwise -- and keeps its label, so the publisher is
+    /// still named. On the 2026-10-01 catalog the 379 essays under one
+    /// publisher's prefix resolved to `vip` and sorted above every API, and
+    /// their publisher asked for exactly this.
+    pub fn resolve_listing(&self, r: &DiscoveryResource, alive: bool) -> Option<CurationInfo> {
+        let resolved = self.resolve(&r.url, alive);
+        if crate::discovery_taxonomy::classify(r).kind != crate::discovery_taxonomy::Kind::Content {
+            return resolved;
+        }
+        resolved.map(|c| match c.tier {
+            Tier::FirstParty | Tier::Vip => CurationInfo {
+                tier: if alive { Tier::Verified } else { Tier::Listed },
+                ..c
+            },
+            _ => c,
+        })
+    }
+
     /// Manifest entries that carry an ERC-8004 identity, as
     /// `(label, url_prefix, network_string, agent_id)` for the attestation task
     /// (WS-E). `label` is the entry name — the join key for the verification
@@ -168,6 +241,11 @@ impl CurationManifest {
     }
 }
 
+/// A host as [`match_manifest_prefix`] compares one: no case, no trailing dot.
+fn normalized_host(host: &str) -> String {
+    host.strip_suffix('.').unwrap_or(host).to_ascii_lowercase()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -182,6 +260,7 @@ mod tests {
         CurationManifest {
             entries: f.entries,
             suppressed: f.suppressed,
+            probe_get_only: f.probe_get_only,
         }
     }
 
@@ -201,12 +280,39 @@ mod tests {
                     path: "/payments/access/".to_string(),
                 }],
                 erc8004: None,
+                expected_pay_to: Vec::new(),
             }],
             suppressed: vec![SuppressEntry {
                 host: "facilitator.ultravioletadao.xyz".to_string(),
                 path: "/__bazaar_debug__".to_string(),
             }],
+            probe_get_only: Vec::new(),
         }
+    }
+
+    #[test]
+    fn an_owner_can_ask_for_get_only_probes_by_prefix() {
+        let f = CurationManifest::parse(
+            r#"{"entries":[],"probeGetOnly":[{"host":"api.seller.example","path":"/write/"}]}"#,
+        )
+        .unwrap();
+        let m = CurationManifest {
+            entries: f.entries,
+            suppressed: f.suppressed,
+            probe_get_only: f.probe_get_only,
+        };
+        let yes = Url::parse("https://api.seller.example/write/orders").unwrap();
+        assert!(m.probes_get_only(&yes));
+        for no in [
+            "https://api.seller.example/read/orders",
+            "https://api.seller.example.evil.com/write/orders",
+        ] {
+            assert!(!m.probes_get_only(&Url::parse(no).unwrap()), "{no}");
+        }
+        assert!(
+            !shipped().probes_get_only(&yes),
+            "the shipped manifest opts nobody out yet"
+        );
     }
 
     #[test]

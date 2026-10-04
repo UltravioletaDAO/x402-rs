@@ -605,9 +605,14 @@ jobs:
           # 2026-08-29 incident happened: the ALB-request-count policy sat in main.tf for a
           # day, unapplied, while CPU/memory (which don't fire for an I/O-bound service) were
           # the only live policies and the service never scaled during a 3x traffic spike.
+          # The task role's IpAllowlistRead policy (decision 144) rides along like the other
+          # task-role policy: CI may write that role's inline policies (cicd-iam-policy.tf).
+          # The Emporium stack-key digest secret does NOT: CI cannot create secrets, so it is
+          # applied by hand (docs/handoffs/SL-X4.md, section 4).
           terraform apply -input=false -auto-approve \
             -target=aws_dynamodb_table.hedera_settlements \
             -target=aws_iam_role_policy.hedera_settlement_access \
+            -target=aws_iam_role_policy.ip_allowlist_read \
             -target=aws_iam_role_policy.secrets_access \
             -target=aws_ecs_task_definition.facilitator \
             -target=aws_ecs_service.facilitator \

@@ -1143,6 +1143,32 @@ pub enum HealthStatus {
     Unprobeable,
 }
 
+/// Why a resource is quarantined. Response-facing as `health.quarantineReason`,
+/// so a reader can tell a dead endpoint from one whose payment was redirected.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum QuarantineReason {
+    /// Consecutive fail-class probes (404/410/5xx/unreachable).
+    FailStreak,
+    /// A live 402 paid a recipient the listing never declared: a hijack signal.
+    PayToDrift,
+}
+
+/// How a resource's last probe verified it alive. Response-facing as
+/// `health.verifiedBy`, beside `verifiedAt`, so a router can tell a listing
+/// whose payment challenge was read from an MCP server that only showed it is
+/// up and serving tools.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum VerifiedBy {
+    /// A 402 to the request the listing declares carried a valid x402 challenge
+    /// that passed the payTo drift check.
+    X402Challenge,
+    /// An MCP endpoint completed its handshake (`initialize`, then `tools/list`)
+    /// and listed at least one tool.
+    McpHandshake,
+}
+
 /// Response-facing health snapshot for a resource. Set on list responses from
 /// the health overlay; never persisted onto the resource in S3.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1155,6 +1181,32 @@ pub struct HealthState {
     pub http_status: Option<u16>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub latency_ms: Option<u64>,
+    /// Share of the `probeCount` probes recorded for this URL that found it up
+    /// (alive, auth-gated or degraded), in basis points: 9977 = 99.77%. The
+    /// number the uptime attestation publishes, per listing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub uptime_bps: Option<u16>,
+    /// How many probes `uptimeBps` is over.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub probe_count: Option<u64>,
+    /// HTTP method of the last probe (`GET`, `POST`, `PUT`, `PATCH`): the one
+    /// the listing declares, or the one the fallback found answering. Absent
+    /// for MCP endpoints and for records older than method-aware probing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub probe_method: Option<String>,
+    /// Why the resource is quarantined; present only while `status` is
+    /// `quarantined`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quarantine_reason: Option<QuarantineReason>,
+    /// When the last probe verified the resource alive: with the request the
+    /// listing declares, or the one its fallback found, it read a valid x402
+    /// challenge in a 402 -- or, for an MCP endpoint, its handshake listed at
+    /// least one tool. Absent when the last probe did not.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verified_at: Option<u64>,
+    /// How `verifiedAt` was earned; present exactly when it is.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verified_by: Option<VerifiedBy>,
 }
 
 /// Curated tier of a resource (WS-C). Orders the listing:
@@ -1386,6 +1438,36 @@ pub struct DiscoveryResource {
     /// time; never persisted.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub curation: Option<CurationInfo>,
+
+    /// `api` or `content`: whether the listing sells a call to a tool or a
+    /// piece of content. Response-only, resolved at read time from the
+    /// declared taxonomy (`config/bazaar_taxonomy.json`); never persisted, so a
+    /// registrant cannot assert it and a vocabulary change needs no rewrite.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<crate::discovery_taxonomy::Kind>,
+
+    /// The categories this listing belongs to, from the one closed list in
+    /// `config/bazaar_taxonomy.json`. Response-only, like `kind`. Absent when
+    /// nothing maps: an unmapped spelling is never guessed into a category.
+    ///
+    /// New field rather than a rewrite of `metadata.category`, which stays
+    /// exactly what the seller declared: other systems admit or refuse a
+    /// listing on that declaration, and must never read one nobody made.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub categories: Vec<String>,
+
+    /// How `categories` were obtained: `declared` (the seller's own value, the
+    /// id itself), `normalized` (the seller's value in another spelling) or
+    /// `inferred` (assigned by the operator's curation). Response-only; absent
+    /// exactly when `categories` is.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub category_source: Option<crate::discovery_taxonomy::CategorySource>,
+
+    /// Whether the listing declares what to send. Response-only, derived from
+    /// `extensions.bazaar` by [`DiscoveryResource::has_input_schema`]; the
+    /// declaration itself stays where it is.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub has_input_schema: Option<bool>,
 }
 
 impl DiscoveryResource {
@@ -1436,6 +1518,10 @@ impl DiscoveryResource {
             observed_terms: None,
             health: None,
             curation: None,
+            kind: None,
+            categories: Vec::new(),
+            category_source: None,
+            has_input_schema: None,
         }
     }
 
@@ -1494,6 +1580,10 @@ impl DiscoveryResource {
             observed_terms: None,
             health: None,
             curation: None,
+            kind: None,
+            categories: Vec::new(),
+            category_source: None,
+            has_input_schema: None,
         }
     }
 
@@ -1545,6 +1635,10 @@ impl DiscoveryResource {
             observed_terms: None,
             health: None,
             curation: None,
+            kind: None,
+            categories: Vec::new(),
+            category_source: None,
+            has_input_schema: None,
         }
     }
 
@@ -1646,6 +1740,104 @@ impl DiscoveryResource {
         self.observed_terms = None;
         self.health = None;
         self.curation = None;
+        self.kind = None;
+        self.categories.clear();
+        self.category_source = None;
+        self.has_input_schema = None;
+    }
+
+    /// Whether the listing says what to send: the `bazaar` extension's
+    /// `info.input`, or an `input` property in its JSON Schema.
+    ///
+    /// The question a router asks before it can call anything on an agent's
+    /// behalf. A listing without it can still be paid; it cannot be used
+    /// without guessing the request.
+    pub fn has_input_schema(&self) -> bool {
+        let Some(bazaar) = self.extensions.as_ref().and_then(|e| e.get("bazaar")) else {
+            return false;
+        };
+        let declared = |v: Option<&serde_json::Value>| {
+            v.and_then(serde_json::Value::as_object)
+                .is_some_and(|o| !o.is_empty())
+        };
+        declared(bazaar.get("info").and_then(|i| i.get("input")))
+            || declared(
+                bazaar
+                    .get("schema")
+                    .and_then(|s| s.get("properties"))
+                    .and_then(|p| p.get("input")),
+            )
+    }
+
+    /// Fill this record's missing descriptive fields from another copy of the
+    /// same listing. Returns whether anything was filled.
+    ///
+    /// Descriptive means what is being sold, never on what terms: the
+    /// description, the `bazaar` extension (the declared input and output),
+    /// and the tags. Never the declared category or provider. Price, dates and
+    /// provenance are not touched -- which copy's terms stand is
+    /// `import_verdict`'s question, and it is answered by authority and date.
+    ///
+    /// Only gaps are filled, so text is never replaced, only never lost. Two
+    /// sources publishing the same listing used to decide this the same way
+    /// they decide the price: the copy that won the merge was kept whole, and a
+    /// newer copy with an empty description erased one that had text. A copy
+    /// that carries nothing now leaves the other's text where it is.
+    ///
+    /// Which copy may complete which is the caller's call: `bulk_import` only
+    /// lets a source at least as authoritative donate, so a feed never
+    /// completes an owner's own registration.
+    pub fn fill_descriptive_gaps_from(&mut self, other: &DiscoveryResource) -> bool {
+        let mut filled = false;
+
+        if self.description.trim().is_empty() && !other.description.trim().is_empty() {
+            self.description = other.description.clone();
+            filled = true;
+        }
+
+        let theirs = other
+            .extensions
+            .as_ref()
+            .and_then(|e| e.get("bazaar"))
+            .filter(|b| !b.is_null());
+        let ours_missing = match self.extensions.as_ref() {
+            None => true,
+            Some(serde_json::Value::Object(map)) => map.get("bazaar").is_none_or(|b| b.is_null()),
+            // Not an object: there is no slot to fill without discarding it.
+            Some(_) => false,
+        };
+        if let (Some(bazaar), true) = (theirs, ours_missing) {
+            let mut map = match self.extensions.clone() {
+                Some(serde_json::Value::Object(map)) => map,
+                _ => serde_json::Map::new(),
+            };
+            map.insert("bazaar".to_string(), bazaar.clone());
+            // Same bound as any published blob; over it, keep what we had.
+            if let Some(ext) =
+                crate::discovery_price::sanitize_extensions(Some(serde_json::Value::Object(map)))
+            {
+                self.extensions = Some(ext);
+                filled = true;
+            }
+        }
+
+        // Tags only. `metadata.category` and `provider` are this record's
+        // source's own declaration and stay exactly that: other systems admit
+        // or refuse a listing on the declared category, so it must never be
+        // one this copy's seller did not make. The closed-list `categories`
+        // are resolved separately, at read time.
+        let their_tags = other.metadata.as_ref().map(|m| &m.tags);
+        if let Some(tags) = their_tags.filter(|t| !t.is_empty()) {
+            let ours_empty = self.metadata.as_ref().is_none_or(|m| m.tags.is_empty());
+            if ours_empty {
+                self.metadata
+                    .get_or_insert_with(DiscoveryMetadata::default)
+                    .tags = tags.clone();
+                filled = true;
+            }
+        }
+
+        filled
     }
 }
 
@@ -1792,10 +1984,36 @@ pub struct DiscoveryFilters {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tier: Option<String>,
 
-    /// Free-text search over url / description / provider / category / tags.
-    /// Stored lowercased by `list()` so matching is a plain substring scan.
+    /// Search: a keyword or a whole request in plain words. See
+    /// `discovery_search` for how it matches and ranks.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub q: Option<String>,
+
+    /// `relevance` | `tier`: how results with `q` are ordered. Absent picks by
+    /// the shape of `q` (`discovery_search::SearchQuery::default_sort`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sort: Option<String>,
+
+    // ========== Router filters ==========
+    /// Highest price, in US dollars, of at least one dollar-stablecoin option.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_price_usd: Option<String>,
+
+    /// HTTP method the listing is called with (`GET` when it declares none).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub method: Option<String>,
+
+    /// Whether the listing declares its request in `extensions.bazaar`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub has_input_schema: Option<bool>,
+
+    /// `api` | `content`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
+
+    /// Hosts to leave out, each with its subdomains (comma-separated lists).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub exclude_host: Option<Vec<String>>,
 }
 
 impl DiscoveryFilters {
@@ -1809,6 +2027,12 @@ impl DiscoveryFilters {
             && self.health.is_none()
             && self.tier.is_none()
             && self.q.is_none()
+            && self.sort.is_none()
+            && self.max_price_usd.is_none()
+            && self.method.is_none()
+            && self.has_input_schema.is_none()
+            && self.kind.is_none()
+            && self.exclude_host.is_none()
     }
 }
 
@@ -1996,5 +2220,128 @@ mod tests {
         let v1_error = FacilitatorErrorReason::FreeForm("test error".to_string());
         let v2_error: FacilitatorErrorReasonV2 = v1_error.into();
         assert!(matches!(v2_error, FacilitatorErrorReasonV2::FreeForm(msg) if msg == "test error"));
+    }
+
+    fn bare_listing(description: &str) -> DiscoveryResource {
+        DiscoveryResource::new(
+            Url::parse("https://api.example.com/x").unwrap(),
+            "http".to_string(),
+            description.to_string(),
+            Vec::new(),
+        )
+    }
+
+    #[test]
+    fn descriptive_gaps_are_filled_and_nothing_present_is_replaced() {
+        let mut donor = bare_listing("the donor's text");
+        donor.extensions =
+            Some(serde_json::json!({ "bazaar": { "info": { "input": { "method": "GET" } } } }));
+        donor.metadata = Some(DiscoveryMetadata {
+            category: Some("finance".to_string()),
+            provider: Some("Donor".to_string()),
+            tags: vec!["quotes".to_string()],
+        });
+
+        // Whitespace is a gap; an extensions blob without `bazaar` is a gap in
+        // that slot only; empty tags are a gap. The declared category and
+        // provider are never filled: they are this record's seller's own.
+        let mut held = bare_listing("  ");
+        held.extensions = Some(serde_json::json!({ "builder-code": { "code": "abc" } }));
+        held.metadata = Some(DiscoveryMetadata::default());
+        assert!(held.fill_descriptive_gaps_from(&donor));
+        assert_eq!(held.description, "the donor's text");
+        let ext = held.extensions.as_ref().unwrap();
+        assert_eq!(ext["builder-code"]["code"], "abc");
+        assert_eq!(ext["bazaar"]["info"]["input"]["method"], "GET");
+        assert!(held.has_input_schema());
+        let meta = held.metadata.as_ref().unwrap();
+        assert_eq!(meta.tags, vec!["quotes".to_string()]);
+        assert_eq!(
+            meta.category, None,
+            "a category nobody declared for this copy"
+        );
+        assert_eq!(meta.provider, None);
+
+        // Without a metadata block at all, the tags still land, alone.
+        let mut bare = bare_listing("text");
+        assert!(bare.fill_descriptive_gaps_from(&donor));
+        let meta = bare.metadata.as_ref().unwrap();
+        assert_eq!(
+            (meta.category.as_deref(), meta.tags.len()),
+            (None, 1),
+            "only the tags"
+        );
+
+        // A second pass has nothing left to take.
+        assert!(!held.fill_descriptive_gaps_from(&donor));
+
+        // Present values are never replaced, whoever the donor is.
+        let mut own = bare_listing("its own words");
+        own.extensions = Some(serde_json::json!({ "bazaar": { "info": { "output": {} } } }));
+        own.metadata = Some(DiscoveryMetadata {
+            category: Some("crypto".to_string()),
+            provider: Some("Own".to_string()),
+            tags: vec!["mine".to_string()],
+        });
+        let before = own.clone();
+        assert!(!own.fill_descriptive_gaps_from(&donor));
+        assert_eq!(own.description, before.description);
+        assert_eq!(own.extensions, before.extensions);
+        assert_eq!(own.metadata, before.metadata);
+    }
+
+    #[test]
+    fn a_donor_with_nothing_to_give_changes_nothing() {
+        let mut held = bare_listing("");
+        let mut empty_donor = bare_listing("   ");
+        empty_donor.metadata = Some(DiscoveryMetadata {
+            category: Some(" ".to_string()),
+            provider: None,
+            tags: Vec::new(),
+        });
+        empty_donor.extensions = Some(serde_json::json!({ "bazaar": null }));
+        assert!(!held.fill_descriptive_gaps_from(&empty_donor));
+        assert_eq!(held.metadata, None, "no empty block is invented");
+        assert_eq!(held.extensions, None);
+
+        // An extensions value that is not an object is left alone rather than
+        // discarded to make room.
+        let mut odd = bare_listing("text");
+        odd.extensions = Some(serde_json::json!("opaque"));
+        let donor = {
+            let mut d = bare_listing("x");
+            d.extensions = Some(serde_json::json!({ "bazaar": { "info": {} } }));
+            d
+        };
+        assert!(!odd.fill_descriptive_gaps_from(&donor));
+        assert_eq!(odd.extensions, Some(serde_json::json!("opaque")));
+    }
+
+    #[test]
+    fn an_input_schema_is_declared_by_info_or_by_the_json_schema() {
+        let with = |ext: serde_json::Value| {
+            let mut r = bare_listing("x");
+            r.extensions = Some(ext);
+            r.has_input_schema()
+        };
+        assert!(with(
+            serde_json::json!({ "bazaar": { "info": { "input": { "method": "GET" } } } })
+        ));
+        assert!(with(serde_json::json!({
+            "bazaar": { "schema": { "properties": { "input": { "type": "object" } } } }
+        })));
+        assert!(!with(
+            serde_json::json!({ "bazaar": { "info": { "input": {} } } })
+        ));
+        assert!(!with(
+            serde_json::json!({ "bazaar": { "info": { "output": { "a": 1 } } } })
+        ));
+        assert!(!with(
+            serde_json::json!({ "bazaar": { "info": { "input": "GET" } } })
+        ));
+        assert!(!with(
+            serde_json::json!({ "other": { "info": { "input": { "method": "GET" } } } })
+        ));
+        assert!(!bare_listing("x").has_input_schema());
     }
 }

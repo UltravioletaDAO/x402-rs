@@ -67,8 +67,10 @@ mod discovery_health;
 mod discovery_owner;
 mod discovery_price;
 mod discovery_revalidation;
+mod discovery_search;
 mod discovery_security;
 mod discovery_store;
+mod discovery_taxonomy;
 mod discovery_terms;
 mod dx402;
 mod erc8004;
@@ -81,6 +83,7 @@ mod from_env;
 mod handlers;
 mod idempotency_store;
 mod interop;
+mod ip_allowlist;
 mod receipts;
 mod json_depth;
 mod lease;
@@ -324,6 +327,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         discovery_registry.count().await
     );
 
+    // What the Bazaar exposes -- and what a full catalog may evict to make room
+    // -- is read off the liveness overlay, which the prober attaches further
+    // down. Until it has been read, an import must not take its empty records
+    // for the truth (`HealthTracker::expect_overlay`).
+    let enable_health = std::env::var("DISCOVERY_ENABLE_HEALTH")
+        .map(|v| v != "false" && v != "0")
+        .unwrap_or(true);
+    if enable_health && std::env::var("DISCOVERY_S3_BUCKET").is_ok() {
+        discovery_registry.health().expect_overlay();
+    }
+
     // Start background aggregation task if enabled
     // Fetches resources from external facilitators (Coinbase, etc.) every hour
     let aggregation_interval_secs = std::env::var("DISCOVERY_AGGREGATION_INTERVAL")
@@ -404,9 +418,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Start the Bazaar health prober (WS-B). Probes registered URLs with the
     // SSRF-hardened connector; 402 = alive, dead endpoints are quarantined and
     // hidden from the default listing. Liveness lives in a separate S3 overlay.
-    let enable_health = std::env::var("DISCOVERY_ENABLE_HEALTH")
-        .map(|v| v != "false" && v != "0")
-        .unwrap_or(true);
     if enable_health {
         let health_tick = std::env::var("DISCOVERY_HEALTH_TICK")
             .ok()
@@ -599,7 +610,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // tower_governor's `x-ratelimit-limit` and `x-ratelimit-remaining`, and
     // `/.well-known/uvd-stack.json` lists every bucket `policy.layer` mounted.
     // A recognized stack identity gets `x-ratelimit-exempt` instead.
+    //
+    // So does a client address on the IP allowlist (decision 144: the
+    // operator's own tests carry no key). The list lives in a Secrets Manager
+    // secret and is re-read while the task runs, so a new address needs no
+    // deploy; it never reaches an application log (src/ip_allowlist.rs).
+    // Disabled, and no AWS call made, without UVD_IP_ALLOWLIST_SECRET.
     let policy = rate_policy::RatePolicy::from_env();
+    if let Some(secret) = policy.allowlist().source().map(str::to_owned) {
+        let config = aws_config::load_defaults(aws_config::BehaviorVersion::latest()).await;
+        let client = aws_sdk_secretsmanager::Client::new(&config);
+        policy.allowlist().spawn_refresher(move || {
+            let client = client.clone();
+            let secret = secret.clone();
+            async move { ip_allowlist::read_secret(&client, &secret).await }
+        });
+    }
     let admission = rate_policy::Admission::from_env(&policy);
     for budget in rate_policy::BUDGETS {
         let limit = budget.limit();
@@ -696,16 +722,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         )
         // `GET /config`: the policy in force, for an operator or a stack
         // client checking that its identity is recognized (the response to a
-        // recognized key carries `x-ratelimit-exempt`). Computed once: nothing
-        // it reports changes while the process runs.
+        // recognized key carries `x-ratelimit-exempt`). Computed once, save the
+        // IP allowlist's count and last read, which change while the process
+        // runs and are read at each request.
         .merge(
-            rate_policy::config_routes(rate_policy::document(
+            rate_policy::config_routes(
+                rate_policy::document(
+                    &policy,
+                    &admission,
+                    erc8004_writes_enabled
+                        .then(erc8004::daily_cap::global)
+                        .as_deref(),
+                ),
                 &policy,
-                &admission,
-                erc8004_writes_enabled
-                    .then(erc8004::daily_cap::global)
-                    .as_deref(),
-            ))
+            )
             .layer(policy.layer(&secondary_read_config)),
         );
     if erc8004_writes_enabled {

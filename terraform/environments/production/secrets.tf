@@ -180,6 +180,42 @@ data "aws_secretsmanager_secret" "stack_key_digest_meshrelay" {
   name = "facilitator-stack-key-digest-meshrelay"
 }
 
+# Emporium reads the bazaar with its own key (decision 144). Declared WITHOUT a
+# value: load {"sha256": "<64 hex>"} by hand (scripts/stack_key.py generate
+# --service emporium), then set var.stack_key_emporium_loaded = true.
+#
+# Nothing a deploy applies references this resource. A reference -- even in the
+# branch of a conditional that is not taken -- would put its creation inside the
+# image deploy's -target closure, and the CI user cannot create secrets. The
+# task reads it through the data source below, by name, once it holds a value.
+resource "aws_secretsmanager_secret" "stack_key_digest_emporium" {
+  name        = "facilitator-stack-key-digest-emporium"
+  description = "SHA-256 of Emporium's X-UVD-Stack-Key (field sha256). Loaded by hand."
+
+  tags = {
+    Name = "facilitator-stack-key-digest-emporium"
+  }
+}
+
+data "aws_secretsmanager_secret" "stack_key_digest_emporium" {
+  count = var.stack_key_emporium_loaded ? 1 : 0
+  name  = "facilitator-stack-key-digest-emporium"
+}
+
+# ----------------------------------------------------------------------------
+# IP allowlist (src/ip_allowlist.rs)
+# ----------------------------------------------------------------------------
+
+# The client addresses that skip the per-IP rate policy -- the owner's tests from
+# home, which carry no stack key (decision 144) -- live in var.ip_allowlist_secret_name
+# (uvd/allowlist/home). It is ONE secret for the whole stack, created and loaded
+# by hand outside Terraform, and deliberately declared by no repository: two
+# states declaring it would collide on the second apply. This one only reads it,
+# by name (aws_iam_role_policy.ip_allowlist_read in main.tf). The task reads it
+# itself, at runtime and again every refresh -- not through the task
+# definition -- so a new address needs no deploy, and a secret that does not
+# exist yet is an empty list, not a task that fails to start.
+
 # ----------------------------------------------------------------------------
 # RPC URL Secrets (Premium Endpoints)
 # ----------------------------------------------------------------------------
@@ -236,12 +272,14 @@ locals {
 
   # Stack key digests. Only the facilitator's half: the clients' key secrets
   # stay out of this list, so this role can never read a key.
-  stack_key_digest_arns = [
+  stack_key_digest_arns = concat([
     data.aws_secretsmanager_secret.stack_key_digest_execution_market.arn,
     data.aws_secretsmanager_secret.stack_key_digest_karmakadabra.arn,
     data.aws_secretsmanager_secret.stack_key_digest_describe_net.arn,
     data.aws_secretsmanager_secret.stack_key_digest_meshrelay.arn,
-  ]
+    ], var.stack_key_emporium_loaded ? [
+    data.aws_secretsmanager_secret.stack_key_digest_emporium[0].arn,
+  ] : [])
 
   # Combined list for IAM policy
   all_secret_arns = concat(
@@ -452,7 +490,7 @@ locals {
   # followed by the service name upper-cased, '-' as '_' (env_var_for), one per
   # entry of DEFAULT_STACK_SERVICES. A name that drifts from that rule is never
   # read, and the service stays a third party with no error anywhere.
-  stack_key_digest_secrets = [
+  stack_key_digest_secrets = concat([
     {
       name      = "UVD_STACK_KEY_SHA256_EXECUTION_MARKET"
       valueFrom = "${data.aws_secretsmanager_secret.stack_key_digest_execution_market.arn}:sha256::"
@@ -469,7 +507,12 @@ locals {
       name      = "UVD_STACK_KEY_SHA256_MESHRELAY"
       valueFrom = "${data.aws_secretsmanager_secret.stack_key_digest_meshrelay.arn}:sha256::"
     },
-  ]
+    ], var.stack_key_emporium_loaded ? [
+    {
+      name      = "UVD_STACK_KEY_SHA256_EMPORIUM"
+      valueFrom = "${data.aws_secretsmanager_secret.stack_key_digest_emporium[0].arn}:sha256::"
+    },
+  ] : [])
 
   # Combined secrets array for task definition
   all_task_secrets = concat(

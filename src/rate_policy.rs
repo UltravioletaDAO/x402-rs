@@ -30,6 +30,18 @@
 //! so the exemption is by credential: a caller that presents a recognized
 //! `X-UVD-Stack-Key` skips every per-IP budget, and nothing else.
 //!
+//! # Allowlisted addresses
+//!
+//! The operator's own tests carry no key (decision 144). A request whose
+//! client address is on the IP allowlist (`crate::ip_allowlist`, re-read from
+//! its secret while the task runs) skips exactly what a recognized key skips.
+//! The address is the one every budget keys on, so writing a listed address
+//! into `X-Forwarded-For` ahead of one's own buys nothing. The exemption is
+//! for the operator's own tools, not for pages a browser loads: a request
+//! carrying `Origin` or `Sec-Fetch-Site` is charged like anybody's, from any
+//! address ([`sent_by_a_browser`]). Neither exemption ever covers the body
+//! deadline, the machine's ceiling or the gas cap.
+//!
 //! The same [`PolicyLayer`] wraps every governor on the service; no route has
 //! an exemption of its own. The types hold it: [`config`] returns a [`Bucket`]
 //! that only [`RatePolicy::layer`] can mount, and outside this module a
@@ -125,6 +137,7 @@ use tower_governor::GovernorLayer;
 use tracing::{info, warn};
 
 use crate::client_ip::ClientIpKeyExtractor;
+use crate::ip_allowlist::{self, IpAllowlist};
 
 // ============================================================================
 // Budgets
@@ -567,11 +580,25 @@ pub const ENV_STACK_KEY_SHA256_PREFIX: &str = "UVD_STACK_KEY_SHA256_";
 
 /// The services a key may be configured for unless `UVD_STACK_SERVICES` says
 /// otherwise. A name with no digest is listed as inactive and exempts nobody.
-pub const DEFAULT_STACK_SERVICES: [&str; 4] = [
+/// Emporium reads the bazaar with its own key (decision 144).
+pub const DEFAULT_STACK_SERVICES: [&str; 5] = [
     "execution-market",
     "karmakadabra",
     "describe-net",
     "meshrelay",
+    "emporium",
+];
+
+/// What a recognized stack identity and an allowlisted address skip: the
+/// limits that are a rule we chose.
+const EXEMPT_FROM: [&str; 2] = ["every budget under rateLimits", "overload.perClient"];
+
+/// What nobody skips: the machine, the body deadline, the gas, the provider.
+const NOT_EXEMPT_FROM: [&str; 4] = [
+    "overload (the global ceiling)",
+    "overload.bodyDeadlineMs",
+    "erc8004DailyWriteCap",
+    "the RPC provider throttle",
 ];
 
 /// A rejected key is logged on the first rejection and then once every this
@@ -759,11 +786,16 @@ impl StackIdentities {
     }
 
     /// Log a rejected key by who sent it and where -- the first one, then one in
-    /// every [`REJECTED_LOG_EVERY`] -- never by its value.
-    fn note_rejected(&self, client: Option<IpAddr>, path: &str) {
+    /// every [`REJECTED_LOG_EVERY`] -- never by its value. An allowlisted
+    /// address is not named either: a listed address never reaches a log.
+    fn note_rejected(&self, client: Option<IpAddr>, allowlisted: bool, path: &str) {
         let rejected = self.rejected.fetch_add(1, Ordering::Relaxed) + 1;
         if rejected == 1 || rejected.is_multiple_of(REJECTED_LOG_EVERY) {
-            let client = client.map_or_else(|| "unknown".to_string(), |ip| ip.to_string());
+            let client = match client {
+                Some(_) if allowlisted => "allowlisted (withheld)".to_string(),
+                Some(ip) => ip.to_string(),
+                None => "unknown".to_string(),
+            };
             warn!(
                 rejected,
                 client_ip = %client,
@@ -789,13 +821,8 @@ impl StackIdentities {
                     "credentials": s.digests.len(),
                 }))
                 .collect::<Vec<_>>(),
-            "exemptFrom": ["every budget under rateLimits", "overload.perClient"],
-            "notExemptFrom": [
-                "overload (the global ceiling)",
-                "overload.bodyDeadlineMs",
-                "erc8004DailyWriteCap",
-                "the RPC provider throttle",
-            ],
+            "exemptFrom": EXEMPT_FROM,
+            "notExemptFrom": NOT_EXEMPT_FROM,
             "configuration": format!(
                 "{ENV_STACK_SERVICES} (service names, default {}) and \
                  {ENV_STACK_KEY_SHA256_PREFIX}<SERVICE> (comma-separated SHA-256 hex digests \
@@ -847,19 +874,23 @@ fn well_formed(key: &[u8]) -> bool {
 // The layer every governor is mounted through
 // ============================================================================
 
-/// The policy: which callers skip the per-IP budgets.
+/// The policy: which callers skip the per-IP budgets -- a recognized stack
+/// identity, or a client address on the IP allowlist.
 #[derive(Clone)]
 pub struct RatePolicy {
     stack: Arc<StackIdentities>,
+    allowlist: Arc<IpAllowlist>,
 }
 
 impl RatePolicy {
     /// Private for the same reason as [`StackIdentities::from_lookup`]: outside
     /// this module the only policy is the one read from the environment, so a
-    /// governor mounted with a second, empty one does not compile.
+    /// governor mounted with a second, empty one does not compile. The
+    /// allowlist starts disabled; [`Self::from_env`] is what turns it on.
     fn new(stack: StackIdentities) -> Self {
         Self {
             stack: Arc::new(stack),
+            allowlist: Arc::new(IpAllowlist::disabled()),
         }
     }
 
@@ -867,6 +898,15 @@ impl RatePolicy {
     #[cfg(test)]
     pub fn none() -> Self {
         Self::new(StackIdentities::none())
+    }
+
+    /// This policy with an allowlist read once from `raw`, for tests.
+    #[cfg(test)]
+    pub fn with_allowlist(self, raw: &str) -> Self {
+        Self {
+            allowlist: Arc::new(IpAllowlist::for_tests(raw)),
+            ..self
+        }
     }
 
     /// A policy whose `(service, key)` pairs are recognized, for tests outside
@@ -883,12 +923,21 @@ impl RatePolicy {
         Self::new(StackIdentities::from_lookup(|var| vars.get(var).cloned()))
     }
 
+    /// The identities and the allowlist the environment configures. The
+    /// allowlist stays empty until `main` spawns its refresher.
     pub fn from_env() -> Self {
-        Self::new(StackIdentities::from_env())
+        Self {
+            allowlist: Arc::new(IpAllowlist::from_env()),
+            ..Self::new(StackIdentities::from_env())
+        }
     }
 
     pub fn stack(&self) -> &StackIdentities {
         &self.stack
+    }
+
+    pub fn allowlist(&self) -> &Arc<IpAllowlist> {
+        &self.allowlist
     }
 
     /// The governor for `bucket` on the API door, which a recognized stack
@@ -910,6 +959,7 @@ impl RatePolicy {
             governor: GovernorLayer::new(Arc::clone(&bucket.config))
                 .error_handler(crate::handlers::rate_limit_error),
             stack: Arc::clone(&self.stack),
+            allowlist: Arc::clone(&self.allowlist),
             limit: bucket.limit,
         }
     }
@@ -923,7 +973,8 @@ impl RatePolicy {
     }
 }
 
-/// A `GovernorLayer` that a recognized stack identity goes around.
+/// A `GovernorLayer` that a recognized stack identity, or an allowlisted
+/// address, goes around.
 ///
 /// Built around the governor rather than inside it: a key extractor can only
 /// choose a bucket, and a bucket of its own would still refuse the stack past
@@ -932,12 +983,14 @@ impl RatePolicy {
 ///
 /// A response charged to the bucket is stamped with `RateLimit-Policy` and
 /// `RateLimit` here, OUTSIDE the governor, so the governor's own `429` carries
-/// them too. A stack identity's response is charged to nothing and is stamped
-/// `x-ratelimit-exempt` instead.
+/// them too. An exempt response is charged to nothing and is stamped
+/// `x-ratelimit-exempt` instead: the service's name, or
+/// [`ip_allowlist::EXEMPT_AS`].
 #[derive(Clone)]
 pub struct PolicyLayer {
     governor: GovernorLayer<ClientIpKeyExtractor, StateInformationMiddleware, Body>,
     stack: Arc<StackIdentities>,
+    allowlist: Arc<IpAllowlist>,
     limit: Limit,
 }
 
@@ -949,6 +1002,7 @@ impl<S: Clone> Layer<S> for PolicyLayer {
             governed: self.governor.layer(inner.clone()),
             bare: inner,
             stack: Arc::clone(&self.stack),
+            allowlist: Arc::clone(&self.allowlist),
             limit: self.limit,
         }
     }
@@ -959,7 +1013,28 @@ pub struct PolicyService<S> {
     governed: Governor<ClientIpKeyExtractor, StateInformationMiddleware, S, Body>,
     bare: S,
     stack: Arc<StackIdentities>,
+    allowlist: Arc<IpAllowlist>,
     limit: Limit,
+}
+
+/// Whether `headers` are a browser's: a cross-origin request always carries
+/// `Origin`, and a current browser sends `Sec-Fetch-Site` on every request.
+/// The operator's tools (`curl`, scripts, tests) send neither. An address on
+/// the allowlist is exempt only for those tools, so the exemption is never
+/// spent nor seen by a web page its owner happens to open.
+fn sent_by_a_browser(headers: &HeaderMap) -> bool {
+    headers.contains_key(header::ORIGIN) || headers.contains_key("sec-fetch-site")
+}
+
+/// Whether `request` comes from an address on `allowlist`: the address the
+/// budgets key on, so only the entry the load balancer appended counts --
+/// and never when a browser sent it ([`sent_by_a_browser`]).
+fn allowlisted(allowlist: &IpAllowlist, request: &Request) -> bool {
+    !allowlist.is_empty()
+        && !sent_by_a_browser(request.headers())
+        && ClientIpKeyExtractor
+            .extract(request)
+            .is_ok_and(|ip| allowlist.contains(ip))
 }
 
 impl<S> Service<Request> for PolicyService<S>
@@ -978,7 +1053,10 @@ where
 
     fn call(&mut self, mut request: Request) -> Self::Future {
         charge(&mut request, self.limit.name);
-        match self.stack.authenticate(request.headers()) {
+        let exempt = self.stack.authenticate(request.headers()).or_else(|| {
+            allowlisted(&self.allowlist, &request).then(|| Arc::from(ip_allowlist::EXEMPT_AS))
+        });
+        match exempt {
             Some(service) => {
                 let bare = self.bare.clone();
                 Box::pin(async move {
@@ -1084,7 +1162,7 @@ const ADMISSION_EXEMPT_PATHS: [&str; 1] = ["/health"];
 ///
 /// 1. **Per address** ([`DEFAULT_MAX_INFLIGHT_PER_CLIENT`], `429
 ///    too_many_concurrent_requests`): third parties only; a recognized stack
-///    identity skips it.
+///    identity and an allowlisted address skip it.
 /// 2. **The body**, read whole within [`DEFAULT_BODY_DEADLINE_MS`] (`408
 ///    request_timeout`), for every caller. Nothing global is held meanwhile.
 /// 3. **The machine** ([`DEFAULT_MAX_INFLIGHT_REQUESTS`], `503 overloaded`): one
@@ -1101,6 +1179,7 @@ pub struct Admission {
     max_per_client: usize,
     body_deadline: Duration,
     stack: Arc<StackIdentities>,
+    allowlist: Arc<IpAllowlist>,
 }
 
 impl Admission {
@@ -1119,6 +1198,7 @@ impl Admission {
             max_per_client: max_per_client.max(1),
             body_deadline: body_deadline.max(Duration::from_millis(1)),
             stack: Arc::clone(&policy.stack),
+            allowlist: Arc::clone(&policy.allowlist),
         }
     }
 
@@ -1223,12 +1303,18 @@ pub async fn admit(
     }
 
     let client = ClientIpKeyExtractor.extract(&request).ok();
+    // On the list decides what a log may name; exempt, also who sent it.
+    let listed = client.is_some_and(|ip| admission.allowlist.contains(ip));
+    let allowlisted = listed && !sent_by_a_browser(request.headers());
     let presented = admission.stack.presented(request.headers());
     if matches!(presented, Presented::Rejected) {
-        admission.stack.note_rejected(client, request.uri().path());
+        admission
+            .stack
+            .note_rejected(client, listed, request.uri().path());
     }
     let _client_slot = match (&presented, client) {
         (Presented::Recognized(_), _) | (_, None) => None,
+        (_, Some(_)) if allowlisted => None,
         (_, Some(ip)) => match admission.enter(ip) {
             Some(slot) => Some(slot),
             None => return too_many_concurrent(),
@@ -1394,10 +1480,11 @@ pub fn document_from(
         "rateLimits": {
             "keyedOn": "client IP: the last X-Forwarded-For entry, else the TCP peer",
             "refusal": { "status": 429, "code": "rate_limited" },
-            "appliesTo": "third parties; a recognized stack identity skips every budget",
+            "appliesTo": "third parties; a recognized stack identity or an allowlisted address skips every budget (an allowlisted address not when a browser sends the request: Origin or Sec-Fetch-Site)",
             "budgets": budgets,
         },
         "stackIdentities": policy.stack().summary(),
+        "ipAllowlist": allowlist_document(policy.allowlist()),
         "overload": {
             "maxInflightRequests": admission.max(),
             "env": ENV_MAX_INFLIGHT_REQUESTS,
@@ -1410,7 +1497,7 @@ pub fn document_from(
                 "env": ENV_MAX_INFLIGHT_PER_CLIENT,
                 "keyedOn": "client IP: the last X-Forwarded-For entry, else the TCP peer",
                 "refusal": { "status": 429, "code": "too_many_concurrent_requests", "retryAfterSecs": OVERLOAD_RETRY_AFTER_SECS },
-                "appliesTo": "third parties; a recognized stack identity skips it (a per-address limit is policy, not hardware)",
+                "appliesTo": "third parties; a recognized stack identity or an allowlisted address skips it (a per-address limit is policy, not hardware; an allowlisted address not when a browser sends the request)",
             },
             "bodyDeadlineMs": admission.body_deadline().as_millis() as u64,
             "bodyDeadlineEnv": ENV_REQUEST_BODY_DEADLINE_MS,
@@ -1421,14 +1508,31 @@ pub fn document_from(
     })
 }
 
-/// `GET /config`, serving `document` as computed at startup.
-pub fn config_routes(document: Value) -> Router {
+/// What `GET /config` says about the IP allowlist: its state, by count, and
+/// what it exempts from. Never an address.
+fn allowlist_document(allowlist: &IpAllowlist) -> Value {
+    let mut document = allowlist.summary();
+    document["exemptFrom"] = json!(EXEMPT_FROM);
+    document["notExemptFrom"] = json!(NOT_EXEMPT_FROM);
+    document
+}
+
+/// `GET /config`, serving `document` as computed at startup, except for the
+/// IP allowlist of `policy`, which is re-read from its secret while the task
+/// runs and is published as it stands at each request.
+pub fn config_routes(document: Value, policy: &RatePolicy) -> Router {
     let document = Arc::new(document);
+    let allowlist = Arc::clone(&policy.allowlist);
     Router::new().route(
         "/config",
         get(move || {
             let document = Arc::clone(&document);
-            async move { Json((*document).clone()) }
+            let allowlist = Arc::clone(&allowlist);
+            async move {
+                let mut document = (*document).clone();
+                document["ipAllowlist"] = allowlist_document(&allowlist);
+                Json(document)
+            }
         }),
     )
 }
@@ -1982,7 +2086,8 @@ mod tests {
     /// NOT exempt.
     #[tokio::test]
     async fn the_config_document_publishes_the_policy_in_force() {
-        let router = config_routes(config_document(&stack_policy()));
+        let policy = stack_policy();
+        let router = config_routes(config_document(&policy), &policy);
         let response = router
             .oneshot(
                 HttpRequest::builder()
@@ -2017,6 +2122,7 @@ mod tests {
                 ("karmakadabra".to_string(), true),
                 ("describe-net".to_string(), false),
                 ("meshrelay".to_string(), false),
+                ("emporium".to_string(), false),
             ]
         );
 
@@ -2104,7 +2210,7 @@ mod tests {
         assert_eq!(seen[2].0, StatusCode::TOO_MANY_REQUESTS);
 
         let config_router = admitted(
-            config_routes(config_document(&policy))
+            config_routes(config_document(&policy), &policy)
                 .layer(policy.layer(&config(Limit::every_ms(3_600_000, 5)))),
             &admission,
         );
@@ -2413,9 +2519,10 @@ mod tests {
     }
 
     /// The gas cap cannot learn of the stack: `daily_cap` names neither the
-    /// header nor this module, so nothing in it can let an identity past it.
-    /// The behavior half is `handlers::erc8004_write_rate_tests::
-    /// a_stack_identity_still_spends_the_daily_gas_cap`.
+    /// header, nor this module, nor the IP allowlist, so nothing in it can let
+    /// an identity or an address past it. The behavior halves are
+    /// `handlers::erc8004_write_rate_tests::a_stack_identity_still_spends_the_daily_gas_cap`
+    /// and `an_allowlisted_address_still_spends_the_daily_gas_cap`.
     #[test]
     fn the_gas_cap_knows_nothing_of_the_stack() {
         let src = include_str!("erc8004/daily_cap.rs").to_ascii_lowercase();
@@ -2424,6 +2531,7 @@ mod tests {
             "stack_key_header",
             "rate_policy",
             "stackidentit",
+            "allowlist",
         ] {
             assert!(
                 !src.contains(needle),
@@ -3032,5 +3140,574 @@ mod tests {
                 budget.name
             );
         }
+    }
+
+    // ------------------------------------------------------------------------
+    // The IP allowlist (decision 144)
+    // ------------------------------------------------------------------------
+
+    /// The listed address in these tests: a documentation address (RFC 5737).
+    /// No real address is ever written into this repository.
+    const LISTED: &str = "198.51.100.77";
+
+    /// The stack's two identities, and LISTED on the allowlist.
+    fn listed_policy() -> RatePolicy {
+        stack_policy().with_allowlist(LISTED)
+    }
+
+    /// `/probe` from the `X-Forwarded-For` lines `xff`, over a TCP peer that is
+    /// a load balancer node, as production sees every request.
+    async fn hit_through(router: &Router, xff: &[&str], peer: &str) -> Response<Body> {
+        let mut builder = HttpRequest::builder().uri("/probe");
+        for line in xff {
+            builder = builder.header("x-forwarded-for", *line);
+        }
+        let mut request = builder.body(Body::empty()).unwrap();
+        request.extensions_mut().insert(axum::extract::ConnectInfo(
+            peer.parse::<std::net::SocketAddr>().unwrap(),
+        ));
+        router.clone().oneshot(request).await.unwrap()
+    }
+
+    /// The rule for a listed address: past the burst of EVERY budget,
+    /// never refused and told no budget -- while the address next to it, at the
+    /// same cadence, is.
+    #[tokio::test]
+    async fn an_allowlisted_address_is_never_refused_by_any_budget() {
+        let policy = listed_policy();
+        for budget in BUDGETS {
+            let limit = frozen(budget);
+            let router = governed(&policy, limit);
+            for n in 1..=limit.burst + 1 {
+                let response = hit(&router, LISTED, &[]).await;
+                assert_eq!(
+                    response.status(),
+                    StatusCode::OK,
+                    "{}: listed request {n} of {}",
+                    budget.name,
+                    limit.burst + 1
+                );
+                assert_eq!(
+                    response.headers()[EXEMPT_HEADER],
+                    ip_allowlist::EXEMPT_AS,
+                    "{}",
+                    budget.name
+                );
+                assert_no_budget_headers(response.headers(), budget.name);
+            }
+            for n in 1..=limit.burst {
+                let response = hit(&router, "198.51.100.78", &[]).await;
+                assert_eq!(response.status(), StatusCode::OK, "{} n={n}", budget.name);
+                assert!(!response.headers().contains_key(EXEMPT_HEADER));
+            }
+            assert_eq!(
+                hit(&router, "198.51.100.78", &[]).await.status(),
+                StatusCode::TOO_MANY_REQUESTS,
+                "{}: the neighbour of the listed address was served past the burst",
+                budget.name
+            );
+        }
+        // A listed address that also presents a recognized key is named by
+        // the key: the credential says who, the address only where from.
+        let router = governed(&policy, frozen(&VERIFY_SETTLE));
+        let em = em_key();
+        let both = hit(&router, LISTED, &[em.as_bytes()]).await;
+        assert_eq!(both.status(), StatusCode::OK);
+        assert_eq!(both.headers()[EXEMPT_HEADER], "execution-market");
+    }
+
+    /// A browser on a listed address is charged like anybody: a request with
+    /// `Origin` or `Sec-Fetch-Site` carries its budget's headers, is told no
+    /// exemption and is refused past the burst -- and the per-address ceiling
+    /// holds for it -- while the same address without them is still exempt.
+    #[tokio::test]
+    async fn a_browser_on_an_allowlisted_address_is_charged_like_anybody() {
+        let policy = listed_policy();
+        let browser_request =
+            |path: &'static str, method: &str, body: Body, header: (&str, &str)| {
+                HttpRequest::builder()
+                    .method(method)
+                    .uri(path)
+                    .header("x-forwarded-for", LISTED)
+                    .header(header.0, header.1)
+                    .body(body)
+                    .unwrap()
+            };
+        let headers = [
+            ("origin", "https://site.example"),
+            ("sec-fetch-site", "cross-site"),
+            ("Sec-Fetch-Site", "none"),
+        ];
+        for header in headers {
+            let router = governed(&policy, Limit::every_ms(3_600_000, 2));
+            for n in 1..=2 {
+                let response = router
+                    .clone()
+                    .oneshot(browser_request("/probe", "GET", Body::empty(), header))
+                    .await
+                    .unwrap();
+                assert_eq!(response.status(), StatusCode::OK, "{header:?}: request {n}");
+                assert!(
+                    !response.headers().contains_key(EXEMPT_HEADER),
+                    "{header:?}: exempted"
+                );
+                assert!(
+                    response.headers().contains_key("ratelimit-policy"),
+                    "{header:?}: no budget named"
+                );
+            }
+            let refused = router
+                .clone()
+                .oneshot(browser_request("/probe", "GET", Body::empty(), header))
+                .await
+                .unwrap();
+            assert_eq!(
+                refused.status(),
+                StatusCode::TOO_MANY_REQUESTS,
+                "{header:?}: served past the burst"
+            );
+            let tool = hit(&router, LISTED, &[]).await;
+            assert_eq!(tool.status(), StatusCode::OK);
+            assert_eq!(tool.headers()[EXEMPT_HEADER], ip_allowlist::EXEMPT_AS);
+        }
+
+        // The per-address ceiling, 1: an upload the browser holds open takes
+        // the address's one slot, and its next request is refused.
+        for header in headers {
+            let admission = Admission::new(&policy, 100, 1, Duration::from_secs(30));
+            let router = admitted(
+                Router::new()
+                    .route("/upload", axum::routing::post(|| async { "ok" }))
+                    .route("/probe", get(|| async { "ok" }))
+                    .layer(policy.layer(&config(Limit::every_ms(3_600_000, 100)))),
+                &admission,
+            );
+            let held = {
+                let router = router.clone();
+                let request = browser_request(
+                    "/upload",
+                    "POST",
+                    Body::from_stream(tokio_stream::pending::<
+                        Result<axum::body::Bytes, std::io::Error>,
+                    >()),
+                    header,
+                );
+                tokio::spawn(async move {
+                    let _ = router.oneshot(request).await;
+                })
+            };
+            in_flight(&admission, LISTED, 1).await;
+            let refused = router
+                .clone()
+                .oneshot(browser_request("/probe", "GET", Body::empty(), header))
+                .await
+                .unwrap();
+            assert_eq!(
+                refused.status(),
+                StatusCode::TOO_MANY_REQUESTS,
+                "{header:?}: past the per-address ceiling"
+            );
+            held.abort();
+        }
+    }
+
+    /// Production turns the list on: `RatePolicy::from_env` reads it from the
+    /// environment, and `main` keeps it fresh with the Secrets Manager reader.
+    /// Without either no address would ever be exempt -- failing closed, but
+    /// failing the decision.
+    #[test]
+    fn production_reads_the_allowlist_and_keeps_it_fresh() {
+        let policy_src = include_str!("rate_policy.rs");
+        assert!(policy_src.contains(concat!("allowlist: Arc::new(IpAllowlist::", "from_env()),")));
+        let main = include_str!("main.rs");
+        assert!(main.contains("policy.allowlist().spawn_refresher("));
+        assert!(main.contains("ip_allowlist::read_secret(&client, &secret)"));
+        let refresher_at = main.find("policy.allowlist().spawn_refresher(").unwrap();
+        let admission_at = main
+            .find("rate_policy::Admission::from_env(&policy)")
+            .unwrap();
+        assert!(
+            refresher_at < admission_at,
+            "the refresher is spawned for the policy the governors are built from"
+        );
+    }
+
+    /// Only the entry the load balancer appended counts. A third party that
+    /// writes the listed address ahead of its own, sends it on a second header
+    /// line, or is merely relayed by a peer with that address, is charged like
+    /// anybody; a client the load balancer saw AS the listed address is not,
+    /// whatever it wrote in front.
+    #[tokio::test]
+    async fn naming_an_allowlisted_address_in_forwarded_for_buys_nothing() {
+        let policy = listed_policy();
+        let alb = "10.0.1.23:41234";
+        let spoofed = format!("{LISTED}, 203.0.113.80");
+        let cases: Vec<(&str, Vec<&str>, String)> = vec![
+            ("ahead of its own", vec![spoofed.as_str()], alb.to_string()),
+            (
+                "on a second line",
+                vec![LISTED, "203.0.113.81"],
+                alb.to_string(),
+            ),
+            ("twice on two lines", vec![LISTED, LISTED], alb.to_string()),
+            (
+                "as the peer only",
+                vec!["203.0.113.82"],
+                format!("{LISTED}:5555"),
+            ),
+        ];
+        for (what, xff, peer) in cases {
+            let router = governed(&policy, Limit::every_ms(3_600_000, 2));
+            for n in 1..=2 {
+                let response = hit_through(&router, &xff, &peer).await;
+                assert_eq!(response.status(), StatusCode::OK, "{what}: request {n}");
+                assert!(
+                    !response.headers().contains_key(EXEMPT_HEADER),
+                    "{what}: exempted"
+                );
+            }
+            assert_eq!(
+                hit_through(&router, &xff, &peer).await.status(),
+                StatusCode::TOO_MANY_REQUESTS,
+                "{what}: a third party went past its budget on a listed address"
+            );
+        }
+
+        let router = governed(&policy, Limit::every_ms(3_600_000, 2));
+        let appended = format!("203.0.113.83, {LISTED}");
+        for n in 1..=5 {
+            let response = hit_through(&router, &[appended.as_str()], alb).await;
+            assert_eq!(response.status(), StatusCode::OK, "listed request {n}");
+            assert_eq!(response.headers()[EXEMPT_HEADER], ip_allowlist::EXEMPT_AS);
+        }
+    }
+
+    /// A listed address skips the per-address ceiling -- a rule we chose -- and
+    /// nothing that protects the task: the machine's ceiling, the body
+    /// deadline and the body limit hold for it as for anybody.
+    #[tokio::test]
+    async fn an_allowlisted_address_skips_the_per_address_ceiling_but_no_protection() {
+        let policy = listed_policy();
+        let upload = || {
+            Router::new()
+                .route(
+                    "/upload",
+                    axum::routing::post(
+                        |body: axum::body::Bytes| async move { body.len().to_string() },
+                    ),
+                )
+                .route("/probe", get(|| async { "ok" }))
+                .layer(policy.layer(&config(Limit::every_ms(3_600_000, 100))))
+        };
+
+        // Per address, ceiling 1: a third party's second upload is refused, the
+        // listed address holds two open and is still served.
+        let admission = Admission::new(&policy, 100, 1, Duration::from_secs(30));
+        let router = admitted(upload(), &admission);
+        let third = stall(&router, "203.0.113.84");
+        in_flight(&admission, "203.0.113.84", 1).await;
+        assert_eq!(
+            get_as(&router, "/probe", "203.0.113.84", None)
+                .await
+                .status(),
+            StatusCode::TOO_MANY_REQUESTS
+        );
+        let first = stall(&router, LISTED);
+        let second = stall(&router, LISTED);
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(
+            !first.is_finished() && !second.is_finished(),
+            "an upload from the listed address was refused by the per-address ceiling"
+        );
+        let served = get_as(&router, "/probe", LISTED, None).await;
+        assert_eq!(served.status(), StatusCode::OK);
+        assert_eq!(served.headers()[EXEMPT_HEADER], ip_allowlist::EXEMPT_AS);
+        for task in [third, first, second] {
+            task.abort();
+        }
+
+        // The machine's ceiling, 1: held by a third party, it sheds the listed
+        // address too.
+        let started = Arc::new(tokio::sync::Notify::new());
+        let release = Arc::new(tokio::sync::Notify::new());
+        let (s, r) = (Arc::clone(&started), Arc::clone(&release));
+        let router = admitted(
+            Router::new()
+                .route(
+                    "/slow",
+                    get(move || {
+                        let (s, r) = (Arc::clone(&s), Arc::clone(&r));
+                        async move {
+                            s.notify_one();
+                            r.notified().await;
+                            "slow"
+                        }
+                    }),
+                )
+                .route("/probe", get(|| async { "ok" }))
+                .layer(policy.layer(&config(Limit::every_ms(3_600_000, 100)))),
+            &Admission::new(&policy, 1, 100, Duration::from_secs(5)),
+        );
+        let slow = {
+            let router = router.clone();
+            tokio::spawn(async move { get_as(&router, "/slow", "203.0.113.85", None).await })
+        };
+        started.notified().await;
+        let shed = get_as(&router, "/probe", LISTED, None).await;
+        assert_eq!(shed.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert!(!shed.headers().contains_key(EXEMPT_HEADER));
+        let (_, _, body) = text(shed).await;
+        assert!(body.contains("overloaded"), "{body}");
+        release.notify_one();
+        assert_eq!(slow.await.unwrap().status(), StatusCode::OK);
+
+        // The body deadline: a body that never arrives is a 408 for it too.
+        let router = admitted(
+            upload(),
+            &Admission::new(&policy, 100, 100, Duration::from_millis(200)),
+        );
+        let pending = Body::from_stream(tokio_stream::pending::<
+            Result<axum::body::Bytes, std::io::Error>,
+        >());
+        let request = HttpRequest::builder()
+            .method("POST")
+            .uri("/upload")
+            .header("x-forwarded-for", LISTED)
+            .body(pending)
+            .unwrap();
+        let answered = tokio::time::timeout(Duration::from_secs(5), router.oneshot(request))
+            .await
+            .expect("the body deadline did not answer the listed address")
+            .unwrap();
+        assert_eq!(answered.status(), StatusCode::REQUEST_TIMEOUT);
+
+        // The body limit: too large is too large, from it too.
+        let router = admitted(
+            upload(),
+            &Admission::new(&policy, 100, 100, Duration::from_secs(5)),
+        )
+        .layer(tower_http::limit::RequestBodyLimitLayer::new(16));
+        let request = HttpRequest::builder()
+            .method("POST")
+            .uri("/upload")
+            .header("x-forwarded-for", LISTED)
+            .body(Body::from_stream(tokio_stream::iter(vec![Ok::<
+                _,
+                std::io::Error,
+            >(
+                axum::body::Bytes::from(vec![b'a'; 32]),
+            )])))
+            .unwrap();
+        let (status, _, body) = text(router.oneshot(request).await.unwrap()).await;
+        assert_eq!(status, StatusCode::PAYLOAD_TOO_LARGE, "{body}");
+    }
+
+    /// `/config` publishes the allowlist by count and state, live -- a list
+    /// that changes after startup is published as it stands -- and says what
+    /// it exempts from: the same as a stack identity. Never an address.
+    #[tokio::test]
+    async fn the_config_document_publishes_the_allowlist_by_count_only() {
+        let policy = listed_policy();
+        let router = config_routes(config_document(&policy), &policy);
+        let fetch = || {
+            let router = router.clone();
+            async move {
+                let request = HttpRequest::builder()
+                    .uri("/config")
+                    .body(Body::empty())
+                    .unwrap();
+                let (status, _, body) = text(router.oneshot(request).await.unwrap()).await;
+                assert_eq!(status, StatusCode::OK);
+                assert!(
+                    !body.contains("198.51.100"),
+                    "/config names an address: {body}"
+                );
+                serde_json::from_str::<Value>(&body).unwrap()
+            }
+        };
+
+        let doc = fetch().await;
+        let list = &doc["ipAllowlist"];
+        assert_eq!(list["enabled"], true);
+        assert_eq!(list["entries"], 1);
+        assert_eq!(list["lastRead"], "ok");
+        assert_eq!(list["exemptHeader"], "x-ratelimit-exempt: ip-allowlist");
+        assert_eq!(list["exemptFrom"], doc["stackIdentities"]["exemptFrom"]);
+        assert_eq!(
+            list["notExemptFrom"],
+            doc["stackIdentities"]["notExemptFrom"]
+        );
+        assert!(doc["rateLimits"]["appliesTo"]
+            .as_str()
+            .unwrap()
+            .contains("allowlisted address"));
+
+        policy.allowlist().apply(Ok(None));
+        let doc = fetch().await;
+        assert_eq!(doc["ipAllowlist"]["entries"], 0);
+        assert_eq!(doc["ipAllowlist"]["lastRead"], "missing");
+
+        let off = config_document(&stack_policy());
+        assert_eq!(off["ipAllowlist"]["enabled"], false);
+        assert_eq!(off["ipAllowlist"]["entries"], 0);
+    }
+
+    /// A listed address never reaches an application log line, a
+    /// response or `/config` -- on the exempt path, when it presents a key that
+    /// is rejected, nor when the list is re-read with an entry refused.
+    #[tokio::test]
+    async fn an_allowlisted_address_never_reaches_a_log_or_a_response() {
+        let captured = Captured::default();
+        let writer = captured.clone();
+        let subscriber = tracing_subscriber::fmt()
+            .with_writer(move || writer.clone())
+            .with_ansi(false)
+            .with_max_level(tracing::Level::TRACE)
+            .finish();
+        let _guard = tracing::subscriber::set_default(subscriber);
+        // See `the_key_never_reaches_a_log_or_a_response` for why.
+        let _second = tracing::Dispatch::new(tracing::subscriber::NoSubscriber::default());
+        tracing::callsite::rebuild_interest_cache();
+
+        let policy = listed_policy();
+        let admission = Admission::new(&policy, 64, 64, Duration::from_secs(5));
+        let router = admitted(governed(&policy, Limit::every_ms(3_600_000, 1)), &admission);
+        let mut seen = Vec::new();
+        seen.push(text(hit(&router, LISTED, &[]).await).await);
+        let false_key = key("RejectedFromListed");
+        seen.push(text(hit(&router, LISTED, &[false_key.as_bytes()]).await).await);
+        assert!(seen.iter().all(|(status, _, _)| *status == StatusCode::OK));
+
+        let config_router = admitted(
+            config_routes(config_document(&policy), &policy)
+                .layer(policy.layer(&config(Limit::every_ms(3_600_000, 5)))),
+            &admission,
+        );
+        let request = HttpRequest::builder()
+            .uri("/config")
+            .header("x-forwarded-for", LISTED)
+            .body(Body::empty())
+            .unwrap();
+        seen.push(text(config_router.oneshot(request).await.unwrap()).await);
+        assert_eq!(seen[2].0, StatusCode::OK);
+
+        policy
+            .allowlist()
+            .apply(Ok(Some(format!("{LISTED}, 10.0.0.1, 198.51.100.0/16"))));
+        policy
+            .allowlist()
+            .apply(Err("AccessDeniedException".to_string()));
+        let debug = format!("{:?}", policy.allowlist());
+
+        let logs = String::from_utf8(captured.0.lock().unwrap().clone()).unwrap();
+        assert!(
+            logs.contains("not recognized")
+                && logs.contains("allowlisted (withheld)")
+                && logs.contains("entry refused")
+                && logs.contains("could not be read"),
+            "the capture saw nothing, so it proves nothing: {logs}"
+        );
+        for shown in [&logs, &debug] {
+            for address in [LISTED, "198.51.100", "10.0.0.1"] {
+                assert!(!shown.contains(address), "{address} printed: {shown}");
+            }
+        }
+        for (status, headers, body) in &seen {
+            assert!(
+                !headers.contains("198.51.100"),
+                "{status} header: {headers}"
+            );
+            assert!(!body.contains("198.51.100"), "{status} body: {body}");
+        }
+    }
+
+    /// The facilitator holds no stack key of its own, so no request it sends --
+    /// a bazaar probe, a feedback-anchor fetch, the FHE proxy, a forward to the
+    /// lease holder -- can carry one into a third party's traffic. Production
+    /// code reads no `UVD_STACK_KEY` (the variable a CLIENT keeps its key in),
+    /// and names the header only to check it (here) and to carry the CALLER's
+    /// own key one hop further (`mcp.rs`, pinned by
+    /// `mcp::a_third_partys_forwarded_settle_carries_no_stack_key`).
+    #[test]
+    fn the_facilitator_holds_no_stack_key_to_send() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let client_variable = concat!("\"UVD_STACK", "_KEY\"");
+        let mut naming = std::collections::BTreeSet::new();
+        let mut scanned_handlers = String::new();
+        let mut stack = vec![root];
+        while let Some(dir) = stack.pop() {
+            for entry in std::fs::read_dir(&dir).unwrap() {
+                let path = entry.unwrap().path();
+                if path.is_dir() {
+                    stack.push(path);
+                    continue;
+                }
+                if path.extension().and_then(|e| e.to_str()) != Some("rs") {
+                    continue;
+                }
+                let name = path.file_name().unwrap().to_string_lossy().into_owned();
+                // `/docs` names the header in its prose and sends nothing.
+                if name == "openapi.rs" {
+                    continue;
+                }
+                let src = std::fs::read_to_string(&path).unwrap();
+                // Production code: every line outside a `#[cfg(test)] mod`.
+                // A test module ends at the first `}` with the indentation of
+                // its `#[cfg(test)]` (rustfmt's layout); `mod x;` is one line.
+                // Production code after a test module is read too.
+                let lines: Vec<&str> = src.lines().collect();
+                let mut n = 0;
+                while n < lines.len() {
+                    let line = lines[n];
+                    let indent = &line[..line.len() - line.trim_start().len()];
+                    let next = lines.get(n + 1).copied().unwrap_or_default();
+                    let opens_test_module = line.trim() == "#[cfg(test)]"
+                        && next.strip_prefix(indent).is_some_and(|rest| {
+                            ["mod ", "pub mod ", "pub(crate) mod "]
+                                .iter()
+                                .any(|head| rest.starts_with(head))
+                        });
+                    if opens_test_module {
+                        n += 2;
+                        if !next.trim_end().ends_with(';') {
+                            let close = format!("{indent}}}");
+                            while n < lines.len() && lines[n].trim_end() != close {
+                                n += 1;
+                            }
+                            n += 1;
+                        }
+                        continue;
+                    }
+                    let code = line.split("//").next().unwrap_or_default();
+                    assert!(
+                        !code.contains(client_variable),
+                        "{}:{} reads a stack key of the facilitator's own: {code}",
+                        path.display(),
+                        n + 1
+                    );
+                    if code.contains(concat!("STACK_KEY", "_HEADER"))
+                        || code.to_ascii_lowercase().contains("x-uvd-stack-key")
+                    {
+                        naming.insert(name.clone());
+                    }
+                    if name == "handlers.rs" {
+                        scanned_handlers.push_str(line);
+                        scanned_handlers.push('\n');
+                    }
+                    n += 1;
+                }
+            }
+        }
+        let naming: Vec<&str> = naming.iter().map(String::as_str).collect();
+        assert_eq!(
+            naming,
+            ["mcp.rs", "rate_policy.rs"],
+            "production code outside the policy and MCP's forward names the stack key header"
+        );
+        // The scan reads past a test module, and skips the test module itself:
+        // `post_settle` comes after `handlers.rs`'s first test module, and the
+        // write tests name the header.
+        assert!(scanned_handlers.contains("pub async fn post_settle<A>("));
+        assert!(!scanned_handlers.contains("WritesKeyForTheseTestsOnly"));
     }
 }

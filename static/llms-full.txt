@@ -1178,17 +1178,33 @@ you can pay as they are, see section 3), `source`, and the read-time annotations
 `health`, `curation` and `priceFreshness`.
 
 The parameters, and only these: `limit` (default 10, capped at 100), `offset`, `q`
-(free text, at most 128 characters), `category`, `network` (CAIP-2), `provider`,
-`tag`, `source` (`self_registered`, `settlement`, `crawled`, `aggregated`),
-`sourceFacilitator`, `health` (`alive`, `degraded`, `auth_gated`, `quarantined`,
-`unknown`, `unprobeable`, `any`), `tier` (`first_party`, `vip`, `verified`, `listed`).
+(free text, no longer than `search.maxQueryChars` in `GET /discovery/config`),
+`sort` (`relevance` or `tier`: how results with `q` are ordered), `category`,
+`network` (CAIP-2), `provider`, `tag`, `source` (`self_registered`, `settlement`,
+`crawled`, `aggregated`), `sourceFacilitator`, `health` (`alive`, `degraded`,
+`auth_gated`, `quarantined`, `unknown`, `unprobeable`, `any`), `tier`
+(`first_party`, `vip`, `verified`, `listed`), and the router filters `maxPriceUsd`
+(the highest price in US dollars, such as `0.01`, of at least one dollar-stablecoin
+option), `method` (`GET`, `POST`, `PUT` or `PATCH`, as the listing declares it),
+`hasInputSchema` (`true` or `false`: whether the listing says what to send), `kind`
+(`api` or `content`) and `excludeHost` (comma-separated host names, each leaving
+out that host and its subdomains).
 
 - **An unknown parameter is a `400`, never ignored.** The body lists `supported`
   and, when the intent is obvious, a `hint` (`?search=` gets "did you mean q?").
   A filter that was silently dropped would look like one that matched everything.
-- **Quarantined entries are hidden by default**; `health=any` shows everything.
-  Order is tier (`first_party`, `vip`, `verified`, `listed`), then alive first,
-  then most recently updated.
+- **Only what is verified alive is listed**: the last probe, made with the request
+  the listing declares, got the listing's own `402` with a payment option we can
+  read (an MCP endpoint: its handshake listed a tool), recently, and it is not
+  quarantined. No parameter lists anything else -- `health=any` included: every
+  item's `health.status` is `alive`, and `health.verifiedBy` says how it was
+  verified (`x402_challenge` or `mcp_handshake`).
+- **Order.** Without `q`: tier (`first_party`, `vip`, `verified`, `listed`), then
+  most recently updated. A one-word `q` keeps that order over the listings that
+  contain it; a `q` of two or more words (function words aside) is ranked by
+  relevance, which the tier only multiplies, and a host's further results
+  follow every other host's. `sort` chooses either one explicitly; `sort=tier`
+  takes the shorter `q` it always took (see `/docs`).
 - **The catalog is a previous reading, not the offer.** `priceFreshness` is
   `fresh`, `stale`, `unknown` or `conflict`, and `priceRevalidation: "pending"`
   means the amounts beside it are the last reading. Before paying, call the

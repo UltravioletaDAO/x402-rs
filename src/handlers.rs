@@ -2252,6 +2252,7 @@ pub fn discovery_admin_routes() -> Router<Arc<DiscoveryRegistry>> {
         )
         .route("/discovery/admin/suppress", post(post_discovery_suppress))
         .route("/discovery/admin/release", post(post_discovery_release))
+        .route("/discovery/admin/pending", get(get_discovery_pending))
         .route("/discovery/refresh", post(post_discovery_refresh))
 }
 
@@ -2552,6 +2553,33 @@ pub async fn post_discovery_release(
         .into_response()
 }
 
+/// `GET /discovery/admin/pending?limit=&offset=`: everything the Bazaar does
+/// NOT expose -- every listing that is not verified alive -- with its health,
+/// for operating the prober. Public routes serve verified alive only and no
+/// parameter widens them; this is the one way to see the rest, behind the
+/// curation token like the other admin routes (404 when it is unset). The
+/// numbers are parsed after authentication and a malformed one falls back to
+/// its default, so nothing about the query can answer for a disabled surface.
+#[instrument(skip_all)]
+pub async fn get_discovery_pending(
+    State(registry): State<Arc<DiscoveryRegistry>>,
+    headers: axum::http::HeaderMap,
+    Query(q): Query<std::collections::HashMap<String, String>>,
+) -> impl IntoResponse {
+    if let Some(r) = admin_reject(admin_auth(&headers, BAZAAR_ADMIN_TOKEN_VAR)) {
+        return r;
+    }
+    let number = |key: &str, default: u32| {
+        q.get(key)
+            .and_then(|v| v.parse::<u32>().ok())
+            .unwrap_or(default)
+    };
+    let response = registry
+        .list_pending(number("limit", 100), number("offset", 0))
+        .await;
+    (StatusCode::OK, Json(response)).into_response()
+}
+
 /// `GET /discovery/attestation/{hash}`: serve a hosted ERC-8004 attestation
 /// evidence body (WS-E). Keyed by `sha256(url)` hex; only `[0-9a-f]{64}` keys
 /// are accepted so a URL path segment can never be mapped to arbitrary content.
@@ -2624,14 +2652,33 @@ pub struct DiscoveryQueryParams {
     /// Filter by curated tier: first_party|vip|verified|listed
     pub tier: Option<String>,
 
-    /// Free-text search over url / description / provider / category / tags.
-    /// Capped at `MAX_SEARCH_LEN` characters.
+    /// Search: a keyword, or a whole request in plain words, ranked by
+    /// relevance. Capped at `MAX_SEARCH_LEN` characters.
     pub q: Option<String>,
+
+    /// `relevance` | `tier`: how results with `q` are ordered.
+    pub sort: Option<String>,
+
+    /// Highest price in US dollars (a dollar-stablecoin option at or below it).
+    pub max_price_usd: Option<String>,
+
+    /// HTTP method the listing is called with: GET, POST, PUT, PATCH.
+    pub method: Option<String>,
+
+    /// `true` | `false`: whether the listing declares its request.
+    pub has_input_schema: Option<String>,
+
+    /// `api` | `content`.
+    pub kind: Option<String>,
+
+    /// Comma-separated hosts to leave out, each with its subdomains.
+    pub exclude_host: Option<String>,
 }
 
-/// Maximum accepted length of the `q` search parameter. The scan is O(items),
-/// so an unbounded needle from an unauthenticated caller is a cheap CPU sink.
-pub const MAX_SEARCH_LEN: usize = 128;
+/// Maximum accepted length of the `q` search parameter: a whole agent
+/// request. Matching goes through an index, so the cost of a long `q` is the
+/// number of its terms, which `discovery_search` bounds.
+pub const MAX_SEARCH_LEN: usize = crate::discovery_search::MAX_QUERY_CHARS;
 
 /// Every query parameter `GET /discovery/resources` understands.
 ///
@@ -2653,6 +2700,12 @@ pub const DISCOVERY_QUERY_PARAMS: &[&str] = &[
     "health",
     "tier",
     "q",
+    "sort",
+    "maxPriceUsd",
+    "method",
+    "hasInputSchema",
+    "kind",
+    "excludeHost",
 ];
 
 /// Cap on how many rejected parameters are echoed back, and how much of each.
@@ -2675,6 +2728,13 @@ fn discovery_param_hint(unknown: &str) -> Option<&'static str> {
         "networks" | "chain" | "chain_id" | "chainid" => Some("network"),
         "tags" => Some("tag"),
         "categories" => Some("category"),
+        "order" | "orderby" | "order_by" | "sort_by" | "sortby" => Some("sort"),
+        "max_price_usd" | "maxprice" | "max_price" | "price" | "maxpriceusd" => Some("maxPriceUsd"),
+        "exclude_host" | "excludehosts" | "exclude_hosts" | "exclude" | "excludehost" => {
+            Some("excludeHost")
+        }
+        "has_input_schema" | "hasinputschema" | "schema" | "input_schema" => Some("hasInputSchema"),
+        "http_method" | "verb" => Some("method"),
         _ => None,
     }
 }
@@ -2729,39 +2789,109 @@ fn default_limit() -> u32 {
     10
 }
 
-impl From<DiscoveryQueryParams> for Option<DiscoveryFilters> {
-    fn from(params: DiscoveryQueryParams) -> Self {
-        if params.category.is_none()
-            && params.network.is_none()
-            && params.provider.is_none()
-            && params.tag.is_none()
-            && params.source.is_none()
-            && params.source_facilitator.is_none()
-            && params.health.is_none()
-            && params.tier.is_none()
-            && params.q.is_none()
-        {
-            None
-        } else {
-            Some(DiscoveryFilters {
-                category: params.category,
-                network: params.network,
-                provider: params.provider,
-                tag: params.tag,
-                source: params.source,
-                source_facilitator: params.source_facilitator,
-                health: params.health,
-                tier: params.tier,
-                q: params.q,
-            })
-        }
+/// Turn the query into filters, or into the 400 that says which value cannot
+/// mean anything.
+///
+/// Every router filter is parsed here with the same function `list` applies,
+/// so a value the listing could not apply is refused instead of quietly
+/// matching nothing -- the same reasoning as the 400 for unknown parameters.
+#[allow(clippy::result_large_err)]
+fn discovery_filters(params: DiscoveryQueryParams) -> Result<Option<DiscoveryFilters>, Response> {
+    use crate::discovery_search as search;
+
+    fn bad(parameter: &str, error: String) -> Response {
+        (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": error, "parameter": parameter })),
+        )
+            .into_response()
     }
+
+    // Bound the search text: its cost is the number of its terms, and the
+    // route is public and unauthenticated.
+    let q_chars = params.q.as_deref().map(|q| q.chars().count()).unwrap_or(0);
+    if q_chars > MAX_SEARCH_LEN {
+        return Err(bad(
+            "q",
+            format!("q must be at most {MAX_SEARCH_LEN} characters"),
+        ));
+    }
+    let sort = params
+        .sort
+        .as_deref()
+        .map(search::parse_sort)
+        .transpose()
+        .map_err(|e| bad("sort", e))?;
+    if sort == Some(search::SortOrder::Tier) && q_chars > search::LEGACY_SUBSTRING_MAX_CHARS {
+        return Err(bad(
+            "q",
+            format!(
+                "with sort=tier, q must be at most {} characters: that order is the substring match, which never took more",
+                search::LEGACY_SUBSTRING_MAX_CHARS
+            ),
+        ));
+    }
+    let max_price_usd = match params.max_price_usd.as_deref() {
+        Some(raw) => {
+            search::parse_max_price_usd(raw).map_err(|e| bad("maxPriceUsd", e))?;
+            Some(raw.trim().to_string())
+        }
+        None => None,
+    };
+    let method = params
+        .method
+        .as_deref()
+        .map(search::parse_method)
+        .transpose()
+        .map_err(|e| bad("method", e))?;
+    let has_input_schema = params
+        .has_input_schema
+        .as_deref()
+        .map(search::parse_has_input_schema)
+        .transpose()
+        .map_err(|e| bad("hasInputSchema", e))?;
+    let kind = params
+        .kind
+        .as_deref()
+        .map(search::parse_kind)
+        .transpose()
+        .map_err(|e| bad("kind", e))?;
+    let exclude_host = params
+        .exclude_host
+        .as_deref()
+        .map(search::parse_exclude_hosts)
+        .transpose()
+        .map_err(|e| bad("excludeHost", e))?;
+
+    let filters = DiscoveryFilters {
+        category: params.category,
+        network: params.network,
+        provider: params.provider,
+        tag: params.tag,
+        source: params.source,
+        source_facilitator: params.source_facilitator,
+        health: params.health,
+        tier: params.tier,
+        q: params.q,
+        sort: sort.map(|s| match s {
+            search::SortOrder::Relevance => "relevance".to_string(),
+            search::SortOrder::Tier => "tier".to_string(),
+        }),
+        max_price_usd,
+        method,
+        has_input_schema,
+        kind,
+        exclude_host,
+    };
+    Ok((!filters.is_empty()).then_some(filters))
 }
 
 /// `GET /discovery/resources`: List discoverable paid resources.
 ///
-/// Supports pagination via `limit` and `offset` query parameters.
-/// Supports filtering by `category`, `network`, `provider`, and `tag`.
+/// Supports pagination via `limit` and `offset` query parameters, the catalog
+/// filters (`category`, `network`, `provider`, `tag`, `source`,
+/// `sourceFacilitator`, `health`, `tier`), search (`q`, `sort`) and the router
+/// filters (`maxPriceUsd`, `method`, `hasInputSchema`, `kind`, `excludeHost`).
 ///
 /// Parameters outside `DISCOVERY_QUERY_PARAMS` are rejected with a 400 rather
 /// than ignored, so a caller can tell a filter that matched everything apart
@@ -2796,22 +2926,12 @@ pub async fn get_discovery_resources(
         "Discovery resources query"
     );
 
-    // Bound the free-text needle: the scan is O(catalog) per request on a
-    // public, unauthenticated route.
-    if let Some(q) = params.q.as_deref() {
-        if q.chars().count() > MAX_SEARCH_LEN {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(json!({
-                    "error": format!("q must be at most {MAX_SEARCH_LEN} characters")
-                })),
-            )
-                .into_response();
-        }
-    }
-
-    let filters: Option<DiscoveryFilters> = params.clone().into();
-    let response = registry.list(params.limit, params.offset, filters).await;
+    let (limit, offset) = (params.limit, params.offset);
+    let filters = match discovery_filters(params) {
+        Ok(filters) => filters,
+        Err(rejection) => return rejection,
+    };
+    let response = registry.list(limit, offset, filters).await;
 
     info!(
         total = response.pagination.total,
@@ -14449,15 +14569,30 @@ mod discovery_handler_tests {
             health: None,
             tier: None,
             q: None,
+            sort: None,
+            max_price_usd: None,
+            method: None,
+            has_input_schema: None,
+            kind: None,
+            exclude_host: None,
         }
     }
 
     async fn list(raw_query: &str) -> (StatusCode, serde_json::Value) {
+        list_with(raw_query, default_params()).await
+    }
+
+    /// The handler reads the values from `params` (axum's `Query`) and only
+    /// the names from `raw_query`; a test sets both.
+    async fn list_with(
+        raw_query: &str,
+        params: DiscoveryQueryParams,
+    ) -> (StatusCode, serde_json::Value) {
         let registry = Arc::new(DiscoveryRegistry::new());
         let response = get_discovery_resources(
             State(registry),
             RawQuery(Some(raw_query.to_string())),
-            Query(default_params()),
+            Query(params),
         )
         .await
         .into_response();
@@ -14520,6 +14655,128 @@ mod discovery_handler_tests {
         assert_eq!(body["error"], "unknown query parameters: search, page");
         // Ambiguous: two rejects with two different replacements, no hint.
         assert!(body["hint"].is_null());
+    }
+
+    /// A whole agent request fits; one character more does not.
+    #[tokio::test]
+    async fn q_takes_a_whole_request_and_no_more() {
+        let at_cap = DiscoveryQueryParams {
+            q: Some("a".repeat(MAX_SEARCH_LEN)),
+            ..default_params()
+        };
+        assert_eq!(MAX_SEARCH_LEN, 400);
+        assert_eq!(list_with("q=x", at_cap).await.0, StatusCode::OK);
+
+        let over = DiscoveryQueryParams {
+            q: Some("á".repeat(MAX_SEARCH_LEN + 1)),
+            ..default_params()
+        };
+        let (status, body) = list_with("q=x", over).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(body["parameter"], "q");
+    }
+
+    /// The old order is the substring match, which never took more than 128
+    /// characters; asking for it with more is a contradiction, said as such.
+    #[tokio::test]
+    async fn sort_tier_keeps_the_old_length_limit() {
+        let params = DiscoveryQueryParams {
+            q: Some("a".repeat(129)),
+            sort: Some("tier".to_string()),
+            ..default_params()
+        };
+        let (status, body) = list_with("q=x&sort=tier", params).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(body["parameter"], "q");
+
+        let params = DiscoveryQueryParams {
+            q: Some("a".repeat(128)),
+            sort: Some("TIER".to_string()),
+            ..default_params()
+        };
+        assert_eq!(list_with("q=x&sort=tier", params).await.0, StatusCode::OK);
+    }
+
+    /// Each router filter refuses a value it cannot apply, naming itself.
+    #[tokio::test]
+    async fn an_unreadable_router_filter_is_a_400_that_names_it() {
+        let cases: Vec<(&str, DiscoveryQueryParams)> = vec![
+            (
+                "sort",
+                DiscoveryQueryParams {
+                    sort: Some("newest".to_string()),
+                    ..default_params()
+                },
+            ),
+            (
+                "maxPriceUsd",
+                DiscoveryQueryParams {
+                    max_price_usd: Some("-1".to_string()),
+                    ..default_params()
+                },
+            ),
+            (
+                "method",
+                DiscoveryQueryParams {
+                    method: Some("BREW".to_string()),
+                    ..default_params()
+                },
+            ),
+            (
+                "hasInputSchema",
+                DiscoveryQueryParams {
+                    has_input_schema: Some("maybe".to_string()),
+                    ..default_params()
+                },
+            ),
+            (
+                "kind",
+                DiscoveryQueryParams {
+                    kind: Some("tool".to_string()),
+                    ..default_params()
+                },
+            ),
+            (
+                "excludeHost",
+                DiscoveryQueryParams {
+                    exclude_host: Some("https://example.com/x".to_string()),
+                    ..default_params()
+                },
+            ),
+        ];
+        for (name, params) in cases {
+            let (status, body) = list_with(&format!("{name}=x"), params).await;
+            assert_eq!(status, StatusCode::BAD_REQUEST, "{name}");
+            assert_eq!(body["parameter"], name);
+            assert!(body["error"].as_str().unwrap().contains(name), "{body}");
+        }
+    }
+
+    #[tokio::test]
+    async fn readable_router_filters_list() {
+        let params = DiscoveryQueryParams {
+            q: Some("find a person's work email".to_string()),
+            sort: Some("relevance".to_string()),
+            max_price_usd: Some("0.05".to_string()),
+            method: Some("post".to_string()),
+            has_input_schema: Some("true".to_string()),
+            kind: Some("API".to_string()),
+            exclude_host: Some("tenjin.blog, example.com".to_string()),
+            ..default_params()
+        };
+        let raw = "q=x&sort=x&maxPriceUsd=x&method=x&hasInputSchema=x&kind=x&excludeHost=x";
+        let (status, body) = list_with(raw, params).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert!(body["items"].is_array());
+    }
+
+    #[test]
+    fn the_new_parameters_have_hints_for_their_usual_misspellings() {
+        assert_eq!(discovery_param_hint("order_by"), Some("sort"));
+        assert_eq!(discovery_param_hint("max_price"), Some("maxPriceUsd"));
+        assert_eq!(discovery_param_hint("MaxPriceUSD"), Some("maxPriceUsd"));
+        assert_eq!(discovery_param_hint("exclude_hosts"), Some("excludeHost"));
+        assert_eq!(discovery_param_hint("input_schema"), Some("hasInputSchema"));
     }
 }
 
@@ -16321,6 +16578,68 @@ mod erc8004_admin_gate_tests {
         let status = status_with(gated_router(), Some("bazaar-only-token")).await;
         std::env::remove_var(BAZAAR_ADMIN_TOKEN_VAR);
         assert_eq!(status, StatusCode::NOT_FOUND);
+    }
+
+    /// `GET /discovery/admin/pending`, the one window on what the Bazaar does
+    /// not expose, sits behind the curation token: absent while it is unset,
+    /// 401 without it, the pending records with it. Here because it shares
+    /// this module's lock on the process environment with the test above.
+    #[tokio::test]
+    async fn the_pending_queue_is_behind_the_bazaar_token() {
+        let _guard = ADMIN_ENV.lock().unwrap_or_else(|e| e.into_inner());
+        let registry = Arc::new(DiscoveryRegistry::new());
+        let listing = json!({
+            "resource": "https://seller.example/pending",
+            "type": "http",
+            "x402Version": 2,
+            "description": "never probed",
+            "accepts": [{
+                "scheme": "exact",
+                "network": "eip155:8453",
+                "asset": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+                "amount": "1000",
+                "payTo": "0x3333333333333333333333333333333333333333",
+                "maxTimeoutSeconds": 300
+            }]
+        });
+        let (mut imported, _) = crate::discovery_aggregator::convert_resources(
+            vec![serde_json::from_value(listing).unwrap()],
+            "coinbase",
+        );
+        registry.register(imported.remove(0)).await.unwrap();
+        let get = |bearer: Option<&str>| {
+            let mut builder = Request::builder()
+                .method("GET")
+                .uri("/discovery/admin/pending?limit=5");
+            if let Some(token) = bearer {
+                builder = builder.header(
+                    axum::http::header::AUTHORIZATION,
+                    format!("Bearer {}", token),
+                );
+            }
+            discovery_admin_routes()
+                .with_state(Arc::clone(&registry))
+                .oneshot(builder.body(Body::empty()).unwrap())
+        };
+
+        std::env::remove_var(BAZAAR_ADMIN_TOKEN_VAR);
+        let unset = get(Some("bazaar-only-token")).await.unwrap().status();
+        std::env::set_var(BAZAAR_ADMIN_TOKEN_VAR, "bazaar-only-token");
+        let without = get(None).await.unwrap().status();
+        let with = get(Some("bazaar-only-token")).await.unwrap();
+        std::env::remove_var(BAZAAR_ADMIN_TOKEN_VAR);
+
+        assert_eq!(unset, StatusCode::NOT_FOUND);
+        assert_eq!(without, StatusCode::UNAUTHORIZED);
+        assert_eq!(with.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(with.into_body(), 64 * 1024)
+            .await
+            .unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(body["pagination"]["total"], 1);
+        assert_eq!(body["items"][0]["url"], "https://seller.example/pending");
+        // And the public listing does not show it.
+        assert_eq!(registry.list(10, 0, None).await.pagination.total, 0);
     }
 
     /// Authentication runs BEFORE the writer lease.
@@ -18135,6 +18454,47 @@ mod agentic_surface_tests {
             expected,
             "static/llms-full.txt is stale -- run ./scripts/build_llms_full.sh and commit the result"
         );
+    }
+
+    /// The agent documents describe `GET /discovery/resources` as the handler
+    /// serves it: every parameter it accepts, and the `q` cap named by where
+    /// it is published -- never a number of their own that drifts from it.
+    #[test]
+    fn the_agent_docs_name_every_discovery_parameter_and_no_query_cap() {
+        let cap = crate::discovery_search::MAX_QUERY_CHARS;
+        for (name, doc) in [
+            ("static/skill.md", lf(include_str!("../static/skill.md"))),
+            (
+                "static/llms-full.txt",
+                lf(include_str!("../static/llms-full.txt")),
+            ),
+        ] {
+            let start = doc
+                .find("The parameters, and only these")
+                .unwrap_or_else(|| panic!("{name}: no parameter list"));
+            let end = start
+                + doc[start..]
+                    .find("Page with `offset`")
+                    .unwrap_or_else(|| panic!("{name}: the parameter list has no end"));
+            let section = &doc[start..end];
+            for param in DISCOVERY_QUERY_PARAMS {
+                assert!(
+                    section.contains(&format!("`{param}`")),
+                    "{name} does not name `{param}`"
+                );
+            }
+            assert!(
+                section.contains("search.maxQueryChars"),
+                "{name}: the q cap is not named by where it is published"
+            );
+            for copied in [
+                format!("{cap} characters"),
+                "128 characters".to_string(),
+                "shows everything".to_string(),
+            ] {
+                assert!(!section.contains(&copied), "{name} says {copied:?}");
+            }
+        }
     }
 
     /// The skills index publishes the real digest of `skill.md`.
@@ -20828,6 +21188,49 @@ mod erc8004_write_rate_tests {
             body,
         )
         .await;
+        assert_eq!(second.status(), StatusCode::TOO_MANY_REQUESTS);
+        let bytes = axum::body::to_bytes(second.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let refusal: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(refusal["code"], "erc8004_daily_write_limit");
+    }
+
+    /// Nor does an address on the IP allowlist skip it: what the list exempts
+    /// from is the write budget, never the gas.
+    #[tokio::test]
+    async fn an_allowlisted_address_still_spends_the_daily_gas_cap() {
+        use crate::erc8004::daily_cap::{self, DailyWriteCap};
+        let listed = "198.51.100.93";
+        let cap = Arc::new(DailyWriteCap::new(
+            1000,
+            std::collections::HashMap::from([(crate::network::Network::Base, 1)]),
+            Box::new(|| 0),
+        ));
+        let sends = Router::new()
+            .route(
+                "/feedback/evm/submit",
+                post(|| async {
+                    daily_cap::mark_sent();
+                    "sent"
+                }),
+            )
+            .layer(axum::middleware::from_fn_with_state(
+                cap,
+                daily_cap::enforce_with,
+            ));
+        let policy = crate::rate_policy::RatePolicy::none().with_allowlist(listed);
+        let router = erc8004_write_governed(&policy, sends);
+        let body = r#"{"network":"base"}"#;
+
+        let first = post_as(&router, "/feedback/evm/submit", listed, None, body).await;
+        assert_eq!(first.status(), StatusCode::OK);
+        assert_eq!(
+            first.headers()["x-ratelimit-exempt"],
+            crate::ip_allowlist::EXEMPT_AS
+        );
+
+        let second = post_as(&router, "/feedback/evm/submit", listed, None, body).await;
         assert_eq!(second.status(), StatusCode::TOO_MANY_REQUESTS);
         let bytes = axum::body::to_bytes(second.into_body(), usize::MAX)
             .await

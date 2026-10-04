@@ -24,11 +24,12 @@
 //! # What an observation is not
 //!
 //! It is not a quote, it is not a guarantee, and it is not a price for a request
-//! other than the one that was made. The prober issues an unauthenticated `GET`
-//! on the listing URL; that is the whole context, and it is recorded as such.
-//! A `POST` with parameters is a different request and may legitimately cost
-//! something else -- which is why [`ObservationContext`] is stored next to the
-//! terms rather than left implicit.
+//! other than the one that was made. The prober issues an unauthenticated
+//! request on the listing URL -- a `GET`, or the `POST`/`PUT`/`PATCH` the
+//! listing declares, carrying the listing's own example body -- and that is the
+//! whole context, recorded as such. Another body, or credentials, is a different
+//! request and may legitimately cost something else -- which is why
+//! [`ObservationContext`] is stored next to the terms rather than left implicit.
 
 use std::collections::{BTreeMap, HashMap};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -180,11 +181,21 @@ pub struct ObservationContext {
 }
 
 impl ObservationContext {
-    /// An unauthenticated GET of the listing URL -- the only context the health
-    /// prober can produce.
+    /// An unauthenticated GET of the listing URL. The prober records the method
+    /// it actually sent, through [`Self::anonymous`]; this shorthand stays for
+    /// the library's callers (`tests/bazaar_freshness.rs` among them), so the
+    /// binary alone does not use it.
+    #[allow(dead_code)]
     pub fn anonymous_get(resource_type: &str) -> Self {
+        Self::anonymous("GET", resource_type)
+    }
+
+    /// An unauthenticated request with `method` -- what the health prober
+    /// produces: the method the listing declares (with the listing's own example
+    /// body), or the one its fallback found answering.
+    pub fn anonymous(method: &str, resource_type: &str) -> Self {
         Self {
-            method: "GET".to_string(),
+            method: method.to_string(),
             resource_type: resource_type.to_string(),
             authenticated: false,
         }

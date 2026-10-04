@@ -307,8 +307,10 @@ resource **HTTP 402 is the healthy signal**; `401/403/405` is auth-gated (health
 by design), `404/410`/dead/5xx counts toward quarantine. MCP endpoints are probed
 with a JSON-RPC `initialize` handshake instead. A resource is quarantined after 3
 consecutive failures (backoff 1h → 6h → 24h → 72h) and recovers automatically
-after 2 consecutive successes. Quarantined resources are hidden from the default
-listing but retained — pass `?health=any` to see everything.
+after 2 consecutive successes. Only what is verified alive is listed: the last
+probe got the listing's own 402, with a payment option, to the request it
+declares (an MCP endpoint: its handshake listed a tool). Everything else is
+retained and re-probed, and no parameter lists it -- `?health=any` included.
 
 **3. Curated tiers.** Listings are ordered `first_party` > `vip` > `verified`
 (probe-confirmed 402) > `listed`, then by liveness, then recency. Tiers come from

@@ -22,6 +22,7 @@ use serde_json::Value;
 use url::Url;
 
 use x402_rs::discovery::DiscoveryRegistry;
+use x402_rs::discovery_health::ProbeMethod;
 use x402_rs::discovery_price::{normalize_declared_option, DeclaredPaymentOption};
 use x402_rs::discovery_terms::{
     ObservationContext, ObservationPhase, ObservedTerms, TermsProvenance, TermsTransport,
@@ -78,7 +79,17 @@ fn now() -> u64 {
 }
 
 /// The one item a listing returns, as JSON.
+///
+/// The listing exposes only what is verified alive, so the record is first
+/// given a verifying probe: these tests are about how the price of an exposed
+/// listing is described, not about whether it is exposed.
 async fn listed(registry: &DiscoveryRegistry) -> Value {
+    for url in registry.all_urls().await {
+        registry
+            .health()
+            .mark_verified(url.as_str(), ProbeMethod::Get)
+            .await;
+    }
     let response = registry.list(10, 0, None).await;
     let json = serde_json::to_value(&response).expect("the listing must serialize");
     json["items"][0].clone()

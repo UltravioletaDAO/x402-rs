@@ -63,6 +63,7 @@ pub mod register_jobs;
 pub mod relay;
 pub mod relay_v4;
 pub mod retire;
+pub mod sma7702;
 pub mod solana;
 pub mod solana_mint;
 pub mod summary;

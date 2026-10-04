@@ -250,7 +250,10 @@ pub enum DelegationState {
     ///
     /// NOT usable and NOT re-delegatable by us: re-pointing an account that a
     /// wallet provider delegated would break whatever that provider is doing
-    /// with it.
+    /// with it. A known Alchemy `SemiModularAccount7702` is still `Foreign`.
+    /// `sma7702` can recognise that implementation and check its ERC-1271
+    /// envelope locally, and nothing in the relay consults it. See
+    /// `docs/plans/sma-7702-erc1271-foreign-delegation.md`.
     Foreign,
 }
 

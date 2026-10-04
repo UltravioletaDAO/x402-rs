@@ -406,6 +406,98 @@ async fn the_origins_own_document_is_not_completed_by_a_copy_either() {
 }
 
 // ============================================================================
+// The seller declares its own schema at registration
+// ============================================================================
+
+/// `POST /discovery/register` takes `extensions.bazaar` -- the x402 v2 place a
+/// seller declares what to send and what comes back -- and keeps it verbatim:
+/// the listing then reports `hasInputSchema` and the prober calls it with the
+/// method and example body it declares. Both SDKs' register helpers (Python
+/// `register_resource`, TypeScript `registerResource`, read 2026-10-04) send
+/// no `extensions` at all, so a seller using them cannot declare it yet.
+#[tokio::test]
+async fn the_seller_declares_its_schema_at_registration() {
+    use tower::ServiceExt as _;
+    use x402_rs::discovery_health::probe_request;
+
+    let registry = std::sync::Arc::new(DiscoveryRegistry::new());
+    let app = x402_rs::handlers::discovery_register_routes().with_state(registry.clone());
+    let url = "https://api.quotes.example/v1/quote";
+    // The shape the x402 bazaar extension publishes: `info` with an example of
+    // each half, and `schema`, a JSON Schema nested well past the payment
+    // `extra` bound.
+    let bazaar = serde_json::json!({
+        "info": {
+            "input": {
+                "type": "http", "method": "POST", "bodyType": "json",
+                "body": { "symbol": "AAPL" }
+            },
+            "output": { "type": "json", "example": { "symbol": "AAPL", "price": 189.5 } }
+        },
+        "schema": {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "type": "object",
+            "properties": {
+                "input": {
+                    "type": "object",
+                    "properties": {
+                        "method": { "type": "string", "const": "POST" },
+                        "body": {
+                            "type": "object",
+                            "properties": {
+                                "symbol": { "type": "string", "pattern": "^[A-Z]{1,5}$" }
+                            },
+                            "required": ["symbol"]
+                        }
+                    },
+                    "required": ["method", "body"]
+                }
+            },
+            "required": ["input"]
+        }
+    });
+    let body = serde_json::json!({
+        "url": url,
+        "type": "http",
+        "description": "Last trade price for a US stock symbol",
+        "accepts": [{
+            "scheme": "exact", "network": "eip155:8453",
+            "asset": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+            "amount": "10000",
+            "payTo": "0x1234567890123456789012345678901234567890",
+            "maxTimeoutSeconds": 60
+        }],
+        "extensions": { "bazaar": bazaar.clone() }
+    });
+    let response = app
+        .oneshot(
+            axum::http::Request::post("/discovery/register")
+                .header("content-type", "application/json")
+                .body(axum::body::Body::from(body.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), axum::http::StatusCode::CREATED);
+
+    let held = registry.get(url).await.expect("registered");
+    assert_eq!(
+        held.extensions.as_ref().map(|e| &e["bazaar"]),
+        Some(&bazaar),
+        "kept verbatim"
+    );
+    assert!(held.has_input_schema());
+    assert_eq!(
+        probe_request(&held.url, held.extensions.as_ref(), false),
+        ProbeRequest::Declared {
+            method: ProbeMethod::Post,
+            example: Some(r#"{"symbol":"AAPL"}"#.to_string()),
+        },
+        "the prober asks the way the seller declared"
+    );
+}
+
+// ============================================================================
 // kind and category, as a router reads them
 // ============================================================================
 

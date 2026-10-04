@@ -8,7 +8,11 @@
   `GET /discovery/stats`, the `/bazaar` page and the uptime attestation now
   cover only listings whose last probe, made with the request the listing
   declares, read a valid x402 challenge in a 402 within the observed-terms
-  freshness window, and that are not quarantined. Auth-gated, degraded,
+  freshness window, and that are not quarantined. The 402 has to be the
+  listing's own answer to that request -- not one another host gave after a
+  redirect, nor one a 301/302/303 reached by turning the request into a GET --
+  and its challenge has to offer at least one payment option the facilitator
+  can read; a challenge with none is not read as one. Auth-gated, degraded,
   quarantined, unprobeable and never-probed listings are no longer listed or
   counted on any public listing surface (`/discovery/config` still reports how
   many records a task holds), and no parameter lists them (`health` can only
@@ -19,11 +23,14 @@
   `initialize`, the `initialized` notification and `tools/list`, with the
   session the server assigns sent back to it, and reads the answers as JSON or
   as an event stream. It is verified alive when `tools/list` lists at least one
-  named tool, within the same window and out of quarantine; nothing is called. A
+  named tool, within the same window and out of quarantine; nothing is called.
+  The `initialize` and `tools/list` answers have to be the endpoint's own, like
+  a 402 (no redirect to another host, no change of method). A
   handshake that lists nothing or does not complete leaves it pending. The
   handshake shows the server is up; it reads no payment terms. So an MCP listing
-  under a curated product's URL is shown only when it declares that product's
-  own recipients (`expectedPayTo` in `config/bazaar_curation.json`).
+  on a curated product's host, whatever the scheme or path of its URL, is shown
+  only when every option it declares pays one of that product's own recipients
+  (`expectedPayTo` in `config/bazaar_curation.json`).
 - The persisted liveness overlay is read record by record: a record a build
   cannot read is left out instead of the whole overlay.
 - The `/bazaar` page shows one number, the listings verified alive, and drops the
@@ -37,7 +44,8 @@
   128 characters.
 - An alive listing is re-probed before its verification leaves the window. A
   record written before this release keeps its listing on the reading the
-  observed-terms overlay took in the same probe, and is re-probed at once; an
+  observed-terms overlay took in the same probe, when that reading offered
+  something to pay, and is re-probed at once; an
   alive MCP record from before this release is re-probed at once by its
   handshake.
 - Until a task has read the persisted liveness overlay, an import protects every
@@ -53,7 +61,9 @@
   405, 400 or 404, and the method that answered is remembered. Still unpaid: no
   payment header, nothing from the listing in the URL or the headers, and our
   own origin -- or a prefix whose owner opts out in `probeGetOnly` of
-  `config/bazaar_curation.json` -- only ever gets a GET. Until now every listing
+  `config/bazaar_curation.json` -- only ever gets a GET from an HTTP listing's
+  probe (an MCP listing's is the handshake above, our own fixed messages, sent
+  to any origin). Until now every listing
   got a GET, so a POST-only service answering 405 or 404 was shown as
   auth-gated or hidden as quarantined; an external router measured 14 of 18
   sampled auth-gated and 15 of 25 quarantined listings answering 402 to a POST.
@@ -105,13 +115,15 @@
 
 - `GET /discovery/resources?q=` accepts up to 400 characters (was 128) and, for a request of two or more words, ranks by relevance: BM25 over the host, path, description, provider, category, tags and the field names and descriptions a listing declares in `extensions.bazaar`, with a fixed English/Spanish vocabulary (`weather` finds a listing that says `forecast`, `precio` one that says `price`). Nothing is sent anywhere to rank. The curated tier multiplies relevance (`first_party` x1.3, `vip` x1.2, `verified` x1.1) instead of ordering the result, and no host keeps more than two places at the top of a relevance result. Measured over the listings the curated bazaar exposes in a 1 999-listing fixture shaped like the live catalog (`tests/fixtures/bazaar/search-*.json`): the twelve intents of the partner's benchmark, sent as written, put 26 of 36 top-three places on services that do the job, against 4 with the 2.46.1 search and 20 with its best hand-picked keyword per intent. The ten it misses are paid essays in the VIP tier titled with the intent's own words: 27 of 36 when they are not VIP, 34 when the router leaves their host out with `excludeHost`. Ten paraphrases in English and Spanish that the vocabulary was not written against: 21 of 30, against 0 with 2.46.1. Latency over that catalog in a debug build: 5-7 ms per search at the median and 9-12 ms at p95 (the 2.46.1 substring search: 1.2-1.5 ms), 50-70 ms for the first search after the catalog changes, which rebuilds the index; a listing without `q` is unchanged.
 - Compatible by default: a listing without `q` keeps its order and its content, and a one-word `q` keeps 2.46.1's substring match and order. `sort=relevance` and `sort=tier` (2.46.1's search, `q` up to 128) choose either explicitly. Under relevance a `q` of up to 128 characters still returns every listing the substring match returned, after every listing a word scored. Clients of `uvd-x402-sdk` for Python get the longer `q` once the SDK lifts its own 128-character check.
+- The relevance index covers only the listings the Bazaar exposes and does not suppress. Each field enters cut to the length the import filter lets it have (the declared schema to a description's length), and no more tags than it lets a listing have. The index has budgets of terms and of text, shared evenly among its listings down to a floor; past the floor the listings last in line -- curated tiers first, then the longest held -- are matched by the substring test alone. It is rebuilt off the request's thread, by a task that completes even when the search that started it is gone, one rebuild at a time and at a bounded rate, and only when the catalog or that set of listings changed: a registration refused as a duplicate, or an unregistration of a URL the catalog does not hold, keeps it. While a rebuild runs, or none is allowed yet, searches rank with the index there is.
+- A one-word `q` keeps 2.46.1's order even when it splits into several terms (`stock-quote`, `tenjin.blog`); relevance is the default for two or more words.
 - The catalog order now breaks its last tie by `url`, so a page walked by `offset` is the same on every replica.
 - New router filters, each a 400 that names itself when its value cannot be applied: `maxPriceUsd` (a dollar-stablecoin option at or below it, compared in atomic units), `method` (`GET`, `POST`, `PUT` or `PATCH`, the declaration as the health prober reads it; `GET` for an HTTP listing that declares none), `hasInputSchema` (the rule behind the listing's own `hasInputSchema`), `kind` (`api` | `content`, the listing's own `kind`) and `excludeHost` (comma-separated, with subdomains).
 - Tokenization is the one Paarce (Emporium) uses, copied with its provenance so the two can be merged later.
 
 ### Bazaar catalog: a full catalog makes room from templated families and crowded hosts first
 
-- When the catalog is at its cap and a new aggregated listing has to displace one, every copy the public surface does not show (not verified alive) goes before any copy it does: a newcomer, never probed, can only take the place of another pending copy, never of an exposed one. Within each group, the duplicates of a templated family go first, keeping one member (an exposed one before the newest); then a host's copies beyond its share of the catalog (`DISCOVERY_MAX_HOST_SHARE_PCT`, default 5 %: 100 listings at the default cap, never fewer than 50); then the oldest copy, as before. A family is a host and a path whose variable segments -- a digit (`/packs/0042`, `/token/0x.../whales`), a ticker (`/stock-history/AAPL`), a placeholder, or a last segment that is a generated slug of four or more words (`/x402/demand-company-oracle-revenue`) -- are read as one template. Admission follows the same order, so nothing comes back as new every cycle. A catalog with room is never trimmed for it, and a first-hand listing is never evicted.
+- When the catalog is at its cap and a new aggregated listing has to displace one, every copy the public surface does not show (not verified alive) goes before any copy it does: a newcomer, never probed, can only take the place of another pending copy, never of an exposed one. Within each group, the duplicates of a templated family go first, keeping one member (an exposed one before the newest); then a host's copies beyond its share of the catalog (`DISCOVERY_MAX_HOST_SHARE_PCT`, default 5 %: 100 listings at the default cap, never fewer than 50); then the oldest copy, as before. A family is a host and a path whose variable segments -- a digit (`/packs/0042`, `/token/0x.../whales`), a ticker (`/stock-history/AAPL`), a placeholder, or a last segment that is a generated slug of four or more words (`/x402/demand-company-oracle-revenue`) -- are read as one template. Admission follows the same order, so nothing comes back as new every cycle. A catalog with room is never trimmed for it, and a first-hand listing is never evicted: the order is among aggregated copies, and a first-hand listing counts against the cap whatever its health.
 - Measured on a copy of the catalog as persisted on 2026-10-01: of its 2 000 listings, 470 aggregated copies are family duplicates (398 of them one data-pack template), so a full catalog can take 470 new services without losing a distinct one. The host share frees nothing there yet: every host above 100 listings registered them first-hand.
 - `GET /discovery/stats` adds `topHosts` (the ten hosts holding the most listings) and `GET /discovery/config` adds `catalog.maxHostSharePercent` and `catalog.maxPerHost`. The cap itself (`DISCOVERY_MAX_RESOURCES`, 2 000) is unchanged.
 
@@ -119,7 +131,8 @@
 
 - A request whose client address is on the IP allowlist skips what a recognized `X-UVD-Stack-Key` skips: every per-IP budget and the per-address in-flight ceiling. Its response carries `x-ratelimit-exempt: ip-allowlist` and no `RateLimit-Policy` or `RateLimit`. The body deadline, the body size limit, the task's ceiling of concurrent requests and the ERC-8004 daily write cap still apply to it, as they do to a stack key.
 - The address is the one every budget keys on: the last `X-Forwarded-For` entry, the one the load balancer appends. An address written in front of it is never read.
-- The list lives in a Secrets Manager secret named by `UVD_IP_ALLOWLIST_SECRET` and is re-read every `UVD_IP_ALLOWLIST_REFRESH_SECS` (default 300, between 30 and 3600), so a new address takes effect without a deploy. Its form is a JSON array of strings; entries separated by commas, semicolons or white space are read too, and a document that starts like JSON but is not an array (an object, or JSON that does not parse) is an empty list. Entries are addresses or CIDR prefixes no broader than /24 (IPv4) or /48 (IPv6); addresses that are not public are refused. Unset, the list is disabled and nothing calls AWS; a secret that does not exist or holds no value is an empty list, and so is a document that is not a list, even over a list read before; a read with no answer within 10 seconds is a failed read, and after three failed reads in a row the list is emptied; a list not read for four refresh cycles counts as empty whatever happens to the refresher.
+- The exemption is for the operator's own tools, not for pages a browser loads: a request carrying `Origin` or `Sec-Fetch-Site` is charged like anybody's, budgets, budget headers and per-address ceiling included, whatever its address.
+- The list lives in a Secrets Manager secret named by `UVD_IP_ALLOWLIST_SECRET` and is re-read every `UVD_IP_ALLOWLIST_REFRESH_SECS` (default 300, between 30 and 3600), so a new address takes effect without a deploy. Its form is a JSON array of strings; entries separated by commas, semicolons or white space are read too, and a document that starts like JSON but is not an array (an object, or JSON that does not parse) is an empty list. Entries are addresses or CIDR prefixes no broader than /24 (IPv4) or /48 (IPv6); addresses that are not public are refused. Unset, the list is disabled and nothing calls AWS; a secret that does not exist or holds no value is an empty list, and so is a document that is not a list, even over a list read before; a read with no answer within 10 seconds is a failed read, and after three failed reads in a row the list is emptied (a role allowed to read the secret only by name, as the task's is, gets an access denial for a secret that does not exist: that reads as `failing`, not `missing`, and empties the list after those three reads); a list not read for four refresh cycles counts as empty whatever happens to the refresher.
 - No address from the list reaches an application log, a response or `GET /config`. `/config` publishes `ipAllowlist`: whether it is on, how many entries are in force and how its last read went (`ok`, `unreadable`, `missing`, `failing`, `stale` or `never`), as it stands at each request. A rejected stack key sent from an allowlisted address is logged without the address.
 - `emporium` joins the stack services (`UVD_STACK_KEY_SHA256_EMPORIUM`), inactive until its digest is configured.
 - New dependency: `aws-sdk-secretsmanager` 1.101; no other crate in `Cargo.lock` changes.

@@ -91,8 +91,9 @@ a liveness `health` status from periodic probing, and a curated `tier`
 (`first_party` > `vip` > `verified` > `listed`) which also drives listing order.
 
 Every public Bazaar surface exposes only what is **verified alive**: the last probe, made with
-the request the listing declares, read a valid x402 challenge in a 402 within the observed-terms
-freshness window. Everything else stays in the catalog and keeps being probed, unseen.
+the request the listing declares, read a valid x402 challenge in the listing's own 402 -- or, for
+an MCP endpoint, completed its handshake and listed a tool -- within the observed-terms freshness
+window. Everything else stays in the catalog and keeps being probed, unseen.
 
 - `GET /discovery/resources` - List verified-alive resources (filters: category, provider, tag, network, source, sourceFacilitator, health, tier; search: q, sort; router filters: maxPriceUsd, method, hasInputSchema, kind, excludeHost; any other parameter is a 400)
 - `GET /discovery/stats` - Aggregate metrics of what is exposed (60s cache)
@@ -2310,10 +2311,13 @@ to nothing.
 **Exposure:** only resources **verified alive** are listed: the last probe, made with the request
 the listing declares, read a valid x402 challenge in a 402 -- or, for an MCP endpoint, completed
 its handshake (`initialize`, then `tools/list`) and listed at least one tool -- no longer ago than
-the observed-terms freshness window, and the resource is not quarantined. `health.verifiedAt`
-says when and `health.verifiedBy` how (`x402_challenge` | `mcp_handshake`). A handshake shows the
-MCP server is up and reads no payment terms, so an MCP listing under a curated product's URL is
-listed only when it declares that product's own recipients. Auth-gated,
+the observed-terms freshness window, and the resource is not quarantined. The 402, and each
+handshake answer, has to be the listing's own answer to that request (not one another host gave
+after a redirect, nor one a 301/302/303 reached by turning the request into a GET); the 402 has
+to offer at least one payment option we can read. `health.verifiedAt` says when and `health.verifiedBy` how (`x402_challenge` |
+`mcp_handshake`). A handshake shows the MCP server is up and reads no payment terms, so an MCP
+listing on a curated product's host -- whatever the scheme or path of its URL -- is listed only
+when every option it declares pays one of that product's own recipients. Auth-gated,
 degraded, quarantined, unprobeable and never-probed resources are not listed, and no parameter
 lists them: they stay in the catalog and keep being probed until a verification promotes them.
 So every listed resource has `health.status` `alive`, and `health` can only narrow what is

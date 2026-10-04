@@ -63,8 +63,8 @@ a GET and nothing else.
   as `safe_get`. No payment header; `queryParams` and `headers` from the listing are never sent;
   nothing of ours goes in the body. **Redirects with a body** (`redirect_hop`): 307/308 keep the
   method and body only on the original request's host, 301/302/303 become a GET without the body,
-  anything else is not followed -- so no origin can bounce our POST, with a stranger's JSON, at a
-  third party or at this facilitator. A 402 body is read up to 256 KiB (`read_capped`); past that it
+  anything else is not followed -- so a redirect never carries a body to another host. A 402 body
+  is read up to 256 KiB (`read_capped`); past that it
   is dropped and the header, where sellers put the challenge, still counts.
 - A remembered body method is retried with GET only after a 405, 400, 404 or 422 -- never after a
   429, a 5xx or a timeout, which is the origin asking to be left alone. `resource.method` is learned

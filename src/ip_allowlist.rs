@@ -48,13 +48,16 @@
 //! # Failing closed
 //!
 //! Without `UVD_IP_ALLOWLIST_SECRET` the list is disabled and nothing calls
-//! AWS. A secret that does not exist, or holds no value yet, is an empty list,
-//! and so is a document that is not a list -- even over a list read before. A
-//! read that fails (permissions, throttling, the network, no answer within the
-//! read timeout) keeps the last list until [`EMPTIED_AFTER_FAILED_READS`] reads
-//! in a row have failed, and then empties it: an address from that long ago may
-//! belong to somebody else now. And whatever happens to the refresher, a list
-//! that has not been read for one read longer than that counts as empty.
+//! AWS. A secret that does not exist, or holds no value yet, is an empty list
+//! (`missing`), and so is a document that is not a list -- even over a list
+//! read before. A read that fails (permissions, throttling, the network, no
+//! answer within the read timeout) keeps the last list until
+//! [`EMPTIED_AFTER_FAILED_READS`] reads in a row have failed, and then empties
+//! it (`failing`): an address from that long ago may belong to somebody else
+//! now. A role allowed to read the secret only by name, as production's is, is
+//! answered with an access denial for a secret that does not exist: that is a
+//! failing read, not a missing one. And whatever happens to the refresher, a
+//! list that has not been read for one read longer than that counts as empty.
 
 use std::future::Future;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};

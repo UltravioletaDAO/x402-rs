@@ -39,8 +39,16 @@ probing with the declared method, are separate changes.
   order by default; a `q` of two or more words, or over 128 characters, gets relevance. `sort=tier`
   and `sort=relevance` force either. Under relevance a `q` of up to 128 characters still keeps every
   listing the substring test kept, after every scored one.
-- **Index**: an inverted index stamped with the catalog generation, which every write moves
-  (`DiscoveryRegistry::write_catalog`); the first search after a write rebuilds it.
+- **Index**: an inverted index over the listings the Bazaar exposes and does not suppress, stamped
+  with the catalog generation, which every write that changes the catalog moves
+  (`DiscoveryRegistry::write_catalog`, `CatalogWrite`), and with the set it was built from. Each
+  field enters cut to the length the import filter allows it (the declared schema to a description's
+  length), and the index has budgets of terms and of text, shared evenly among its listings down to
+  a floor (`discovery_search::MAX_INDEX_POSTINGS`, `MAX_INDEX_TEXT_BYTES` and their minimum
+  shares); past the floor, the listings last in line (curated tiers first, then the longest held) are
+  matched by the substring test alone. A search that finds the generation or the set moved rebuilds
+  it off the request's thread, one rebuild at a time and no more often than
+  `discovery_search::RebuildBudget` allows; meanwhile searches rank with the index there is.
 
 ## 3. Router filters
 
@@ -70,7 +78,8 @@ kept over a pending one and then the newest; then a host's copies beyond
 `DISCOVERY_MAX_HOST_SHARE_PCT` (default 5 %, 100 at the default cap, never fewer than 50), pending
 ones first; then the oldest copy, as before. What counts as exposed is asked in one place,
 `DiscoveryRegistry::exposed_in`, the verified-alive rule the listing applies. A catalog with room is never trimmed
-for it, and a first-hand listing is never evicted. `GET /discovery/stats` `topHosts` and
+for it, and a first-hand listing is never evicted. The pending-before-exposed order is among aggregated copies:
+a first-hand record counts against the cap whatever its health. `GET /discovery/stats` `topHosts` and
 `GET /discovery/config` `catalog.maxPerHost` show it on a running task.
 
 A family is the host plus the path with each variable segment written `*`: a segment with a

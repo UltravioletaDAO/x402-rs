@@ -18456,6 +18456,47 @@ mod agentic_surface_tests {
         );
     }
 
+    /// The agent documents describe `GET /discovery/resources` as the handler
+    /// serves it: every parameter it accepts, and the `q` cap named by where
+    /// it is published -- never a number of their own that drifts from it.
+    #[test]
+    fn the_agent_docs_name_every_discovery_parameter_and_no_query_cap() {
+        let cap = crate::discovery_search::MAX_QUERY_CHARS;
+        for (name, doc) in [
+            ("static/skill.md", lf(include_str!("../static/skill.md"))),
+            (
+                "static/llms-full.txt",
+                lf(include_str!("../static/llms-full.txt")),
+            ),
+        ] {
+            let start = doc
+                .find("The parameters, and only these")
+                .unwrap_or_else(|| panic!("{name}: no parameter list"));
+            let end = start
+                + doc[start..]
+                    .find("Page with `offset`")
+                    .unwrap_or_else(|| panic!("{name}: the parameter list has no end"));
+            let section = &doc[start..end];
+            for param in DISCOVERY_QUERY_PARAMS {
+                assert!(
+                    section.contains(&format!("`{param}`")),
+                    "{name} does not name `{param}`"
+                );
+            }
+            assert!(
+                section.contains("search.maxQueryChars"),
+                "{name}: the q cap is not named by where it is published"
+            );
+            for copied in [
+                format!("{cap} characters"),
+                "128 characters".to_string(),
+                "shows everything".to_string(),
+            ] {
+                assert!(!section.contains(&copied), "{name} says {copied:?}");
+            }
+        }
+    }
+
     /// The skills index publishes the real digest of `skill.md`.
     ///
     /// A `digest` that does not match is worse than no digest: a client that

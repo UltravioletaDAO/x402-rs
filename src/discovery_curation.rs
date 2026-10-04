@@ -134,32 +134,36 @@ impl CurationManifest {
             .any(|p| match_manifest_prefix(url, &p.host, &p.path))
     }
 
-    /// Whether a listing's declared recipients are ones the curated product it
-    /// sits under is paid at (`expectedPayTo`): every declared `payTo`, compared
-    /// without case. True for a listing under no curated prefix, or under an
-    /// entry that declares no recipients.
+    /// Whether a listing's declared recipients are ones the curated products
+    /// on its HOST are paid at (`expectedPayTo`): every declared `payTo`,
+    /// compared without case. True for a listing on a host no curated entry
+    /// names, or whose entries declare no recipients.
     ///
     /// What ties an MCP listing to its product. An HTTP listing's terms are
     /// checked against its own live challenge (the payTo drift check); an MCP
     /// endpoint is verified by its handshake, which carries no terms, so a
-    /// listing anybody registered under a curated product's URL would otherwise
-    /// be shown with that product's name and the registrant's recipients.
+    /// listing anybody registered on a curated product's host would otherwise
+    /// be shown on that host with the registrant's recipients.
+    ///
+    /// By host, not by prefix: one endpoint can be named by more than one URL.
     pub fn pay_to_backed(&self, r: &crate::types_v2::DiscoveryResource) -> bool {
-        let entry = self.entries.iter().find(|e| {
-            e.prefixes
-                .iter()
-                .any(|p| match_manifest_prefix(&r.url, &p.host, &p.path))
-        });
-        let Some(entry) = entry.filter(|e| !e.expected_pay_to.is_empty()) else {
+        let Some(host) = r.url.host_str() else {
             return true;
         };
+        let host = normalized_host(host);
+        let expected: Vec<&String> = self
+            .entries
+            .iter()
+            .filter(|e| e.prefixes.iter().any(|p| normalized_host(&p.host) == host))
+            .flat_map(|e| e.expected_pay_to.iter())
+            .collect();
+        if expected.is_empty() {
+            return true;
+        }
         !r.accepts.is_empty()
             && r.accepts.iter().all(|a| {
                 let declared = a.pay_to.to_string();
-                entry
-                    .expected_pay_to
-                    .iter()
-                    .any(|e| e.eq_ignore_ascii_case(&declared))
+                expected.iter().any(|e| e.eq_ignore_ascii_case(&declared))
             })
     }
 
@@ -235,6 +239,11 @@ impl CurationManifest {
             })
             .collect()
     }
+}
+
+/// A host as [`match_manifest_prefix`] compares one: no case, no trailing dot.
+fn normalized_host(host: &str) -> String {
+    host.strip_suffix('.').unwrap_or(host).to_ascii_lowercase()
 }
 
 #[cfg(test)]

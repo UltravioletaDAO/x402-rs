@@ -807,27 +807,187 @@ fn walk_schema(
     }
 }
 
-/// Call `f` with each searchable field of `r` and its weight.
-fn for_each_field(r: &DiscoveryResource, mut f: impl FnMut(&str, f32)) {
-    if let Some(host) = r.url.host_str() {
-        f(host, W_HOST);
+/// The most terms one field of a listing gives the index.
+pub const MAX_FIELD_TERMS: usize = 256;
+
+/// The most terms one listing gives the index, all its fields together.
+pub const MAX_DOCUMENT_TERMS: usize = 1_024;
+
+/// The most `(term, listing)` entries one index holds. It is shared out: each
+/// listing gives at most its even share of it ([`terms_per_listing`]), so a
+/// listing with a lot to say never pushes another one out. Only past
+/// [`MIN_TERMS_PER_LISTING`] a share is the last listings handed to
+/// [`SearchIndex::build`] are left out, and a search matches them by the
+/// substring test alone.
+pub const MAX_INDEX_POSTINGS: usize = 600_000;
+
+/// The smallest share of [`MAX_INDEX_POSTINGS`] a listing is cut to.
+pub const MIN_TERMS_PER_LISTING: usize = 64;
+
+/// The most text the documents of one build carry, in bytes, shared out the
+/// same way down to [`MIN_TEXT_PER_LISTING`].
+pub const MAX_INDEX_TEXT_BYTES: usize = 16 * 1024 * 1024;
+
+/// The smallest share of [`MAX_INDEX_TEXT_BYTES`] a listing is cut to.
+pub const MIN_TEXT_PER_LISTING: usize = 1_024;
+
+/// Rebuilds of the index one process may start back to back, before
+/// [`REBUILD_REFILL_SECS`] paces them ([`RebuildBudget`]).
+pub const REBUILD_BURST: u32 = 8;
+
+/// Seconds after which one more rebuild may start once the burst is spent.
+pub const REBUILD_REFILL_SECS: u64 = 10;
+
+/// The terms each of `listings` listings may give the index: its even share of
+/// [`MAX_INDEX_POSTINGS`], no more than [`MAX_DOCUMENT_TERMS`] and no less than
+/// [`MIN_TERMS_PER_LISTING`].
+pub fn terms_per_listing(listings: usize) -> usize {
+    (MAX_INDEX_POSTINGS / listings.max(1)).clamp(MIN_TERMS_PER_LISTING, MAX_DOCUMENT_TERMS)
+}
+
+/// When the index may be rebuilt: [`REBUILD_BURST`] rebuilds at once, then
+/// one every [`REBUILD_REFILL_SECS`]. While none is allowed, a search is
+/// ranked with the index it already has.
+#[derive(Debug)]
+pub struct RebuildBudget {
+    available: u32,
+    refilled_at: std::time::Instant,
+}
+
+impl Default for RebuildBudget {
+    fn default() -> Self {
+        Self {
+            available: REBUILD_BURST,
+            refilled_at: std::time::Instant::now(),
+        }
     }
-    f(&path_text(r.url.path()), W_PATH);
-    f(&r.description, W_DESCRIPTION);
+}
+
+impl RebuildBudget {
+    /// Spend one rebuild at `now`, if one is available.
+    pub fn take(&mut self, now: std::time::Instant) -> bool {
+        let refill = std::time::Duration::from_secs(REBUILD_REFILL_SECS);
+        while self.available < REBUILD_BURST && now.duration_since(self.refilled_at) >= refill {
+            self.available += 1;
+            self.refilled_at += refill;
+        }
+        if self.available == REBUILD_BURST {
+            self.refilled_at = now;
+        }
+        if self.available == 0 {
+            return false;
+        }
+        self.available -= 1;
+        true
+    }
+}
+
+/// Call `emit` with each searchable field of `r` and its weight, each cut to
+/// the length the import filter lets that field have, and no more tags than
+/// it lets a listing have ([`crate::discovery_security::curation_check`]).
+fn for_each_field(r: &DiscoveryResource, mut emit: impl FnMut(&str, f32)) {
+    use crate::discovery_security::{
+        MAX_DESCRIPTION_LEN, MAX_META_FIELD_LEN, MAX_TAGS, MAX_TAG_LEN, MAX_URL_LEN,
+    };
+    let mut f = |text: &str, max: usize, weight: f32| emit(clip(text, max), weight);
+    if let Some(host) = r.url.host_str() {
+        f(host, MAX_URL_LEN, W_HOST);
+    }
+    f(&path_text(r.url.path()), MAX_URL_LEN, W_PATH);
+    f(&r.description, MAX_DESCRIPTION_LEN, W_DESCRIPTION);
     if let Some(m) = &r.metadata {
         if let Some(p) = &m.provider {
-            f(p, W_PROVIDER);
+            f(p, MAX_META_FIELD_LEN, W_PROVIDER);
         }
         if let Some(c) = &m.category {
-            f(c, W_CATEGORY);
+            f(c, MAX_META_FIELD_LEN, W_CATEGORY);
         }
-        for t in &m.tags {
-            f(t, W_TAG);
+        for t in m.tags.iter().take(MAX_TAGS) {
+            f(t, MAX_TAG_LEN, W_TAG);
         }
     }
     if let Some(ext) = &r.extensions {
-        f(&schema_text(ext), W_SCHEMA);
+        f(&schema_text(ext), MAX_DESCRIPTION_LEN, W_SCHEMA);
     }
+}
+
+/// `text` cut to at most `max` bytes, on a character boundary.
+fn clip(text: &str, max: usize) -> &str {
+    if text.len() <= max {
+        return text;
+    }
+    let mut end = max;
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    &text[..end]
+}
+
+/// What the index reads of one listing: its catalog key and its searchable
+/// fields with their weights, already cut ([`for_each_field`]) -- or no fields
+/// at all for a listing left out of the index. Owned, so the documents are
+/// taken under the catalog guard and the index is built after it is released,
+/// off the request's thread.
+#[derive(Debug)]
+pub struct IndexDocument {
+    key: String,
+    fields: Option<Vec<(String, f32)>>,
+}
+
+impl IndexDocument {
+    /// The document of the listing stored under `key`, carrying at most
+    /// `text_bytes` of text, its fields taken in order.
+    fn within(key: &str, r: &DiscoveryResource, text_bytes: usize) -> Self {
+        let mut fields = Vec::new();
+        let mut left = text_bytes;
+        for_each_field(r, |text, weight| {
+            let text = clip(text, left);
+            left -= text.len();
+            if !text.is_empty() {
+                fields.push((text.to_string(), weight));
+            }
+        });
+        Self {
+            key: key.to_string(),
+            fields: Some(fields),
+        }
+    }
+
+    /// A listing the index is built from but does not index.
+    fn left_out(key: &str) -> Self {
+        Self {
+            key: key.to_string(),
+            fields: None,
+        }
+    }
+
+    fn text_bytes(&self) -> usize {
+        self.fields
+            .iter()
+            .flatten()
+            .map(|(text, _)| text.len())
+            .sum()
+    }
+}
+
+/// The documents of `listings`, in the order given: each carrying at most its
+/// even share of [`MAX_INDEX_TEXT_BYTES`] (no less than
+/// [`MIN_TEXT_PER_LISTING`]), until they carry the whole budget; every listing
+/// after that is left out of the index.
+pub fn documents(listings: &[(&String, &DiscoveryResource)]) -> Vec<IndexDocument> {
+    let share = (MAX_INDEX_TEXT_BYTES / listings.len().max(1)).max(MIN_TEXT_PER_LISTING);
+    let mut text_bytes = 0usize;
+    listings
+        .iter()
+        .map(|(key, r)| {
+            if text_bytes >= MAX_INDEX_TEXT_BYTES {
+                return IndexDocument::left_out(key);
+            }
+            let document = IndexDocument::within(key, r, share);
+            text_bytes += document.text_bytes();
+            document
+        })
+        .collect()
 }
 
 // ============================================================================
@@ -876,6 +1036,9 @@ pub struct SearchQuery {
     /// Whether `q` is short enough for the substring test to keep its matches
     /// under relevance ranking (it always applies under `sort=tier`).
     substring_rule: bool,
+    /// Whether `q` is one word: no whitespace in it, however many terms it
+    /// splits into (`stock-quote`, `tenjin.blog`).
+    one_word: bool,
 }
 
 impl SearchQuery {
@@ -911,14 +1074,16 @@ impl SearchQuery {
             concepts,
             needle,
             substring_rule,
+            one_word: !trimmed.contains(char::is_whitespace),
         })
     }
 
     /// The order a request gets when it names none: relevance for a request
-    /// in words -- two or more terms, or longer than the substring test ever
-    /// took -- and 2.46.1's order for a single word.
+    /// in words -- two or more words that leave two or more terms, or longer
+    /// than the substring test ever took -- and 2.46.1's order for a single
+    /// word, even one that splits into several terms.
     pub fn default_sort(&self) -> SortOrder {
-        if self.concepts.len() >= 2 || !self.substring_rule {
+        if (self.concepts.len() >= 2 && !self.one_word) || !self.substring_rule {
             SortOrder::Relevance
         } else {
             SortOrder::Tier
@@ -953,7 +1118,8 @@ impl SearchQuery {
 // Index
 // ============================================================================
 
-/// An inverted index over the catalog, for one catalog generation.
+/// An inverted index over the listings a search can return, for one catalog
+/// generation.
 #[derive(Debug)]
 pub struct SearchIndex {
     generation: u64,
@@ -964,35 +1130,61 @@ pub struct SearchIndex {
     avg_length: f32,
     /// Term -> `(document, weighted term frequency)`.
     postings: HashMap<String, Vec<(u32, f32)>>,
+    /// The keys of the listings it was built from and does not index: past
+    /// [`MAX_INDEX_TEXT_BYTES`] or [`MAX_INDEX_POSTINGS`].
+    left_out: HashSet<String>,
 }
 
 impl SearchIndex {
-    /// Index every `(key, resource)` of a catalog at `generation`.
-    pub fn build<'a, I>(generation: u64, catalog: I) -> Self
+    /// Index `documents` of the catalog at `generation`, in the order given: at
+    /// most [`MAX_FIELD_TERMS`] terms from each field and
+    /// [`terms_per_listing`] from each listing, until the index holds
+    /// [`MAX_INDEX_POSTINGS`]. The listings after that are left out.
+    pub fn build<I>(generation: u64, documents: I) -> Self
     where
-        I: IntoIterator<Item = (&'a String, &'a DiscoveryResource)>,
+        I: IntoIterator<Item = IndexDocument>,
     {
+        let documents: Vec<IndexDocument> = documents.into_iter().collect();
+        let per_listing =
+            terms_per_listing(documents.iter().filter(|d| d.fields.is_some()).count());
         let mut ids = HashMap::new();
         let mut lengths = Vec::new();
         let mut postings: HashMap<String, Vec<(u32, f32)>> = HashMap::new();
+        let mut left_out = HashSet::new();
+        let mut held = 0usize;
         let mut tokens = Vec::new();
         let mut tf: HashMap<String, f32> = HashMap::new();
 
-        for (key, r) in catalog {
-            let id = lengths.len() as u32;
+        for document in documents {
+            let Some(fields) = document.fields.filter(|_| held < MAX_INDEX_POSTINGS) else {
+                left_out.insert(document.key);
+                continue;
+            };
             let mut length = 0.0f32;
-            for_each_field(r, |text, weight| {
+            let mut terms = 0usize;
+            for (text, weight) in &fields {
                 tokens.clear();
                 tokenize_into(text, &mut tokens);
+                tokens.truncate(MAX_FIELD_TERMS.min(per_listing - terms));
+                terms += tokens.len();
                 for t in tokens.drain(..) {
-                    *tf.entry(t).or_insert(0.0) += weight;
-                    length += weight;
+                    *tf.entry(t).or_insert(0.0) += *weight;
+                    length += *weight;
                 }
-            });
+            }
+            if held + tf.len() > MAX_INDEX_POSTINGS {
+                // The budget is spent: this listing and every one after it.
+                held = MAX_INDEX_POSTINGS;
+                tf.clear();
+                left_out.insert(document.key);
+                continue;
+            }
+            held += tf.len();
+            let id = lengths.len() as u32;
             for (term, weight) in tf.drain() {
                 postings.entry(term).or_default().push((id, weight));
             }
-            ids.insert(key.clone(), id);
+            ids.insert(document.key, id);
             lengths.push(length);
         }
 
@@ -1007,6 +1199,7 @@ impl SearchIndex {
             lengths,
             avg_length,
             postings,
+            left_out,
         }
     }
 
@@ -1018,6 +1211,25 @@ impl SearchIndex {
     /// How many listings this index covers.
     pub fn listing_count(&self) -> usize {
         self.lengths.len()
+    }
+
+    /// How many listings it was built from and left out.
+    pub fn left_out_count(&self) -> usize {
+        self.left_out.len()
+    }
+
+    /// How many `(term, listing)` entries it holds: its size.
+    pub fn posting_count(&self) -> usize {
+        self.postings.values().map(Vec::len).sum()
+    }
+
+    /// Whether it was built from exactly the listings stored under `keys`,
+    /// indexed or left out.
+    pub fn covers(&self, keys: &HashSet<String>) -> bool {
+        self.ids.len() + self.left_out.len() == keys.len()
+            && keys
+                .iter()
+                .all(|k| self.ids.contains_key(k) || self.left_out.contains(k))
     }
 
     /// Relevance of every indexed listing to `query`, by document id.
@@ -1494,7 +1706,13 @@ mod tests {
             .iter()
             .map(|r| (r.url.to_string(), r.clone()))
             .collect();
-        (SearchIndex::build(1, catalog.iter()), catalog)
+        let documents = catalog.iter().map(|(k, r)| document_of(k, r));
+        (SearchIndex::build(1, documents), catalog)
+    }
+
+    /// The whole document of `r`, with no text budget.
+    fn document_of(key: &str, r: &DiscoveryResource) -> IndexDocument {
+        IndexDocument::within(key, r, usize::MAX)
     }
 
     /// Ranked URLs for `q`, best first.
@@ -1721,6 +1939,11 @@ mod tests {
         assert_eq!(one("  Tenjin "), SortOrder::Tier);
         // Function words do not make a request: "the weather" is one term.
         assert_eq!(one("the weather"), SortOrder::Tier);
+        // One word is one word, however many terms it splits into.
+        assert_eq!(one("stock-quote"), SortOrder::Tier);
+        assert_eq!(one("tenjin.blog"), SortOrder::Tier);
+        assert_eq!(one("x402Version"), SortOrder::Tier);
+        assert_eq!(one("stock-quote now"), SortOrder::Relevance);
         assert_eq!(one("web search"), SortOrder::Relevance);
         assert_eq!(one("Find a person's work email"), SortOrder::Relevance);
         // Longer than the substring test ever took: relevance whatever it says.
@@ -1982,5 +2205,227 @@ mod tests {
             "https://t.example/x"
         );
         assert_eq!(ranked(&[r, other], "acme")[0], "https://t.example/x");
+    }
+
+    /// `n` distinct letters-only words, from the `from`th on.
+    fn words(from: usize, n: usize) -> String {
+        (from..from + n)
+            .map(|mut i| {
+                let mut w = String::from("q");
+                loop {
+                    w.push((b'a' + (i % 26) as u8) as char);
+                    i /= 26;
+                    if i == 0 {
+                        break w;
+                    }
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+
+    /// One listing gives the index a bounded amount of text whatever it
+    /// carries: each field cut to the length an import lets that field have
+    /// and to MAX_FIELD_TERMS terms, and no more tags than an import keeps.
+    #[test]
+    fn a_listing_gives_the_index_a_bounded_amount_of_text() {
+        use crate::discovery_security::{
+            MAX_DESCRIPTION_LEN, MAX_META_FIELD_LEN, MAX_TAGS, MAX_TAG_LEN,
+        };
+        let plain = listing("https://big.example/x", "");
+        let baseline = index_of(std::slice::from_ref(&plain)).0.posting_count();
+
+        let mut big = plain.clone();
+        big.description = words(0, 12_000);
+        assert!(big.description.len() > 50_000);
+        big.metadata = Some(DiscoveryMetadata {
+            category: None,
+            provider: Some(words(20_000, 2_000)),
+            tags: (0..100).map(|i| words(30_000 + i * 500, 500)).collect(),
+        });
+        let document = document_of("https://big.example/x", &big);
+        let fields = document.fields.as_ref().unwrap();
+        // host, path, description, provider, then the tags.
+        assert_eq!(fields.len(), 4 + MAX_TAGS);
+        assert!(fields[2].0.len() <= MAX_DESCRIPTION_LEN);
+        assert!(fields[3].0.len() <= MAX_META_FIELD_LEN);
+        assert!(
+            fields[4..]
+                .iter()
+                .all(|(text, _)| text.len() <= MAX_TAG_LEN),
+            "a tag reached the index whole"
+        );
+
+        let added = index_of(std::slice::from_ref(&big)).0.posting_count() - baseline;
+        let most = MAX_FIELD_TERMS + (MAX_META_FIELD_LEN + MAX_TAGS * MAX_TAG_LEN) / 3;
+        assert!(added <= most, "{added} postings from one listing");
+        assert!(
+            added >= MAX_FIELD_TERMS,
+            "{added}: the description is still indexed"
+        );
+
+        // The cut is a byte budget that never splits a character.
+        assert_eq!(clip("añb", 2), "a");
+        assert_eq!(clip("añb", 3), "añ");
+        assert_eq!(clip("ab", 8), "ab");
+        assert_eq!(clip("", 0), "");
+    }
+
+    /// However many fields a listing has, it gives the index at most
+    /// MAX_DOCUMENT_TERMS terms.
+    #[test]
+    fn a_listing_gives_the_index_at_most_its_term_budget() {
+        let document = IndexDocument {
+            key: "https://wide.example/x".to_string(),
+            fields: Some(
+                (0..10)
+                    .map(|f| (words(f * MAX_FIELD_TERMS, MAX_FIELD_TERMS), 1.0))
+                    .collect(),
+            ),
+        };
+        let index = SearchIndex::build(1, [document]);
+        assert_eq!(index.listing_count(), 1);
+        assert_eq!(index.posting_count(), MAX_DOCUMENT_TERMS);
+
+        // And at most MAX_FIELD_TERMS of them from one field.
+        let one_field = IndexDocument {
+            key: "https://long.example/x".to_string(),
+            fields: Some(vec![(words(0, 3 * MAX_FIELD_TERMS), 1.0)]),
+        };
+        let index = SearchIndex::build(1, [one_field]);
+        assert_eq!(index.posting_count(), MAX_FIELD_TERMS);
+    }
+
+    /// `count` documents of `terms` distinct terms each (the same terms in
+    /// every one: an entry is a term in a listing), under keys `l0`, `l1`...
+    fn heavy(count: usize, terms: usize) -> (Vec<String>, Vec<IndexDocument>) {
+        let fields: Vec<(String, f32)> = (0..terms.div_ceil(MAX_FIELD_TERMS))
+            .map(|f| {
+                let from = f * MAX_FIELD_TERMS;
+                (words(from, MAX_FIELD_TERMS.min(terms - from)), 1.0)
+            })
+            .collect();
+        let keys: Vec<String> = (0..count)
+            .map(|i| format!("https://l{i}.example/x"))
+            .collect();
+        let documents = keys
+            .iter()
+            .map(|key| IndexDocument {
+                key: key.clone(),
+                fields: Some(fields.clone()),
+            })
+            .collect();
+        (keys, documents)
+    }
+
+    /// The postings budget is shared out: listings with as much to say as
+    /// they are allowed, handed over first, never push out the one handed over
+    /// last -- each is cut to its share instead.
+    #[test]
+    fn the_postings_budget_is_shared_so_nobody_is_pushed_out() {
+        let count = MAX_INDEX_POSTINGS / MAX_DOCUMENT_TERMS + 10;
+        let (mut keys, mut documents) = heavy(count, MAX_DOCUMENT_TERMS);
+        let late = listing("https://late.example/x", "Seven-day forecast.");
+        keys.push("https://late.example/x".to_string());
+        documents.push(document_of("https://late.example/x", &late));
+
+        let index = SearchIndex::build(1, documents);
+        assert!(index.posting_count() <= MAX_INDEX_POSTINGS);
+        assert_eq!(index.left_out_count(), 0);
+        assert_eq!(index.listing_count(), count + 1);
+        let query = SearchQuery::parse("weather forecast").unwrap();
+        let scores = index.scores(&query);
+        assert!(
+            index.relevance(&scores, &query, "https://late.example/x", &late) > Some(0.0),
+            "the listing handed over last is not ranked"
+        );
+        assert!(index.posting_count() <= (count + 1) * terms_per_listing(count + 1));
+    }
+
+    /// Past the smallest share, the budget is a cut: the listings handed over
+    /// first are indexed, the rest left out -- and remembered, so the index
+    /// still counts as built from all of them, and from no other set.
+    #[test]
+    fn past_the_smallest_share_the_index_leaves_the_last_ones_out() {
+        let count = MAX_INDEX_POSTINGS / MIN_TERMS_PER_LISTING + 10;
+        let (keys, mut documents) = heavy(count, MIN_TERMS_PER_LISTING + 6);
+        // A short first listing, so the budget runs out in the middle of one:
+        // that one is left out whole, never indexed past the budget.
+        documents[0].fields = Some(vec![(words(0, 10), 1.0)]);
+        let index = SearchIndex::build(1, documents);
+        assert!(index.posting_count() <= MAX_INDEX_POSTINGS);
+        assert_eq!(
+            index.listing_count(),
+            MAX_INDEX_POSTINGS / MIN_TERMS_PER_LISTING
+        );
+        assert_eq!(index.left_out_count(), 10);
+        assert!(
+            index.ids.contains_key(&keys[0]),
+            "the first one handed over"
+        );
+        assert!(!index.ids.contains_key(&keys[count - 1]));
+        let mut all: HashSet<String> = keys.iter().cloned().collect();
+        assert!(index.covers(&all));
+        all.remove(&keys[0]);
+        assert!(!index.covers(&all), "one fewer");
+        all.insert("https://other.example/x".to_string());
+        assert!(!index.covers(&all), "as many, but one swapped");
+    }
+
+    /// The text budget is shared out the same way: each listing carries at
+    /// most its share, and only past the smallest share are the last ones
+    /// left out, before anything of theirs is copied.
+    #[test]
+    fn the_text_budget_is_shared_and_then_cut() {
+        let description = words(0, 600);
+        assert!(description.len() > 2_000);
+        let catalog = |count: usize| -> Vec<(String, DiscoveryResource)> {
+            (0..count)
+                .map(|i| {
+                    let url = format!("https://d{i}.example/x");
+                    (url.clone(), listing(&url, &description))
+                })
+                .collect()
+        };
+
+        // Shared: nobody left out, nobody over its share.
+        let shared = catalog(MAX_INDEX_TEXT_BYTES / 2_000 + 50);
+        let pairs: Vec<(&String, &DiscoveryResource)> =
+            shared.iter().map(|(k, r)| (k, r)).collect();
+        let docs = documents(&pairs);
+        let share = MAX_INDEX_TEXT_BYTES / pairs.len();
+        assert!(docs.iter().all(|d| d.fields.is_some()));
+        assert!(docs.iter().all(|d| d.text_bytes() <= share));
+        assert!(docs.iter().map(IndexDocument::text_bytes).sum::<usize>() <= MAX_INDEX_TEXT_BYTES);
+
+        // Past the smallest share: a cut.
+        let cut = catalog(MAX_INDEX_TEXT_BYTES / MIN_TEXT_PER_LISTING + 16);
+        let pairs: Vec<(&String, &DiscoveryResource)> = cut.iter().map(|(k, r)| (k, r)).collect();
+        let docs = documents(&pairs);
+        let kept = docs.iter().filter(|d| d.fields.is_some()).count();
+        assert_eq!(kept, MAX_INDEX_TEXT_BYTES / MIN_TEXT_PER_LISTING);
+        assert!(docs[..kept].iter().all(|d| d.fields.is_some()));
+        assert!(docs[kept..].iter().all(|d| d.fields.is_none()));
+    }
+
+    /// Rebuilds come in a burst, then one per refill.
+    #[test]
+    fn rebuilds_are_paced_after_a_burst() {
+        let start = std::time::Instant::now();
+        let mut budget = RebuildBudget::default();
+        for n in 0..REBUILD_BURST {
+            assert!(budget.take(start), "rebuild {n} of the burst");
+        }
+        assert!(!budget.take(start));
+        let refill = std::time::Duration::from_secs(REBUILD_REFILL_SECS);
+        assert!(!budget.take(start + refill / 2));
+        assert!(budget.take(start + refill));
+        assert!(!budget.take(start + refill));
+        // Long idle refills the burst, and no more.
+        let later = start + refill * 1_000;
+        for _ in 0..REBUILD_BURST {
+            assert!(budget.take(later));
+        }
+        assert!(!budget.take(later));
     }
 }

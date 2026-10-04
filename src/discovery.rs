@@ -253,8 +253,12 @@ fn host_key(url: &url::Url) -> String {
 /// first is the first to go.
 ///
 /// `exposed` is the first key: a copy the public surface shows is evicted only
-/// after every copy it does not, whatever their class or age. A pending listing
+/// after every copy it does not, whatever their class or age. A pending copy
 /// -- not yet verified alive -- never displaces an exposed one.
+///
+/// Only aggregated copies are in this order, so that guarantee holds among
+/// them: a first-hand record is never evicted, and counts against the cap
+/// whatever its health.
 type EvictionKey = (bool, EvictionClass, u64, String);
 
 /// Every aggregated copy in `cache`, in the order a full catalog evicts them:
@@ -731,8 +735,9 @@ fn now_secs() -> u64 {
         .unwrap_or(0)
 }
 
-/// `list()` visibility predicate: default hides `quarantined`; `health=any`
-/// shows everything; `health=<status>` filters to that exact status.
+/// `list()` health filter: default hides `quarantined`; `health=any` keeps
+/// every status; `health=<status>` filters to that exact status. It applies on
+/// top of exposure, which only `alive` listings pass, so it can only narrow.
 fn health_visible(health: &HashMap<String, HealthState>, url: &str, filter: Option<&str>) -> bool {
     let status = health
         .get(url)
@@ -840,14 +845,51 @@ pub struct DiscoveryRegistry {
     /// they tell "the owner published something" from "nothing moved" without
     /// re-reading a 15 MB object every minute.
     cached_version: Arc<RwLock<Version>>,
-    /// Moved by every write to `resources` ([`Self::write_catalog`]). The search
-    /// index records the generation it was built from, and a search that finds
-    /// them different rebuilds it.
+    /// Moved by every write that changes `resources` ([`Self::write_catalog`]).
+    /// The search index records the generation it was built from, and a
+    /// search that finds them different rebuilds it.
     catalog_generation: Arc<AtomicU64>,
-    /// The search index of the last generation searched. Behind a plain mutex:
-    /// it is taken and released inside one synchronous call, never across an
+    /// The search index searches rank with ([`Self::search_index`]). Behind a
+    /// plain lock, taken only to read or swap the `Arc`, never across an
     /// `.await`.
-    search_index: Arc<std::sync::Mutex<Option<Arc<crate::discovery_search::SearchIndex>>>>,
+    search_index: Arc<std::sync::RwLock<Option<Arc<crate::discovery_search::SearchIndex>>>>,
+    /// Held by the one rebuild of the search index in progress.
+    index_rebuild: Arc<tokio::sync::Mutex<()>>,
+    /// How often the search index may be rebuilt.
+    index_budget: Arc<std::sync::Mutex<crate::discovery_search::RebuildBudget>>,
+    /// How many times this process started a rebuild of the search index.
+    index_builds: Arc<AtomicU64>,
+}
+
+/// The catalog held for writing ([`DiscoveryRegistry::write_catalog`]).
+///
+/// The generation moves on the first MUTABLE access, under the write guard: a
+/// write that changes nothing it can see -- a registration refused as a
+/// duplicate -- leaves the generation, and the search index built on it, where
+/// they were. A reader under the read guard still sees a generation and
+/// contents that agree.
+struct CatalogWrite<'a> {
+    guard: tokio::sync::RwLockWriteGuard<'a, HashMap<String, DiscoveryResource>>,
+    generation: &'a AtomicU64,
+    moved: bool,
+}
+
+impl std::ops::Deref for CatalogWrite<'_> {
+    type Target = HashMap<String, DiscoveryResource>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.guard
+    }
+}
+
+impl std::ops::DerefMut for CatalogWrite<'_> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        if !self.moved {
+            self.generation.fetch_add(1, Ordering::AcqRel);
+            self.moved = true;
+        }
+        &mut self.guard
+    }
 }
 
 /// One pending catalog write.
@@ -957,6 +999,9 @@ impl Clone for DiscoveryRegistry {
             cached_version: Arc::clone(&self.cached_version),
             catalog_generation: Arc::clone(&self.catalog_generation),
             search_index: Arc::clone(&self.search_index),
+            index_rebuild: Arc::clone(&self.index_rebuild),
+            index_budget: Arc::clone(&self.index_budget),
+            index_builds: Arc::clone(&self.index_builds),
         }
     }
 }
@@ -988,7 +1033,10 @@ impl DiscoveryRegistry {
             served: Arc::new(std::sync::OnceLock::new()),
             cached_version: Arc::new(RwLock::new(Version::Absent)),
             catalog_generation: Arc::new(AtomicU64::new(0)),
-            search_index: Arc::new(std::sync::Mutex::new(None)),
+            search_index: Arc::new(std::sync::RwLock::new(None)),
+            index_rebuild: Arc::new(tokio::sync::Mutex::new(())),
+            index_budget: Arc::new(std::sync::Mutex::new(Default::default())),
+            index_builds: Arc::new(AtomicU64::new(0)),
         }
     }
 
@@ -1223,9 +1271,9 @@ impl DiscoveryRegistry {
         let Some(state) = health.get(r.url.as_str()) else {
             return false;
         };
-        // An MCP handshake verifies the server, not the listing's terms: under a
-        // curated product's URL, the listing has to declare that product's own
-        // recipients to be shown at all.
+        // An MCP handshake verifies the server, not the listing's terms: on a
+        // curated product's host, whatever the URL's scheme or path, the
+        // listing has to declare that product's own recipients to be shown.
         let mcp = r.resource_type == "mcp";
         if mcp && !self.curation.pay_to_backed(r) {
             return false;
@@ -1235,13 +1283,18 @@ impl DiscoveryRegistry {
             r.extensions.as_ref(),
             self.curation.probes_get_only(&r.url),
         );
-        let observed_at = observed.get(r.url.as_str()).map(|t| t.observed_at);
+        // A record from before `verifiedAt` existed stands on its probe's
+        // reading of the terms: only one that offered something to pay.
+        let observed_at = observed
+            .get(r.url.as_str())
+            .filter(|t| !t.accepts.is_empty())
+            .map(|t| t.observed_at);
         crate::discovery_health::is_verified_alive(state, &request, mcp, observed_at, now, window)
     }
 
     /// The URLs exposed right now, for a caller that does not hold the catalog
     /// guard. Trimming and admission, which do, ask [`Self::exposed_in`]: a
-    /// pending record never displaces an exposed one.
+    /// pending aggregated copy never displaces an exposed one.
     #[allow(dead_code)]
     pub async fn exposed_urls(&self) -> std::collections::HashSet<String> {
         let health = self.health.snapshot().await;
@@ -1420,7 +1473,10 @@ impl DiscoveryRegistry {
             served: Arc::new(std::sync::OnceLock::new()),
             cached_version: Arc::new(RwLock::new(snapshot.version)),
             catalog_generation: Arc::new(AtomicU64::new(0)),
-            search_index: Arc::new(std::sync::Mutex::new(None)),
+            search_index: Arc::new(std::sync::RwLock::new(None)),
+            index_rebuild: Arc::new(tokio::sync::Mutex::new(())),
+            index_budget: Arc::new(std::sync::Mutex::new(Default::default())),
+            index_builds: Arc::new(AtomicU64::new(0)),
         })
     }
 
@@ -1508,52 +1564,151 @@ impl DiscoveryRegistry {
     }
 
     /// The catalog, for writing. Every write goes through here so that the
-    /// search index can never be served for a catalog it was not built from.
-    ///
-    /// The generation moves while the write guard is held, so a reader that
-    /// holds the read guard sees a generation and contents that agree.
-    async fn write_catalog(
-        &self,
-    ) -> tokio::sync::RwLockWriteGuard<'_, HashMap<String, DiscoveryResource>> {
-        let guard = self.resources.write().await;
-        self.catalog_generation.fetch_add(1, Ordering::AcqRel);
-        guard
+    /// search index can never be served for a catalog it was not built from:
+    /// the first change made through it moves the generation
+    /// ([`CatalogWrite`]).
+    async fn write_catalog(&self) -> CatalogWrite<'_> {
+        CatalogWrite {
+            guard: self.resources.write().await,
+            generation: &self.catalog_generation,
+            moved: false,
+        }
     }
 
-    /// The search index for `resources`, which the caller holds read-locked.
+    /// The index searches rank with now, if one was built.
+    fn current_index(&self) -> Option<Arc<crate::discovery_search::SearchIndex>> {
+        self.search_index
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+
+    /// What a relevance search searches: the keys of the EXPOSED, unsuppressed
+    /// listings -- what is pending or suppressed is never returned, so it
+    /// neither sizes the index nor weighs on how the rest rank -- and the index
+    /// to rank them with.
     ///
-    /// Reused while the catalog has not moved; rebuilt by the first search
-    /// after a write. Rebuilding happens under the index mutex, so a burst of
-    /// searches after a write builds it once rather than once each.
-    fn search_index(
+    /// The index is reused while neither the generation nor that set moved.
+    /// Otherwise it is rebuilt: the documents are taken under the catalog's
+    /// read guard -- curated tiers first, then the longest held, each listing
+    /// with its share of the index's budgets
+    /// ([`crate::discovery_search::documents`],
+    /// [`crate::discovery_search::SearchIndex::build`]) -- the guard is
+    /// released, and a task builds on a blocking thread and stores the index
+    /// even when the search that started it is gone. One rebuild at a time,
+    /// and no more often than [`crate::discovery_search::RebuildBudget`]
+    /// allows: while one is running, or none is allowed, a search ranks with
+    /// the index there is. Only the first index is always waited for. No index
+    /// (a build panicked) means that search falls back to the substring test.
+    async fn search_index(
         &self,
-        resources: &HashMap<String, DiscoveryResource>,
-    ) -> Arc<crate::discovery_search::SearchIndex> {
-        let generation = self.catalog_generation.load(Ordering::Acquire);
-        // A panic while building leaves nothing half-written in the slot (it
-        // is assigned only once built), so a poisoned lock is safe to reuse.
-        let mut slot = self
-            .search_index
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if let Some(index) = slot.as_ref() {
-            if index.generation() == generation {
-                return Arc::clone(index);
+        health: &HashMap<String, HealthState>,
+        observed: &HashMap<String, crate::discovery_terms::ObservedTerms>,
+        suppressed: &std::collections::HashSet<String>,
+        now: u64,
+        window: u64,
+    ) -> (
+        Option<Arc<crate::discovery_search::SearchIndex>>,
+        std::collections::HashSet<String>,
+    ) {
+        use crate::discovery_search::SearchIndex;
+
+        loop {
+            let current = self.current_index();
+            let resources = self.resources.read().await;
+            let generation = self.catalog_generation.load(Ordering::Acquire);
+            let searchable: Vec<(&String, &DiscoveryResource)> = resources
+                .iter()
+                .filter(|(_, r)| {
+                    !self.curation.is_suppressed(&r.url)
+                        && !suppressed.contains(&Self::suppression_key(r.url.as_str()))
+                        && self.is_exposed(r, health, observed, now, window)
+                })
+                .collect();
+            let keys: std::collections::HashSet<String> =
+                searchable.iter().map(|(key, _)| (*key).clone()).collect();
+            if current
+                .as_ref()
+                .is_some_and(|index| index.generation() == generation && index.covers(&keys))
+            {
+                return (current, keys);
             }
+            let Ok(rebuilding) = Arc::clone(&self.index_rebuild).try_lock_owned() else {
+                // A rebuild is running: rank with the index there is, or wait
+                // for the first one.
+                if current.is_some() {
+                    return (current, keys);
+                }
+                drop(resources);
+                drop(Arc::clone(&self.index_rebuild).lock_owned().await);
+                continue;
+            };
+            let allowed = self
+                .index_budget
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .take(std::time::Instant::now());
+            if current.is_some() && !allowed {
+                return (current, keys);
+            }
+            let mut ordered: Vec<(u8, u64, &String, &DiscoveryResource)> = searchable
+                .into_iter()
+                .map(|(key, r)| {
+                    let tier = self
+                        .curation
+                        .resolve_listing(r, true)
+                        .map(|c| c.tier)
+                        .unwrap_or(Tier::Listed);
+                    (tier.rank(), r.first_seen.unwrap_or(0), key, r)
+                })
+                .collect();
+            ordered.sort_unstable_by(|a, b| (a.0, a.1, a.2).cmp(&(b.0, b.1, b.2)));
+            let ordered: Vec<(&String, &DiscoveryResource)> =
+                ordered.into_iter().map(|(_, _, key, r)| (key, r)).collect();
+            let documents = crate::discovery_search::documents(&ordered);
+            drop(ordered);
+            drop(resources);
+
+            let build = self.index_builds.fetch_add(1, Ordering::Relaxed) + 1;
+            let started = std::time::Instant::now();
+            let slot = Arc::clone(&self.search_index);
+            let rebuild = tokio::spawn(async move {
+                let _rebuilding = rebuilding;
+                let built =
+                    tokio::task::spawn_blocking(move || SearchIndex::build(generation, documents))
+                        .await
+                        .ok()
+                        .map(Arc::new);
+                if let Some(index) = &built {
+                    *slot
+                        .write()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner) =
+                        Some(Arc::clone(index));
+                }
+                built
+            });
+            let Some(index) = rebuild.await.ok().flatten() else {
+                warn!("the discovery search index failed to build; this search ranks with the last one, or by substring");
+                return (current, keys);
+            };
+            if index.left_out_count() > 0 {
+                warn!(
+                    generation = generation,
+                    listings = index.listing_count(),
+                    left_out = index.left_out_count(),
+                    "the discovery search index is at its budget; the listings left out match by substring only"
+                );
+            }
+            debug!(
+                build = build,
+                generation = generation,
+                listings = index.listing_count(),
+                postings = index.posting_count(),
+                elapsed_ms = started.elapsed().as_millis() as u64,
+                "rebuilt the discovery search index"
+            );
+            return (Some(index), keys);
         }
-        let started = std::time::Instant::now();
-        let index = Arc::new(crate::discovery_search::SearchIndex::build(
-            generation,
-            resources.iter(),
-        ));
-        debug!(
-            generation = generation,
-            listings = index.listing_count(),
-            elapsed_ms = started.elapsed().as_millis() as u64,
-            "rebuilt the discovery search index"
-        );
-        *slot = Some(Arc::clone(&index));
-        index
     }
 
     /// Persist a resource to the store, off the caller's path.
@@ -1669,7 +1824,13 @@ impl DiscoveryRegistry {
     pub async fn unregister(&self, url: &str) -> Result<DiscoveryResource, DiscoveryError> {
         let mut resources = self.write_catalog().await;
 
-        match resources.remove(url) {
+        // Looked up first: a URL that is not here changes nothing.
+        let removed = if resources.contains_key(url) {
+            resources.remove(url)
+        } else {
+            None
+        };
+        match removed {
             Some(resource) => {
                 info!(url = %url, "Unregistered resource from discovery registry");
 
@@ -1741,27 +1902,46 @@ impl DiscoveryRegistry {
                 .unwrap_or_else(|| q.default_sort())
         });
 
+        // Only a relevance order needs the index, and it is fetched before the
+        // catalog guard is taken: a rebuild waits on a blocking task. The keys
+        // that come with it are the exposed listings, computed once for this
+        // search. A write that lands in between, or a rebuild not yet done, is
+        // ranked with the index there is -- a listing it does not hold is
+        // matched by the substring test alone.
+        let (ranking, exposed_keys) = match (&query, order) {
+            (Some(q), Some(SortOrder::Relevance)) => {
+                let (index, keys) = self
+                    .search_index(&health, &observed, &suppressed, now, freshness_window)
+                    .await;
+                let ranking = index.map(|index| {
+                    let scores = index.scores(q);
+                    (index, scores)
+                });
+                (ranking, Some(keys))
+            }
+            _ => (None, None),
+        };
+
         let resources = self.resources.read().await;
 
         // Cap limit at 100 to prevent abuse
         let limit = limit.min(100);
 
-        // Only a relevance order needs the index.
-        let ranking = match (&query, order) {
-            (Some(q), Some(SortOrder::Relevance)) => {
-                let index = self.search_index(&resources);
-                let scores = index.scores(q);
-                Some((index, scores))
-            }
-            _ => None,
-        };
-
-        // Filter (user filters + `q` + suppression + health visibility), then
-        // resolve each survivor's curated tier for ordering + annotation.
+        // Filter (user filters + exposure + `q` + suppression + health
+        // visibility), then resolve each survivor's curated tier for ordering
+        // + annotation.
         let mut scored: Vec<(&DiscoveryResource, Option<CurationInfo>, f32)> = resources
             .iter()
             .filter(|(_, r)| self.matches_filters(r, &filters))
             .filter(|(_, r)| constraints.admits(r))
+            // Exposure: only what is verified alive leaves this registry. No
+            // parameter widens it; the rest is probed and waits, unseen. It
+            // comes before `q`, so what is pending is neither ranked nor
+            // matched -- and every filter applies to exposed listings only.
+            .filter(|(key, r)| match &exposed_keys {
+                Some(keys) => keys.contains(key.as_str()),
+                None => self.is_exposed(r, &health, &observed, now, freshness_window),
+            })
             .filter_map(|(key, r)| {
                 let relevance = match (&query, &ranking) {
                     (None, _) => 0.0,
@@ -1781,11 +1961,6 @@ impl DiscoveryRegistry {
                     && !suppressed.contains(&Self::suppression_key(r.url.as_str()))
             })
             .filter(|(r, _)| health_visible(&health, r.url.as_str(), health_filter.as_deref()))
-            // Exposure: only what is verified alive leaves this registry. No
-            // parameter widens it; the rest is probed and waits, unseen. `q`
-            // and every filter above therefore rank and match only exposed
-            // listings.
-            .filter(|(r, _)| self.is_exposed(r, &health, &observed, now, freshness_window))
             .map(|(r, relevance)| {
                 let alive = health
                     .get(r.url.as_str())
@@ -4530,11 +4705,18 @@ mod tests {
         let r = registry.list(10, 0, search("weather forecast", None)).await;
         assert_eq!(urls(&r), ["https://b.example.com/x"]);
 
+        // Words the substring test cannot join: only a rebuilt index finds them.
+        let generation = registry.catalog_generation.load(Ordering::Acquire);
         registry
-            .update(described("https://b.example.com/x", "Stock quotes.", 30))
+            .update(described(
+                "https://b.example.com/x",
+                "Tickers for every market.",
+                30,
+            ))
             .await
             .unwrap();
-        let r = registry.list(10, 0, search("stock quote", None)).await;
+        assert!(registry.catalog_generation.load(Ordering::Acquire) > generation);
+        let r = registry.list(10, 0, search("market tickers", None)).await;
         assert_eq!(r.pagination.total, 1, "an update's new text is searchable");
 
         let mut copy = described("https://c.example.com/x", "Reddit search.", 40);
@@ -4549,6 +4731,173 @@ mod tests {
             urls(&r),
             ["https://c.example.com/x"],
             "an import is searchable"
+        );
+    }
+
+    /// The index searches rank with now.
+    async fn last_index(registry: &DiscoveryRegistry) -> Arc<crate::discovery_search::SearchIndex> {
+        registry
+            .current_index()
+            .expect("a relevance search builds the index")
+    }
+
+    /// ~`len` bytes of distinct-looking words, the same for the same `seed`.
+    fn noise(len: usize, seed: u64) -> String {
+        let mut state = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1;
+        let mut text = String::with_capacity(len + 8);
+        while text.len() < len {
+            for _ in 0..6 {
+                state ^= state << 13;
+                state ^= state >> 7;
+                state ^= state << 17;
+                text.push((b'a' + (state % 26) as u8) as char);
+            }
+            text.push(' ');
+        }
+        text
+    }
+
+    /// Only the exposed are indexed: 250 registrations of ~60 KB each, none of
+    /// them probed, leave the index exactly the size it was. A registration
+    /// refused as a duplicate, or an unregistration of nothing, moves neither
+    /// the generation nor the index.
+    #[tokio::test]
+    async fn pending_listings_and_refused_writes_leave_the_search_index_alone() {
+        let registry = DiscoveryRegistry::new();
+        registry
+            .register(described(
+                "https://a.example.com/x",
+                "Weather forecast for any city.",
+                10,
+            ))
+            .await
+            .unwrap();
+        expose_all(&registry).await;
+        let q = || search("weather forecast", None);
+        assert_eq!(registry.list(10, 0, q()).await.pagination.total, 1);
+        let before = last_index(&registry).await;
+        assert_eq!(before.listing_count(), 1);
+
+        for i in 0..250u64 {
+            registry
+                .register(described(
+                    &format!("https://pending{i}.example.com/p"),
+                    &format!("weather forecast {}", noise(60_000, i)),
+                    20,
+                ))
+                .await
+                .unwrap();
+        }
+        assert_eq!(registry.list(10, 0, q()).await.pagination.total, 1);
+        let after = last_index(&registry).await;
+        assert_eq!(after.listing_count(), before.listing_count());
+        assert_eq!(after.posting_count(), before.posting_count());
+
+        let generation = registry.catalog_generation.load(Ordering::Acquire);
+        let duplicate = described("https://pending0.example.com/p", "again", 30);
+        assert!(matches!(
+            registry.register(duplicate).await,
+            Err(DiscoveryError::AlreadyExists(_))
+        ));
+        assert!(matches!(
+            registry.unregister("https://nothing.example.com/x").await,
+            Err(DiscoveryError::NotFound(_))
+        ));
+        assert_eq!(
+            registry.catalog_generation.load(Ordering::Acquire),
+            generation,
+            "a refused write moved the generation"
+        );
+        assert_eq!(registry.list(10, 0, q()).await.pagination.total, 1);
+        assert!(
+            Arc::ptr_eq(&last_index(&registry).await, &after),
+            "a refused write rebuilt the index"
+        );
+
+        // Once one of them is verified it is indexed, and found.
+        registry
+            .health()
+            .mark_verified(
+                "https://pending7.example.com/p",
+                crate::discovery_health::ProbeMethod::Get,
+            )
+            .await;
+        assert_eq!(registry.list(10, 0, q()).await.pagination.total, 2);
+        assert_eq!(last_index(&registry).await.listing_count(), 2);
+
+        // A suppressed listing leaves the index as it leaves the listing.
+        assert!(registry.suppress("https://pending7.example.com/p").await);
+        assert_eq!(registry.list(10, 0, q()).await.pagination.total, 1);
+        assert_eq!(last_index(&registry).await.listing_count(), 1);
+    }
+
+    /// One rebuild per change, even when the search that started it is gone:
+    /// the rebuild runs on a task of its own and stores its index, so the next
+    /// search reuses it instead of building again.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_search_abandoned_mid_rebuild_still_leaves_the_index_built() {
+        let registry = DiscoveryRegistry::new();
+        for i in 0..1_500u64 {
+            registry
+                .register(described(
+                    &format!("https://seller{i}.example.com/p"),
+                    &format!("weather forecast {}", noise(1_500, i)),
+                    i,
+                ))
+                .await
+                .unwrap();
+        }
+        expose_all(&registry).await;
+        let q = || search("weather forecast", None);
+
+        let abandoned = {
+            let registry = registry.clone();
+            tokio::spawn(async move { registry.list(10, 0, q()).await })
+        };
+        while registry.index_builds.load(Ordering::Relaxed) == 0 {
+            tokio::task::yield_now().await;
+        }
+        abandoned.abort();
+        assert!(
+            abandoned.await.is_err_and(|e| e.is_cancelled()),
+            "the search finished before it could be abandoned; the test proves nothing"
+        );
+
+        assert_eq!(registry.list(10, 0, q()).await.pagination.total, 1_500);
+        assert_eq!(registry.index_builds.load(Ordering::Relaxed), 1);
+    }
+
+    /// Writes between searches do not rebuild the index at their pace: after a
+    /// burst the rebuilds are paced, and in between a search ranks with the
+    /// index there is -- what it serves is still found.
+    #[tokio::test]
+    async fn writes_between_searches_do_not_rebuild_the_index_every_time() {
+        let registry = DiscoveryRegistry::new();
+        registry
+            .register(described(
+                "https://a.example.com/x",
+                "Weather forecast for any city.",
+                10,
+            ))
+            .await
+            .unwrap();
+        expose_all(&registry).await;
+        let q = || search("weather forecast", None);
+        for i in 0..40u64 {
+            registry
+                .register(described(
+                    &format!("https://pending{i}.example.com/p"),
+                    "Nothing to see.",
+                    20,
+                ))
+                .await
+                .unwrap();
+            assert_eq!(registry.list(10, 0, q()).await.pagination.total, 1);
+        }
+        let builds = registry.index_builds.load(Ordering::Relaxed);
+        assert!(
+            builds <= u64::from(crate::discovery_search::REBUILD_BURST) + 1,
+            "{builds} rebuilds for 40 writes"
         );
     }
 
@@ -4841,6 +5190,51 @@ mod tests {
         // No curated product at that URL: the handshake is enough.
         let registry = mcp_registry(None, "https://mcp.other.example/mcp").await;
         assert_eq!(registry.list(10, 0, None).await.pagination.total, 1);
+    }
+
+    /// The recipients rule is the product's HOST's: another spelling of its
+    /// URL -- `http://`, a percent-encoded path, capitals and a trailing dot,
+    /// another path -- is held to it too, and EVERY option a listing declares
+    /// has to pay one of the product's recipients.
+    #[tokio::test]
+    async fn an_mcp_listing_on_a_products_host_declares_its_recipients_whatever_the_url() {
+        const PRODUCT: &str = "0xe4dc963c56979E0260fc146b87eE24F18220e545";
+        const STRANGER: &str = "0x1234567890123456789012345678901234567890";
+        async fn shown(url: &str, pay_to: &[&str]) -> u32 {
+            let registry = DiscoveryRegistry::new();
+            let mut r = create_test_resource(url, None);
+            r.resource_type = "mcp".to_string();
+            let template = r.accepts[0].clone();
+            r.accepts = pay_to
+                .iter()
+                .map(|p| {
+                    let mut option = template.clone();
+                    option.pay_to = MixedAddress::Evm(p.parse().unwrap());
+                    option
+                })
+                .collect();
+            let key = r.url.to_string();
+            registry.register(r).await.unwrap();
+            registry.health().mark_mcp_handshake(&key, 3).await;
+            registry.list(10, 0, None).await.pagination.total
+        }
+        let cases: [(&str, &[&str], u32); 10] = [
+            ("https://api.describe.net/mcp", &[PRODUCT], 1),
+            ("http://api.describe.net/mcp", &[PRODUCT], 1),
+            ("http://api.describe.net/mcp", &[STRANGER], 0),
+            ("https://api.describe.net/%6Dcp", &[STRANGER], 0),
+            ("https://API.Describe.NET./mcp", &[STRANGER], 0),
+            ("https://api.describe.net/another/path", &[STRANGER], 0),
+            ("https://api.describe.net/mcp", &[PRODUCT, STRANGER], 0),
+            ("https://api.describe.net/mcp", &[STRANGER, PRODUCT], 0),
+            // A host no curated entry names, and one whose entry names no
+            // recipients: the handshake is enough.
+            ("https://describe.net.example/mcp", &[STRANGER], 1),
+            ("https://tenjin.blog/mcp", &[STRANGER], 1),
+        ];
+        for (url, pay_to, expected) in cases {
+            assert_eq!(shown(url, pay_to).await, expected, "{url} {pay_to:?}");
+        }
     }
 
     /// `kind` is the listing's own kind: the essay publisher's pay-per-read

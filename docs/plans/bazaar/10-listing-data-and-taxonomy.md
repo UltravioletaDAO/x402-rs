@@ -210,3 +210,13 @@ options actually carry text for the `datapackvibe` listings is not observable fr
 catalog; the first post-deploy count answers it. If they do not, those listings fill only when
 another aggregated copy of them is fetched, which the per-source fetch cap (`maxItemsPerSource`,
 1 000) and the catalog cap decide.
+
+**Measured after the 2.47.0 deploy (2026-10-04)** and closed in 2.48.0: they did not. 138 of the
+141 visible thirdweb listings had no description and all 141 no input schema. Coinbase's feed
+publishes 32 701 resources; all 144 thirdweb-held URLs are in it, none in its first 1 000 (median
+position ~2 981), and its copies carry the description for 139 and the input schema for all 144.
+The aggregator now reads past the cap for the sources in `catalog.scanPastCap.sources` (Coinbase by
+default), a bounded number of pages a cycle, keeping only copies of URLs the catalog already holds,
+which then go through the import's usual rules: the newer copy's terms win (Coinbase's copy is the
+newer one for all 144, with the same recipients on the same networks), and 2.2 fills what either
+copy lacks. Nothing new enters the catalog that way.

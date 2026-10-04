@@ -2706,7 +2706,10 @@ from one source per cycle, and `maxPerHost` -- `maxHostSharePercent` of `maxReso
 fewer than 50, null when the share is off: when a full catalog has to make room, copies that are
 not verified alive go before any that are, and within each a host's aggregated copies beyond that
 number go right after the duplicates of a templated family; a catalog with room is never trimmed
-for it, and a first-hand listing never), `healthProber` (the probe budget -- `budgetPerTick` is
+for it, and a first-hand listing never; and `scanPastCap` -- the `sources` read past
+`maxItemsPerSource`, `pagesPerCycle` pages of `pageSize` a cycle, resuming where the last cycle
+stopped, keeping only copies of listings already held, so nothing new enters that way),
+`healthProber` (the probe budget -- `budgetPerTick` is
 `maxRps * tickSeconds` and is the number the revalidation queue spends from, never adds to),
 `revalidation`, `observedTerms`, `search` (`maxQueryChars`, the longest `q` that
 `GET /discovery/resources` accepts, which the `/bazaar` page reads instead of typing it), and
@@ -2941,6 +2944,14 @@ outbound fetches against caller-supplied URLs.
     "provider": "Example",
     "category": "data",
     "tags": ["api"]
+  },
+  "extensions": {
+    "bazaar": {
+      "info": {
+        "input": { "type": "http", "method": "POST", "bodyType": "json", "body": { "symbol": "AAPL" } },
+        "output": { "type": "json", "example": { "price": 189.5 } }
+      }
+    }
   }
 }
 ```
@@ -2951,7 +2962,12 @@ outbound fetches against caller-supplied URLs.
   CAIP-2 (`eip155:8453`) or the x402 v1 name (`base`); `amount` accepts `maxAmountRequired` as
   its v1 spelling.
 - `metadata` (optional): `provider`, `category`, `tags`.
-- `extensions` (optional): resource-level x402 extensions, stored verbatim.
+- `extensions` (optional): resource-level x402 extensions, stored verbatim. `extensions.bazaar` is
+  where you declare what to send and what comes back -- `info.input` / `info.output`, and
+  optionally a JSON Schema in `schema` -- exactly as the x402 bazaar extension publishes it in a
+  402. A listing that declares its input reports `hasInputSchema: true`, and the health prober
+  calls it with the method it declares (with `{}`, and with your example body only when `{}` is
+  refused with a 400 or 422) instead of a bare GET.
 
 **Schemes you cannot settle here are still registrable.** `scheme` is stored as published, so a
 listing for a scheme this facilitator does not implement is catalogued under its own name rather
@@ -3846,6 +3862,42 @@ mod tests {
             "the /verify example in src/openapi.rs and the one in \
              static/skill.md have drifted apart"
         );
+    }
+
+    /// The `extensions.bazaar` the register example publishes is one this
+    /// build reads as a declared input: the listing reports `hasInputSchema`
+    /// and is probed with the method the example declares. Docs that showed a
+    /// shape the code ignores would teach sellers to declare nothing.
+    #[test]
+    fn the_register_example_declares_an_input_this_build_reads() {
+        let spec = ApiDoc::openapi();
+        let example: serde_json::Value = serde_json::from_str(&json_block_after(
+            spec.paths.paths["/discovery/register"]
+                .post
+                .as_ref()
+                .unwrap()
+                .description
+                .as_deref()
+                .unwrap(),
+            "**Request body:**",
+        ))
+        .expect("the /docs register example must be JSON");
+        let extensions = example.get("extensions").cloned();
+        assert_eq!(
+            crate::discovery_health::declared_request(extensions.as_ref()),
+            crate::discovery_health::ProbeRequest::Declared {
+                method: crate::discovery_health::ProbeMethod::Post,
+                example: Some(r#"{"symbol":"AAPL"}"#.to_string()),
+            }
+        );
+        let mut resource = crate::types_v2::DiscoveryResource::new(
+            url::Url::parse("https://api.example.com/paid").unwrap(),
+            "http".to_string(),
+            String::new(),
+            Vec::new(),
+        );
+        resource.extensions = crate::discovery_price::sanitize_extensions(extensions);
+        assert!(resource.has_input_schema());
     }
 
     /// `/docs` and `/skill.md` publish the same **v2** body too.

@@ -41,7 +41,7 @@
 //! use x402_rs::discovery_aggregator::{DiscoveryAggregator, FacilitatorConfig};
 //!
 //! let aggregator = DiscoveryAggregator::new();
-//! let resources = aggregator.fetch_all().await?;
+//! let resources = aggregator.fetch_all(&held_urls).await?;
 //! registry.bulk_import(resources, true).await?;
 //! ```
 
@@ -675,11 +675,38 @@ async fn adopt_published_catalog(registry: &crate::discovery::DiscoveryRegistry)
 // Discovery Aggregator
 // ============================================================================
 
+/// How far past `max_items_per_source` the aggregator reads, and for whom
+/// ([`crate::discovery_config::scan_sources`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ScanPastCap {
+    /// Source ids scanned past the cap.
+    pub sources: Vec<String>,
+    /// Pages per source per cycle; `0` disables the scan.
+    pub pages_per_cycle: usize,
+    /// Items asked for per page.
+    pub page_size: usize,
+}
+
+impl ScanPastCap {
+    /// The resolved configuration.
+    pub fn from_config() -> Self {
+        Self {
+            sources: crate::discovery_config::scan_sources(),
+            pages_per_cycle: crate::discovery_config::scan_pages_per_cycle(),
+            page_size: crate::discovery_config::scan_page_size(),
+        }
+    }
+}
+
 /// Aggregates discoverable resources from external facilitators.
 #[derive(Debug, Clone)]
 pub struct DiscoveryAggregator {
     client: Client,
     facilitators: Vec<FacilitatorConfig>,
+    scan: ScanPastCap,
+    /// Where the scan past the cap resumes next cycle, per source id. In memory:
+    /// a restart starts over at the cap, which costs one rotation, not data.
+    cursors: std::sync::Arc<std::sync::Mutex<std::collections::HashMap<String, usize>>>,
 }
 
 impl Default for DiscoveryAggregator {
@@ -701,6 +728,8 @@ impl DiscoveryAggregator {
         Self {
             client,
             facilitators: FacilitatorConfig::all(),
+            scan: ScanPastCap::from_config(),
+            cursors: Default::default(),
         }
     }
 
@@ -716,11 +745,26 @@ impl DiscoveryAggregator {
         Self {
             client,
             facilitators,
+            scan: ScanPastCap::from_config(),
+            cursors: Default::default(),
         }
     }
 
+    /// The same aggregator with another scan past the cap.
+    #[cfg(test)]
+    fn with_scan(mut self, scan: ScanPastCap) -> Self {
+        self.scan = scan;
+        self
+    }
+
     /// Fetch resources from all enabled facilitators.
-    pub async fn fetch_all(&self) -> Vec<DiscoveryResource> {
+    ///
+    /// `held` is the catalog's URLs: past a source's cap, only copies of those
+    /// are kept ([`Self::scan_past_cap`]).
+    pub async fn fetch_all(
+        &self,
+        held: &std::collections::HashSet<String>,
+    ) -> Vec<DiscoveryResource> {
         let mut all_resources = Vec::new();
 
         for config in &self.facilitators {
@@ -729,7 +773,7 @@ impl DiscoveryAggregator {
                 continue;
             }
 
-            match self.fetch_from_facilitator(config).await {
+            match self.fetch_from_facilitator(config, held).await {
                 Ok(resources) => {
                     info!(
                         facilitator = %config.id,
@@ -768,6 +812,7 @@ impl DiscoveryAggregator {
     async fn fetch_from_facilitator(
         &self,
         config: &FacilitatorConfig,
+        held: &std::collections::HashSet<String>,
     ) -> Result<Vec<DiscoveryResource>, AggregatorError> {
         info!(facilitator = %config.id, url = %config.discovery_url, "Fetching from facilitator");
 
@@ -779,25 +824,8 @@ impl DiscoveryAggregator {
         loop {
             let url = format!("{}?limit={}&offset={}", config.discovery_url, limit, offset);
 
-            let response = self
-                .client
-                .get(&url)
-                .timeout(Duration::from_secs(config.timeout_secs))
-                .send()
-                .await?;
-
-            if !response.status().is_success() {
-                return Err(AggregatorError::FacilitatorError(format!(
-                    "HTTP {}: {}",
-                    response.status(),
-                    response.text().await.unwrap_or_default()
-                )));
-            }
-
-            let body = response.text().await?;
-
             // Try multiple response formats (facilitators use different schemas)
-            let (items, pagination) = self.parse_discovery_response(&body, &config.id)?;
+            let (items, pagination) = self.fetch_page(config, &url).await?;
 
             let batch_count = items.len();
 
@@ -824,6 +852,12 @@ impl DiscoveryAggregator {
                     total = ?total,
                     "source truncated at the per-source cap; the rest of its catalog was not fetched"
                 );
+                if let Some(total) = total {
+                    let found = self
+                        .scan_past_cap(config, offset as usize, total as usize, held)
+                        .await;
+                    all_resources.extend(found);
+                }
                 break;
             }
             if done {
@@ -834,6 +868,150 @@ impl DiscoveryAggregator {
         }
 
         Ok(all_resources)
+    }
+
+    /// One page of a source's feed, in whichever response format it uses.
+    async fn fetch_page(
+        &self,
+        config: &FacilitatorConfig,
+        url: &str,
+    ) -> Result<(Vec<CoinbaseResource>, Option<CoinbasePagination>), AggregatorError> {
+        let response = self
+            .client
+            .get(url)
+            .timeout(Duration::from_secs(config.timeout_secs))
+            .send()
+            .await?;
+
+        if !response.status().is_success() {
+            return Err(AggregatorError::FacilitatorError(format!(
+                "HTTP {}: {}",
+                response.status(),
+                response.text().await.unwrap_or_default()
+            )));
+        }
+
+        let body = response.text().await?;
+        self.parse_discovery_response(&body, &config.id)
+    }
+
+    /// Read past a source's cap for copies of listings the catalog already
+    /// holds, and only those.
+    ///
+    /// The cap bounds what enters the catalog from one source; it was never
+    /// meant to hide the rest of a feed from listings already in it. A listing
+    /// held from one feed is completed from another feed's copy of the same URL
+    /// by the import's own rules (`fill_descriptive_gaps_from`, and the newer
+    /// copy's terms when it is newer). Coinbase carries those copies past its
+    /// first 1 000 for every listing held from thirdweb.
+    ///
+    /// Bounded every way that costs: only the configured sources, `held` must
+    /// be non-empty, at most `pages_per_cycle` pages a cycle resuming where the
+    /// last cycle stopped (so the whole feed is covered over several cycles),
+    /// one page in memory at a time, and nothing of a page kept but the copies
+    /// of held URLs. A page that fails ends the scan for this cycle and never
+    /// fails the source: what the capped fetch got stands.
+    async fn scan_past_cap(
+        &self,
+        config: &FacilitatorConfig,
+        from: usize,
+        total: usize,
+        held: &std::collections::HashSet<String>,
+    ) -> Vec<DiscoveryResource> {
+        let scan = &self.scan;
+        if held.is_empty()
+            || scan.pages_per_cycle == 0
+            || scan.page_size == 0
+            || total <= from
+            || !scan
+                .sources
+                .iter()
+                .any(|s| s.eq_ignore_ascii_case(&config.id))
+        {
+            return Vec::new();
+        }
+        let start = self
+            .cursors
+            .lock()
+            .ok()
+            .and_then(|c| c.get(&config.id).copied())
+            .filter(|at| *at >= from && *at < total)
+            .unwrap_or(from);
+
+        let mut offset = start;
+        let mut pages = 0;
+        let mut scanned = 0;
+        let mut copies: Vec<CoinbaseResource> = Vec::new();
+        while pages < scan.pages_per_cycle {
+            let url = format!(
+                "{}?limit={}&offset={}",
+                config.discovery_url, scan.page_size, offset
+            );
+            let (items, pagination) = match self.fetch_page(config, &url).await {
+                Ok(page) => page,
+                // A page that arrived and does not parse -- one malformed item
+                // fails the whole page -- would fail again every cycle, and the
+                // rest of the feed behind it would never be read: step over it.
+                Err(AggregatorError::ParseError(e)) => {
+                    warn!(
+                        direction = "outbound",
+                        facilitator = %config.id,
+                        offset = offset,
+                        upstream_error = %e,
+                        "Scan past the per-source cap skipped a page it could not read"
+                    );
+                    pages += 1;
+                    offset += scan.page_size;
+                    if offset >= total {
+                        offset = from;
+                        break;
+                    }
+                    continue;
+                }
+                // The source did not answer: try the same page next cycle.
+                Err(e) => {
+                    warn!(
+                        direction = "outbound",
+                        facilitator = %config.id,
+                        offset = offset,
+                        upstream_error = %e,
+                        "Scan past the per-source cap stopped for this cycle"
+                    );
+                    break;
+                }
+            };
+            pages += 1;
+            let batch = items.len();
+            scanned += batch;
+            copies.extend(
+                items
+                    .into_iter()
+                    .filter(|cb| Url::parse(&cb.url).is_ok_and(|u| held.contains(u.as_str()))),
+            );
+            offset += batch;
+            let end = pagination
+                .and_then(|p| p.total)
+                .map_or(total, |t| t as usize);
+            if batch == 0 || offset >= end {
+                // The end of the feed: next cycle starts over at the cap.
+                offset = from;
+                break;
+            }
+        }
+        if let Ok(mut cursors) = self.cursors.lock() {
+            cursors.insert(config.id.clone(), offset);
+        }
+        let found = self.convert_coinbase_resources(copies, &config.id);
+        info!(
+            facilitator = %config.id,
+            from = start,
+            next = offset,
+            pages = pages,
+            scanned = scanned,
+            kept = found.len(),
+            "Scanned past the per-source cap for copies of listings the catalog holds"
+        );
+        found
     }
 
     /// Parse discovery response, trying multiple formats.
@@ -1143,7 +1321,15 @@ async fn run_aggregation(
 ) {
     info!("Running discovery aggregation cycle");
 
-    let resources = aggregator.fetch_all().await;
+    // What the catalog holds now: past a source's cap, only copies of these are
+    // read (`scan_past_cap`).
+    let held: std::collections::HashSet<String> = registry
+        .all_urls()
+        .await
+        .into_iter()
+        .map(String::from)
+        .collect();
+    let resources = aggregator.fetch_all(&held).await;
 
     if resources.is_empty() {
         warn!("No resources fetched from external facilitators");
@@ -1704,5 +1890,184 @@ mod tests {
             "if this ever stops being true, `adopt_published_catalog` is no longer load-bearing \
              and the test above proves nothing"
         );
+    }
+
+    // ------------------------------------------------------------------------
+    // Past the per-source cap
+    // ------------------------------------------------------------------------
+
+    type Asked = std::sync::Arc<std::sync::Mutex<Vec<(usize, usize)>>>;
+
+    /// A local feed of `total` resources, `r0` to `r{total-1}`, that answers
+    /// any `limit` up to 1 000 and records every `(limit, offset)` asked for.
+    /// The page at offset `poison`, when set, is not JSON.
+    async fn feed(total: usize, poison: Option<usize>) -> (String, Asked) {
+        use axum::extract::{Query, State};
+        let asked = Asked::default();
+        let page =
+            move |State(asked): State<Asked>,
+                  Query(q): Query<std::collections::HashMap<String, String>>| async move {
+                let limit: usize = q
+                    .get("limit")
+                    .and_then(|v| v.parse().ok())
+                    .unwrap_or(20usize)
+                    .min(1_000);
+                let offset: usize = q.get("offset").and_then(|v| v.parse().ok()).unwrap_or(0);
+                asked.lock().unwrap().push((limit, offset));
+                if poison == Some(offset) {
+                    return axum::response::IntoResponse::into_response("<html>not a feed</html>");
+                }
+                let items: Vec<serde_json::Value> = (offset..(offset + limit).min(total))
+                    .map(|i| {
+                        serde_json::json!({
+                            "resource": format!("https://seller.example/r{i}"),
+                            "type": "http",
+                            "description": format!("resource {i}"),
+                            "accepts": [{
+                                "scheme": "exact", "network": "eip155:8453",
+                                "asset": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+                                "amount": "1000",
+                                "payTo": "0x1234567890123456789012345678901234567890",
+                                "maxTimeoutSeconds": 60
+                            }]
+                        })
+                    })
+                    .collect();
+                axum::response::IntoResponse::into_response(axum::Json(serde_json::json!({
+                    "items": items,
+                    "pagination": { "limit": limit, "offset": offset, "total": total }
+                })))
+            };
+        let app = axum::Router::new()
+            .route("/discovery/resources", axum::routing::get(page))
+            .with_state(asked.clone());
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        (format!("http://{addr}/discovery/resources"), asked)
+    }
+
+    fn local_source(id: &str, discovery_url: &str) -> FacilitatorConfig {
+        FacilitatorConfig {
+            id: id.to_string(),
+            name: id.to_string(),
+            discovery_url: discovery_url.to_string(),
+            enabled: true,
+            timeout_secs: 10,
+        }
+    }
+
+    fn held(urls: &[&str]) -> std::collections::HashSet<String> {
+        urls.iter().map(|u| u.to_string()).collect()
+    }
+
+    fn has(resources: &[DiscoveryResource], url: &str) -> bool {
+        resources.iter().any(|r| r.url.as_str() == url)
+    }
+
+    #[tokio::test]
+    async fn past_the_cap_only_copies_of_held_listings_are_read_a_budget_at_a_time() {
+        // Coinbase, 2026-10-04: 32 701 resources, and every listing held from
+        // thirdweb sits past the first 1 000 -- where the capped fetch never
+        // looked, so its text and schema never reached the catalog.
+        let (url, asked) = feed(2_500, None).await;
+        let aggregator = DiscoveryAggregator::with_facilitators(vec![local_source(
+            "coinbase", &url,
+        )])
+        .with_scan(ScanPastCap {
+            sources: vec!["coinbase".to_string()],
+            pages_per_cycle: 1,
+            page_size: 1_000,
+        });
+        let held = held(&[
+            "https://seller.example/r10",
+            "https://seller.example/r1500",
+            "https://seller.example/r2400",
+            "https://elsewhere.example/x",
+        ]);
+
+        // Cycle 1: the capped fetch as before, then one page past the cap.
+        let first = aggregator.fetch_all(&held).await;
+        assert_eq!(first.len(), 1_001, "the first 1 000, and one held copy");
+        assert!(has(&first, "https://seller.example/r1500"));
+        assert!(
+            !has(&first, "https://seller.example/r1499"),
+            "nothing the catalog does not hold enters past the cap"
+        );
+        let copy = first
+            .iter()
+            .find(|r| r.url.as_str() == "https://seller.example/r1500")
+            .unwrap();
+        assert_eq!(copy.description, "resource 1500", "converted like any copy");
+        assert_eq!(copy.source_facilitator.as_deref(), Some("coinbase"));
+        let pages: Vec<_> = asked.lock().unwrap().drain(..).collect();
+        assert_eq!(pages.len(), 11, "{pages:?}");
+        assert_eq!(pages.last(), Some(&(1_000, 1_000)));
+
+        // Cycle 2 resumes where the first stopped, and reaches the end.
+        let second = aggregator.fetch_all(&held).await;
+        assert!(has(&second, "https://seller.example/r2400"));
+        assert!(!has(&second, "https://seller.example/r1500"));
+        assert_eq!(asked.lock().unwrap().drain(..).last(), Some((1_000, 2_000)));
+
+        // Cycle 3 starts over at the cap.
+        let third = aggregator.fetch_all(&held).await;
+        assert!(has(&third, "https://seller.example/r1500"));
+        assert_eq!(asked.lock().unwrap().drain(..).last(), Some((1_000, 1_000)));
+    }
+
+    #[tokio::test]
+    async fn no_scan_for_another_source_an_empty_catalog_or_a_zero_budget() {
+        let (url, asked) = feed(2_500, None).await;
+        let scan = ScanPastCap {
+            sources: vec!["coinbase".to_string()],
+            pages_per_cycle: 8,
+            page_size: 1_000,
+        };
+        let held = held(&["https://seller.example/r1500"]);
+        let cases = [
+            ("thirdweb", scan.clone(), held.clone()),
+            ("coinbase", scan.clone(), std::collections::HashSet::new()),
+            (
+                "coinbase",
+                ScanPastCap {
+                    pages_per_cycle: 0,
+                    ..scan.clone()
+                },
+                held.clone(),
+            ),
+        ];
+        for (id, scan, held) in cases {
+            let aggregator = DiscoveryAggregator::with_facilitators(vec![local_source(id, &url)])
+                .with_scan(scan);
+            assert_eq!(aggregator.fetch_all(&held).await.len(), 1_000, "{id}");
+            let pages: Vec<_> = asked.lock().unwrap().drain(..).collect();
+            assert!(
+                pages.iter().all(|(limit, _)| *limit == 100),
+                "{id}: {pages:?}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn a_page_past_the_cap_that_does_not_parse_is_stepped_over() {
+        // One malformed item fails a whole page. Retrying it every cycle would
+        // leave everything behind it unread for good.
+        let (url, asked) = feed(2_500, Some(1_000)).await;
+        let aggregator = DiscoveryAggregator::with_facilitators(vec![local_source(
+            "coinbase", &url,
+        )])
+        .with_scan(ScanPastCap {
+            sources: vec!["coinbase".to_string()],
+            pages_per_cycle: 1,
+            page_size: 1_000,
+        });
+        let held = held(&["https://seller.example/r2400"]);
+        let first = aggregator.fetch_all(&held).await;
+        assert_eq!(first.len(), 1_000, "the capped fetch stands");
+        assert_eq!(asked.lock().unwrap().drain(..).last(), Some((1_000, 1_000)));
+        let second = aggregator.fetch_all(&held).await;
+        assert!(has(&second, "https://seller.example/r2400"));
+        assert_eq!(asked.lock().unwrap().drain(..).last(), Some((1_000, 2_000)));
     }
 }

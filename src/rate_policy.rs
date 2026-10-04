@@ -36,8 +36,11 @@
 //! client address is on the IP allowlist (`crate::ip_allowlist`, re-read from
 //! its secret while the task runs) skips exactly what a recognized key skips.
 //! The address is the one every budget keys on, so writing a listed address
-//! into `X-Forwarded-For` ahead of one's own buys nothing. Neither exemption
-//! ever covers the body deadline, the machine's ceiling or the gas cap.
+//! into `X-Forwarded-For` ahead of one's own buys nothing. The exemption is
+//! for the operator's own tools, not for pages a browser loads: a request
+//! carrying `Origin` or `Sec-Fetch-Site` is charged like anybody's, from any
+//! address ([`sent_by_a_browser`]). Neither exemption ever covers the body
+//! deadline, the machine's ceiling or the gas cap.
 //!
 //! The same [`PolicyLayer`] wraps every governor on the service; no route has
 //! an exemption of its own. The types hold it: [`config`] returns a [`Bucket`]
@@ -1014,10 +1017,21 @@ pub struct PolicyService<S> {
     limit: Limit,
 }
 
+/// Whether `headers` are a browser's: a cross-origin request always carries
+/// `Origin`, and a current browser sends `Sec-Fetch-Site` on every request.
+/// The operator's tools (`curl`, scripts, tests) send neither. An address on
+/// the allowlist is exempt only for those tools, so the exemption is never
+/// spent nor seen by a web page its owner happens to open.
+fn sent_by_a_browser(headers: &HeaderMap) -> bool {
+    headers.contains_key(header::ORIGIN) || headers.contains_key("sec-fetch-site")
+}
+
 /// Whether `request` comes from an address on `allowlist`: the address the
-/// budgets key on, so only the entry the load balancer appended counts.
+/// budgets key on, so only the entry the load balancer appended counts --
+/// and never when a browser sent it ([`sent_by_a_browser`]).
 fn allowlisted(allowlist: &IpAllowlist, request: &Request) -> bool {
     !allowlist.is_empty()
+        && !sent_by_a_browser(request.headers())
         && ClientIpKeyExtractor
             .extract(request)
             .is_ok_and(|ip| allowlist.contains(ip))
@@ -1289,12 +1303,14 @@ pub async fn admit(
     }
 
     let client = ClientIpKeyExtractor.extract(&request).ok();
-    let allowlisted = client.is_some_and(|ip| admission.allowlist.contains(ip));
+    // On the list decides what a log may name; exempt, also who sent it.
+    let listed = client.is_some_and(|ip| admission.allowlist.contains(ip));
+    let allowlisted = listed && !sent_by_a_browser(request.headers());
     let presented = admission.stack.presented(request.headers());
     if matches!(presented, Presented::Rejected) {
         admission
             .stack
-            .note_rejected(client, allowlisted, request.uri().path());
+            .note_rejected(client, listed, request.uri().path());
     }
     let _client_slot = match (&presented, client) {
         (Presented::Recognized(_), _) | (_, None) => None,
@@ -1464,7 +1480,7 @@ pub fn document_from(
         "rateLimits": {
             "keyedOn": "client IP: the last X-Forwarded-For entry, else the TCP peer",
             "refusal": { "status": 429, "code": "rate_limited" },
-            "appliesTo": "third parties; a recognized stack identity or an allowlisted address skips every budget",
+            "appliesTo": "third parties; a recognized stack identity or an allowlisted address skips every budget (an allowlisted address not when a browser sends the request: Origin or Sec-Fetch-Site)",
             "budgets": budgets,
         },
         "stackIdentities": policy.stack().summary(),
@@ -1481,7 +1497,7 @@ pub fn document_from(
                 "env": ENV_MAX_INFLIGHT_PER_CLIENT,
                 "keyedOn": "client IP: the last X-Forwarded-For entry, else the TCP peer",
                 "refusal": { "status": 429, "code": "too_many_concurrent_requests", "retryAfterSecs": OVERLOAD_RETRY_AFTER_SECS },
-                "appliesTo": "third parties; a recognized stack identity or an allowlisted address skips it (a per-address limit is policy, not hardware)",
+                "appliesTo": "third parties; a recognized stack identity or an allowlisted address skips it (a per-address limit is policy, not hardware; an allowlisted address not when a browser sends the request)",
             },
             "bodyDeadlineMs": admission.body_deadline().as_millis() as u64,
             "bodyDeadlineEnv": ENV_REQUEST_BODY_DEADLINE_MS,
@@ -3198,6 +3214,101 @@ mod tests {
         let both = hit(&router, LISTED, &[em.as_bytes()]).await;
         assert_eq!(both.status(), StatusCode::OK);
         assert_eq!(both.headers()[EXEMPT_HEADER], "execution-market");
+    }
+
+    /// A browser on a listed address is charged like anybody: a request with
+    /// `Origin` or `Sec-Fetch-Site` carries its budget's headers, is told no
+    /// exemption and is refused past the burst -- and the per-address ceiling
+    /// holds for it -- while the same address without them is still exempt.
+    #[tokio::test]
+    async fn a_browser_on_an_allowlisted_address_is_charged_like_anybody() {
+        let policy = listed_policy();
+        let browser_request =
+            |path: &'static str, method: &str, body: Body, header: (&str, &str)| {
+                HttpRequest::builder()
+                    .method(method)
+                    .uri(path)
+                    .header("x-forwarded-for", LISTED)
+                    .header(header.0, header.1)
+                    .body(body)
+                    .unwrap()
+            };
+        let headers = [
+            ("origin", "https://site.example"),
+            ("sec-fetch-site", "cross-site"),
+            ("Sec-Fetch-Site", "none"),
+        ];
+        for header in headers {
+            let router = governed(&policy, Limit::every_ms(3_600_000, 2));
+            for n in 1..=2 {
+                let response = router
+                    .clone()
+                    .oneshot(browser_request("/probe", "GET", Body::empty(), header))
+                    .await
+                    .unwrap();
+                assert_eq!(response.status(), StatusCode::OK, "{header:?}: request {n}");
+                assert!(
+                    !response.headers().contains_key(EXEMPT_HEADER),
+                    "{header:?}: exempted"
+                );
+                assert!(
+                    response.headers().contains_key("ratelimit-policy"),
+                    "{header:?}: no budget named"
+                );
+            }
+            let refused = router
+                .clone()
+                .oneshot(browser_request("/probe", "GET", Body::empty(), header))
+                .await
+                .unwrap();
+            assert_eq!(
+                refused.status(),
+                StatusCode::TOO_MANY_REQUESTS,
+                "{header:?}: served past the burst"
+            );
+            let tool = hit(&router, LISTED, &[]).await;
+            assert_eq!(tool.status(), StatusCode::OK);
+            assert_eq!(tool.headers()[EXEMPT_HEADER], ip_allowlist::EXEMPT_AS);
+        }
+
+        // The per-address ceiling, 1: an upload the browser holds open takes
+        // the address's one slot, and its next request is refused.
+        for header in headers {
+            let admission = Admission::new(&policy, 100, 1, Duration::from_secs(30));
+            let router = admitted(
+                Router::new()
+                    .route("/upload", axum::routing::post(|| async { "ok" }))
+                    .route("/probe", get(|| async { "ok" }))
+                    .layer(policy.layer(&config(Limit::every_ms(3_600_000, 100)))),
+                &admission,
+            );
+            let held = {
+                let router = router.clone();
+                let request = browser_request(
+                    "/upload",
+                    "POST",
+                    Body::from_stream(tokio_stream::pending::<
+                        Result<axum::body::Bytes, std::io::Error>,
+                    >()),
+                    header,
+                );
+                tokio::spawn(async move {
+                    let _ = router.oneshot(request).await;
+                })
+            };
+            in_flight(&admission, LISTED, 1).await;
+            let refused = router
+                .clone()
+                .oneshot(browser_request("/probe", "GET", Body::empty(), header))
+                .await
+                .unwrap();
+            assert_eq!(
+                refused.status(),
+                StatusCode::TOO_MANY_REQUESTS,
+                "{header:?}: past the per-address ceiling"
+            );
+            held.abort();
+        }
     }
 
     /// Production turns the list on: `RatePolicy::from_env` reads it from the

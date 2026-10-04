@@ -354,6 +354,36 @@ pub(crate) fn hop_headers<'a>(
     }
 }
 
+/// Carried, as a response extension, by a response [`safe_request_with`]
+/// reached by following at least one redirect: which host answered, and
+/// whether the request still had its method there. A response without it
+/// answered the request as it was sent.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct FollowedRedirect {
+    /// The host that answered, lowercased.
+    pub host: Option<String>,
+    /// False when a 301/302/303 turned a request with a body into a GET.
+    pub method_kept: bool,
+}
+
+/// `resp` with a [`FollowedRedirect`] when `current` is not where the request
+/// started, or the body it started with is gone.
+fn mark_followed(
+    mut resp: reqwest::Response,
+    origin: &Url,
+    current: &Url,
+    sent_body: bool,
+    has_body: bool,
+) -> reqwest::Response {
+    if current != origin || sent_body != has_body {
+        resp.extensions_mut().insert(FollowedRedirect {
+            host: current.host_str().map(str::to_ascii_lowercase),
+            method_kept: sent_body == has_body,
+        });
+    }
+    resp
+}
+
 /// [`safe_request`] with `headers`, which every hop on the original host
 /// carries and no hop to another host does ([`hop_headers`]).
 async fn safe_request_with(
@@ -363,6 +393,7 @@ async fn safe_request_with(
     body: Option<(reqwest::Method, String)>,
     headers: &[ExtraHeader],
 ) -> Result<reqwest::Response, SecurityReject> {
+    let sent_body = body.is_some();
     let mut body = body;
     let mut current = url.clone();
     for _hop in 0..=MAX_REDIRECTS {
@@ -396,6 +427,7 @@ async fn safe_request_with(
             let next = current
                 .join(location)
                 .map_err(|e| SecurityReject::Parse(e.to_string()))?;
+            let has_body = body.is_some();
             match redirect_hop(resp.status().as_u16(), url, next, body) {
                 Some((to, carried)) => {
                     current = to;
@@ -403,10 +435,16 @@ async fn safe_request_with(
                     continue;
                 }
                 // Not followed: the redirect itself is the answer.
-                None => return Ok(resp),
+                None => return Ok(mark_followed(resp, url, &current, sent_body, has_body)),
             }
         }
-        return Ok(resp);
+        return Ok(mark_followed(
+            resp,
+            url,
+            &current,
+            sent_body,
+            body.is_some(),
+        ));
     }
     Err(SecurityReject::TooManyRedirects(MAX_REDIRECTS))
 }
@@ -738,6 +776,77 @@ mod tests {
         assert_eq!(
             redirect_hop(307, &origin, ours.clone(), None),
             Some((ours.clone(), None))
+        );
+    }
+
+    /// A response the connector reached by following a redirect says so --
+    /// which host answered, and whether the method survived -- and one that
+    /// answered the request as sent carries nothing.
+    #[test]
+    fn a_followed_redirect_is_marked_with_where_it_ended() {
+        let origin = Url::parse("https://seller.example/x").unwrap();
+        let other = Url::parse("https://Elsewhere.example/y").unwrap();
+        let mark = |current: &Url, sent_body: bool, has_body: bool| {
+            let resp = reqwest::Response::from(axum::http::Response::new(""));
+            mark_followed(resp, &origin, current, sent_body, has_body)
+                .extensions()
+                .get::<FollowedRedirect>()
+                .cloned()
+        };
+        assert_eq!(mark(&origin, true, true), None, "a POST answered as sent");
+        assert_eq!(mark(&origin, false, false), None, "a GET answered as sent");
+        assert_eq!(
+            mark(&other, false, false),
+            Some(FollowedRedirect {
+                host: Some("elsewhere.example".to_string()),
+                method_kept: true,
+            }),
+            "a GET followed to another host"
+        );
+        assert_eq!(
+            mark(&origin, true, false),
+            Some(FollowedRedirect {
+                host: Some("seller.example".to_string()),
+                method_kept: false,
+            }),
+            "a 303 back to the same URL turned the POST into a GET"
+        );
+        let same_host = Url::parse("https://seller.example/x/").unwrap();
+        assert_eq!(
+            mark(&same_host, true, true),
+            Some(FollowedRedirect {
+                host: Some("seller.example".to_string()),
+                method_kept: true,
+            }),
+            "a 307 on the same host"
+        );
+    }
+
+    /// Every response `safe_request_with` returns goes through
+    /// `mark_followed`. The connector refuses loopback, so no test drives a
+    /// real redirect through it; the wiring is checked where it is written.
+    #[test]
+    fn every_answer_of_the_connector_carries_its_redirect_mark() {
+        let src = include_str!("discovery_security.rs").replace("\r\n", "\n");
+        let start = src
+            .find("async fn safe_request_with(")
+            .expect("the connector");
+        let end = start + src[start..].find("\n}\n").expect("its end");
+        let body = &src[start..end];
+        assert_eq!(body.matches("return Ok(").count(), 2, "{body}");
+        assert_eq!(body.matches("Ok(mark_followed(").count(), 2, "{body}");
+        // With the body the request had at that point: before the hop that
+        // would have dropped it, and after every hop followed.
+        assert!(
+            body.contains("let has_body = body.is_some();")
+                && body.contains(
+                    "None => return Ok(mark_followed(resp, url, &current, sent_body, has_body))"
+                ),
+            "{body}"
+        );
+        assert!(
+            body.contains("            sent_body,\n            body.is_some(),\n        ));"),
+            "{body}"
         );
     }
 

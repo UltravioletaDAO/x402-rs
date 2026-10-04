@@ -1307,12 +1307,16 @@ async fn probe_mcp<T: ProbeTransport + ?Sized>(transport: &T, url: &url::Url) ->
 
 /// The rest of the handshake, after an `initialize` that answered 2xx: how
 /// many tools `tools/list` returned, or `None` when any step did not give a
-/// JSON-RPC result.
+/// JSON-RPC result, or an answer read was not the endpoint's own
+/// ([`own_response`]).
 async fn mcp_list_tools<T: ProbeTransport + ?Sized>(
     transport: &T,
     url: &url::Url,
     initialized: reqwest::Response,
 ) -> Option<u32> {
+    if !own_response(url, &initialized) {
+        return None;
+    }
     // Whatever answered `initialize` assigned it; it is sent back only on
     // requests to the listing's own host (`discovery_security::hop_headers`).
     let session = initialized
@@ -1334,7 +1338,7 @@ async fn mcp_list_tools<T: ProbeTransport + ?Sized>(
         .send_mcp(url, MCP_TOOLS_LIST, session.as_deref())
         .await
         .ok()?;
-    if !listed.status().is_success() {
+    if !listed.status().is_success() || !own_response(url, &listed) {
         return None;
     }
     let content_type = response_content_type(&listed);
@@ -1419,6 +1423,16 @@ pub struct LiveTerms {
     pub resource_host: Option<String>,
 }
 
+impl LiveTerms {
+    /// Whether this reading can verify a listing: a challenge we read that
+    /// offers at least one payment option we could normalize. `readable` is
+    /// enough for the drift check -- a recipient anywhere in it counts -- but a
+    /// challenge with no option in it offers nothing to pay.
+    pub fn offers_payment(&self) -> bool {
+        self.readable && !self.accepts.is_empty()
+    }
+}
+
 /// One transport's reading of a challenge, before the two are reconciled.
 #[derive(Debug, Default, PartialEq, Eq)]
 struct ChallengeReading {
@@ -1456,11 +1470,13 @@ struct ChallengeReading {
 /// amount came from a body describes an offer neither document made, and it
 /// would be indistinguishable from a real one afterwards. Instead:
 ///
-/// 1. The higher declared `x402Version` wins -- a seller serving two protocol
-///    versions is telling us which one is current by numbering it.
-/// 2. On a tie, or with no version declared, the header wins, because that is
+/// 1. A transport offering an option we can read wins over one offering none
+///    -- the other could only ever hide a payable offer.
+/// 2. Then the higher declared `x402Version` wins -- a seller serving two
+///    protocol versions is telling us which one is current by numbering it.
+/// 3. On a tie, or with no version declared, the header wins, because that is
 ///    where sellers actually put the challenge.
-/// 3. The loser is preserved whole, in `conflict`, as evidence.
+/// 4. The loser is preserved whole, in `conflict`, as evidence.
 ///
 /// `pay_to` stays the union of both, deliberately: the hijack check must fire
 /// on a recipient declared anywhere in the response, whichever transport the
@@ -1493,9 +1509,11 @@ fn pay_to_from_402(body: Option<&str>, header: Option<&str>) -> LiveTerms {
 
     let (winner, winning_transport, loser, losing_transport) = match (from_header, from_body) {
         (Some(h), Some(b)) => {
-            let header_wins = match (h.x402_version, b.x402_version) {
-                (Some(hv), Some(bv)) if bv > hv => false,
-                _ => true,
+            // An offer we can read beats one we cannot; then the version.
+            let header_wins = match (h.accepts.is_empty(), b.accepts.is_empty()) {
+                (false, true) => true,
+                (true, false) => false,
+                _ => !matches!((h.x402_version, b.x402_version), (Some(hv), Some(bv)) if bv > hv),
             };
             if header_wins {
                 (h, TermsTransport::Header, Some(b), TermsTransport::Body)
@@ -1576,7 +1594,10 @@ fn read_challenge(v: &serde_json::Value) -> ChallengeReading {
     // that let the hijack check pass while seeing nothing.
     for key in ["accepts", "paymentRequirements"] {
         if let Some(accepts) = v.get(key).and_then(|a| a.as_array()) {
-            reading.found_shape = true;
+            // A list with no option in it -- `[]`, `["junk"]` -- is not one.
+            if accepts.iter().any(|a| a.is_object()) {
+                reading.found_shape = true;
+            }
             for a in accepts {
                 if let Some(p) = a.get("payTo").and_then(drift_recipient_value) {
                     reading.pay_to.push(p);
@@ -1656,6 +1677,43 @@ struct ProbeOutcome {
     challenge_header: Option<String>,
     /// What the origin asked us to wait, when it asked.
     retry_after: Option<Duration>,
+    /// Where the redirects it followed ended, when it followed any.
+    redirect: Option<crate::discovery_security::FollowedRedirect>,
+}
+
+impl ProbeOutcome {
+    /// Whether this is the listing's own answer to the request as it was sent
+    /// ([`own_answer`]).
+    fn answered_as_sent(&self, url: &url::Url) -> bool {
+        own_answer(url, self.redirect.as_ref())
+    }
+}
+
+/// Whether a response is `url`'s own answer to the request as it was sent: no
+/// redirect, or only redirects that stayed on the listing's host and kept the
+/// method. An answer another host gave, or one a 301/302/303 reached by
+/// turning the request into a GET, answers a request the listing does not
+/// declare, and verifies nothing.
+fn own_answer(
+    url: &url::Url,
+    redirect: Option<&crate::discovery_security::FollowedRedirect>,
+) -> bool {
+    redirect.is_none_or(|r| {
+        r.method_kept
+            && r.host
+                .as_deref()
+                .zip(url.host_str())
+                .is_some_and(|(theirs, ours)| theirs.eq_ignore_ascii_case(ours))
+    })
+}
+
+/// [`own_answer`] for a response as the transport handed it over.
+fn own_response(url: &url::Url, resp: &reqwest::Response) -> bool {
+    own_answer(
+        url,
+        resp.extensions()
+            .get::<crate::discovery_security::FollowedRedirect>(),
+    )
 }
 
 /// How a probe reaches the network.
@@ -1795,7 +1853,7 @@ async fn probe_listing<T: ProbeTransport + ?Sized>(
         };
     };
     let second = probe_once(transport, url, method, body).await;
-    if proves(&second) {
+    if proves(url, &second) {
         ListingProbe {
             outcome: second,
             method,
@@ -1810,10 +1868,14 @@ async fn probe_listing<T: ProbeTransport + ?Sized>(
     }
 }
 
-/// Whether a probe proved its request: a 402 carrying a challenge we can read.
-fn proves(outcome: &ProbeOutcome) -> bool {
+/// Whether a probe proved its request: the listing's own 402 to the request as
+/// sent ([`ProbeOutcome::answered_as_sent`]), carrying a challenge that offers
+/// a payment ([`LiveTerms::offers_payment`]).
+fn proves(url: &url::Url, outcome: &ProbeOutcome) -> bool {
     outcome.class == ProbeClass::Alive
-        && pay_to_from_402(outcome.body.as_deref(), outcome.challenge_header.as_deref()).readable
+        && outcome.answered_as_sent(url)
+        && pay_to_from_402(outcome.body.as_deref(), outcome.challenge_header.as_deref())
+            .offers_payment()
 }
 
 /// Read at most `cap` bytes of a response body; `None` past that.
@@ -1882,6 +1944,10 @@ async fn probe_once<T: ProbeTransport + ?Sized>(
                 .get(reqwest::header::RETRY_AFTER)
                 .and_then(|v| v.to_str().ok())
                 .and_then(crate::discovery_revalidation::parse_retry_after);
+            let redirect = resp
+                .extensions()
+                .get::<crate::discovery_security::FollowedRedirect>()
+                .cloned();
             // Only a 402 carries payment terms worth diffing.
             let (body, header) = if code == 402 {
                 let header = resp
@@ -1901,6 +1967,7 @@ async fn probe_once<T: ProbeTransport + ?Sized>(
                 body,
                 challenge_header: header,
                 retry_after,
+                redirect,
             }
         }
         // A URL the SSRF connector refuses (private/template/bad-port) is not a
@@ -2120,6 +2187,7 @@ async fn probe_and_record<T: ProbeTransport + ?Sized>(
         }
         (probed.outcome, Some(probed.method), probed.fell_back)
     };
+    let answered_as_sent = outcome.answered_as_sent(&u);
     let ProbeOutcome {
         mut class,
         http,
@@ -2127,6 +2195,7 @@ async fn probe_and_record<T: ProbeTransport + ?Sized>(
         body,
         challenge_header: pr_header,
         retry_after,
+        redirect: _,
     } = outcome;
 
     // The challenge is read ONCE, and read whole. Two callers
@@ -2204,17 +2273,19 @@ async fn probe_and_record<T: ProbeTransport + ?Sized>(
         }
     }
 
-    // Verified alive is earned by THIS probe or lost by it: a 402 whose
-    // challenge we read and whose recipients passed the drift check -- or, for
-    // an MCP endpoint, a handshake that listed at least one tool. An unreadable
-    // 402, a handshake that listed nothing, or any other answer clears it.
+    // Verified alive is earned by THIS probe or lost by it: the listing's own
+    // 402 to the request as sent, whose challenge offers a payment and whose
+    // recipients passed the drift check -- or, for an MCP endpoint, a
+    // handshake that listed at least one tool. Any other answer clears it.
     let verified_by = match mcp_tools {
         Some(tools) => {
             tracker.note_mcp_tools(u.as_str(), tools).await;
             (class == ProbeClass::Alive && tools > 0).then_some(VerifiedBy::McpHandshake)
         }
-        None => (class == ProbeClass::Alive && live.as_ref().is_some_and(|l| l.readable))
-            .then_some(VerifiedBy::X402Challenge),
+        None => (class == ProbeClass::Alive
+            && answered_as_sent
+            && live.as_ref().is_some_and(LiveTerms::offers_payment))
+        .then_some(VerifiedBy::X402Challenge),
     };
     tracker.note_verified(u.as_str(), verified_by).await;
 
@@ -4694,6 +4765,400 @@ mod declared_method_tests {
             "cleared by a probe that read nothing"
         );
         assert_eq!(registry.list(10, 0, None).await.pagination.total, 0);
+    }
+
+    /// A transport that answers every request with the same 402, carrying
+    /// `challenge` in its header, as the connector hands a response over after
+    /// following `redirect` (when set).
+    struct Answers {
+        challenge: String,
+        redirect: Option<crate::discovery_security::FollowedRedirect>,
+    }
+
+    #[async_trait::async_trait]
+    impl ProbeTransport for Answers {
+        async fn send(
+            &self,
+            _url: &url::Url,
+            _method: ProbeMethod,
+            _body: Option<&str>,
+        ) -> Result<reqwest::Response, SecurityReject> {
+            let mut response = axum::http::Response::builder()
+                .status(402)
+                .header("payment-required", self.challenge.as_str())
+                .body("{}")
+                .unwrap();
+            if let Some(redirect) = &self.redirect {
+                response.extensions_mut().insert(redirect.clone());
+            }
+            Ok(reqwest::Response::from(response))
+        }
+
+        async fn send_mcp(
+            &self,
+            _url: &url::Url,
+            _body: &str,
+            _session: Option<&str>,
+        ) -> Result<reqwest::Response, SecurityReject> {
+            Err(SecurityReject::Http("no MCP here".to_string()))
+        }
+    }
+
+    /// A 402 verifies a listing only as the listing's own answer to the
+    /// request it declares, and only when it offers a payment: not one another
+    /// host gave after a redirect, not one a 301/302/303 reached by turning the
+    /// POST into a GET, and not a challenge with no option we can read --
+    /// whatever its status says.
+    #[tokio::test]
+    async fn a_402_verifies_only_the_listings_own_answer_offering_a_payment() {
+        use crate::discovery_security::FollowedRedirect;
+        let followed = |host: &str, method_kept: bool| {
+            Some(FollowedRedirect {
+                host: Some(host.to_string()),
+                method_kept,
+            })
+        };
+        let a = accepts();
+        // The listing's own recipient, so the drift check passes: only the
+        // options are missing.
+        let unreadable_options = json!([{ "payTo": a[0]["payTo"] }]);
+        let cases = [
+            ("as sent", challenge_for(&a), None, true),
+            (
+                "same host, same method",
+                challenge_for(&a),
+                followed("seller.example", true),
+                true,
+            ),
+            (
+                "another host",
+                challenge_for(&a),
+                followed("elsewhere.example", true),
+                false,
+            ),
+            (
+                "the POST became a GET",
+                challenge_for(&a),
+                followed("seller.example", false),
+                false,
+            ),
+            ("no option", challenge_for(&json!([])), None, false),
+            ("only junk", challenge_for(&json!(["junk"])), None, false),
+            (
+                "no option we can read",
+                challenge_for(&unreadable_options),
+                None,
+                false,
+            ),
+        ];
+        for (name, challenge, redirect, verified) in cases {
+            let registry = DiscoveryRegistry::new();
+            registry
+                .register(listing_of("/r", Some("POST")))
+                .await
+                .unwrap();
+            let target = registry.probe_targets().await.remove(0);
+            let health = registry.health();
+            let transport = Answers {
+                challenge,
+                redirect,
+            };
+            probe_and_record(&transport, &registry, &health, target.clone()).await;
+            let state = health.snapshot().await.remove(target.url.as_str()).unwrap();
+            assert_eq!(state.status, HealthStatus::Alive, "{name}");
+            assert_eq!(state.verified_by.is_some(), verified, "{name}");
+            assert_eq!(
+                registry.list(10, 0, None).await.pagination.total,
+                u32::from(verified),
+                "{name}"
+            );
+        }
+    }
+
+    /// What a challenge has to hold to be read at all, and to verify: a list
+    /// with no option in it is not a challenge, and one whose options none
+    /// normalize is read -- its recipients still face the drift check -- but
+    /// offers nothing to pay.
+    #[test]
+    fn a_challenge_offers_a_payment_only_with_an_option_we_read() {
+        for body in [
+            r#"{"x402Version":2,"accepts":[]}"#,
+            r#"{"accepts":["junk"]}"#,
+            r#"{"paymentRequirements":[1,null,"x"]}"#,
+        ] {
+            let live = pay_to_from_402(Some(body), None);
+            assert!(!live.readable, "{body}");
+            assert!(!live.offers_payment(), "{body}");
+        }
+        let live = pay_to_from_402(Some(r#"{"accepts":[{"payTo":"0xAAAA"}]}"#), None);
+        assert!(
+            live.readable,
+            "a recipient is still read for the drift check"
+        );
+        assert_eq!(live.pay_to, vec!["0xaaaa".to_string()]);
+        assert!(!live.offers_payment());
+        let live = pay_to_from_402(Some(r#"{"payTo":"0xBBBB"}"#), None);
+        assert!(live.readable);
+        assert!(!live.offers_payment());
+        assert!(pay_to_from_402(None, Some(&challenge_for(&accepts()))).offers_payment());
+    }
+
+    /// When both transports carry a challenge, the one offering an option we
+    /// can read wins, whatever the version or the default: a header we cannot
+    /// read never hides the payable offer in the body.
+    #[test]
+    fn a_readable_offer_wins_over_one_that_offers_nothing() {
+        let a = accepts();
+        let unreadable =
+            header_of(&json!({ "x402Version": 3, "accepts": [{ "payTo": a[0]["payTo"] }] }));
+        let body = json!({ "x402Version": 2, "accepts": a }).to_string();
+        let live = pay_to_from_402(Some(&body), Some(&unreadable));
+        assert!(live.offers_payment());
+        assert_eq!(live.transport, Some(TermsTransport::Body));
+        let live = pay_to_from_402(
+            Some(r#"{"accepts":[{"payTo":"0xAAAA"}]}"#),
+            Some(&challenge_for(&a)),
+        );
+        assert!(live.offers_payment());
+        assert_eq!(live.transport, Some(TermsTransport::Header));
+    }
+
+    /// The fallback's extra request replaces the first answer only with the
+    /// listing's own 402: a POST that a redirect took to another host leaves
+    /// the GET's 405 standing, while the same POST answered on the listing's
+    /// host replaces it.
+    #[tokio::test]
+    async fn the_fallback_answer_counts_only_as_the_listings_own() {
+        struct Fallback {
+            challenge: String,
+            redirect: Option<crate::discovery_security::FollowedRedirect>,
+        }
+
+        #[async_trait::async_trait]
+        impl ProbeTransport for Fallback {
+            async fn send(
+                &self,
+                _url: &url::Url,
+                method: ProbeMethod,
+                _body: Option<&str>,
+            ) -> Result<reqwest::Response, SecurityReject> {
+                let mut response = if method == ProbeMethod::Get {
+                    axum::http::Response::builder()
+                        .status(405)
+                        .body(String::new())
+                        .unwrap()
+                } else {
+                    axum::http::Response::builder()
+                        .status(402)
+                        .header("payment-required", self.challenge.as_str())
+                        .body("{}".to_string())
+                        .unwrap()
+                };
+                if method != ProbeMethod::Get {
+                    if let Some(redirect) = &self.redirect {
+                        response.extensions_mut().insert(redirect.clone());
+                    }
+                }
+                Ok(reqwest::Response::from(response))
+            }
+
+            async fn send_mcp(
+                &self,
+                _url: &url::Url,
+                _body: &str,
+                _session: Option<&str>,
+            ) -> Result<reqwest::Response, SecurityReject> {
+                Err(SecurityReject::Http("no MCP here".to_string()))
+            }
+        }
+
+        let elsewhere = crate::discovery_security::FollowedRedirect {
+            host: Some("elsewhere.example".to_string()),
+            method_kept: true,
+        };
+        let a = accepts();
+        let payable = challenge_for(&a);
+        // Read, recipient and all, but with no option to pay.
+        let unpayable = challenge_for(&json!([{ "payTo": a[0]["payTo"] }]));
+        for (name, challenge, redirect, status, verified) in [
+            (
+                "another host",
+                payable.clone(),
+                Some(elsewhere),
+                HealthStatus::AuthGated,
+                false,
+            ),
+            (
+                "nothing to pay",
+                unpayable,
+                None,
+                HealthStatus::AuthGated,
+                false,
+            ),
+            ("its own 402", payable, None, HealthStatus::Alive, true),
+        ] {
+            let registry = DiscoveryRegistry::new();
+            registry.register(listing_of("/r", None)).await.unwrap();
+            let target = registry.probe_targets().await.remove(0);
+            let health = registry.health();
+            let transport = Fallback {
+                challenge,
+                redirect,
+            };
+            probe_and_record(&transport, &registry, &health, target.clone()).await;
+            let state = health.snapshot().await.remove(target.url.as_str()).unwrap();
+            assert_eq!(state.status, status, "{name}");
+            assert_eq!(state.verified_by.is_some(), verified, "{name}");
+        }
+    }
+
+    /// A record from before `verifiedAt` existed is exposed on its probe's
+    /// reading of the terms only when that reading offered something to pay.
+    #[tokio::test]
+    async fn a_legacy_record_needs_a_reading_with_something_to_pay() {
+        for (name, payable, shown) in [("nothing to pay", false, 0), ("an offer", true, 1)] {
+            let registry = DiscoveryRegistry::new();
+            let r = listing_of("/legacy", Some("GET"));
+            let url = r.url.to_string();
+            let offer = r.accepts.clone();
+            registry.register(r).await.unwrap();
+            let health = registry.health();
+            health
+                .record_probe(&url, ProbeClass::Alive, Some(402), 1, None)
+                .await;
+            let checked = health.snapshot().await[&url].last_checked.unwrap();
+            let reading = ObservedTerms {
+                accepts: if payable { offer } else { Vec::new() },
+                observed_at: checked,
+                context: ObservationContext::anonymous_get("http"),
+                phase: ObservationPhase::Verification,
+                provenance: TermsProvenance::OriginResponse,
+                transport: TermsTransport::Header,
+                x402_version: Some(2),
+                http_status: Some(402),
+                content_hash: None,
+                conflict: None,
+                rejected: BTreeMap::new(),
+                truncated: false,
+            };
+            registry.terms().record(&url, reading).await;
+            assert_eq!(
+                registry.list(10, 0, None).await.pagination.total,
+                shown,
+                "{name}"
+            );
+        }
+    }
+
+    /// The MCP handshake verifies an endpoint only on its own answers: an
+    /// `initialize` or a `tools/list` answered by another host, or reached by
+    /// turning the POST into a GET, verifies nothing.
+    #[tokio::test]
+    async fn an_mcp_handshake_verifies_only_the_endpoints_own_answers() {
+        use crate::discovery_security::FollowedRedirect;
+
+        struct Handshake {
+            initialize: Option<FollowedRedirect>,
+            tools_list: Option<FollowedRedirect>,
+        }
+
+        #[async_trait::async_trait]
+        impl ProbeTransport for Handshake {
+            async fn send(
+                &self,
+                _url: &url::Url,
+                _method: ProbeMethod,
+                _body: Option<&str>,
+            ) -> Result<reqwest::Response, SecurityReject> {
+                Err(SecurityReject::Http("no HTTP probe here".to_string()))
+            }
+
+            async fn send_mcp(
+                &self,
+                _url: &url::Url,
+                body: &str,
+                _session: Option<&str>,
+            ) -> Result<reqwest::Response, SecurityReject> {
+                let (text, redirect) = if body == MCP_TOOLS_LIST {
+                    (
+                        r#"{"jsonrpc":"2.0","id":2,"result":{"tools":[{"name":"search"}]}}"#,
+                        self.tools_list.clone(),
+                    )
+                } else if body == MCP_INITIALIZE {
+                    (
+                        r#"{"jsonrpc":"2.0","id":1,"result":{"capabilities":{}}}"#,
+                        self.initialize.clone(),
+                    )
+                } else {
+                    ("", None)
+                };
+                let mut response = axum::http::Response::builder()
+                    .status(200)
+                    .header("content-type", "application/json")
+                    .body(text)
+                    .unwrap();
+                if let Some(redirect) = redirect {
+                    response.extensions_mut().insert(redirect);
+                }
+                Ok(reqwest::Response::from(response))
+            }
+        }
+
+        let url = "https://mcp.seller.example/mcp";
+        let followed = |host: &str, method_kept: bool| {
+            Some(FollowedRedirect {
+                host: Some(host.to_string()),
+                method_kept,
+            })
+        };
+        let cases = [
+            ("as sent", None, None, true),
+            (
+                "same host, same method",
+                followed("mcp.seller.example", true),
+                None,
+                true,
+            ),
+            (
+                "initialize from another host",
+                followed("elsewhere.example", true),
+                None,
+                false,
+            ),
+            (
+                "tools/list from another host",
+                None,
+                followed("elsewhere.example", true),
+                false,
+            ),
+            (
+                "initialize as a GET",
+                followed("mcp.seller.example", false),
+                None,
+                false,
+            ),
+        ];
+        for (name, initialize, tools_list, verified) in cases {
+            let registry = DiscoveryRegistry::new();
+            let health = registry.health();
+            let target = ProbeTarget {
+                url: url::Url::parse(url).unwrap(),
+                resource_type: "mcp".to_string(),
+                pay_to: vec![],
+                request: ProbeRequest::Undeclared,
+            };
+            let transport = Handshake {
+                initialize,
+                tools_list,
+            };
+            probe_and_record(&transport, &registry, &health, target).await;
+            let state = health.snapshot().await.remove(url).unwrap();
+            assert_eq!(
+                state.verified_by == Some(VerifiedBy::McpHandshake),
+                verified,
+                "{name}"
+            );
+        }
     }
 
     #[test]

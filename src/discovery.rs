@@ -694,6 +694,28 @@ fn import_verdict(incoming: &DiscoveryResource, existing: &DiscoveryResource) ->
     }
 }
 
+/// The declared recipients before and after `incoming` replaces `existing`, as
+/// `(network, payTo)` pairs, when they differ as sets -- who the drift baseline
+/// the prober checks a live 402 against pays
+/// ([`crate::discovery_health::declared_recipients`]).
+/// `None` when the merge leaves them as they were: a repricing, a new
+/// description or a reordered list is not a change of who gets paid.
+fn declared_recipients_changed(
+    existing: &DiscoveryResource,
+    incoming: &DiscoveryResource,
+) -> Option<(Vec<(Option<String>, String)>, Vec<(Option<String>, String)>)> {
+    let pairs = |r: &DiscoveryResource| -> Vec<(Option<String>, String)> {
+        let set: std::collections::BTreeSet<(Option<String>, String)> =
+            crate::discovery_health::declared_recipients(&r.accepts)
+                .into_iter()
+                .map(|d| (d.network, d.pay_to))
+                .collect();
+        set.into_iter().collect()
+    };
+    let (previous, current) = (pairs(existing), pairs(incoming));
+    (previous != current).then_some((previous, current))
+}
+
 /// Why this resource's price cannot be established by probing it.
 ///
 /// The prober issues one kind of request: an unauthenticated request of the
@@ -1383,8 +1405,8 @@ impl DiscoveryRegistry {
 
     /// Snapshot of probe targets: url, resource type, expected payTo, and the
     /// request the listing declares. `pay_to` is the set of recipients currently
-    /// listed for the resource, so the prober can detect a payTo swap in the
-    /// live 402 body.
+    /// listed for the resource, each with its network, so the prober can detect
+    /// a payTo swap in the live 402 body.
     pub async fn probe_targets(&self) -> Vec<crate::discovery_health::ProbeTarget> {
         self.resources
             .read()
@@ -1393,11 +1415,7 @@ impl DiscoveryRegistry {
             .map(|r| crate::discovery_health::ProbeTarget {
                 url: r.url.clone(),
                 resource_type: r.resource_type.clone(),
-                pay_to: r
-                    .accepts
-                    .iter()
-                    .map(|a| a.pay_to.to_string().to_ascii_lowercase())
-                    .collect(),
+                pay_to: crate::discovery_health::declared_offers(&r.accepts),
                 request: crate::discovery_health::probe_request(
                     &r.url,
                     r.extensions.as_ref(),
@@ -2167,6 +2185,9 @@ impl DiscoveryRegistry {
         let mut updated = 0;
         let mut skipped = 0;
         let mut reject_counts: HashMap<&'static str, usize> = HashMap::new();
+        // Listings whose declared recipients this import changed: the drift
+        // baseline moved, so they are re-probed now instead of at their schedule.
+        let mut recipients_changed: Vec<String> = Vec::new();
         let now = now_secs();
         // The overlays that say what the public surface shows, read before the
         // catalog guard (each is behind its own async lock): a full catalog
@@ -2268,6 +2289,43 @@ impl DiscoveryRegistry {
                             }
                             _ => merged.source,
                         };
+                        // The copy that won declares other recipients: that is
+                        // the drift baseline moving, so it is said and probed.
+                        // Taken from the source that won the merge, never from a
+                        // 402; a listing held for drift still needs two clean
+                        // challenges against the new baseline to come back.
+                        if let Some((previous, current)) =
+                            declared_recipients_changed(existing, &merged)
+                        {
+                            // Moving the baseline of a listing held for drift is
+                            // the fast way out of that hold, so it is said at WARN.
+                            let held_for_drift = health.get(&url_key).is_some_and(|h| {
+                                h.quarantine_reason
+                                    == Some(crate::types_v2::QuarantineReason::PayToDrift)
+                            });
+                            if held_for_drift {
+                                warn!(
+                                    url = %url_key,
+                                    source = ?merged.source_facilitator,
+                                    previous_source = ?existing.source_facilitator,
+                                    previous = ?previous,
+                                    current = ?current,
+                                    "paytoswap: declared recipients of a listing held for drift \
+                                     refreshed from a newer copy; re-probing against them"
+                                );
+                            } else {
+                                info!(
+                                    url = %url_key,
+                                    source = ?merged.source_facilitator,
+                                    previous_source = ?existing.source_facilitator,
+                                    previous = ?previous,
+                                    current = ?current,
+                                    "paytoswap: declared recipients refreshed from a newer copy of \
+                                     the listing; re-probing against them"
+                                );
+                            }
+                            recipients_changed.push(url_key.clone());
+                        }
                         cache.insert(url_key, merged);
                         updated += 1;
                     }
@@ -2348,6 +2406,23 @@ impl DiscoveryRegistry {
                     "Bulk import snapshot not published: the catalog moved underneath it"
                 ),
                 Err(e) => error!(error = %e, "Failed to persist bulk import snapshot"),
+            }
+        }
+
+        // Outside the catalog guard, like every other revalidation request.
+        if crate::discovery_config::revalidation_enabled() && !recipients_changed.is_empty() {
+            let mut accepted = Vec::new();
+            for url in &recipients_changed {
+                if self
+                    .revalidation
+                    .request(url, RefreshReason::RevisionChanged, now)
+                    .await
+                {
+                    accepted.push(url.clone());
+                }
+            }
+            if !accepted.is_empty() && !crate::discovery_owner::owns_jobs() {
+                self.revalidation.offer_to_owner(accepted);
             }
         }
 
@@ -3057,6 +3132,106 @@ mod tests {
         // Keep the record inside the future-timestamp guard regardless of clock.
         r.last_updated = source_updated_at.unwrap_or_else(now_secs);
         r
+    }
+
+    #[tokio::test]
+    async fn a_newer_copy_that_declares_another_recipient_moves_the_baseline_and_is_reprobed() {
+        // The Tavily question of 2026-10-04: when the newest aggregated copy of a
+        // listing declares the recipient its live 402 now pays, the listing is
+        // refreshed from that copy (the source, never the 402) and probed again
+        // at once instead of waiting out a 72-hour drift backoff.
+        let registry = DiscoveryRegistry::new();
+        let url = "https://x402.search.example/search";
+        let queued = |registry: &DiscoveryRegistry| {
+            let queue = registry.revalidation();
+            async move { queue.take_batch(100, now_secs()).await }
+        };
+        let baseline = |registry: &DiscoveryRegistry| {
+            let registry = registry.clone();
+            async move {
+                registry
+                    .probe_targets()
+                    .await
+                    .into_iter()
+                    .find(|t| t.url.as_str() == url)
+                    .unwrap()
+                    .pay_to
+                    .into_iter()
+                    .map(|o| (o.network, o.pay_to))
+                    .collect::<Vec<_>>()
+            }
+        };
+        let declared =
+            |pay_to: &str| vec![(Some("eip155:8453".to_string()), pay_to.to_ascii_lowercase())];
+        let old = "0x1234567890123456789012345678901234567890";
+        let new = "0x24B8FD1A73685B25a4c3bA03FAC4A2d733015C6F";
+
+        registry
+            .bulk_import(
+                vec![aggregated(url, Some(now_secs() - 7_200), "search")],
+                ImportPolicy::Filtered,
+            )
+            .await
+            .unwrap();
+        assert!(
+            queued(&registry).await.is_empty(),
+            "a new listing is not a change"
+        );
+
+        // A newer copy that only reprices: same recipients, nothing to re-probe.
+        let mut repriced = aggregated(url, Some(now_secs() - 3_600), "search");
+        repriced.accepts[0].amount = TokenAmount::from(5u64);
+        let (_a, updated, _s) = registry
+            .bulk_import(vec![repriced], ImportPolicy::Filtered)
+            .await
+            .unwrap();
+        assert_eq!(updated, 1);
+        assert!(
+            queued(&registry).await.is_empty(),
+            "a price is not a recipient"
+        );
+        assert_eq!(baseline(&registry).await, declared(old));
+
+        // A newer copy paying another recipient on the same network.
+        let mut moved = aggregated(url, Some(now_secs() - 60), "search");
+        moved.accepts[0].pay_to = MixedAddress::Evm(new.parse().unwrap());
+        registry
+            .bulk_import(vec![moved], ImportPolicy::Filtered)
+            .await
+            .unwrap();
+        assert_eq!(baseline(&registry).await, declared(new));
+        assert_eq!(
+            queued(&registry).await,
+            [(url.to_string(), RefreshReason::RevisionChanged)]
+        );
+
+        // An OLDER copy still naming the old recipient does not move it back.
+        registry
+            .bulk_import(
+                vec![aggregated(url, Some(now_secs() - 1_800), "search")],
+                ImportPolicy::Filtered,
+            )
+            .await
+            .unwrap();
+        assert_eq!(baseline(&registry).await, declared(new));
+        assert!(queued(&registry).await.is_empty());
+    }
+
+    #[test]
+    fn a_recipient_change_is_a_set_change_and_nothing_else() {
+        let url = "https://x402.search.example/search";
+        let held = aggregated(url, Some(1), "search");
+        let mut other = held.clone();
+        other.accepts[0].amount = TokenAmount::from(7u64);
+        other.description = "another text".to_string();
+        assert_eq!(declared_recipients_changed(&held, &other), None);
+        // The same address on another network is another declaration.
+        other.accepts[0].network = Caip2NetworkId::eip155(137);
+        assert!(declared_recipients_changed(&held, &other).is_some());
+        // Duplicates and order do not make a change.
+        let mut doubled = held.clone();
+        doubled.accepts.push(held.accepts[0].clone());
+        assert_eq!(declared_recipients_changed(&held, &doubled), None);
     }
 
     #[tokio::test]

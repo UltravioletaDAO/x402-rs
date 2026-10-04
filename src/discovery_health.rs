@@ -163,10 +163,117 @@ impl ProbeRequest {
 pub struct ProbeTarget {
     pub url: url::Url,
     pub resource_type: String,
-    /// Recipients the listing declares, lowercased: the payTo drift baseline.
-    pub pay_to: Vec<String>,
+    /// The offers the listing declares -- scheme, network, asset, recipient:
+    /// the payTo drift baseline ([`declared_offers`]).
+    pub pay_to: Vec<DeclaredOffer>,
     /// The request the listing declares.
     pub request: ProbeRequest,
+}
+
+/// One offer, as the drift check compares it: what it is paid in, where, and
+/// to whom. Scheme, asset and recipient lowercased; the network as
+/// [`drift_network`] keys it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeclaredOffer {
+    pub scheme: String,
+    pub network: Option<String>,
+    pub asset: String,
+    pub pay_to: String,
+}
+
+impl DeclaredOffer {
+    pub fn of(option: &CatalogPaymentOption) -> Self {
+        Self {
+            scheme: option.scheme.to_string().to_ascii_lowercase(),
+            network: drift_network(&option.network.to_string()),
+            asset: option.asset.to_string().to_ascii_lowercase(),
+            pay_to: option.pay_to.to_string().to_ascii_lowercase(),
+        }
+    }
+
+    #[cfg(test)]
+    fn new(scheme: &str, network: &str, asset: &str, pay_to: &str) -> Self {
+        Self {
+            scheme: scheme.to_ascii_lowercase(),
+            network: drift_network(network),
+            asset: asset.to_ascii_lowercase(),
+            pay_to: pay_to.to_ascii_lowercase(),
+        }
+    }
+}
+
+/// The drift baseline of a catalog record: every offer its options declare.
+pub fn declared_offers(accepts: &[CatalogPaymentOption]) -> Vec<DeclaredOffer> {
+    accepts.iter().map(DeclaredOffer::of).collect()
+}
+
+/// One recipient a listing declares, and the network it declares it on.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeclaredRecipient {
+    /// [`drift_network`] of the option's network; `None` when it names no
+    /// chain family the check can tell apart.
+    pub network: Option<String>,
+    /// `payTo`, lowercased.
+    pub pay_to: String,
+}
+
+impl DeclaredRecipient {
+    pub fn new(network: &str, pay_to: &str) -> Self {
+        Self {
+            network: drift_network(network),
+            pay_to: pay_to.to_ascii_lowercase(),
+        }
+    }
+}
+
+/// The drift baseline of a catalog record: every recipient its options declare,
+/// with the network each is declared on.
+pub fn declared_recipients(accepts: &[CatalogPaymentOption]) -> Vec<DeclaredRecipient> {
+    accepts
+        .iter()
+        .map(|a| DeclaredRecipient::new(&a.network.to_string(), &a.pay_to.to_string()))
+        .collect()
+}
+
+/// Chain families the drift check tells apart by their CAIP-2 namespace alone.
+///
+/// Within one of them every reference is the same network for this check:
+/// `solana:5eykt…` and `solana:mainnet` spell one chain, and reading them as two
+/// would let an option on an alias of a declared network pass as "another
+/// network". Coarser can only make the check stricter. EVM is the exception,
+/// because its reference is a chain id we can read exactly.
+///
+/// A namespace outside this list is no chain we can name -- `aws:base`, the
+/// network of Coinbase's `agent-pay` option, reads like an alias of Base -- and
+/// a recipient offered on it fails closed. The list is the families this
+/// facilitator settles, plus a registered CAIP-2 namespace once a live seller
+/// is measured offering it: `stacks` (183 listings of one host on 2026-10-04,
+/// Base, Arbitrum and Polygon to the declared address and `stacks:1` beside).
+const DRIFT_FAMILIES: [&str; 9] = [
+    "solana", "near", "stellar", "hedera", "fogo", "sui", "xrpl", "algorand", "stacks",
+];
+
+/// The network a recipient is offered on, as the drift check compares it.
+///
+/// An EVM chain is its chain id: `base`, `eip155:8453` and `eip155:08453` are
+/// one network. Any other chain we can name is its family ([`DRIFT_FAMILIES`]).
+/// `None` for anything else: a network we cannot name is never "another
+/// network", and a recipient the listing does not declare on it is a drift.
+fn drift_network(raw: &str) -> Option<String> {
+    let s = raw.trim();
+    let caip2 = crate::discovery_price::resolve_catalog_network(s)
+        .map(|id| id.to_string())
+        .or_else(|| crate::network::resolve_network(s).map(|n| n.to_caip2()))
+        .unwrap_or_else(|| s.to_string());
+    let (namespace, reference) = caip2.split_once(':')?;
+    let namespace = namespace.trim().to_ascii_lowercase();
+    if namespace == "eip155" {
+        let chain_id: u64 = reference.trim().parse().ok()?;
+        return Some(format!("eip155:{chain_id}"));
+    }
+    DRIFT_FAMILIES
+        .contains(&namespace.as_str())
+        .then_some(namespace)
 }
 
 impl ProbeTarget {
@@ -562,7 +669,19 @@ pub struct HealthRecord {
     /// run yet ([`unverified_legacy_alive`]).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mcp_tools: Option<u32>,
+    /// The drift rule ([`DRIFT_RULE`]) under which the last probe of a payTo
+    /// drift hold judged it. Absent (or older) on a hold the current rule has
+    /// not looked at yet, which is probed once more straight away
+    /// ([`probed_with_another_request`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub drift_rule: Option<u8>,
 }
+
+/// The drift check's revision, recorded on the holds it judges. 2 compares
+/// recipients per network ([`compare_recipients`]): a build before it held a
+/// listing whose challenge added a network, and those holds are looked at
+/// again once.
+const DRIFT_RULE: u8 = 2;
 
 impl HealthRecord {
     /// Why the record is quarantined, `None` when it is not.
@@ -1018,6 +1137,7 @@ impl HealthTracker {
             verified_at: None,
             verified_by: None,
             mcp_tools: None,
+            drift_rule: None,
         });
         // A record from before the reason was kept gets it now, read off its
         // signature while the last status code is still the one that set it.
@@ -1030,6 +1150,11 @@ impl HealthTracker {
         // a security hold, and it keeps its own recovery rule.
         let request_changed = method.is_some_and(|m| rec.last_method() != m);
         let drift_hold = rec.held_for_drift();
+        // This probe is the current rule judging the hold (or putting one in
+        // place), so the one early look an older hold gets is spent.
+        if drift_hold || class == ProbeClass::PayToDrift {
+            rec.drift_rule = Some(DRIFT_RULE);
+        }
         let quarantined_by_other_request =
             request_changed && rec.status == HealthStatus::Quarantined && !drift_hold;
         if request_changed {
@@ -1403,6 +1528,10 @@ pub struct LiveTerms {
     /// `payTo` recipients, lowercased. The union of BOTH transports: a hijack
     /// declared anywhere in the challenge is a hijack.
     pub pay_to: Vec<String>,
+    /// The same recipients, transport by transport, each with the network its
+    /// option names ([`drift_network`]). What the drift check judges, one
+    /// transport at a time ([`compare_recipients`]).
+    pub by_transport: Vec<TransportRecipients>,
     /// Whether a parseable x402 challenge was found in either transport.
     pub readable: bool,
     /// The full requirements from the transport that won. Never a blend of the
@@ -1433,10 +1562,28 @@ impl LiveTerms {
     }
 }
 
+/// One transport's recipients, as the drift check reads them.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct TransportRecipients {
+    /// Every recipient the document names -- in any option, readable or not,
+    /// and in a v1 top-level `payTo` -- with the network its option names.
+    pub named: Vec<DeclaredRecipient>,
+    /// The options we could read as an offer ([`normalize_declared_option`])
+    /// whose network is spelled the way a client reads it
+    /// ([`spelled_for_clients`]). Only one of these, equal to an offer the
+    /// listing declares, can show that a declared recipient is still being
+    /// paid: a recipient in an option nobody can take -- unreadable, loose in
+    /// the document, under another scheme or asset, or a chain spelled so no
+    /// client recognizes it -- is a mention.
+    pub payable: Vec<DeclaredOffer>,
+}
+
 /// One transport's reading of a challenge, before the two are reconciled.
 #[derive(Debug, Default, PartialEq, Eq)]
 struct ChallengeReading {
     pay_to: Vec<String>,
+    recipients: Vec<DeclaredRecipient>,
+    payable: Vec<DeclaredOffer>,
     accepts: Vec<CatalogPaymentOption>,
     x402_version: Option<u64>,
     rejected: BTreeMap<String, usize>,
@@ -1502,6 +1649,10 @@ fn pay_to_from_402(body: Option<&str>, header: Option<&str>) -> LiveTerms {
                 terms.pay_to.push(p.clone());
             }
         }
+        terms.by_transport.push(TransportRecipients {
+            named: reading.recipients.clone(),
+            payable: reading.payable.clone(),
+        });
     }
     if !terms.readable {
         return terms;
@@ -1600,11 +1751,19 @@ fn read_challenge(v: &serde_json::Value) -> ChallengeReading {
             }
             for a in accepts {
                 if let Some(p) = a.get("payTo").and_then(drift_recipient_value) {
+                    reading
+                        .recipients
+                        .push(live_recipient(a.get("network"), &p));
                     reading.pay_to.push(p);
                 }
                 match serde_json::from_value::<DeclaredPaymentOption>(a.clone()) {
                     Ok(declared) => match normalize_declared_option(declared) {
-                        Ok(option) => reading.accepts.push(option),
+                        Ok(option) => {
+                            if spelled_for_clients(a.get("network"), &option.network) {
+                                reading.payable.push(DeclaredOffer::of(&option));
+                            }
+                            reading.accepts.push(option);
+                        }
                         Err(reject) => {
                             *reading
                                 .rejected
@@ -1625,10 +1784,43 @@ fn read_challenge(v: &serde_json::Value) -> ChallengeReading {
     if let Some(p) = v.get("payTo").filter(|p| p.is_string()) {
         reading.found_shape = true;
         if let Some(p) = drift_recipient_value(p) {
+            reading
+                .recipients
+                .push(live_recipient(v.get("network"), &p));
             reading.pay_to.push(p);
         }
     }
     reading
+}
+
+/// Whether an option names its network the way a client reads it: exactly the
+/// CAIP-2 identifier the catalog resolves it to, or an x402 v1 name. A bare
+/// chain id (`8453`) or another informal spelling resolves for the catalog,
+/// but a client matching network strings would not take that option, so it
+/// cannot stand for the declared offer.
+fn spelled_for_clients(
+    raw: Option<&serde_json::Value>,
+    resolved: &crate::caip2::Caip2NetworkId,
+) -> bool {
+    let Some(raw) = raw.and_then(serde_json::Value::as_str) else {
+        return false;
+    };
+    raw == resolved.to_string()
+        || (!raw.contains(':')
+            && raw == raw.to_ascii_lowercase()
+            && crate::network::resolve_network(raw).is_some())
+}
+
+/// A live recipient with the network its option names. A `network` that is
+/// absent or not a string names no network, and fails closed like any other
+/// network we cannot name.
+fn live_recipient(network: Option<&serde_json::Value>, pay_to: &str) -> DeclaredRecipient {
+    DeclaredRecipient {
+        network: network
+            .and_then(serde_json::Value::as_str)
+            .and_then(drift_network),
+        pay_to: pay_to.to_string(),
+    }
 }
 
 /// A live `payTo`, lowercased, for the drift check -- or `None` when it is a
@@ -2219,14 +2411,33 @@ async fn probe_and_record<T: ProbeTransport + ?Sized>(
     // recorded below, as an observation.
     if !expected_pay_to.is_empty() {
         if let Some(live) = live.as_ref() {
-            if pay_to_drifted(&expected_pay_to, live) {
+            let verdict = compare_recipients(&expected_pay_to, live);
+            if verdict == Recipients::Drifted {
+                let expected: Vec<&str> =
+                    expected_pay_to.iter().map(|d| d.pay_to.as_str()).collect();
                 warn!(
                     url = %u,
-                    expected = ?expected_pay_to,
+                    expected = ?expected,
                     observed = ?live.pay_to,
                     "paytoswap: live 402 pays an undeclared recipient; quarantining"
                 );
                 class = ProbeClass::PayToDrift;
+            } else if let Recipients::ExtraNetworks(extra) = verdict {
+                // Not held: a declared recipient is still offered on its own
+                // network. A recipient nobody vouched for still takes money
+                // through this option, so it is logged at WARN with its network
+                // and address, which is the record of it even when the catalog
+                // cannot read the option. It never becomes part of the listing.
+                let extra: Vec<String> = extra
+                    .iter()
+                    .map(|r| format!("{} {}", r.network.as_deref().unwrap_or("?"), r.pay_to))
+                    .collect();
+                warn!(
+                    url = %u,
+                    extra = ?extra,
+                    "paytoswap: live 402 adds a payment option on a network the listing \
+                     does not declare; recorded, not quarantined"
+                );
             } else if !live.readable {
                 // A check that did NOT run must not look like one
                 // that passed. This is the state that hid the bug:
@@ -2326,15 +2537,111 @@ async fn probe_and_record<T: ProbeTransport + ?Sized>(
     }
 }
 
-/// Whether a live challenge pays a recipient the listing never declared.
+/// What a live challenge's recipients mean against the ones the listing declares.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Recipients {
+    /// Every recipient the challenge pays is one the listing declares.
+    Declared,
+    /// It also names recipients the listing never declared, each on a network
+    /// the listing does not declare at all, and it still offers a payable
+    /// option to a declared recipient on that recipient's declared network: a
+    /// way to pay that the listing does not mention, not a changed one. Not a
+    /// drift. Those extra recipients, for the log.
+    ExtraNetworks(Vec<DeclaredRecipient>),
+    /// A hijack signal: quarantine.
+    Drifted,
+}
+
+/// Whether a live challenge pays a recipient the listing never declared, and
+/// where. Each transport is judged on its own and the worst verdict stands:
+/// a client reads one of them, so a declared recipient in the body does not
+/// vouch for a header that pays somebody else.
+///
+/// * A recipient the listing declares, on any network, is never a drift by
+///   itself -- the rule this check had before networks entered it, kept as it
+///   was.
+/// * A recipient it does not declare, on a network it DOES declare, is a
+///   drift: the money on that network now goes to somebody else. So is one on
+///   a network we cannot name ([`drift_network`]), which fails closed.
+/// * One on a network we can name and the listing does not declare is an
+///   extra way to pay (a seller that lists Base and adds Solana), not a changed
+///   one -- as long as the same transport still carries an offer the listing
+///   declares, scheme, network, asset and recipient alike, spelled so a client
+///   takes it. A mention does not count: the declared address in an option
+///   nobody can take (unreadable, another scheme or asset, a bare chain id),
+///   loose in the document, or on another chain than the one it is declared on
+///   leaves the extra option as the only real offer, and that is a drift.
+///
+/// The extra option is never adopted: the declared recipients come from the
+/// catalog's sources, never from the 402 being checked against them. It is
+/// logged with its network and recipient, and kept in the observed terms when
+/// the catalog can read it as an offer.
 ///
 /// The AMOUNT is not an input here, and must never become one. A seller
 /// repricing is ordinary commerce; a seller redirecting the money is a hijack.
 /// Quarantine is the response to the second, and applying it to the first would
 /// hide a live resource over a change it is entitled to make. A price change is
 /// recorded as an observation instead, where a reader can see it and decide.
-fn pay_to_drifted(expected: &[String], live: &LiveTerms) -> bool {
-    live.pay_to.iter().any(|p| !expected.contains(p))
+fn compare_recipients(declared: &[DeclaredOffer], live: &LiveTerms) -> Recipients {
+    let mut extra: Vec<DeclaredRecipient> = Vec::new();
+    for transport in &live.by_transport {
+        match judge_transport(declared, transport) {
+            Recipients::Drifted => return Recipients::Drifted,
+            Recipients::ExtraNetworks(found) => {
+                for r in found {
+                    if !extra.contains(&r) {
+                        extra.push(r);
+                    }
+                }
+            }
+            Recipients::Declared => {}
+        }
+    }
+    if extra.is_empty() {
+        Recipients::Declared
+    } else {
+        Recipients::ExtraNetworks(extra)
+    }
+}
+
+/// [`compare_recipients`] for one transport.
+fn judge_transport(declared: &[DeclaredOffer], live: &TransportRecipients) -> Recipients {
+    let declared_networks: Vec<&str> = declared
+        .iter()
+        .filter_map(|d| d.network.as_deref())
+        .collect();
+    let mut extra: Vec<DeclaredRecipient> = Vec::new();
+    for r in &live.named {
+        if declared.iter().any(|d| d.pay_to == r.pay_to) {
+            continue;
+        }
+        match r.network.as_deref() {
+            Some(network) if !declared_networks.contains(&network) => {
+                if !extra.contains(r) {
+                    extra.push(r.clone());
+                }
+            }
+            _ => return Recipients::Drifted,
+        }
+    }
+    if extra.is_empty() {
+        return Recipients::Declared;
+    }
+    let still_paid = live
+        .payable
+        .iter()
+        .any(|p| p.network.is_some() && declared.contains(p));
+    if still_paid {
+        Recipients::ExtraNetworks(extra)
+    } else {
+        Recipients::Drifted
+    }
+}
+
+/// [`compare_recipients`] as the one bit quarantine needs.
+#[cfg(test)]
+fn pay_to_drifted(declared: &[DeclaredOffer], live: &LiveTerms) -> bool {
+    compare_recipients(declared, live) == Recipients::Drifted
 }
 
 /// Store one reading of an origin's live terms in the observed-terms overlay.
@@ -2467,11 +2774,14 @@ fn probed_with_another_request(rec: &HealthRecord, target: &ProbeTarget) -> bool
     // liveness verdict, and a different request is no reason to look sooner.
     // Except ONCE for a hold a build without the URN exclusion set (no method
     // recorded): that build quarantined every seller whose challenge carried an
-    // agent-pay quote reference, for 72 hours. Looking again does not lift
-    // anything -- the hold still needs two clean challenges in a row, and a
-    // real swap is seen again on this very probe.
+    // agent-pay quote reference, for 72 hours. And once for a hold no build
+    // with the per-network rule has judged (no `drift_rule`): before it, a
+    // challenge that added a network held its listing for 72 hours at a time.
+    // Looking again does not lift anything -- the hold still needs two clean
+    // challenges in a row, and a real swap is seen again on this very probe.
+    // Same for a hold any later revision of the rule has not judged yet.
     if rec.held_for_drift() {
-        return rec.probe_method.is_none();
+        return rec.probe_method.is_none() || rec.drift_rule != Some(DRIFT_RULE);
     }
     match &target.request {
         ProbeRequest::Declared { method, .. } => rec.last_method() != *method,
@@ -2822,7 +3132,7 @@ mod payment_required_transport_tests {
         // Same recipient, a very different number. This must NOT quarantine:
         // the whole distinction between an identity failure and a commercial
         // one lives in this predicate.
-        let expected = vec!["0xe4dc963c56979e0260fc146b87ee24f18220e545".to_string()];
+        let expected = vec![base_offer("0xe4dc963c56979e0260fc146b87ee24f18220e545")];
         let repriced = FULL_BODY.replace(r#""amount":"30000""#, r#""amount":"500000""#);
         let terms = pay_to_from_402(Some(&repriced), None);
         assert!(terms.readable);
@@ -2839,7 +3149,7 @@ mod payment_required_transport_tests {
 
     #[test]
     fn a_redirected_payment_still_is_a_hijack() {
-        let expected = vec!["0xe4dc963c56979e0260fc146b87ee24f18220e545".to_string()];
+        let expected = vec![base_offer("0xe4dc963c56979e0260fc146b87ee24f18220e545")];
         let hijacked = FULL_BODY.replace(
             "0xe4dc963c56979E0260fc146b87eE24F18220e545",
             "0x000000000000000000000000000000000000dEaD",
@@ -2865,6 +3175,352 @@ mod payment_required_transport_tests {
             .filter(|p| !declared.contains(p))
             .collect();
         assert!(!drifted.is_empty(), "the swap must be detectable");
+    }
+
+    // ========================================================================
+    // Recipients per network
+    // ========================================================================
+
+    /// losbeto's live 402, 2026-10-04 (observed-terms overlay): the challenge in
+    /// the header as x402 v2 and in the body as v1, both paying the Base
+    /// recipient its catalog copy declares and adding a Solana option.
+    const LOSBETO_HEADER: &str = r#"{"x402Version":2,"accepts":[
+        {"scheme":"exact","network":"eip155:8453",
+         "asset":"0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913","amount":"350000",
+         "payTo":"0xd5Ba9711a3D052846a3695C70e7fcb8b3168FE7d","maxTimeoutSeconds":300},
+        {"scheme":"exact","network":"solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp",
+         "asset":"EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v","amount":"350000",
+         "payTo":"GEhr9HCFTRDjanMg435frSgCVwVZYpNoPrEkmNBnFHFE","maxTimeoutSeconds":300}]}"#;
+    const LOSBETO_BODY: &str = r#"{"x402Version":1,"accepts":[
+        {"scheme":"exact","network":"base",
+         "asset":"0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913","maxAmountRequired":"350000",
+         "payTo":"0xd5Ba9711a3D052846a3695C70e7fcb8b3168FE7d","maxTimeoutSeconds":300},
+        {"scheme":"exact","network":"solana",
+         "asset":"EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v","maxAmountRequired":"350000",
+         "payTo":"GEhr9HCFTRDjanMg435frSgCVwVZYpNoPrEkmNBnFHFE","maxTimeoutSeconds":300}]}"#;
+
+    const USDC_BASE: &str = "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913";
+
+    /// An `exact` USDC offer to `pay_to` on `network`, as the catalog declares
+    /// it ([`challenge`] puts this same asset in every option).
+    fn usdc_offer(network: &str, pay_to: &str) -> DeclaredOffer {
+        DeclaredOffer::new("exact", network, USDC_BASE, pay_to)
+    }
+
+    fn base_offer(pay_to: &str) -> DeclaredOffer {
+        usdc_offer("eip155:8453", pay_to)
+    }
+
+    /// What the catalog declared for it: PayAI's copy, Base only.
+    fn losbeto_declared() -> Vec<DeclaredOffer> {
+        vec![base_offer("0xd5Ba9711a3D052846a3695C70e7fcb8b3168FE7d")]
+    }
+
+    /// A challenge with one option per `(network, payTo)`.
+    fn challenge(options: &[(&str, &str)]) -> LiveTerms {
+        let accepts: Vec<serde_json::Value> = options
+            .iter()
+            .map(|(network, pay_to)| {
+                serde_json::json!({
+                    "scheme": "exact", "network": network, "payTo": pay_to,
+                    "asset": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+                    "amount": "1000", "maxTimeoutSeconds": 60
+                })
+            })
+            .collect();
+        let doc = serde_json::json!({ "x402Version": 2, "accepts": accepts });
+        pay_to_from_402(None, Some(header_of(&doc.to_string()).as_str()))
+    }
+
+    const BASE_A: &str = "0xd5Ba9711a3D052846a3695C70e7fcb8b3168FE7d";
+    const OTHER: &str = "0x000000000000000000000000000000000000dEaD";
+    const SOLANA_S: &str = "GEhr9HCFTRDjanMg435frSgCVwVZYpNoPrEkmNBnFHFE";
+
+    #[test]
+    fn losbeto_adds_a_network_and_is_not_quarantined() {
+        // The case that held 10+ of its listings: the declared Base recipient is
+        // still paid, and the challenge adds Solana. A network more, not a
+        // recipient changed.
+        let live = pay_to_from_402(Some(LOSBETO_BODY), Some(header_of(LOSBETO_HEADER).as_str()));
+        assert!(live.readable);
+        assert!(live.offers_payment());
+        assert_eq!(
+            compare_recipients(&losbeto_declared(), &live),
+            Recipients::ExtraNetworks(vec![DeclaredRecipient::new("solana", SOLANA_S)])
+        );
+        assert!(!pay_to_drifted(&losbeto_declared(), &live));
+        // Each transport alone says the same.
+        for one in [
+            pay_to_from_402(Some(LOSBETO_BODY), None),
+            pay_to_from_402(None, Some(header_of(LOSBETO_HEADER).as_str())),
+        ] {
+            assert!(!pay_to_drifted(&losbeto_declared(), &one));
+        }
+    }
+
+    #[test]
+    fn tavily_pays_another_recipient_on_its_declared_network_and_stays_quarantined() {
+        // x402.tavily.com/search, 2026-10-04: the catalog (Coinbase's copy,
+        // lastUpdated 15:08:50Z) declares one Base recipient; the live 402 pays
+        // another on Base, next to the `agent-pay` quote reference. That is the
+        // swap the quarantine exists for, and no extra network changes it.
+        let declared = vec![base_offer("0xC5c967576a19Ed250030f8C15B6158968DD64643")];
+        let live = challenge(&[
+            ("eip155:8453", "0x24B8FD1A73685B25a4c3bA03FAC4A2d733015C6F"),
+            ("aws:base", "urn:x402:agent-pay:see-quote"),
+        ]);
+        assert_eq!(compare_recipients(&declared, &live), Recipients::Drifted);
+        // Even with an extra network and the old recipient still paid on another
+        // chain: a new recipient on Base is a new recipient on Base.
+        let live = challenge(&[
+            ("eip155:8453", "0x24B8FD1A73685B25a4c3bA03FAC4A2d733015C6F"),
+            ("eip155:137", "0xC5c967576a19Ed250030f8C15B6158968DD64643"),
+            ("solana", SOLANA_S),
+        ]);
+        assert_eq!(compare_recipients(&declared, &live), Recipients::Drifted);
+    }
+
+    #[test]
+    fn an_extra_network_counts_only_while_a_declared_recipient_is_still_paid() {
+        // Declared recipient gone, only the new network left: the money moved.
+        assert_eq!(
+            compare_recipients(&losbeto_declared(), &challenge(&[("solana", SOLANA_S)])),
+            Recipients::Drifted
+        );
+        // Gone from the network it is declared on counts as gone, even when
+        // the address shows up on another chain or on a testnet.
+        for elsewhere in ["eip155:137", "eip155:84532"] {
+            assert_eq!(
+                compare_recipients(
+                    &losbeto_declared(),
+                    &challenge(&[(elsewhere, BASE_A), ("solana", SOLANA_S)])
+                ),
+                Recipients::Drifted,
+                "{elsewhere}"
+            );
+        }
+        // On another chain alone it is a declared recipient, as before.
+        assert_eq!(
+            compare_recipients(&losbeto_declared(), &challenge(&[("eip155:137", BASE_A)])),
+            Recipients::Declared
+        );
+    }
+
+    #[test]
+    fn a_mention_of_the_declared_recipient_is_not_an_offer_to_it() {
+        let attacker = serde_json::json!({
+            "scheme": "exact", "network": "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp",
+            "asset": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v", "amount": "350000",
+            "payTo": "AttackerSo1anaAddress1111111111111111111111", "maxTimeoutSeconds": 300
+        });
+        let declared_base = serde_json::json!({
+            "scheme": "exact", "network": "eip155:8453",
+            "asset": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913", "amount": "350000",
+            "payTo": BASE_A, "maxTimeoutSeconds": 300
+        });
+        let v2 = |accepts: serde_json::Value| {
+            header_of(&serde_json::json!({"x402Version": 2, "accepts": accepts}).to_string())
+        };
+        // An option nobody can pay that names the declared address.
+        let live = pay_to_from_402(
+            None,
+            Some(v2(serde_json::json!([{"payTo": BASE_A}, attacker])).as_str()),
+        );
+        assert!(
+            pay_to_drifted(&losbeto_declared(), &live),
+            "unpayable option"
+        );
+        // The declared address loose at the top of the document.
+        let doc = serde_json::json!({"x402Version": 2, "payTo": BASE_A, "accepts": [attacker]});
+        let live = pay_to_from_402(None, Some(header_of(&doc.to_string()).as_str()));
+        assert!(
+            pay_to_drifted(&losbeto_declared(), &live),
+            "top-level payTo"
+        );
+        // The declared offer in the body, only the attacker in the header that
+        // a v2 client reads: each transport is judged on its own.
+        let body = serde_json::json!({"x402Version": 1, "accepts": [declared_base]});
+        let live = pay_to_from_402(
+            Some(&body.to_string()),
+            Some(v2(serde_json::json!([attacker])).as_str()),
+        );
+        assert!(
+            pay_to_drifted(&losbeto_declared(), &live),
+            "split transports"
+        );
+        // A decoy: the declared recipient on the declared network, in an option
+        // no client takes -- a scheme nobody implements, an asset nobody
+        // declared, or the chain written as a bare id.
+        for (field, value) in [
+            ("scheme", serde_json::json!("x")),
+            (
+                "asset",
+                serde_json::json!("0x0000000000000000000000000000000000000001"),
+            ),
+            ("network", serde_json::json!("8453")),
+        ] {
+            let mut decoy = declared_base.clone();
+            decoy[field] = value;
+            let live = pay_to_from_402(
+                None,
+                Some(v2(serde_json::json!([decoy, attacker])).as_str()),
+            );
+            assert!(pay_to_drifted(&losbeto_declared(), &live), "decoy {field}");
+        }
+        // The real thing still passes: the declared offer beside the extra one,
+        // with the network as v1 names it too.
+        let live = pay_to_from_402(
+            None,
+            Some(v2(serde_json::json!([declared_base, attacker])).as_str()),
+        );
+        assert!(!pay_to_drifted(&losbeto_declared(), &live));
+        let mut v1_named = declared_base.clone();
+        v1_named["network"] = serde_json::json!("base");
+        let live = pay_to_from_402(
+            None,
+            Some(v2(serde_json::json!([v1_named, attacker])).as_str()),
+        );
+        assert!(!pay_to_drifted(&losbeto_declared(), &live));
+    }
+
+    #[test]
+    fn a_new_recipient_on_a_declared_network_is_a_drift_in_any_spelling() {
+        // Every spelling of Base is Base: none of them is "another network".
+        for spelling in [
+            "eip155:8453",
+            "base",
+            "Base",
+            "base-mainnet",
+            "8453",
+            "eip155:08453",
+            "EIP155:8453",
+            " eip155:8453 ",
+        ] {
+            let live = challenge(&[("eip155:8453", BASE_A), (spelling, OTHER)]);
+            assert_eq!(
+                compare_recipients(&losbeto_declared(), &live),
+                Recipients::Drifted,
+                "{spelling:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_network_we_cannot_name_fails_closed() {
+        // `aws:base` is the network of Coinbase's agent-pay option and reads like
+        // an alias of Base; the rest are no chain at all. A recipient the
+        // listing does not declare on any of them is a drift.
+        for network in [
+            "aws:base",
+            "solana-mainnet",
+            "evm:8453",
+            "eip155:base",
+            "eip155:",
+            ":8453",
+            "",
+            "not a network",
+        ] {
+            let live = challenge(&[("eip155:8453", BASE_A), (network, OTHER)]);
+            assert_eq!(
+                compare_recipients(&losbeto_declared(), &live),
+                Recipients::Drifted,
+                "{network:?}"
+            );
+        }
+        // So is an option whose network is missing or not a string.
+        for option in [
+            serde_json::json!({"payTo": OTHER}),
+            serde_json::json!({"payTo": OTHER, "network": 8453}),
+            serde_json::json!({"payTo": OTHER, "network": null}),
+        ] {
+            let doc = serde_json::json!({"x402Version": 2, "accepts": [
+                {"scheme": "exact", "network": "eip155:8453", "payTo": BASE_A,
+                 "asset": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913", "amount": "1"},
+                option.clone()
+            ]});
+            let live = pay_to_from_402(Some(&doc.to_string()), None);
+            assert!(pay_to_drifted(&losbeto_declared(), &live), "{option}");
+        }
+        // And a v1 top-level payTo: it names no network unless the document does.
+        let live = pay_to_from_402(Some(&format!(r#"{{"payTo":"{OTHER}"}}"#)), None);
+        assert!(pay_to_drifted(&losbeto_declared(), &live));
+    }
+
+    #[test]
+    fn a_stacks_option_beside_the_declared_evm_recipient_is_an_extra_network() {
+        // The shape 183 listings of one host served on 2026-10-04: the declared
+        // address on Base, Arbitrum and Polygon, and an option on `stacks:1`
+        // paying a Stacks account. Held for 72 hours at a time before this rule.
+        let declared: Vec<DeclaredOffer> = ["eip155:8453", "eip155:42161", "eip155:137"]
+            .iter()
+            .map(|n| usdc_offer(n, BASE_A))
+            .collect();
+        let stacks = "SP000000000000000000002Q6VF78";
+        let live = challenge(&[
+            ("eip155:8453", BASE_A),
+            ("eip155:42161", BASE_A),
+            ("eip155:137", BASE_A),
+            ("stacks:1", stacks),
+        ]);
+        assert_eq!(
+            compare_recipients(&declared, &live),
+            Recipients::ExtraNetworks(vec![DeclaredRecipient::new("stacks:1", stacks)])
+        );
+        // The same option with the EVM recipient swapped is still a swap.
+        let live = challenge(&[("eip155:8453", OTHER), ("stacks:1", stacks)]);
+        assert_eq!(compare_recipients(&declared, &live), Recipients::Drifted);
+    }
+
+    #[test]
+    fn an_alias_of_a_declared_family_is_that_family() {
+        // A listing that declares Solana: an option on `solana:mainnet`, or on
+        // the devnet, is not "another network" -- every Solana spelling is one
+        // family for this check, so a new recipient there is a drift.
+        let declared = vec![usdc_offer(
+            "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp",
+            SOLANA_S,
+        )];
+        for alias in [
+            "solana",
+            "solana:mainnet",
+            "SOLANA:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp",
+            "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1",
+        ] {
+            let live = challenge(&[
+                ("solana", SOLANA_S),
+                (alias, "AttackerSo1anaAddress1111111111111111111111"),
+            ]);
+            assert_eq!(
+                compare_recipients(&declared, &live),
+                Recipients::Drifted,
+                "{alias:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_drift_network_keys() {
+        assert_eq!(drift_network("base").as_deref(), Some("eip155:8453"));
+        assert_eq!(
+            drift_network("eip155:08453").as_deref(),
+            Some("eip155:8453")
+        );
+        assert_eq!(drift_network("EIP155:8453").as_deref(), Some("eip155:8453"));
+        assert_eq!(drift_network("polygon").as_deref(), Some("eip155:137"));
+        assert_eq!(
+            drift_network("solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp").as_deref(),
+            Some("solana")
+        );
+        // Algorand as the x402 spec spells it (CDP lists losbeto with it): a
+        // family we can name, though the catalog cannot hold the option.
+        assert_eq!(
+            drift_network("algorand:wGHE2Pwdvd7S12BL5FaOP20EGYesN73ktiC1qzkkit8=").as_deref(),
+            Some("algorand")
+        );
+        assert_eq!(drift_network("stacks:1").as_deref(), Some("stacks"));
+        for unnamed in ["aws:base", "evm:8453", "eip155:base", "", "solana-mainnet"] {
+            assert_eq!(drift_network(unnamed), None, "{unnamed:?}");
+        }
     }
 
     #[test]
@@ -3867,6 +4523,103 @@ mod declared_method_tests {
         assert!(admit(&mut per_host, &mcp), "and it fits a fresh host whole");
     }
 
+    /// The two listings of the 2026-10-04 report, through the production probe
+    /// path: losbeto adds Solana to the Base recipient its catalog copy declares
+    /// and is verified; Tavily pays another Base recipient and stays held.
+    #[tokio::test]
+    async fn an_extra_network_is_verified_and_a_swapped_recipient_stays_held() {
+        let option = |network: &str, pay_to: &str| {
+            json!({
+                "scheme": "exact", "network": network, "payTo": pay_to,
+                "asset": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+                "amount": "350000", "maxTimeoutSeconds": 300
+            })
+        };
+        let losbeto = json!([
+            option("eip155:8453", "0xd5Ba9711a3D052846a3695C70e7fcb8b3168FE7d"),
+            option(
+                "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp",
+                "GEhr9HCFTRDjanMg435frSgCVwVZYpNoPrEkmNBnFHFE"
+            ),
+        ]);
+        let tavily_live = json!([
+            option("eip155:8453", "0x24B8FD1A73685B25a4c3bA03FAC4A2d733015C6F"),
+            { "scheme": "agent-pay", "network": "aws:base",
+              "payTo": "urn:x402:agent-pay:see-quote", "amount": "0" },
+        ]);
+        let (base, _seller) = serve(HashMap::from([
+            ("/council-deep".to_string(), route(402, 405, &losbeto)),
+            ("/held".to_string(), route(402, 405, &losbeto)),
+            ("/search".to_string(), route(405, 402, &tavily_live)),
+        ]))
+        .await;
+        let lo = Loopback::serving(&base);
+        let registry = DiscoveryRegistry::new();
+        let t = HealthTracker::new();
+        let usdc = "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913";
+        let losbeto_target = |p: &str| ProbeTarget {
+            pay_to: vec![DeclaredOffer::new(
+                "exact",
+                "eip155:8453",
+                usdc,
+                "0xd5Ba9711a3D052846a3695C70e7fcb8b3168FE7d",
+            )],
+            ..target(&format!("https://api.losbeto.xyz{p}"), get())
+        };
+        let tavily = ProbeTarget {
+            pay_to: vec![DeclaredOffer::new(
+                "exact",
+                "eip155:8453",
+                usdc,
+                "0xC5c967576a19Ed250030f8C15B6158968DD64643",
+            )],
+            ..target("https://x402.tavily.com/search", post(None))
+        };
+
+        probe_and_record(&lo, &registry, &t, losbeto_target("/council-deep")).await;
+        let state = t
+            .snapshot()
+            .await
+            .remove("https://api.losbeto.xyz/council-deep")
+            .unwrap();
+        assert_eq!(state.status, HealthStatus::Alive);
+        assert_eq!(state.quarantine_reason, None);
+        assert_eq!(state.verified_by, Some(VerifiedBy::X402Challenge));
+        // The extra option is in the observation, never in the listing.
+        let observed = registry
+            .terms()
+            .get("https://api.losbeto.xyz/council-deep")
+            .await
+            .expect("the challenge is recorded");
+        assert_eq!(observed.accepts.len(), 2);
+
+        // A listing a build without this rule held for drift recovers like any
+        // drift hold: two clean challenges in a row, never one.
+        let held = "https://api.losbeto.xyz/held";
+        t.record_probe(
+            held,
+            ProbeClass::PayToDrift,
+            Some(402),
+            1,
+            Some(ProbeMethod::Get),
+        )
+        .await;
+        probe_and_record(&lo, &registry, &t, losbeto_target("/held")).await;
+        assert_eq!(status_of(&t, held).await, HealthStatus::Quarantined);
+        probe_and_record(&lo, &registry, &t, losbeto_target("/held")).await;
+        assert_eq!(status_of(&t, held).await, HealthStatus::Alive);
+
+        probe_and_record(&lo, &registry, &t, tavily).await;
+        let state = t
+            .snapshot()
+            .await
+            .remove("https://x402.tavily.com/search")
+            .unwrap();
+        assert_eq!(state.status, HealthStatus::Quarantined);
+        assert_eq!(state.quarantine_reason, Some(QuarantineReason::PayToDrift));
+        assert_eq!(state.verified_by, None);
+    }
+
     #[tokio::test]
     async fn an_origin_that_names_its_method_in_its_challenge_is_asked_that_way_next() {
         let accepts = accepts();
@@ -3924,8 +4677,14 @@ mod declared_method_tests {
         let registry = DiscoveryRegistry::new();
         let t = HealthTracker::new();
         let lo = Loopback::serving(&base);
+        // What the catalog declares for this listing, by the import rule itself.
+        let (mut imported, _rejected) = crate::discovery_aggregator::convert_resources(
+            vec![serde_json::from_value(tavily()).unwrap()],
+            "coinbase",
+        );
+        let declared = declared_offers(&imported.remove(0).accepts);
         let undeclared = |p: &str| ProbeTarget {
-            pay_to: vec!["0xfe2d09ca270818e9736207ee27f0fa464a67ac66".to_string()],
+            pay_to: declared.clone(),
             ..target(
                 &format!("https://seller.example{p}"),
                 ProbeRequest::Undeclared,
@@ -4147,6 +4906,50 @@ mod declared_method_tests {
     }
 
     #[tokio::test]
+    async fn a_drift_hold_the_per_network_rule_never_judged_is_looked_at_once() {
+        // A listing a build before the per-network rule held because its
+        // challenge added a network: probed again straight away instead of in
+        // 72 hours, still lifted only by two clean challenges.
+        let url = "https://api.losbeto.xyz/stock-quote";
+        let get_target = target(url, get());
+        let t = HealthTracker::new();
+        t.record_probe(
+            url,
+            ProbeClass::PayToDrift,
+            Some(402),
+            1,
+            Some(ProbeMethod::Get),
+        )
+        .await;
+        assert!(
+            !tracker_due(&t, &get_target, now_secs()),
+            "a hold this rule set keeps its schedule"
+        );
+        // What the previous build left in the overlay: the same hold, no rule.
+        t.records.write().await.get_mut(url).unwrap().drift_rule = None;
+        assert!(tracker_due(&t, &get_target, now_secs()), "looked at once");
+        t.record_probe(url, ProbeClass::Alive, Some(402), 1, Some(ProbeMethod::Get))
+            .await;
+        assert_eq!(
+            status_of(&t, url).await,
+            HealthStatus::Quarantined,
+            "one clean challenge lifts nothing"
+        );
+        assert!(
+            !tracker_due(&t, &get_target, now_secs()),
+            "and only once: the second challenge waits its hour"
+        );
+
+        // An overlay written before the field existed reads as that hold.
+        let old = r#"{"https://x.example/a":{"status":"quarantined","http_status":402,
+            "consecutive_ok":0,"consecutive_fail":3,"next_probe_at":0,
+            "quarantine_reason":"pay_to_drift","probe_method":"GET"}}"#;
+        let parsed = parse_overlay(old.as_bytes()).unwrap();
+        assert_eq!(parsed["https://x.example/a"].drift_rule, None);
+        assert!(parsed["https://x.example/a"].held_for_drift());
+    }
+
+    #[tokio::test]
     async fn a_drift_hold_is_not_lifted_by_an_answer_that_is_not_a_challenge() {
         for (class, code) in [
             (ProbeClass::AuthGated, Some(401)),
@@ -4315,18 +5118,19 @@ mod declared_method_tests {
             vec![serde_json::from_value(listing.clone()).unwrap()],
             "coinbase",
         );
-        let declared: Vec<String> = imported
-            .remove(0)
-            .accepts
-            .iter()
-            .map(|a| a.pay_to.to_string().to_ascii_lowercase())
-            .collect();
-        assert_eq!(declared, ["0xfe2d09ca270818e9736207ee27f0fa464a67ac66"]);
+        let declared = declared_offers(&imported.remove(0).accepts);
+        assert_eq!(declared.len(), 1);
+        assert_eq!(declared[0].network.as_deref(), Some("eip155:8453"));
+        assert_eq!(
+            declared[0].pay_to,
+            "0xfe2d09ca270818e9736207ee27f0fa464a67ac66"
+        );
 
         let live = pay_to_from_402(None, Some(&challenge_for(&listing["accepts"])));
         assert!(live.readable);
         assert_eq!(
-            live.pay_to, declared,
+            live.pay_to,
+            ["0xfe2d09ca270818e9736207ee27f0fa464a67ac66"],
             "urn:x402:agent-pay:see-quote is not a recipient"
         );
         assert!(

@@ -327,8 +327,14 @@ implemented behind `ENABLE_BAZAAR_ATTESTATIONS` (default off).
 resolved address is private/metadata (a mixed answer is treated as an attack),
 pins the socket to the checked address, follows redirects manually re-checking
 each hop, and restricts ports. If a live 402 ever advertises a `payTo` the
-listing never declared, the resource is quarantined immediately and a
-`paytoswap` alarm is logged — that is a hijack signal, not a health signal.
+listing never declared on a network the listing declares (or on one the
+prober cannot name), the resource is quarantined immediately and a `paytoswap`
+alarm is logged — that is a hijack signal, not a health signal. An extra option
+on a network the listing does not declare is tolerated only while the same
+challenge still offers a payable option to a declared recipient on its declared
+network: it is logged at WARN with its network and recipient, never adopted
+into the listing, and does not quarantine it. Without that declared offer, it
+is a drift too.
 
 ```bash
 # Search the whole catalog

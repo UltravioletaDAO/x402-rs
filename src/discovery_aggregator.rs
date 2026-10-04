@@ -2008,12 +2008,18 @@ mod tests {
         let second = aggregator.fetch_all(&held).await;
         assert!(has(&second, "https://seller.example/r2400"));
         assert!(!has(&second, "https://seller.example/r1500"));
-        assert_eq!(asked.lock().unwrap().drain(..).last(), Some((1_000, 2_000)));
+        assert_eq!(
+            asked.lock().unwrap().drain(..).next_back(),
+            Some((1_000, 2_000))
+        );
 
         // Cycle 3 starts over at the cap.
         let third = aggregator.fetch_all(&held).await;
         assert!(has(&third, "https://seller.example/r1500"));
-        assert_eq!(asked.lock().unwrap().drain(..).last(), Some((1_000, 1_000)));
+        assert_eq!(
+            asked.lock().unwrap().drain(..).next_back(),
+            Some((1_000, 1_000))
+        );
     }
 
     #[tokio::test]
@@ -2065,9 +2071,15 @@ mod tests {
         let held = held(&["https://seller.example/r2400"]);
         let first = aggregator.fetch_all(&held).await;
         assert_eq!(first.len(), 1_000, "the capped fetch stands");
-        assert_eq!(asked.lock().unwrap().drain(..).last(), Some((1_000, 1_000)));
+        assert_eq!(
+            asked.lock().unwrap().drain(..).next_back(),
+            Some((1_000, 1_000))
+        );
         let second = aggregator.fetch_all(&held).await;
         assert!(has(&second, "https://seller.example/r2400"));
-        assert_eq!(asked.lock().unwrap().drain(..).last(), Some((1_000, 2_000)));
+        assert_eq!(
+            asked.lock().unwrap().drain(..).next_back(),
+            Some((1_000, 2_000))
+        );
     }
 }

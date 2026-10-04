@@ -694,6 +694,9 @@ fn import_verdict(incoming: &DiscoveryResource, existing: &DiscoveryResource) ->
     }
 }
 
+/// Declared `(network, payTo)` pairs, sorted and without repeats.
+type RecipientPairs = Vec<(Option<String>, String)>;
+
 /// The declared recipients before and after `incoming` replaces `existing`, as
 /// `(network, payTo)` pairs, when they differ as sets -- who the drift baseline
 /// the prober checks a live 402 against pays
@@ -703,8 +706,8 @@ fn import_verdict(incoming: &DiscoveryResource, existing: &DiscoveryResource) ->
 fn declared_recipients_changed(
     existing: &DiscoveryResource,
     incoming: &DiscoveryResource,
-) -> Option<(Vec<(Option<String>, String)>, Vec<(Option<String>, String)>)> {
-    let pairs = |r: &DiscoveryResource| -> Vec<(Option<String>, String)> {
+) -> Option<(RecipientPairs, RecipientPairs)> {
+    let pairs = |r: &DiscoveryResource| -> RecipientPairs {
         let set: std::collections::BTreeSet<(Option<String>, String)> =
             crate::discovery_health::declared_recipients(&r.accepts)
                 .into_iter()

@@ -1807,23 +1807,26 @@ fn decode_payment_required(raw: &str) -> Option<serde_json::Value> {
     }
     let direct = serde_json::from_str::<serde_json::Value>(raw.trim()).ok();
     let unwrapped = direct.as_ref().and_then(|v| v.as_str());
-    let mut readings = [Some(raw), unwrapped]
-        .into_iter()
-        .flatten()
-        .flat_map(|text| {
-            [
-                serde_json::from_str::<serde_json::Value>(text.trim()).ok(),
-                decode_node_payment_required(text),
-                decode_python_payment_required(text),
-            ]
-        })
-        .flatten()
-        .filter(|v| read_challenge(v).found_shape);
+    let mut readings = Vec::new();
+    for text in [Some(raw), unwrapped].into_iter().flatten() {
+        let candidates = [
+            serde_json::from_str::<serde_json::Value>(text.trim()).ok(),
+            decode_node_payment_required(text).ok()?,
+            decode_python_payment_required(text).ok()?,
+        ];
+        readings.extend(
+            candidates
+                .into_iter()
+                .flatten()
+                .filter(|v| read_challenge(v).found_shape),
+        );
+    }
+    let mut readings = readings.into_iter();
     let first = readings.next()?;
     readings.all(|v| v == first).then_some(first)
 }
 
-fn decode_node_payment_required(raw: &str) -> Option<serde_json::Value> {
+fn decode_node_payment_required(raw: &str) -> Result<Option<serde_json::Value>, ()> {
     use base64::engine::{DecodePaddingMode, GeneralPurpose, GeneralPurposeConfig};
     use base64::Engine as _;
     const FORGIVING: GeneralPurpose = GeneralPurpose::new(
@@ -1847,11 +1850,13 @@ fn decode_node_payment_required(raw: &str) -> Option<serde_json::Value> {
     if symbols.len() % 4 == 1 {
         symbols.pop();
     }
-    let decoded = FORGIVING.decode(&symbols).ok()?;
-    serde_json::from_str(&String::from_utf8_lossy(&decoded)).ok()
+    let Ok(decoded) = FORGIVING.decode(&symbols) else {
+        return Ok(None);
+    };
+    parse_decoded_payment_required(String::from_utf8_lossy(&decoded).as_bytes())
 }
 
-fn decode_python_payment_required(raw: &str) -> Option<serde_json::Value> {
+fn decode_python_payment_required(raw: &str) -> Result<Option<serde_json::Value>, ()> {
     use base64::engine::{DecodePaddingMode, GeneralPurpose, GeneralPurposeConfig};
     use base64::Engine as _;
     const PYTHON: GeneralPurpose = GeneralPurpose::new(
@@ -1881,10 +1886,31 @@ fn decode_python_payment_required(raw: &str) -> Option<serde_json::Value> {
     }
     // Python skips stray padding, but incomplete final quads require padding.
     if !terminated && symbols.len() % 4 != 0 {
-        return None;
+        return Ok(None);
     }
-    let decoded = PYTHON.decode(&symbols).ok()?;
-    serde_json::from_slice(&decoded).ok()
+    let Ok(decoded) = PYTHON.decode(&symbols) else {
+        return Ok(None);
+    };
+    parse_decoded_payment_required(&decoded)
+}
+
+fn parse_decoded_payment_required(decoded: &[u8]) -> Result<Option<serde_json::Value>, ()> {
+    match serde_json::from_slice(decoded) {
+        Ok(value) => Ok(Some(value)),
+        Err(_) => {
+            let other_encoding =
+                decoded.starts_with(&[0xEF, 0xBB, 0xBF]) || decoded.iter().take(4).any(|b| *b == 0);
+            // IgnoredAny validates syntax without Value's surrogate, number
+            // and nesting limits. Malformed or truncated base64 is not JSON.
+            let json_syntax = std::str::from_utf8(decoded).is_ok()
+                && serde_json::from_slice::<serde::de::IgnoredAny>(decoded).is_ok();
+            if other_encoding || json_syntax {
+                Err(())
+            } else {
+                Ok(None)
+            }
+        }
+    }
 }
 
 /// Read one challenge document: its recipients, its full requirements and the
@@ -7457,23 +7483,31 @@ mod ver3_refutation_tests {
     }
     #[test]
     fn python_padding_rules_are_independent_of_the_node_reading() {
-        let original = decode_python_payment_required(&attacker_b64()).unwrap();
+        let original = decode_python_payment_required(&attacker_b64())
+            .unwrap()
+            .unwrap();
         let base64 = attacker_b64();
         for at in (0..base64.len() - 2).step_by(4) {
             let h = format!("{}={}", &base64[..at], &base64[at..]);
             assert_eq!(
                 decode_python_payment_required(&h),
-                Some(original.clone()),
+                Ok(Some(original.clone())),
                 "at {at}"
             );
         }
         assert_eq!(
             decode_python_payment_required(&format!("{base64}QUFB")),
-            Some(original.clone())
+            Ok(Some(original.clone()))
         );
         let split_pad = base64.replacen("==", "=!=", 1);
-        assert_eq!(decode_python_payment_required(&split_pad), Some(original));
-        assert!(decode_python_payment_required(base64.trim_end_matches('=')).is_none());
+        assert_eq!(
+            decode_python_payment_required(&split_pad),
+            Ok(Some(original))
+        );
+        assert_eq!(
+            decode_python_payment_required(base64.trim_end_matches('=')),
+            Ok(None)
+        );
     }
 
     struct Named(Vec<(&'static str, Vec<u8>)>);
@@ -7625,5 +7659,73 @@ mod ver3_refutation_tests {
                 HealthStatus::Alive
             );
         }
+    }
+    #[tokio::test]
+    async fn alternate_json_rejected_by_serde_cannot_be_hidden() {
+        use base64::Engine as _;
+        let attacker =
+            serde_json::json!({"x402Version": 2, "accepts": [option(BASE, USDC, B)]}).to_string();
+        let prefix = &attacker[..attacker.len() - 1];
+        let documents = [
+            format!(r#"{prefix},"error":"\ud800"}}"#).into_bytes(),
+            format!(r#"{prefix},"error":1e400}}"#).into_bytes(),
+            format!(
+                r#"{prefix},"error":{}0{}}}"#,
+                "[".repeat(200),
+                "]".repeat(200)
+            )
+            .into_bytes(),
+            [vec![0xEF, 0xBB, 0xBF], attacker.as_bytes().to_vec()].concat(),
+            attacker.encode_utf16().flat_map(u16::to_le_bytes).collect(),
+        ];
+        let url = url::Url::parse("https://seller.example/x").unwrap();
+        for mut doc in documents {
+            while doc.len() % 3 != 1 {
+                doc.push(b' ');
+            }
+            let payload = base64::engine::general_purpose::STANDARD.encode(doc);
+            let header = serde_json::json!({"!": payload, "x402Version": 2, "accepts": [option(BASE, USDC, A)]}).to_string();
+            let live = pay_to_from_402(Some(&declared_body()), Some(&header));
+            assert!(live.untrusted_header);
+            assert_eq!(
+                compare_recipients(&baseline(&[option(BASE, USDC, A)]), &live),
+                Recipients::Drifted
+            );
+            let registry = DiscoveryRegistry::new();
+            let health = registry.health();
+            let target = ProbeTarget {
+                url: url.clone(),
+                resource_type: "http".into(),
+                pay_to: baseline(&[option(BASE, USDC, A)]),
+                request: ProbeRequest::Declared {
+                    method: ProbeMethod::Get,
+                    example: None,
+                },
+            };
+            probe_and_record(&Raw(vec![header.into_bytes()]), &registry, &health, target).await;
+            assert_eq!(
+                health.snapshot().await[url.as_str()].status,
+                HealthStatus::Quarantined
+            );
+        }
+    }
+
+    #[test]
+    fn escaped_quoted_base64_is_unwrapped_and_remains_declared() {
+        use base64::Engine as _;
+        let base64 = base64::engine::general_purpose::STANDARD.encode(declared_body());
+        let header = format!(
+            r#""\u{:04x}{}""#,
+            u32::from(base64.as_bytes()[0]),
+            &base64[1..]
+        );
+        assert_eq!(serde_json::from_str::<String>(&header).unwrap(), base64);
+        let live = pay_to_from_402(None, Some(&header));
+        assert!(live.readable);
+        assert!(!live.untrusted_header);
+        assert_eq!(
+            compare_recipients(&baseline(&[option(BASE, USDC, A)]), &live),
+            Recipients::Declared
+        );
     }
 }

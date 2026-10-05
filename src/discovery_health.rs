@@ -208,8 +208,9 @@ impl DeclaredOffer {
 
     /// The offer a live option makes, read the way a client reads it: a
     /// scheme the protocol's `Scheme` takes as written (`EXACT`, ` exact `
-    /// are refused), the asset and recipient as [`client_address`] reads them,
-    /// on the network the catalog resolved. `None` when a client could not
+    /// are refused), the asset and recipient as written ([`canonical_address`]:
+    /// untrimmed, folded only on EVM, where normalization already refused a
+    /// `0X` prefix), on the network the catalog resolved. `None` when a client could not
     /// take the option, so it never stands for a declared offer.
     fn live(raw: &serde_json::Value, option: &CatalogPaymentOption) -> Option<Self> {
         let field = |k: &str| raw.get(k).and_then(serde_json::Value::as_str);
@@ -219,8 +220,8 @@ impl DeclaredOffer {
         Some(Self {
             scheme: scheme.to_string(),
             network: drift_network(&chain),
-            asset: client_address(&chain, field("asset")?)?,
-            pay_to: client_address(&chain, field("payTo")?)?,
+            asset: canonical_address(&chain, field("asset")?),
+            pay_to: canonical_address(&chain, field("payTo")?),
             chain,
         })
     }
@@ -264,16 +265,6 @@ fn canonical_address(chain: &str, raw: &str) -> String {
     } else {
         raw.to_string()
     }
-}
-
-/// An address as a client reads it off a live option: on an EVM chain one
-/// with a literal `0x` prefix, in any case (lowercased, as
-/// [`canonical_address`]); anywhere else exactly as written, untrimmed.
-fn client_address(chain: &str, raw: &str) -> Option<String> {
-    if !chain.starts_with("eip155:") {
-        return Some(raw.to_string());
-    }
-    raw.starts_with("0x").then(|| raw.to_ascii_lowercase())
 }
 
 /// Whether two recipients are the same account: equal as written, equal in

@@ -6,9 +6,11 @@
   (`accepts`, `paymentRequirements`) y `pay_to_from_402` los juzga por separado
   (el `payTo` v1 de nivel superior se nombra en cada lista). P1-B,
   `spelled_for_clients` acepta un nombre v1 solo si el serde derivado de
-  `Network` lo lee y resuelve al mismo CAIP-2. P3: la guarda `0x` de
-  `client_address` ya la mata `an_evm_address_a_client_cannot_read_is_not_the_declared_offer`
-  (mutacion M5 en el cuerpo del PR); no se toca.
+  `Network` lo lee. P3: la guarda `0x` de `client_address` era inalcanzable
+  (`parse_catalog_address` ya rechaza `0X`, y un espacio inicial no iguala la
+  oferta declarada): quitarla dejaba la suite en verde, asi que se quito y
+  `DeclaredOffer::live` usa `canonical_address`. Si un dia el parser acepta
+  `0X`, `an_evm_address_a_client_cannot_read_is_not_the_declared_offer` cae.
 - Tests nuevos en `discovery_health::strict_offer_identity_tests`:
   `payment_requirements_decoy_does_not_vouch_for_accepts`,
   `each_list_key_still_vouches_for_its_own_extra_option`,

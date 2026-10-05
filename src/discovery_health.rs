@@ -6662,6 +6662,23 @@ mod strict_offer_identity_tests {
     }
 
     #[test]
+    fn a_declared_recipient_in_another_offer_does_not_complete_this_one() {
+        // Two declared Solana offers whose recipients differ only in case: the
+        // live option pays the second recipient in the first offer's mint,
+        // which is neither declared offer.
+        let other = SOL.replacen("hr", "hR", 1);
+        let before: crate::types::MixedAddress =
+            serde_json::from_value(serde_json::json!(SOL)).unwrap();
+        let after: crate::types::MixedAddress =
+            serde_json::from_value(serde_json::json!(other)).unwrap();
+        assert_ne!(before, after, "distinct valid base58 addresses");
+        let usdt = "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB";
+        let declared = baseline(&[option(MAINNET, MINT, SOL), option(MAINNET, usdt, &other)]);
+        let live = challenge(&[option(MAINNET, MINT, &other), option(BASE, USDC, B)]);
+        assert_eq!(compare_recipients(&declared, &live), Recipients::Drifted);
+    }
+
+    #[test]
     fn a_declared_scheme_no_client_takes_vouches_for_nothing() {
         // Equal to the declaration is not enough: the live option must also be
         // one the protocol's `Scheme` takes as written.

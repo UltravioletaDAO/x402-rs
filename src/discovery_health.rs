@@ -1625,9 +1625,11 @@ pub struct LiveTerms {
     /// `payTo` recipients, lowercased. The union of BOTH transports: a hijack
     /// declared anywhere in the challenge is a hijack.
     pub pay_to: Vec<String>,
-    /// The same recipients, transport by transport, each with the network its
-    /// option names ([`drift_network`]). What the drift check judges, one
-    /// transport at a time ([`compare_recipients`]).
+    /// The same recipients, list by list -- each transport's `accepts` and
+    /// `paymentRequirements` apart -- each with the network its option names
+    /// ([`drift_network`]). What the drift check judges, one list at a time
+    /// ([`compare_recipients`]): a client pays from one list, so an offer in
+    /// another cannot vouch for it.
     pub by_transport: Vec<TransportRecipients>,
     /// Whether a parseable x402 challenge was found in either transport.
     pub readable: bool,
@@ -1659,7 +1661,8 @@ impl LiveTerms {
     }
 }
 
-/// One transport's recipients, as the drift check reads them.
+/// One list of options (`accepts` or `paymentRequirements` of one
+/// transport), as the drift check reads it.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct TransportRecipients {
     /// Every recipient the document names -- in any option, readable or not,
@@ -1679,8 +1682,8 @@ pub struct TransportRecipients {
 #[derive(Debug, Default, PartialEq, Eq)]
 struct ChallengeReading {
     pay_to: Vec<String>,
-    recipients: Vec<DeclaredRecipient>,
-    payable: Vec<DeclaredOffer>,
+    /// One entry per list key the document carries, never merged.
+    lists: Vec<TransportRecipients>,
     accepts: Vec<CatalogPaymentOption>,
     x402_version: Option<u64>,
     rejected: BTreeMap<String, usize>,
@@ -1746,10 +1749,7 @@ fn pay_to_from_402(body: Option<&str>, header: Option<&str>) -> LiveTerms {
                 terms.pay_to.push(p.clone());
             }
         }
-        terms.by_transport.push(TransportRecipients {
-            named: reading.recipients.clone(),
-            payable: reading.payable.clone(),
-        });
+        terms.by_transport.extend(reading.lists.iter().cloned());
     }
     if !terms.readable {
         return terms;
@@ -1840,17 +1840,20 @@ fn read_challenge(v: &serde_json::Value) -> ChallengeReading {
     // `paymentRequirements` is the v1 spelling of `accepts`. Missing it made a
     // seller using it look like "no terms here" -- which is exactly the state
     // that let the hijack check pass while seeing nothing.
+    //
+    // Each key is its own list for the drift check: a client pays from one of
+    // them, so the declared offer in `paymentRequirements` cannot show that
+    // the extra option in `accepts` is still the seller's (nor the reverse).
     for key in ["accepts", "paymentRequirements"] {
         if let Some(accepts) = v.get(key).and_then(|a| a.as_array()) {
             // A list with no option in it -- `[]`, `["junk"]` -- is not one.
             if accepts.iter().any(|a| a.is_object()) {
                 reading.found_shape = true;
             }
+            let mut list = TransportRecipients::default();
             for a in accepts {
                 if let Some(p) = a.get("payTo").and_then(drift_recipient_value) {
-                    reading
-                        .recipients
-                        .push(live_recipient(a.get("network"), &p));
+                    list.named.push(live_recipient(a.get("network"), &p));
                     reading.pay_to.push(p.to_ascii_lowercase());
                 }
                 match serde_json::from_value::<DeclaredPaymentOption>(a.clone()) {
@@ -1858,7 +1861,7 @@ fn read_challenge(v: &serde_json::Value) -> ChallengeReading {
                         Ok(option) => {
                             if spelled_for_clients(a.get("network"), &option.network) {
                                 if let Some(offer) = DeclaredOffer::live(a, &option) {
-                                    reading.payable.push(offer);
+                                    list.payable.push(offer);
                                 }
                             }
                             reading.accepts.push(option);
@@ -1878,14 +1881,20 @@ fn read_challenge(v: &serde_json::Value) -> ChallengeReading {
                     }
                 }
             }
+            reading.lists.push(list);
         }
     }
+    // A v1 top-level `payTo` belongs to no list, so it is named in every one.
     if let Some(p) = v.get("payTo").filter(|p| p.is_string()) {
         reading.found_shape = true;
         if let Some(p) = drift_recipient_value(p) {
-            reading
-                .recipients
-                .push(live_recipient(v.get("network"), &p));
+            let recipient = live_recipient(v.get("network"), &p);
+            if reading.lists.is_empty() {
+                reading.lists.push(TransportRecipients::default());
+            }
+            for list in &mut reading.lists {
+                list.named.push(recipient.clone());
+            }
             reading.pay_to.push(p.to_ascii_lowercase());
         }
     }
@@ -1893,10 +1902,12 @@ fn read_challenge(v: &serde_json::Value) -> ChallengeReading {
 }
 
 /// Whether an option names its network the way a client reads it: exactly the
-/// CAIP-2 identifier the catalog resolves it to, or an x402 v1 name. A bare
-/// chain id (`8453`) or another informal spelling resolves for the catalog,
-/// but a client matching network strings would not take that option, so it
-/// cannot stand for the declared offer.
+/// CAIP-2 identifier the catalog resolves it to, or an x402 v1 name as the
+/// derived serde of [`crate::network::Network`] reads it -- the wire name
+/// clients send. A bare chain id (`8453`) or a `Network::from_str`
+/// alias (`base-mainnet`, `bnb`) resolves for the catalog, but a client
+/// matching network strings would not take that option, so it cannot stand for
+/// the declared offer.
 fn spelled_for_clients(
     raw: Option<&serde_json::Value>,
     resolved: &crate::caip2::Caip2NetworkId,
@@ -1905,9 +1916,7 @@ fn spelled_for_clients(
         return false;
     };
     raw == resolved.to_string()
-        || (!raw.contains(':')
-            && raw == raw.to_ascii_lowercase()
-            && crate::network::resolve_network(raw).is_some())
+        || serde_json::from_value::<crate::network::Network>(serde_json::Value::from(raw)).is_ok()
 }
 
 /// A live recipient with the network its option names. A `network` that is
@@ -6760,6 +6769,131 @@ mod strict_offer_identity_tests {
         assert_eq!(
             compare_recipients(&declared, &live),
             Recipients::ExtraNetworks(vec![DeclaredRecipient::new(BASE, B)])
+        );
+    }
+
+    #[test]
+    fn payment_requirements_decoy_does_not_vouch_for_accepts() {
+        // P1-A: `accepts` and `paymentRequirements` are two lists a client
+        // reads one at a time; the declared offer in one does not pay the
+        // Solana option in the other.
+        let declared = baseline(&[option(BASE, USDC, A)]);
+        for version in [1, 2] {
+            for (accepts, requirements) in [
+                (option(MAINNET, MINT, SOL), option(BASE, USDC, A)),
+                (option(BASE, USDC, A), option(MAINNET, MINT, SOL)),
+            ] {
+                let doc = serde_json::json!({"x402Version": version,
+                    "accepts": [accepts], "paymentRequirements": [requirements]});
+                for live in [
+                    pay_to_from_402(Some(&doc.to_string()), None),
+                    pay_to_from_402(None, Some(&doc.to_string())),
+                ] {
+                    assert_eq!(
+                        compare_recipients(&declared, &live),
+                        Recipients::Drifted,
+                        "v{version}: {doc}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn each_list_key_still_vouches_for_its_own_extra_option() {
+        let declared = baseline(&[option(BASE, USDC, A)]);
+        for key in ["accepts", "paymentRequirements"] {
+            let doc = serde_json::json!({"x402Version": 1,
+                key: [option(BASE, USDC, A), option(MAINNET, MINT, SOL)]});
+            let live = pay_to_from_402(Some(&doc.to_string()), None);
+            assert_eq!(
+                compare_recipients(&declared, &live),
+                Recipients::ExtraNetworks(vec![DeclaredRecipient::new(MAINNET, SOL)]),
+                "{key}"
+            );
+        }
+    }
+
+    /// Every `Network::from_str` spelling that the derived serde of `Network`
+    /// refuses, with an asset and a recipient valid on that network.
+    fn from_str_only_aliases() -> Vec<(&'static str, &'static str, &'static str)> {
+        let evm = |alias| (alias, USDC, A);
+        #[allow(unused_mut)]
+        let mut aliases = vec![
+            evm("base-mainnet"),
+            evm("bnb"),
+            evm("binance"),
+            evm("skale"),
+            evm("skale-testnet"),
+            evm("scroll-mainnet"),
+            evm("robinhood-mainnet"),
+            evm("robinhood-chain"),
+        ];
+        #[cfg(feature = "hedera")]
+        aliases.push(("hedera-mainnet", "0.0.456858", "0.0.12345"));
+        #[cfg(feature = "xrpl")]
+        aliases.push((
+            "xrpl-mainnet",
+            "rMxCKbEDwqr76QuheSUMdEGf4B9xJ8m5De",
+            "rN7n7otQDd6FczFgLdSqtcsAUxDkw6fzRH",
+        ));
+        #[cfg(feature = "sui")]
+        aliases.push((
+            "sui-mainnet",
+            "0xdba34672e30cb065b1f93e3ab55318768fd6fef66c15942c9f7cb846e2f900e7::usdc::USDC",
+            "0x1111111111111111111111111111111111111111111111111111111111111111",
+        ));
+        aliases
+    }
+
+    #[test]
+    fn a_from_str_alias_is_not_a_v1_wire_name() {
+        // P1-B: a v1 name counts only as the derived serde of `Network`
+        // reads it, which is what clients send and accept.
+        let mut vouched = Vec::new();
+        for (alias, asset, recipient) in from_str_only_aliases() {
+            let network = alias.parse::<crate::network::Network>().unwrap();
+            assert!(
+                serde_json::from_value::<crate::network::Network>(serde_json::json!(alias))
+                    .is_err(),
+                "{alias} is a serde name"
+            );
+            let wire = serde_json::to_value(network).unwrap();
+            let wire = wire.as_str().unwrap();
+            let chain = network.to_caip2();
+            let declared = baseline(&[option(&chain, asset, recipient)]);
+            for (spelling, expect_drift) in [(alias, true), (wire, false), (chain.as_str(), false)]
+            {
+                let live = challenge(&[
+                    option(spelling, asset, recipient),
+                    option(MAINNET, MINT, SOL),
+                ]);
+                if pay_to_drifted(&declared, &live) != expect_drift {
+                    vouched.push(format!("{spelling} (declared {chain})"));
+                }
+            }
+        }
+        assert!(vouched.is_empty(), "wrong verdict for: {vouched:?}");
+    }
+
+    #[cfg(feature = "algorand")]
+    #[test]
+    fn algorand_mainnet_cannot_be_declared_so_its_alias_cannot_vouch() {
+        // The catalog has no CAIP-2 namespace for Algorand: no listing can
+        // declare an offer there, so `algorand-mainnet` never reaches
+        // `spelled_for_clients`.
+        for spelling in ["algorand-mainnet", "algorand", "algorand:mainnet"] {
+            assert!(crate::discovery_price::resolve_catalog_network(spelling).is_none());
+        }
+    }
+
+    #[test]
+    fn the_v1_wire_name_still_vouches_for_the_extra_option() {
+        let declared = baseline(&[option(BASE, USDC, A)]);
+        let live = challenge(&[option("base", USDC, A), option(MAINNET, MINT, SOL)]);
+        assert_eq!(
+            compare_recipients(&declared, &live),
+            Recipients::ExtraNetworks(vec![DeclaredRecipient::new(MAINNET, SOL)])
         );
     }
 

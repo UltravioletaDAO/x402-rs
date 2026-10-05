@@ -30,6 +30,12 @@
   another case is another mint; only an EVM address, written with a literal
   `0x`, is compared in any case), and a scheme the protocol's `Scheme` takes
   literally (`EXACT`, ` exact ` do not count). Anything else is a drift.
+- That offer must sit in the same list as the extra option: `accepts` and
+  `paymentRequirements` of one document are judged apart, like the two
+  transports, so the declared offer in one does not vouch for an option in the
+  other. A v1 network name counts only as the wire name the derived serde of
+  `Network` reads (`base`, not `base-mainnet`, `bnb` or any other
+  `Network::from_str` alias).
 - An upstream page that does not parse no longer panics when its error preview
   would cut a multibyte character at byte 500.
 - A drift hold no build with the per-network rule has judged is probed once

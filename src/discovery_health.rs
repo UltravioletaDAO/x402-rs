@@ -266,16 +266,14 @@ fn canonical_address(chain: &str, raw: &str) -> String {
     }
 }
 
-/// An address as a client reads it off a live option: on an EVM chain only a
-/// literal `0x` and 40 hex digits, in any case (lowercased, as
+/// An address as a client reads it off a live option: on an EVM chain one
+/// with a literal `0x` prefix, in any case (lowercased, as
 /// [`canonical_address`]); anywhere else exactly as written, untrimmed.
 fn client_address(chain: &str, raw: &str) -> Option<String> {
     if !chain.starts_with("eip155:") {
         return Some(raw.to_string());
     }
-    let hex = raw.strip_prefix("0x")?;
-    (hex.len() == 40 && hex.bytes().all(|b| b.is_ascii_hexdigit()))
-        .then(|| raw.to_ascii_lowercase())
+    raw.starts_with("0x").then(|| raw.to_ascii_lowercase())
 }
 
 /// Whether two recipients are the same account: equal as written, equal in
@@ -6656,6 +6654,22 @@ mod strict_offer_identity_tests {
         let declared = baseline(&[option(MAINNET, MINT, SOL)]);
         let live = challenge(&[option(MAINNET, MINT, &other), option(BASE, USDC, B)]);
         assert_eq!(compare_recipients(&declared, &live), Recipients::Drifted);
+        // Beside the declared Base offer, the other-case recipient is a new
+        // recipient on a declared network, not the declared one.
+        let declared = baseline(&[option(BASE, USDC, A), option(MAINNET, MINT, SOL)]);
+        let live = challenge(&[option(BASE, USDC, A), option(MAINNET, MINT, &other)]);
+        assert_eq!(compare_recipients(&declared, &live), Recipients::Drifted);
+    }
+
+    #[test]
+    fn a_declared_scheme_no_client_takes_vouches_for_nothing() {
+        // Equal to the declaration is not enough: the live option must also be
+        // one the protocol's `Scheme` takes as written.
+        let declared = vec![DeclaredOffer::new("Exact", BASE, USDC, A)];
+        let mut decoy = option(BASE, USDC, A);
+        decoy["scheme"] = serde_json::json!("Exact");
+        let live = challenge(&[decoy, option(MAINNET, MINT, SOL)]);
+        assert!(pay_to_drifted(&declared, &live));
     }
 
     #[test]

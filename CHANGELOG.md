@@ -38,6 +38,17 @@
   `Network::from_str` alias).
 - An upstream page that does not parse no longer panics when its error preview
   would cut a multibyte character at byte 500.
+- **The `PAYMENT-REQUIRED` header is decoded as forgivingly as the clients
+  that pay it.** It used to accept only padded standard base64 or unpadded
+  URL-safe base64, so a header in any other spelling Node's `Buffer` or the
+  browser's `atob` reads (unpadded standard, padded URL-safe, mixed alphabets,
+  whitespace or stray characters, extra padding or bytes after it, non-zero
+  trailing bits, a dangling final symbol, invalid UTF-8 in the JSON) counted as
+  absent, and the hijack check judged the body alone: a body keeping the
+  declared offer hid a header paying another recipient. Now either alphabet is
+  read, padding is optional, characters outside the alphabets are skipped,
+  decoding stops at the first `=` and the bytes become text with invalid UTF-8
+  replaced, as `Buffer` does.
 - A drift hold no build with the per-network rule has judged is probed once
   more straight away instead of after its 72-hour backoff. It still needs two
   clean challenges in a row to come back.

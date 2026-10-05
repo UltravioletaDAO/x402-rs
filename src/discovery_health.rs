@@ -1788,17 +1788,45 @@ fn pay_to_from_402(body: Option<&str>, header: Option<&str>) -> LiveTerms {
 /// Decode a `PAYMENT-REQUIRED` header value into the challenge it carries.
 ///
 /// Base64 in practice; a few sellers send bare JSON, so both are accepted.
+///
+/// The base64 is read as forgivingly as the clients that pay it read it:
+/// Node's `Buffer.from(value, "base64")` and the browser's `atob`. Measured on
+/// Node 22: either alphabet (mixed too), padding optional, trailing bits
+/// ignored, whitespace and every other character outside the alphabets
+/// skipped, and decoding stops at the first `=`. The bytes are text the way
+/// `TextDecoder` and `Buffer#toString` make them, invalid UTF-8 replaced. A
+/// header a client reads and this decoder did not would leave only the body
+/// to judge, and an attacker who keeps the declared offer in the body would
+/// pass the hijack check with the header paying someone else.
 fn decode_payment_required(raw: &str) -> Option<serde_json::Value> {
+    use base64::engine::{DecodePaddingMode, GeneralPurpose, GeneralPurposeConfig};
     use base64::Engine as _;
+    const FORGIVING: GeneralPurpose = GeneralPurpose::new(
+        &base64::alphabet::STANDARD,
+        GeneralPurposeConfig::new()
+            .with_decode_padding_mode(DecodePaddingMode::RequireNone)
+            .with_decode_allow_trailing_bits(true),
+    );
     let trimmed = raw.trim();
     if let Ok(v) = serde_json::from_str::<serde_json::Value>(trimmed) {
         return Some(v);
     }
-    let decoded = base64::engine::general_purpose::STANDARD
-        .decode(trimmed)
-        .or_else(|_| base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(trimmed))
-        .ok()?;
-    serde_json::from_slice(&decoded).ok()
+    let mut symbols: Vec<u8> = trimmed
+        .bytes()
+        .take_while(|b| *b != b'=')
+        .filter_map(|b| match b {
+            b'-' => Some(b'+'),
+            b'_' => Some(b'/'),
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'+' | b'/' => Some(b),
+            _ => None,
+        })
+        .collect();
+    // A lone final symbol carries no whole byte; Buffer drops it.
+    if symbols.len() % 4 == 1 {
+        symbols.pop();
+    }
+    let decoded = FORGIVING.decode(&symbols).ok()?;
+    serde_json::from_str(&String::from_utf8_lossy(&decoded)).ok()
 }
 
 /// Read one challenge document: its recipients, its full requirements and the
@@ -6964,5 +6992,114 @@ mod strict_offer_identity_tests {
             line.contains("https://seller.example/r"),
             "url missing: {line}"
         );
+    }
+
+    /// One challenge document as the base64 spellings a paying client reads:
+    /// `Buffer.from(value, "base64")` on Node, `atob` in the browser. Each one
+    /// was decoded by Node 22 to the same document (PR #114, X4114R3).
+    fn client_readable_headers(options: &[serde_json::Value]) -> Vec<(&'static str, String)> {
+        use base64::engine::general_purpose::{STANDARD, STANDARD_NO_PAD, URL_SAFE};
+        use base64::Engine as _;
+        // `?>` gives the encoding a `/` and a `+`, so the URL-safe alphabet
+        // differs from the standard one.
+        let doc = serde_json::json!({"x402Version": 2, "accepts": options,
+            "error": "??>>??>>"})
+        .to_string();
+        // Trailing whitespace is still the same JSON; it sets the length mod 3.
+        let sized = |rem: usize| {
+            let mut d = doc.clone();
+            while d.len() % 3 != rem {
+                d.push(' ');
+            }
+            d
+        };
+        let alphabet = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+        let with_trailing_bits = |rem: usize, mask: usize| {
+            let mut s = STANDARD_NO_PAD.encode(sized(rem));
+            let last = s.pop().unwrap();
+            let at = alphabet.iter().position(|c| *c as char == last).unwrap();
+            s.push(alphabet[at | mask] as char);
+            s
+        };
+        let standard = STANDARD.encode(sized(1));
+        assert!(standard.ends_with("=="), "a padded spelling to cut");
+        let url_safe = URL_SAFE.encode(sized(1));
+        assert!(
+            url_safe.contains('-') && url_safe.contains('_'),
+            "the URL-safe spelling must differ"
+        );
+        let mixed = STANDARD.encode(sized(1)).replacen('+', "-", 1);
+        assert!(mixed.contains('/'), "both alphabets in one value");
+        let spaced: String = STANDARD
+            .encode(sized(1))
+            .chars()
+            .enumerate()
+            .flat_map(|(i, c)| {
+                let gap = if i % 8 == 7 {
+                    Some(if i % 16 == 7 { ' ' } else { '\t' })
+                } else {
+                    None
+                };
+                std::iter::once(c).chain(gap)
+            })
+            .collect();
+        let junk: String = STANDARD
+            .encode(sized(1))
+            .chars()
+            .enumerate()
+            .flat_map(|(i, c)| std::iter::once(c).chain((i % 10 == 9).then_some('.')))
+            .collect();
+        let mut invalid_utf8 = sized(1).into_bytes();
+        let at = invalid_utf8.windows(2).position(|w| w == b"??").unwrap();
+        invalid_utf8[at] = 0xFF;
+        vec![
+            ("standard_no_pad", STANDARD_NO_PAD.encode(sized(1))),
+            ("url_safe_padded", url_safe),
+            ("mixed_alphabets", mixed),
+            ("spaces_and_tabs", spaced),
+            ("junk_skipped", junk),
+            ("extra_padding", format!("{standard}==")),
+            ("after_padding", format!("{standard}QUFB")),
+            ("trailing_bits_rem1", with_trailing_bits(1, 0x0F)),
+            ("trailing_bits_rem2", with_trailing_bits(2, 0x03)),
+            ("dangling_symbol", format!("{}Q", STANDARD.encode(sized(0)))),
+            ("invalid_utf8", STANDARD.encode(invalid_utf8)),
+        ]
+    }
+
+    #[test]
+    fn a_header_only_attacker_in_any_client_readable_base64_is_a_drift() {
+        // P2-1 (VER2-X4114): the body keeps the declared offer, the header a
+        // client actually pays pays the attacker, spelled in base64 the old
+        // decoder (STANDARD or URL_SAFE_NO_PAD only) could not read.
+        let declared = baseline(&[option(BASE, USDC, A)]);
+        let body =
+            serde_json::json!({"x402Version": 2, "accepts": [option(BASE, USDC, A)]}).to_string();
+        for (spelling, header) in client_readable_headers(&[option(BASE, USDC, B)]) {
+            let live = pay_to_from_402(Some(&body), Some(&header));
+            assert_eq!(
+                compare_recipients(&declared, &live),
+                Recipients::Drifted,
+                "{spelling}: {header:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_same_spellings_carrying_the_declared_offer_are_not_a_drift() {
+        let declared = baseline(&[option(BASE, USDC, A)]);
+        let body =
+            serde_json::json!({"x402Version": 2, "accepts": [option(BASE, USDC, A)]}).to_string();
+        for (spelling, header) in client_readable_headers(&[option(BASE, USDC, A)]) {
+            let alone = pay_to_from_402(None, Some(&header));
+            assert!(alone.readable, "{spelling}: the header must be read");
+            assert_eq!(alone.pay_to, vec![A.to_string()], "{spelling}");
+            let live = pay_to_from_402(Some(&body), Some(&header));
+            assert_eq!(
+                compare_recipients(&declared, &live),
+                Recipients::Declared,
+                "{spelling}: {header:?}"
+            );
+        }
     }
 }

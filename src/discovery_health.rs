@@ -170,36 +170,135 @@ pub struct ProbeTarget {
     pub request: ProbeRequest,
 }
 
-/// One offer, as the drift check compares it: what it is paid in, where, and
-/// to whom. Scheme, asset and recipient lowercased; the network as
-/// [`drift_network`] keys it.
+/// One offer: what it is paid in, where, and to whom.
+///
+/// Two readings of the network live side by side, on purpose. `network` is the
+/// conservative key the drift check uses to tell networks apart
+/// ([`drift_network`], a family for non-EVM chains): coarser can only find
+/// MORE drift there. `chain` is the exact CAIP-2 identifier, the identity a
+/// client matches an offer by: Solana mainnet and devnet are one family and
+/// two offers, and only the exact one shows that the declared offer is still
+/// on sale ([`DeclaredOffer::is_offered_by`]).
+///
+/// Addresses are kept as written ([`canonical_address`]): only an EVM address
+/// is case-folded, because only there is case a checksum and not the address.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DeclaredOffer {
+    /// The scheme, exactly as written: a client takes `exact`, not `EXACT`.
     pub scheme: String,
+    /// [`drift_network`] of the network.
     pub network: Option<String>,
+    /// The exact CAIP-2 identifier of the network.
+    pub chain: String,
     pub asset: String,
     pub pay_to: String,
 }
 
 impl DeclaredOffer {
     pub fn of(option: &CatalogPaymentOption) -> Self {
+        let chain = option.network.to_string();
         Self {
-            scheme: option.scheme.to_string().to_ascii_lowercase(),
-            network: drift_network(&option.network.to_string()),
-            asset: option.asset.to_string().to_ascii_lowercase(),
-            pay_to: option.pay_to.to_string().to_ascii_lowercase(),
+            scheme: option.scheme.to_string(),
+            network: drift_network(&chain),
+            asset: canonical_address(&chain, &option.asset.to_string()),
+            pay_to: canonical_address(&chain, &option.pay_to.to_string()),
+            chain,
         }
+    }
+
+    /// The offer a live option makes, read the way a client reads it: a
+    /// scheme the protocol's `Scheme` takes as written (`EXACT`, ` exact `
+    /// are refused), the asset and recipient as [`client_address`] reads them,
+    /// on the network the catalog resolved. `None` when a client could not
+    /// take the option, so it never stands for a declared offer.
+    fn live(raw: &serde_json::Value, option: &CatalogPaymentOption) -> Option<Self> {
+        let field = |k: &str| raw.get(k).and_then(serde_json::Value::as_str);
+        let scheme = field("scheme")?;
+        serde_json::from_value::<crate::types::Scheme>(serde_json::Value::from(scheme)).ok()?;
+        let chain = option.network.to_string();
+        Some(Self {
+            scheme: scheme.to_string(),
+            network: drift_network(&chain),
+            asset: client_address(&chain, field("asset")?)?,
+            pay_to: client_address(&chain, field("payTo")?)?,
+            chain,
+        })
+    }
+
+    /// Whether `live` is this very offer: same scheme, same CAIP-2 network,
+    /// same asset and same recipient, with no folding beyond an EVM address's.
+    fn is_offered_by(&self, live: &DeclaredOffer) -> bool {
+        self.scheme == live.scheme
+            && self.chain == live.chain
+            && self.asset == live.asset
+            && self.pay_to == live.pay_to
+    }
+
+    /// Whether `pay_to`, read on a live option, is this offer's recipient --
+    /// on any network: the drift check's "declared recipient". An EVM
+    /// recipient matches in any case; any other only as written, or as the
+    /// same parsed address.
+    fn declares_recipient(&self, pay_to: &str) -> bool {
+        same_address(&self.chain, &self.pay_to, pay_to)
     }
 
     #[cfg(test)]
     fn new(scheme: &str, network: &str, asset: &str, pay_to: &str) -> Self {
+        let chain = exact_chain(network).unwrap_or_else(|| network.to_string());
         Self {
-            scheme: scheme.to_ascii_lowercase(),
+            scheme: scheme.to_string(),
             network: drift_network(network),
-            asset: asset.to_ascii_lowercase(),
-            pay_to: pay_to.to_ascii_lowercase(),
+            asset: canonical_address(&chain, asset),
+            pay_to: canonical_address(&chain, pay_to),
+            chain,
         }
     }
+}
+
+/// An address as offers are compared: lowercased on an EVM chain, where case
+/// is only a checksum, and exactly as written anywhere else -- a Solana mint
+/// and the same string in another case are two different accounts.
+fn canonical_address(chain: &str, raw: &str) -> String {
+    if chain.starts_with("eip155:") {
+        raw.to_ascii_lowercase()
+    } else {
+        raw.to_string()
+    }
+}
+
+/// An address as a client reads it off a live option: on an EVM chain only a
+/// literal `0x` and 40 hex digits, in any case (lowercased, as
+/// [`canonical_address`]); anywhere else exactly as written, untrimmed.
+fn client_address(chain: &str, raw: &str) -> Option<String> {
+    if !chain.starts_with("eip155:") {
+        return Some(raw.to_string());
+    }
+    let hex = raw.strip_prefix("0x")?;
+    (hex.len() == 40 && hex.bytes().all(|b| b.is_ascii_hexdigit()))
+        .then(|| raw.to_ascii_lowercase())
+}
+
+/// Whether two recipients are the same account: equal as written, equal in
+/// any case on an EVM chain, or parsed to the same address.
+fn same_address(chain: &str, declared: &str, live: &str) -> bool {
+    if declared == live || (chain.starts_with("eip155:") && declared.eq_ignore_ascii_case(live)) {
+        return true;
+    }
+    matches!(
+        (
+            crate::discovery_price::parse_catalog_address(declared),
+            crate::discovery_price::parse_catalog_address(live),
+        ),
+        (Some(a), Some(b)) if a == b
+    )
+}
+
+/// The exact CAIP-2 identifier a network spelling resolves to.
+fn exact_chain(raw: &str) -> Option<String> {
+    let s = raw.trim();
+    crate::discovery_price::resolve_catalog_network(s)
+        .map(|id| id.to_string())
+        .or_else(|| crate::network::resolve_network(s).map(|n| n.to_caip2()))
 }
 
 /// The drift baseline of a catalog record: every offer its options declare.
@@ -213,15 +312,18 @@ pub struct DeclaredRecipient {
     /// [`drift_network`] of the option's network; `None` when it names no
     /// chain family the check can tell apart.
     pub network: Option<String>,
-    /// `payTo`, lowercased.
+    /// `payTo`, trimmed; lowercased only on an EVM chain
+    /// ([`canonical_address`]).
     pub pay_to: String,
 }
 
 impl DeclaredRecipient {
     pub fn new(network: &str, pay_to: &str) -> Self {
+        let network = drift_network(network);
+        let chain = network.as_deref().unwrap_or("");
         Self {
-            network: drift_network(network),
-            pay_to: pay_to.to_ascii_lowercase(),
+            pay_to: canonical_address(chain, pay_to.trim()),
+            network,
         }
     }
 }
@@ -240,8 +342,9 @@ pub fn declared_recipients(accepts: &[CatalogPaymentOption]) -> Vec<DeclaredReci
 /// Within one of them every reference is the same network for this check:
 /// `solana:5eykt…` and `solana:mainnet` spell one chain, and reading them as two
 /// would let an option on an alias of a declared network pass as "another
-/// network". Coarser can only make the check stricter. EVM is the exception,
-/// because its reference is a chain id we can read exactly.
+/// network". Coarser can only make the drift check stricter -- and is why it
+/// is never the identity of an offer ([`DeclaredOffer::chain`] is). EVM is the
+/// exception, because its reference is a chain id we can read exactly.
 ///
 /// A namespace outside this list is no chain we can name -- `aws:base`, the
 /// network of Coinbase's `agent-pay` option, reads like an alias of Base -- and
@@ -260,11 +363,7 @@ const DRIFT_FAMILIES: [&str; 9] = [
 /// `None` for anything else: a network we cannot name is never "another
 /// network", and a recipient the listing does not declare on it is a drift.
 fn drift_network(raw: &str) -> Option<String> {
-    let s = raw.trim();
-    let caip2 = crate::discovery_price::resolve_catalog_network(s)
-        .map(|id| id.to_string())
-        .or_else(|| crate::network::resolve_network(s).map(|n| n.to_caip2()))
-        .unwrap_or_else(|| s.to_string());
+    let caip2 = exact_chain(raw).unwrap_or_else(|| raw.trim().to_string());
     let (namespace, reference) = caip2.split_once(':')?;
     let namespace = namespace.trim().to_ascii_lowercase();
     if namespace == "eip155" {
@@ -1754,13 +1853,15 @@ fn read_challenge(v: &serde_json::Value) -> ChallengeReading {
                     reading
                         .recipients
                         .push(live_recipient(a.get("network"), &p));
-                    reading.pay_to.push(p);
+                    reading.pay_to.push(p.to_ascii_lowercase());
                 }
                 match serde_json::from_value::<DeclaredPaymentOption>(a.clone()) {
                     Ok(declared) => match normalize_declared_option(declared) {
                         Ok(option) => {
                             if spelled_for_clients(a.get("network"), &option.network) {
-                                reading.payable.push(DeclaredOffer::of(&option));
+                                if let Some(offer) = DeclaredOffer::live(a, &option) {
+                                    reading.payable.push(offer);
+                                }
                             }
                             reading.accepts.push(option);
                         }
@@ -1787,7 +1888,7 @@ fn read_challenge(v: &serde_json::Value) -> ChallengeReading {
             reading
                 .recipients
                 .push(live_recipient(v.get("network"), &p));
-            reading.pay_to.push(p);
+            reading.pay_to.push(p.to_ascii_lowercase());
         }
     }
     reading
@@ -1815,16 +1916,19 @@ fn spelled_for_clients(
 /// absent or not a string names no network, and fails closed like any other
 /// network we cannot name.
 fn live_recipient(network: Option<&serde_json::Value>, pay_to: &str) -> DeclaredRecipient {
+    let network = network
+        .and_then(serde_json::Value::as_str)
+        .and_then(drift_network);
+    let chain = network.as_deref().unwrap_or("");
     DeclaredRecipient {
-        network: network
-            .and_then(serde_json::Value::as_str)
-            .and_then(drift_network),
-        pay_to: pay_to.to_string(),
+        pay_to: canonical_address(chain, pay_to),
+        network,
     }
 }
 
-/// A live `payTo`, lowercased, for the drift check -- or `None` when it is a
-/// URN.
+/// A live `payTo`, trimmed, for the drift check -- or `None` when it is a URN.
+/// Not case-folded: whether case matters is the network's to say
+/// ([`canonical_address`]).
 ///
 /// A URN (RFC 8141) names something; it is not an account and cannot receive a
 /// transfer, so it cannot redirect anybody's money. The `agent-pay` option
@@ -1837,8 +1941,11 @@ fn live_recipient(network: Option<&serde_json::Value>, pay_to: &str) -> Declared
 /// cannot parse is still compared, because a client may pay a spelling we do
 /// not read (`0X` + hex, a chain we do not support).
 fn drift_recipient(raw: &str) -> Option<String> {
-    let lowered = raw.trim().to_ascii_lowercase();
-    (!lowered.starts_with("urn:")).then_some(lowered)
+    let trimmed = raw.trim();
+    let urn = trimmed
+        .get(..4)
+        .is_some_and(|p| p.eq_ignore_ascii_case("urn:"));
+    (!urn).then(|| trimmed.to_string())
 }
 
 /// [`drift_recipient`] for the JSON value an option carries. A `payTo` that is
@@ -1849,7 +1956,7 @@ fn drift_recipient_value(value: &serde_json::Value) -> Option<String> {
     match value {
         serde_json::Value::Null => None,
         serde_json::Value::String(s) => drift_recipient(s),
-        other => Some(other.to_string().to_ascii_lowercase()),
+        other => Some(other.to_string()),
     }
 }
 
@@ -2428,16 +2535,7 @@ async fn probe_and_record<T: ProbeTransport + ?Sized>(
                 // through this option, so it is logged at WARN with its network
                 // and address, which is the record of it even when the catalog
                 // cannot read the option. It never becomes part of the listing.
-                let extra: Vec<String> = extra
-                    .iter()
-                    .map(|r| format!("{} {}", r.network.as_deref().unwrap_or("?"), r.pay_to))
-                    .collect();
-                warn!(
-                    url = %u,
-                    extra = ?extra,
-                    "paytoswap: live 402 adds a payment option on a network the listing \
-                     does not declare; recorded, not quarantined"
-                );
+                log_extra_networks(&u, &extra);
             } else if !live.readable {
                 // A check that did NOT run must not look like one
                 // that passed. This is the state that hid the bug:
@@ -2537,6 +2635,21 @@ async fn probe_and_record<T: ProbeTransport + ?Sized>(
     }
 }
 
+/// The WARN an extra payment option leaves: its network and its recipient,
+/// the only record of a recipient nobody vouched for.
+fn log_extra_networks(url: &impl std::fmt::Display, extra: &[DeclaredRecipient]) {
+    let extra: Vec<String> = extra
+        .iter()
+        .map(|r| format!("{} {}", r.network.as_deref().unwrap_or("?"), r.pay_to))
+        .collect();
+    warn!(
+        url = %url,
+        extra = ?extra,
+        "paytoswap: live 402 adds a payment option on a network the listing \
+         does not declare; recorded, not quarantined"
+    );
+}
+
 /// What a live challenge's recipients mean against the ones the listing declares.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Recipients {
@@ -2612,7 +2725,7 @@ fn judge_transport(declared: &[DeclaredOffer], live: &TransportRecipients) -> Re
         .collect();
     let mut extra: Vec<DeclaredRecipient> = Vec::new();
     for r in &live.named {
-        if declared.iter().any(|d| d.pay_to == r.pay_to) {
+        if declared.iter().any(|d| d.declares_recipient(&r.pay_to)) {
             continue;
         }
         match r.network.as_deref() {
@@ -2630,7 +2743,7 @@ fn judge_transport(declared: &[DeclaredOffer], live: &TransportRecipients) -> Re
     let still_paid = live
         .payable
         .iter()
-        .any(|p| p.network.is_some() && declared.contains(p));
+        .any(|p| p.network.is_some() && declared.iter().any(|d| d.is_offered_by(p)));
     if still_paid {
         Recipients::ExtraNetworks(extra)
     } else {
@@ -6465,6 +6578,208 @@ mod declared_method_tests {
             t.uptime_prefix_verified("https://other.example/", now_secs(), window)
                 .await,
             None
+        );
+    }
+}
+
+/// The declared offer that lets an extra network pass is compared as a client
+/// matches it: the exact CAIP-2 network, the asset and recipient as written
+/// outside EVM, a scheme the protocol takes literally. Anything looser lets a
+/// decoy vouch for the attacker's option (REF-X4114, P1-1..3).
+#[cfg(test)]
+mod strict_offer_identity_tests {
+    use super::*;
+
+    const BASE: &str = "eip155:8453";
+    const MAINNET: &str = "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp";
+    const DEVNET: &str = "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1";
+    const A: &str = "0x1111111111111111111111111111111111111111";
+    const B: &str = "0x2222222222222222222222222222222222222222";
+    const USDC: &str = "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913";
+    const MINT: &str = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
+    const SOL: &str = "GEhr9HCFTRDjanMg435frSgCVwVZYpNoPrEkmNBnFHFE";
+
+    fn option(network: &str, asset: &str, recipient: &str) -> serde_json::Value {
+        serde_json::json!({"scheme": "exact", "network": network, "asset": asset,
+            "payTo": recipient, "amount": "1", "maxTimeoutSeconds": 60})
+    }
+
+    fn baseline(options: &[serde_json::Value]) -> Vec<DeclaredOffer> {
+        options
+            .iter()
+            .map(|value| {
+                let wire = serde_json::from_value::<DeclaredPaymentOption>(value.clone()).unwrap();
+                DeclaredOffer::of(&normalize_declared_option(wire).unwrap())
+            })
+            .collect()
+    }
+
+    fn challenge(options: &[serde_json::Value]) -> LiveTerms {
+        let doc = serde_json::json!({"x402Version": 2, "accepts": options});
+        pay_to_from_402(Some(&doc.to_string()), None)
+    }
+
+    #[test]
+    fn another_solana_network_is_not_the_declared_offer() {
+        // P1-1: mainnet and devnet are one family for the drift key and two
+        // offers for a client.
+        let declared = baseline(&[option(MAINNET, MINT, SOL)]);
+        let live = challenge(&[option(DEVNET, MINT, SOL), option(BASE, USDC, B)]);
+        assert_eq!(
+            compare_recipients(&declared, &live),
+            Recipients::Drifted,
+            "mainnet was removed; a devnet decoy must not vouch for the attacker on Base"
+        );
+    }
+
+    #[test]
+    fn a_different_case_sensitive_mint_is_not_the_declared_asset() {
+        // P1-2: two valid, distinct base58 mints that only differ in case.
+        let other_mint = MINT.replacen('j', "J", 1);
+        let before: crate::types::MixedAddress =
+            serde_json::from_value(serde_json::json!(MINT)).unwrap();
+        let after: crate::types::MixedAddress =
+            serde_json::from_value(serde_json::json!(other_mint)).unwrap();
+        assert_ne!(before, after, "distinct valid base58 addresses");
+        let declared = baseline(&[option(MAINNET, MINT, SOL)]);
+        let live = challenge(&[option(MAINNET, &other_mint, SOL), option(BASE, USDC, B)]);
+        assert_eq!(
+            compare_recipients(&declared, &live),
+            Recipients::Drifted,
+            "USDC was removed; another mint must not vouch for the attacker on Base"
+        );
+    }
+
+    #[test]
+    fn a_solana_recipient_in_another_case_is_not_the_declared_one() {
+        let other = SOL.replacen('G', "g", 1);
+        let declared = baseline(&[option(MAINNET, MINT, SOL)]);
+        let live = challenge(&[option(MAINNET, MINT, &other), option(BASE, USDC, B)]);
+        assert_eq!(compare_recipients(&declared, &live), Recipients::Drifted);
+    }
+
+    #[test]
+    fn literal_scheme_rejected_by_clients_is_not_a_payable_offer() {
+        // P1-3: the catalog normalizes `EXACT`; a client does not take it.
+        let declared = baseline(&[option(BASE, USDC, A)]);
+        let mut accepted = Vec::new();
+        for scheme in ["EXACT", " exact ", "Exact", "exact "] {
+            assert!(
+                serde_json::from_value::<crate::types::Scheme>(serde_json::json!(scheme)).is_err()
+            );
+            let mut decoy = option(BASE, USDC, A);
+            decoy["scheme"] = serde_json::json!(scheme);
+            let live = challenge(&[decoy, option(MAINNET, MINT, SOL)]);
+            if !pay_to_drifted(&declared, &live) {
+                accepted.push(scheme);
+            }
+        }
+        assert!(
+            accepted.is_empty(),
+            "client-rejected schemes wrongly vouch for attacker: {accepted:?}"
+        );
+    }
+
+    #[test]
+    fn an_evm_address_a_client_cannot_read_is_not_the_declared_offer() {
+        let declared = baseline(&[option(BASE, USDC, A)]);
+        let upper_prefix = A.replacen("0x", "0X", 1);
+        for (asset, pay_to) in [
+            (USDC.replacen("0x", "0X", 1), A.to_string()),
+            (USDC.to_string(), upper_prefix),
+            (format!(" {USDC}"), A.to_string()),
+        ] {
+            let live = challenge(&[option(BASE, &asset, &pay_to), option(MAINNET, MINT, SOL)]);
+            assert!(
+                pay_to_drifted(&declared, &live),
+                "{asset} / {pay_to} must not vouch for the Solana option"
+            );
+        }
+    }
+
+    #[test]
+    fn an_evm_address_in_another_case_is_still_the_declared_offer() {
+        // EVM case is a checksum, not the address: the legitimate equivalence stays.
+        let declared = baseline(&[option(BASE, &USDC.to_ascii_lowercase(), A)]);
+        let checksummed_recipient = "0xd5Ba9711a3D052846a3695C70e7fcb8b3168FE7d";
+        let declared_mixed = baseline(&[option(BASE, USDC, checksummed_recipient)]);
+        let live = challenge(&[option(BASE, USDC, A), option(MAINNET, MINT, SOL)]);
+        assert_eq!(
+            compare_recipients(&declared, &live),
+            Recipients::ExtraNetworks(vec![DeclaredRecipient::new(MAINNET, SOL)])
+        );
+        let live = challenge(&[
+            option(
+                BASE,
+                &USDC.to_ascii_uppercase().replacen("0X", "0x", 1),
+                &checksummed_recipient.to_ascii_lowercase(),
+            ),
+            option(MAINNET, MINT, SOL),
+        ]);
+        assert!(!pay_to_drifted(&declared_mixed, &live));
+    }
+
+    #[test]
+    fn the_actual_offer_beside_an_extra_network_is_accepted() {
+        let declared = baseline(&[option(BASE, USDC, A)]);
+        let live = challenge(&[option(BASE, USDC, A), option(MAINNET, MINT, SOL)]);
+        assert!(!pay_to_drifted(&declared, &live));
+        let declared = baseline(&[option(MAINNET, MINT, SOL)]);
+        let live = challenge(&[option(MAINNET, MINT, SOL), option(BASE, USDC, B)]);
+        assert_eq!(
+            compare_recipients(&declared, &live),
+            Recipients::ExtraNetworks(vec![DeclaredRecipient::new(BASE, B)])
+        );
+    }
+
+    #[derive(Clone, Default)]
+    struct Captured(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+
+    impl std::io::Write for Captured {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(buf);
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn the_extra_option_is_logged_at_warn_with_its_network_and_recipient() {
+        let captured = Captured::default();
+        let writer = captured.clone();
+        let subscriber = tracing_subscriber::fmt()
+            .with_writer(move || writer.clone())
+            .with_ansi(false)
+            .with_max_level(tracing::Level::TRACE)
+            .finish();
+        let _guard = tracing::subscriber::set_default(subscriber);
+        // See rate_policy's log test: a second dispatcher keeps another
+        // thread's cached `never` interest from silencing this capture.
+        let _second = tracing::Dispatch::new(tracing::subscriber::NoSubscriber::default());
+        tracing::callsite::rebuild_interest_cache();
+
+        let declared = baseline(&[option(BASE, USDC, A)]);
+        let live = challenge(&[option(BASE, USDC, A), option(MAINNET, MINT, SOL)]);
+        let Recipients::ExtraNetworks(extra) = compare_recipients(&declared, &live) else {
+            panic!("expected an extra network");
+        };
+        log_extra_networks(&"https://seller.example/r", &extra);
+
+        let out = String::from_utf8(captured.0.lock().unwrap().clone()).unwrap();
+        let line = out
+            .lines()
+            .find(|l| l.contains("adds a payment option"))
+            .unwrap_or_else(|| panic!("no extra-option event in {out:?}"));
+        assert!(line.contains(" WARN "), "not at WARN: {line}");
+        assert!(
+            line.contains(&format!("solana {SOL}")),
+            "network and recipient missing: {line}"
+        );
+        assert!(
+            line.contains("https://seller.example/r"),
+            "url missing: {line}"
         );
     }
 }

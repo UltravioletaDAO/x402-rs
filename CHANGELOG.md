@@ -24,6 +24,14 @@
   listings (Base, Arbitrum and Polygon, plus `stacks:1`) were held for adding a
   network; x402.tavily.com/search pays another Base recipient than every
   aggregated copy declares, and stays held.
+- The declared offer that lets an extra network pass is matched as a client
+  matches it: the exact CAIP-2 network (Solana devnet does not stand for
+  mainnet), the asset and recipient as written outside EVM (a Solana mint in
+  another case is another mint; only an EVM address, a literal `0x` and 40 hex
+  digits, is compared in any case), and a scheme the protocol's `Scheme` takes
+  literally (`EXACT`, ` exact ` do not count). Anything else is a drift.
+- An upstream page that does not parse no longer panics when its error preview
+  would cut a multibyte character at byte 500.
 - A drift hold no build with the per-network rule has judged is probed once
   more straight away instead of after its 72-hour backoff. It still needs two
   clean challenges in a row to come back.

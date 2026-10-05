@@ -1070,7 +1070,11 @@ impl DiscoveryAggregator {
         }
 
         // All formats failed
-        let preview = &body[..500.min(body.len())];
+        let mut end = body.len().min(500);
+        while !body.is_char_boundary(end) {
+            end -= 1;
+        }
+        let preview = &body[..end];
         Err(AggregatorError::ParseError(format!(
             "Unknown response format from {}: {}",
             facilitator_id, preview
@@ -1915,7 +1919,11 @@ mod tests {
                 let offset: usize = q.get("offset").and_then(|v| v.parse().ok()).unwrap_or(0);
                 asked.lock().unwrap().push((limit, offset));
                 if poison == Some(offset) {
-                    return axum::response::IntoResponse::into_response("<html>not a feed</html>");
+                    // Past the preview's 500 bytes, cut inside a multibyte character.
+                    return axum::response::IntoResponse::into_response(format!(
+                        "<html>{}</html>",
+                        "\u{20ac}".repeat(200)
+                    ));
                 }
                 let items: Vec<serde_json::Value> = (offset..(offset + limit).min(total))
                     .map(|i| {

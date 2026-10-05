@@ -1624,6 +1624,9 @@ pub struct LiveTerms {
     pub by_transport: Vec<TransportRecipients>,
     /// Whether a parseable x402 challenge was found in either transport.
     pub readable: bool,
+    /// A present header was unreadable, multiline or decoded inconsistently.
+    /// No body can vouch for it; the probe must be quarantined.
+    pub untrusted_header: bool,
     /// The full requirements from the transport that won. Never a blend of the
     /// two: fields taken from different transports compose an offer nobody made.
     pub accepts: Vec<CatalogPaymentOption>,
@@ -1723,7 +1726,13 @@ fn pay_to_from_402(body: Option<&str>, header: Option<&str>) -> LiveTerms {
     let from_header = header
         .and_then(decode_payment_required)
         .map(|v| read_challenge(&v))
-        .filter(|r| r.found_shape);
+        .filter(|r| r.found_shape && !r.accepts.is_empty());
+    if header.is_some() && from_header.is_none() {
+        return LiveTerms {
+            untrusted_header: true,
+            ..LiveTerms::default()
+        };
+    }
     let from_body = body
         .and_then(|b| serde_json::from_str::<serde_json::Value>(b).ok())
         .map(|v| read_challenge(&v))
@@ -1789,16 +1798,32 @@ fn pay_to_from_402(body: Option<&str>, header: Option<&str>) -> LiveTerms {
 ///
 /// Base64 in practice; a few sellers send bare JSON, so both are accepted.
 ///
-/// The base64 is read as forgivingly as the clients that pay it read it:
-/// Node's `Buffer.from(value, "base64")` and the browser's `atob`. Measured on
-/// Node 22: either alphabet (mixed too), padding optional, trailing bits
-/// ignored, whitespace and every other character outside the alphabets
-/// skipped, and decoding stops at the first `=`. The bytes are text the way
-/// `TextDecoder` and `Buffer#toString` make them, invalid UTF-8 replaced. A
-/// header a client reads and this decoder did not would leave only the body
-/// to judge, and an attacker who keeps the declared offer in the body would
-/// pass the hijack check with the header paying someone else.
+/// Direct JSON, unwrapped JSON strings, Node's forgiving base64 and Python's
+/// non-validating base64 are independent readings. Only agreeing challenge
+/// readings are trusted; an unreadable header is never an absent header.
 fn decode_payment_required(raw: &str) -> Option<serde_json::Value> {
+    if !raw.is_ascii() || raw.contains(['\r', '\n']) {
+        return None;
+    }
+    let direct = serde_json::from_str::<serde_json::Value>(raw.trim()).ok();
+    let unwrapped = direct.as_ref().and_then(|v| v.as_str());
+    let mut readings = [Some(raw), unwrapped]
+        .into_iter()
+        .flatten()
+        .flat_map(|text| {
+            [
+                serde_json::from_str::<serde_json::Value>(text.trim()).ok(),
+                decode_node_payment_required(text),
+                decode_python_payment_required(text),
+            ]
+        })
+        .flatten()
+        .filter(|v| read_challenge(v).found_shape);
+    let first = readings.next()?;
+    readings.all(|v| v == first).then_some(first)
+}
+
+fn decode_node_payment_required(raw: &str) -> Option<serde_json::Value> {
     use base64::engine::{DecodePaddingMode, GeneralPurpose, GeneralPurposeConfig};
     use base64::Engine as _;
     const FORGIVING: GeneralPurpose = GeneralPurpose::new(
@@ -1808,9 +1833,6 @@ fn decode_payment_required(raw: &str) -> Option<serde_json::Value> {
             .with_decode_allow_trailing_bits(true),
     );
     let trimmed = raw.trim();
-    if let Ok(v) = serde_json::from_str::<serde_json::Value>(trimmed) {
-        return Some(v);
-    }
     let mut symbols: Vec<u8> = trimmed
         .bytes()
         .take_while(|b| *b != b'=')
@@ -1827,6 +1849,42 @@ fn decode_payment_required(raw: &str) -> Option<serde_json::Value> {
     }
     let decoded = FORGIVING.decode(&symbols).ok()?;
     serde_json::from_str(&String::from_utf8_lossy(&decoded)).ok()
+}
+
+fn decode_python_payment_required(raw: &str) -> Option<serde_json::Value> {
+    use base64::engine::{DecodePaddingMode, GeneralPurpose, GeneralPurposeConfig};
+    use base64::Engine as _;
+    const PYTHON: GeneralPurpose = GeneralPurpose::new(
+        &base64::alphabet::STANDARD,
+        GeneralPurposeConfig::new()
+            .with_decode_padding_mode(DecodePaddingMode::RequireNone)
+            .with_decode_allow_trailing_bits(true),
+    );
+    let mut symbols = Vec::new();
+    let mut padding = 0;
+    let mut terminated = false;
+    for b in raw.bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'+' | b'/' => {
+                symbols.push(b);
+                padding = 0;
+            }
+            b'=' if symbols.len() % 4 >= 2 => {
+                padding += 1;
+                if symbols.len() % 4 + padding == 4 {
+                    terminated = true;
+                    break;
+                }
+            }
+            _ => {}
+        }
+    }
+    // Python skips stray padding, but incomplete final quads require padding.
+    if !terminated && symbols.len() % 4 != 0 {
+        return None;
+    }
+    let decoded = PYTHON.decode(&symbols).ok()?;
+    serde_json::from_slice(&decoded).ok()
 }
 
 /// Read one challenge document: its recipients, its full requirements and the
@@ -2275,12 +2333,14 @@ async fn probe_once<T: ProbeTransport + ?Sized>(
                 .cloned();
             // Only a 402 carries payment terms worth diffing.
             let (body, header) = if code == 402 {
-                let header = resp
-                    .headers()
-                    .get("payment-required")
-                    .or_else(|| resp.headers().get("x-payment-required"))
-                    .and_then(|v| v.to_str().ok())
-                    .map(str::to_string);
+                let values: Vec<String> = ["payment-required", "x-payment-required"]
+                    .into_iter()
+                    .flat_map(|name| resp.headers().get_all(name))
+                    .map(|v| v.as_bytes().iter().map(|b| char::from(*b)).collect())
+                    .collect();
+                // A newline cannot occur in a HeaderValue. Preserve it as an
+                // unambiguous multiline marker, including empty header lines.
+                let header = (!values.is_empty()).then(|| values.join("\n"));
                 (read_capped(resp, MAX_PROBE_RESPONSE_BYTES).await, header)
             } else {
                 (None, None)
@@ -2542,7 +2602,7 @@ async fn probe_and_record<T: ProbeTransport + ?Sized>(
     // and quarantining for it would hide a live resource over a
     // change it is entitled to make. The price change is
     // recorded below, as an observation.
-    if !expected_pay_to.is_empty() {
+    if !expected_pay_to.is_empty() || live.as_ref().is_some_and(|l| l.untrusted_header) {
         if let Some(live) = live.as_ref() {
             let verdict = compare_recipients(&expected_pay_to, live);
             if verdict == Recipients::Drifted {
@@ -2722,6 +2782,9 @@ enum Recipients {
 /// hide a live resource over a change it is entitled to make. A price change is
 /// recorded as an observation instead, where a reader can see it and decide.
 fn compare_recipients(declared: &[DeclaredOffer], live: &LiveTerms) -> Recipients {
+    if live.untrusted_header {
+        return Recipients::Drifted;
+    }
     let mut extra: Vec<DeclaredRecipient> = Vec::new();
     for transport in &live.by_transport {
         match judge_transport(declared, transport) {
@@ -5290,6 +5353,10 @@ mod declared_method_tests {
         // The declared address in another spelling is the declared address.
         assert!(!pay_to_drifted(
             &declared,
+            &with(0, "0xFE2D09CA270818E9736207EE27F0FA464A67AC66")
+        ));
+        assert!(pay_to_drifted(
+            &declared,
             &with(0, " 0XFE2D09CA270818E9736207EE27F0FA464A67AC66 ")
         ));
         // Fails closed: anything else counts, in either slot -- including
@@ -5808,7 +5875,13 @@ mod declared_method_tests {
             };
             probe_and_record(&transport, &registry, &health, target.clone()).await;
             let state = health.snapshot().await.remove(target.url.as_str()).unwrap();
-            assert_eq!(state.status, HealthStatus::Alive, "{name}");
+            let expected_status =
+                if ["no option", "only junk", "no option we can read"].contains(&name) {
+                    HealthStatus::Quarantined
+                } else {
+                    HealthStatus::Alive
+                };
+            assert_eq!(state.status, expected_status, "{name}");
             assert_eq!(state.verified_by.is_some(), verified, "{name}");
             assert_eq!(
                 registry.list(10, 0, None).await.pagination.total,
@@ -5846,9 +5919,8 @@ mod declared_method_tests {
         assert!(pay_to_from_402(None, Some(&challenge_for(&accepts()))).offers_payment());
     }
 
-    /// When both transports carry a challenge, the one offering an option we
-    /// can read wins, whatever the version or the default: a header we cannot
-    /// read never hides the payable offer in the body.
+    /// An unreadable header holds the probe even when the body is payable.
+    /// A readable header still wins over a body offering no usable option.
     #[test]
     fn a_readable_offer_wins_over_one_that_offers_nothing() {
         let a = accepts();
@@ -5856,8 +5928,9 @@ mod declared_method_tests {
             header_of(&json!({ "x402Version": 3, "accepts": [{ "payTo": a[0]["payTo"] }] }));
         let body = json!({ "x402Version": 2, "accepts": a }).to_string();
         let live = pay_to_from_402(Some(&body), Some(&unreadable));
-        assert!(live.offers_payment());
-        assert_eq!(live.transport, Some(TermsTransport::Body));
+        assert!(live.untrusted_header);
+        assert!(!live.offers_payment());
+        assert_eq!(compare_recipients(&[], &live), Recipients::Drifted);
         let live = pay_to_from_402(
             Some(r#"{"accepts":[{"payTo":"0xAAAA"}]}"#),
             Some(&challenge_for(&a)),
@@ -7099,6 +7172,457 @@ mod strict_offer_identity_tests {
                 compare_recipients(&declared, &live),
                 Recipients::Declared,
                 "{spelling}: {header:?}"
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+mod ver3_refutation_tests {
+    use super::*;
+    const BASE: &str = "eip155:8453";
+    const MAINNET: &str = "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp";
+    const A: &str = "0x1111111111111111111111111111111111111111";
+    const B: &str = "0x2222222222222222222222222222222222222222";
+    const USDC: &str = "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913";
+    const MINT: &str = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
+    const ATTACKER_SOL: &str = "GEhr9HCFTRDjanMg435frSgCVwVZYpNoPrEkmNBnFHFE";
+    fn option(network: &str, asset: &str, recipient: &str) -> serde_json::Value {
+        serde_json::json!({"scheme":"exact","network":network,"asset":asset,
+            "payTo":recipient,"amount":"1","maxTimeoutSeconds":60})
+    }
+    fn baseline(options: &[serde_json::Value]) -> Vec<DeclaredOffer> {
+        options
+            .iter()
+            .map(|v| {
+                let wire = serde_json::from_value::<DeclaredPaymentOption>(v.clone()).unwrap();
+                DeclaredOffer::of(&normalize_declared_option(wire).unwrap())
+            })
+            .collect()
+    }
+    fn declared_body() -> String {
+        serde_json::json!({"x402Version": 2, "accepts": [option(BASE, USDC, A)]}).to_string()
+    }
+    fn attacker_b64() -> String {
+        use base64::Engine as _;
+        let mut filler = String::new();
+        loop {
+            let doc = serde_json::json!({"x402Version":2,"accepts":[option(BASE, USDC, B)],"error":filler}).to_string();
+            if doc.len() % 3 == 1 {
+                return base64::engine::general_purpose::STANDARD.encode(doc);
+            }
+            filler.push('x');
+        }
+    }
+    #[test]
+    fn payment_requirements_decoy_does_not_vouch_for_accepts() {
+        let declared = baseline(&[option(BASE, USDC, A)]);
+        for version in [1, 2] {
+            let live = pay_to_from_402(
+                Some(
+                    &serde_json::json!({"x402Version":version,
+                "accepts":[option(MAINNET, MINT, ATTACKER_SOL)],
+                "paymentRequirements":[option(BASE, USDC, A)]})
+                    .to_string(),
+                ),
+                None,
+            );
+            assert_eq!(
+                compare_recipients(&declared, &live),
+                Recipients::Drifted,
+                "v{version}"
+            );
+        }
+    }
+    #[test]
+    fn a_from_str_alias_is_not_a_v1_wire_name() {
+        let declared = baseline(&[option(BASE, USDC, A)]);
+        assert!(
+            serde_json::from_value::<crate::network::Network>(serde_json::json!("base-mainnet"))
+                .is_err()
+        );
+        let live = pay_to_from_402(
+            Some(
+                &serde_json::json!({"x402Version":2,
+            "accepts":[option("base-mainnet", USDC, A), option(MAINNET, MINT, ATTACKER_SOL)]})
+                .to_string(),
+            ),
+            None,
+        );
+        assert_eq!(compare_recipients(&declared, &live), Recipients::Drifted);
+    }
+    #[test]
+    fn ver3_quoted_base64_header_is_read() {
+        let declared = baseline(&[option(BASE, USDC, A)]);
+        let header = format!("\"{}\"", attacker_b64());
+        let live = pay_to_from_402(Some(&declared_body()), Some(&header));
+        assert_eq!(
+            compare_recipients(&declared, &live),
+            Recipients::Drifted,
+            "{header}"
+        );
+    }
+    #[test]
+    fn ver3_json_object_wrapping_attacker_base64_is_read() {
+        let declared = baseline(&[option(BASE, USDC, A)]);
+        let header = serde_json::json!({"!": attacker_b64(), "x402Version": 2,
+            "accepts": [option(BASE, USDC, A)]})
+        .to_string();
+        assert!(header.starts_with("{\"!\":\""), "{header}");
+        let live = pay_to_from_402(Some(&declared_body()), Some(&header));
+        assert_eq!(
+            compare_recipients(&declared, &live),
+            Recipients::Drifted,
+            "{header}"
+        );
+    }
+    #[test]
+    fn ver3_headers_no_client_decodes_are_not_read() {
+        for h in [
+            "",
+            "!!!!",
+            "%%%%====",
+            "eyJh",
+            "eyJhIjoxfQ==",
+            "e30",
+            "W10=",
+            "bnVsbA==",
+            "MQ==",
+        ] {
+            let live = pay_to_from_402(None, Some(h));
+            assert!(
+                !live.readable,
+                "{h:?} read as a challenge: {:?}",
+                live.pay_to
+            );
+        }
+    }
+    struct Raw(Vec<Vec<u8>>);
+    #[async_trait::async_trait]
+    impl ProbeTransport for Raw {
+        async fn send(
+            &self,
+            _u: &url::Url,
+            _m: ProbeMethod,
+            _b: Option<&str>,
+        ) -> Result<reqwest::Response, SecurityReject> {
+            let mut r = axum::http::Response::builder().status(402);
+            for v in &self.0 {
+                r = r.header(
+                    "payment-required",
+                    axum::http::HeaderValue::from_bytes(v).unwrap(),
+                );
+            }
+            Ok(reqwest::Response::from(r.body(declared_body()).unwrap()))
+        }
+        async fn send_mcp(
+            &self,
+            _u: &url::Url,
+            _b: &str,
+            _s: Option<&str>,
+        ) -> Result<reqwest::Response, SecurityReject> {
+            Err(SecurityReject::Http("no".into()))
+        }
+    }
+    #[tokio::test]
+    async fn ver3_obs_text_byte_drops_the_header() {
+        let mut v = attacker_b64().into_bytes();
+        v.push(0x80);
+        let url = url::Url::parse("https://seller.example/x").unwrap();
+        let out = probe_once(&Raw(vec![v]), &url, ProbeMethod::Get, None).await;
+        assert!(
+            out.challenge_header.is_some(),
+            "header with one obs-text byte was dropped"
+        );
+        let live = pay_to_from_402(out.body.as_deref(), out.challenge_header.as_deref());
+        assert_eq!(
+            compare_recipients(&baseline(&[option(BASE, USDC, A)]), &live),
+            Recipients::Drifted
+        );
+    }
+    #[tokio::test]
+    async fn ver3_second_header_line_is_not_read() {
+        let url = url::Url::parse("https://seller.example/x").unwrap();
+        let out = probe_once(
+            &Raw(vec![b"!".to_vec(), attacker_b64().into_bytes()]),
+            &url,
+            ProbeMethod::Get,
+            None,
+        )
+        .await;
+        let declared = baseline(&[option(BASE, USDC, A)]);
+        let live = pay_to_from_402(out.body.as_deref(), out.challenge_header.as_deref());
+        assert_eq!(
+            compare_recipients(&declared, &live),
+            Recipients::Drifted,
+            "header seen = {:?}",
+            out.challenge_header
+        );
+    }
+    #[test]
+    fn ver3_mid_padding_header_is_read() {
+        let declared = baseline(&[option(BASE, USDC, A)]);
+        let b = attacker_b64();
+        let mid = (b.len() / 2) / 4 * 4;
+        let header = format!("{}={}", &b[..mid], &b[mid..]);
+        let live = pay_to_from_402(Some(&declared_body()), Some(&header));
+        assert_eq!(
+            compare_recipients(&declared, &live),
+            Recipients::Drifted,
+            "{header}"
+        );
+    }
+    #[test]
+    fn unreadable_header_cannot_be_hidden_by_a_declared_body() {
+        let declared = baseline(&[option(BASE, USDC, A)]);
+        for header in [
+            "",
+            "!!!!",
+            "null",
+            "[]",
+            "{}",
+            "eyJhIjoxfQ==",
+            "é",
+            "{\"accepts\":[{}]}",
+        ] {
+            let live = pay_to_from_402(Some(&declared_body()), Some(header));
+            assert!(live.untrusted_header, "{header:?}");
+            assert!(!live.offers_payment(), "{header:?}");
+            assert_eq!(
+                compare_recipients(&declared, &live),
+                Recipients::Drifted,
+                "{header:?}"
+            );
+        }
+        assert_eq!(
+            compare_recipients(&declared, &pay_to_from_402(Some(&declared_body()), None)),
+            Recipients::Declared
+        );
+    }
+    #[tokio::test]
+    async fn duplicate_headers_cannot_be_hidden_by_a_valid_first_line() {
+        use base64::Engine as _;
+        let url = url::Url::parse("https://seller.example/x").unwrap();
+        for second in [
+            Vec::new(),
+            b"!".to_vec(),
+            declared_body().into_bytes(),
+            attacker_b64().into_bytes(),
+        ] {
+            let out = probe_once(
+                &Raw(vec![
+                    base64::engine::general_purpose::STANDARD
+                        .encode(declared_body())
+                        .into_bytes(),
+                    second,
+                ]),
+                &url,
+                ProbeMethod::Get,
+                None,
+            )
+            .await;
+            let live = pay_to_from_402(out.body.as_deref(), out.challenge_header.as_deref());
+            assert!(live.untrusted_header);
+            assert_eq!(
+                compare_recipients(&baseline(&[option(BASE, USDC, A)]), &live),
+                Recipients::Drifted
+            );
+        }
+    }
+    #[test]
+    fn sane_json_and_base64_headers_remain_declared() {
+        use base64::Engine as _;
+        let body = declared_body();
+        for header in [
+            body.clone(),
+            base64::engine::general_purpose::STANDARD.encode(&body),
+        ] {
+            let live = pay_to_from_402(Some(&body), Some(&header));
+            assert!(!live.untrusted_header);
+            assert!(live.offers_payment());
+            assert_eq!(
+                compare_recipients(&baseline(&[option(BASE, USDC, A)]), &live),
+                Recipients::Declared
+            );
+        }
+        let base64 = base64::engine::general_purpose::STANDARD.encode(&body);
+        let mid = (base64.len() / 2) / 4 * 4;
+        let header = format!("{}={}", &base64[..mid], &base64[mid..]);
+        let live = pay_to_from_402(Some(&body), Some(&header));
+        assert!(live.readable);
+        assert_eq!(
+            compare_recipients(&baseline(&[option(BASE, USDC, A)]), &live),
+            Recipients::Declared
+        );
+    }
+    #[test]
+    fn python_padding_rules_are_independent_of_the_node_reading() {
+        let original = decode_python_payment_required(&attacker_b64()).unwrap();
+        let base64 = attacker_b64();
+        for at in (0..base64.len() - 2).step_by(4) {
+            let h = format!("{}={}", &base64[..at], &base64[at..]);
+            assert_eq!(
+                decode_python_payment_required(&h),
+                Some(original.clone()),
+                "at {at}"
+            );
+        }
+        assert_eq!(
+            decode_python_payment_required(&format!("{base64}QUFB")),
+            Some(original.clone())
+        );
+        let split_pad = base64.replacen("==", "=!=", 1);
+        assert_eq!(decode_python_payment_required(&split_pad), Some(original));
+        assert!(decode_python_payment_required(base64.trim_end_matches('=')).is_none());
+    }
+
+    struct Named(Vec<(&'static str, Vec<u8>)>);
+    #[async_trait::async_trait]
+    impl ProbeTransport for Named {
+        async fn send(
+            &self,
+            u: &url::Url,
+            m: ProbeMethod,
+            b: Option<&str>,
+        ) -> Result<reqwest::Response, SecurityReject> {
+            let mut response = Raw(Vec::new()).send(u, m, b).await?;
+            for (name, value) in &self.0 {
+                response
+                    .headers_mut()
+                    .append(*name, axum::http::HeaderValue::from_bytes(value).unwrap());
+            }
+            Ok(response)
+        }
+        async fn send_mcp(
+            &self,
+            _u: &url::Url,
+            _b: &str,
+            _s: Option<&str>,
+        ) -> Result<reqwest::Response, SecurityReject> {
+            Err(SecurityReject::Http("no".into()))
+        }
+    }
+
+    #[tokio::test]
+    async fn all_header_aliases_preserve_presence_and_raw_bytes() {
+        use base64::Engine as _;
+        let url = url::Url::parse("https://seller.example/x").unwrap();
+        for alias in ["payment-required", "x-payment-required", "PAYMENT-REQUIRED"] {
+            let mut declared_obs_text = base64::engine::general_purpose::STANDARD
+                .encode(declared_body())
+                .into_bytes();
+            declared_obs_text.push(0x80);
+            for value in [
+                Vec::new(),
+                vec![0x80],
+                vec![0xFF],
+                b"!".to_vec(),
+                declared_obs_text,
+            ] {
+                let out = probe_once(
+                    &Named(vec![(alias, value.clone())]),
+                    &url,
+                    ProbeMethod::Get,
+                    None,
+                )
+                .await;
+                let expected: String = value.iter().map(|b| char::from(*b)).collect();
+                assert_eq!(out.challenge_header.as_deref(), Some(expected.as_str()));
+                let live = pay_to_from_402(out.body.as_deref(), out.challenge_header.as_deref());
+                assert!(live.untrusted_header, "{alias}: {value:?}");
+                assert_eq!(compare_recipients(&[], &live), Recipients::Drifted);
+            }
+        }
+        for headers in [
+            vec![
+                ("payment-required", declared_body().into_bytes()),
+                ("x-payment-required", b"!".to_vec()),
+            ],
+            vec![
+                ("x-payment-required", declared_body().into_bytes()),
+                ("x-payment-required", attacker_b64().into_bytes()),
+            ],
+        ] {
+            let out = probe_once(&Named(headers), &url, ProbeMethod::Get, None).await;
+            let live = pay_to_from_402(out.body.as_deref(), out.challenge_header.as_deref());
+            assert!(live.untrusted_header);
+        }
+    }
+
+    #[tokio::test]
+    async fn unreadable_headers_are_quarantined_even_without_declared_recipients() {
+        let url = url::Url::parse("https://seller.example/x").unwrap();
+        let b = attacker_b64();
+        let mid = (b.len() / 2) / 4 * 4;
+        for declared in [Vec::new(), baseline(&[option(BASE, USDC, A)])] {
+            for values in [
+                vec![Vec::new()],
+                vec![vec![0x80]],
+                vec![b"!".to_vec()],
+                vec![declared_body().into_bytes(), b"!".to_vec()],
+            ] {
+                let registry = DiscoveryRegistry::new();
+                let health = registry.health();
+                let target = ProbeTarget {
+                    url: url.clone(),
+                    resource_type: "http".into(),
+                    pay_to: declared.clone(),
+                    request: ProbeRequest::Declared {
+                        method: ProbeMethod::Get,
+                        example: None,
+                    },
+                };
+                probe_and_record(&Raw(values), &registry, &health, target).await;
+                let state = health.snapshot().await.remove(url.as_str()).unwrap();
+                assert_eq!(state.status, HealthStatus::Quarantined);
+                assert!(registry.terms().get(url.as_str()).await.is_none());
+            }
+        }
+        for value in [
+            format!("\"{b}\""),
+            serde_json::json!({"!": b, "accepts": [option(BASE, USDC, A)], "x402Version": 2})
+                .to_string(),
+            format!("{}={}", &b[..mid], &b[mid..]),
+        ] {
+            let registry = DiscoveryRegistry::new();
+            let health = registry.health();
+            let target = ProbeTarget {
+                url: url.clone(),
+                resource_type: "http".into(),
+                pay_to: baseline(&[option(BASE, USDC, A)]),
+                request: ProbeRequest::Declared {
+                    method: ProbeMethod::Get,
+                    example: None,
+                },
+            };
+            probe_and_record(&Raw(vec![value.into_bytes()]), &registry, &health, target).await;
+            assert_eq!(
+                health.snapshot().await[url.as_str()].status,
+                HealthStatus::Quarantined
+            );
+        }
+        for alias in ["payment-required", "x-payment-required"] {
+            let registry = DiscoveryRegistry::new();
+            let health = registry.health();
+            let target = ProbeTarget {
+                url: url.clone(),
+                resource_type: "http".into(),
+                pay_to: baseline(&[option(BASE, USDC, A)]),
+                request: ProbeRequest::Declared {
+                    method: ProbeMethod::Get,
+                    example: None,
+                },
+            };
+            probe_and_record(
+                &Named(vec![(alias, declared_body().into_bytes())]),
+                &registry,
+                &health,
+                target,
+            )
+            .await;
+            assert_eq!(
+                health.snapshot().await[url.as_str()].status,
+                HealthStatus::Alive
             );
         }
     }

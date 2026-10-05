@@ -6814,6 +6814,33 @@ mod strict_offer_identity_tests {
         }
     }
 
+    #[test]
+    fn a_top_level_pay_to_is_judged_in_every_list() {
+        // A v1 top-level `payTo` belongs to no list: a list that does not
+        // carry the declared offer cannot vouch for it.
+        let declared = baseline(&[option(BASE, USDC, A)]);
+        for (accepts, requirements) in [
+            (vec![option(BASE, USDC, A)], vec![]),
+            (vec![], vec![option(BASE, USDC, A)]),
+        ] {
+            let doc = serde_json::json!({"x402Version": 1, "accepts": accepts,
+                "paymentRequirements": requirements, "payTo": SOL, "network": MAINNET});
+            let live = pay_to_from_402(Some(&doc.to_string()), None);
+            assert_eq!(
+                compare_recipients(&declared, &live),
+                Recipients::Drifted,
+                "{doc}"
+            );
+        }
+        let doc = serde_json::json!({"x402Version": 1, "accepts": [option(BASE, USDC, A)],
+            "payTo": SOL, "network": MAINNET});
+        let live = pay_to_from_402(Some(&doc.to_string()), None);
+        assert_eq!(
+            compare_recipients(&declared, &live),
+            Recipients::ExtraNetworks(vec![DeclaredRecipient::new(MAINNET, SOL)])
+        );
+    }
+
     /// Every `Network::from_str` spelling that the derived serde of `Network`
     /// refuses, with an asset and a recipient valid on that network.
     fn from_str_only_aliases() -> Vec<(&'static str, &'static str, &'static str)> {

@@ -1900,10 +1900,26 @@ fn parse_decoded_payment_required(decoded: &[u8]) -> Result<Option<serde_json::V
         Err(_) => {
             let other_encoding =
                 decoded.starts_with(&[0xEF, 0xBB, 0xBF]) || decoded.iter().take(4).any(|b| *b == 0);
-            // IgnoredAny validates syntax without Value's surrogate, number
-            // and nesting limits. Malformed or truncated base64 is not JSON.
-            let json_syntax = std::str::from_utf8(decoded).is_ok()
-                && serde_json::from_slice::<serde::de::IgnoredAny>(decoded).is_ok();
+            let mut syntax_bytes = Vec::with_capacity(decoded.len());
+            let mut remaining = decoded;
+            while !remaining.is_empty() {
+                if matches!(remaining, [0xED, 0xA0..=0xBF, 0x80..=0xBF, ..]) {
+                    syntax_bytes.extend_from_slice(&[0xEF, 0xBF, 0xBD]);
+                    remaining = &remaining[3..];
+                } else {
+                    syntax_bytes.push(remaining[0]);
+                    remaining = &remaining[1..];
+                }
+            }
+            // Validate syntax only: permissive clients accept surrogates,
+            // non-finite numbers and depth that Value rejects. Never use this
+            // transformed document as payment terms.
+            let json_syntax = std::str::from_utf8(&syntax_bytes).is_ok_and(|text| {
+                serde_json::from_str::<serde::de::IgnoredAny>(
+                    &text.replace("NaN", "0").replace("Infinity", "0"),
+                )
+                .is_ok()
+            });
             if other_encoding || json_syntax {
                 Err(())
             } else {
@@ -7727,5 +7743,36 @@ mod ver3_refutation_tests {
             compare_recipients(&baseline(&[option(BASE, USDC, A)]), &live),
             Recipients::Declared
         );
+    }
+    #[test]
+    fn python_nonfinite_and_raw_surrogates_cannot_hide_behind_declared_json() {
+        use base64::Engine as _;
+        let attacker =
+            serde_json::json!({"x402Version": 2, "accepts": [option(BASE, USDC, B)]}).to_string();
+        let prefix = &attacker[..attacker.len() - 1];
+        let mut documents = ["NaN", "Infinity", "-Infinity"]
+            .into_iter()
+            .map(|number| format!(r#"{prefix},"error":{number}}}"#).into_bytes())
+            .collect::<Vec<_>>();
+        let mut surrogate = format!(r#"{prefix},"error":"~"}}"#).into_bytes();
+        let position = surrogate.iter().position(|b| *b == b'~').unwrap();
+        surrogate.splice(position..=position, [0xED, 0xA0, 0x80]);
+        documents.push(surrogate);
+        for mut doc in documents {
+            while doc.len() % 3 != 1 {
+                doc.push(b' ');
+            }
+            let payload = base64::engine::general_purpose::STANDARD.encode(&doc);
+            // Python ignores '-', Node treats it as '+'. Only Python can
+            // recover this document, so Node must not vouch for the wrapper.
+            let header = serde_json::json!({"!": format!("-{payload}"), "x402Version": 2, "accepts": [option(BASE, USDC, A)]}).to_string();
+            assert!(decode_python_payment_required(&header).is_err());
+            let live = pay_to_from_402(Some(&declared_body()), Some(&header));
+            assert!(live.untrusted_header);
+            assert_eq!(
+                compare_recipients(&baseline(&[option(BASE, USDC, A)]), &live),
+                Recipients::Drifted
+            );
+        }
     }
 }

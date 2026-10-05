@@ -111,10 +111,10 @@ Todos exit 0 en el mismo aislamiento de red indicado arriba. El script
 |---|---|---|
 | Landing | `python3 scripts/verify_landing_canonical.py --offline` | exit 0 |
 | Frontend (Node 22) | `node --test tests/frontend-capabilities.test.cjs` | 19 passed |
-| Balances | `python3 -m unittest discover -s tests/scripts -p 'test_*balances.py'` | 20 tests OK |
-| ERC-8004 | `python3 -m unittest discover -s tests/scripts -p 'test_erc8004_*.py'` | 19 tests OK |
-| Drift gate | `python3 -m unittest discover -s tests/scripts -p 'test_drift_gate_*.py'` | 29 tests OK |
-| CI scripts | `python3 -m unittest discover -s tests/scripts -p 'test_ci_*.py'` | 5 tests OK |
+| Balances | `python3 -m unittest discover -s tests/scripts -p 'test_*balances.py'` | 5 tests OK |
+| ERC-8004 | `python3 -m unittest discover -s tests/scripts -p 'test_erc8004_*.py'` | 20 tests OK |
+| Drift gate | `python3 -m unittest discover -s tests/scripts -p 'test_drift_gate_*.py'` | 19 tests OK |
+| CI scripts | `python3 -m unittest discover -s tests/scripts -p 'test_ci_*.py'` | 29 tests OK |
 | Build (preflight) | `cargo build --locked --features "$features"` | exit 0 |
 | Root (preflight) | `cargo test --locked -p x402-rs --features "$features" -- --test-threads=1` | exit 0 |
 | Crates (preflight) | `cargo test --locked -p x402-axum -p x402-reqwest -p x402-compliance -- --test-threads=1` | exit 0 |

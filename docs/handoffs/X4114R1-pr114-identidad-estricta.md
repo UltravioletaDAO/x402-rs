@@ -7,11 +7,12 @@
   conservadora por familia); asset/payTo sin case-folding fuera de EVM
   (`canonical_address`, `client_address`); la opcion viva solo cuenta como
   oferta si su `scheme` deserializa literal como `types::Scheme` y sus
-  direcciones EVM son `0x` + 40 hex; WARN de la opcion extra extraido a
+  direcciones EVM llevan `0x` literal (`0X` o un espacio: drift); WARN de la opcion extra extraido a
   `log_extra_networks` con test de captura; preview UTF-8 del agregador corta
   en frontera de caracter y la fixture de pagina invalida es multibyte.
 - Tests nuevos: `discovery_health::strict_offer_identity_tests` (P1-1, P1-2,
-  P1-3, EVM legitimo, control positivo, WARN) y
+  P1-3, EVM legitimo, control positivo, WARN, destinatario de otra oferta
+  declarada, scheme declarado que ningun cliente toma) y
   `discovery_aggregator::tests::a_page_past_the_cap_that_does_not_parse_is_stepped_over`
   con HTML multibyte.
 - Falta: nada del codigo; el resultado de suite, mutaciones y clippy esta en

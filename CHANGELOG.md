@@ -27,8 +27,8 @@
 - The declared offer that lets an extra network pass is matched as a client
   matches it: the exact CAIP-2 network (Solana devnet does not stand for
   mainnet), the asset and recipient as written outside EVM (a Solana mint in
-  another case is another mint; only an EVM address, a literal `0x` and 40 hex
-  digits, is compared in any case), and a scheme the protocol's `Scheme` takes
+  another case is another mint; only an EVM address, written with a literal
+  `0x`, is compared in any case), and a scheme the protocol's `Scheme` takes
   literally (`EXACT`, ` exact ` do not count). Anything else is a drift.
 - An upstream page that does not parse no longer panics when its error preview
   would cut a multibyte character at byte 500.

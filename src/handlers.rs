@@ -19001,7 +19001,13 @@ mod markdown_negotiation_tests {
         assert_eq!(status, StatusCode::OK);
         assert_eq!(ctype, "text/markdown; charset=utf-8");
         assert!(vary.to_ascii_lowercase().contains("accept"));
-        assert_eq!(body, INDEX_MD, "/ must serve /index.md byte for byte");
+        // As served: without the fhe-transfer passages while ENABLE_ZAMA is
+        // off (crate::zama), the file itself while on.
+        assert_eq!(
+            body,
+            crate::zama::surface(INDEX_MD),
+            "/ must serve /index.md byte for byte"
+        );
     }
 
     /// The header that would break a substring implementation.
@@ -19391,7 +19397,7 @@ mod human_surface_tests {
         let compressed = axum::body::to_bytes(response.into_body(), usize::MAX)
             .await
             .unwrap();
-        assert_eq!(gunzip(&compressed), LLMS_FULL_TXT);
+        assert_eq!(gunzip(&compressed), crate::zama::surface(LLMS_FULL_TXT));
         assert!(
             compressed.len() * 2 < LLMS_FULL_TXT.len(),
             "gzip saved less than half: {} -> {} bytes",
@@ -19422,7 +19428,7 @@ mod human_surface_tests {
         let compressed = axum::body::to_bytes(response.into_body(), usize::MAX)
             .await
             .unwrap();
-        assert_eq!(gunzip(&compressed), INDEX_HTML);
+        assert_eq!(gunzip(&compressed), crate::zama::surface(INDEX_HTML));
     }
 
     /// No `Accept-Encoding`, or gzip refused with `q=0`: no gzip. Both still

@@ -753,6 +753,12 @@ mod tests {
         upto.accepts[0].scheme = CatalogScheme::Unsupported("upto".to_string());
         let u = snap.of(&upto).unwrap();
         assert_eq!(u.calls_30d, 1, "{u:?}");
+        // A listing that itself declares the testnet is paid there: still
+        // nothing counts.
+        let mut sepolia = listing(url);
+        sepolia.accepts[0].network = Caip2NetworkId::eip155(84532);
+        let u = snap.of(&sepolia).unwrap();
+        assert_eq!(u.calls_30d, 0, "{u:?}");
     }
 
     #[tokio::test]

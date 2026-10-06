@@ -2445,11 +2445,17 @@ mod tests {
             listing("https://enc.example/x", "Encode base64 strings."),
             listing("https://evm.example/x", "HyperEVM block explorer."),
             listing("https://sol.example/x", "Solana block explorer."),
+            listing(
+                "https://px.example/x",
+                "Token price for any symbol. Pay with USDC on Base.",
+            ),
         ];
         let (index, _) = index_of(&listings);
         let mask = |key: &str| index.chains[index.ids[key] as usize];
         // `base64` is not Base.
         assert_eq!(mask("https://enc.example/x"), 0);
+        // Nor is the network a description says it is paid on.
+        assert_eq!(mask("https://px.example/x"), 0);
         // `HyperEVM` is read whole, not as `hyper` and `evm`.
         assert_eq!(
             mask("https://evm.example/x"),
@@ -2461,6 +2467,37 @@ mod tests {
         assert_eq!(
             ranked(&listings, "solana block explorer"),
             ["https://sol.example/x"]
+        );
+    }
+
+    #[test]
+    fn the_start_of_a_word_is_held_at_half_its_weight() {
+        // `web3` is also `web`, as a lesser reading of it than a `web` the
+        // listing wrote: `base64` must not answer `base` as well as `base`.
+        let listings = vec![listing("https://a.example/x", "Web3 wallet.")];
+        let (index, _) = index_of(&listings);
+        let tf = |term: &str| index.postings[term][0].1;
+        assert_eq!(tf("web") / tf("web3"), ALTERNATIVE_WEIGHT);
+    }
+
+    #[test]
+    fn a_listing_kept_by_its_words_alone_ranks_after_every_scored_one() {
+        // `base rpc` names Base; a HyperEVM node (its host) is about another
+        // chain and is excluded -- but its description says the request word
+        // for word, and what the substring test of 2.46.1 kept stays.
+        let listings = vec![
+            listing(
+                "https://hyperevm.example/rpc",
+                "JSON-RPC node; also proxies base rpc calls.",
+            ),
+            listing("https://base-node.example/rpc", "Base RPC node."),
+        ];
+        assert_eq!(
+            ranked(&listings, "base rpc"),
+            [
+                "https://base-node.example/rpc",
+                "https://hyperevm.example/rpc"
+            ]
         );
     }
 

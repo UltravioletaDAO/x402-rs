@@ -78,57 +78,17 @@ variable "observability_image_tag" {
 #     --image-scanning-configuration scanOnPush=true --region us-east-2
 #   aws ecr put-image-tag-mutability --repository-name facilitator \
 #     --image-tag-mutability IMMUTABLE --region us-east-2
-resource "aws_ecr_repository" "otel_collector" {
-  name                 = "facilitator-otel-collector"
-  image_tag_mutability = "IMMUTABLE"
-
-  image_scanning_configuration {
-    scan_on_push = true
-  }
-
-  tags = {
-    Name = "facilitator-otel-collector"
-  }
+#
+# The four observability repos (facilitator-otel-collector, -prometheus, -tempo, -grafana)
+# were declared here until COSTO-X402 (lote A) removed them: no pulls, and the stack is
+# off. Before enable_observability = true, recreate them and push the images; the task
+# definitions below build the image URLs from local.observability_ecr_registry.
+locals {
+  observability_ecr_registry = "${data.aws_caller_identity.current.account_id}.dkr.ecr.${data.aws_region.current.name}.amazonaws.com"
 }
 
-resource "aws_ecr_repository" "prometheus" {
-  name                 = "facilitator-prometheus"
-  image_tag_mutability = "IMMUTABLE"
 
-  image_scanning_configuration {
-    scan_on_push = true
-  }
 
-  tags = {
-    Name = "facilitator-prometheus"
-  }
-}
-
-resource "aws_ecr_repository" "tempo" {
-  name                 = "facilitator-tempo"
-  image_tag_mutability = "IMMUTABLE"
-
-  image_scanning_configuration {
-    scan_on_push = true
-  }
-
-  tags = {
-    Name = "facilitator-tempo"
-  }
-}
-
-resource "aws_ecr_repository" "grafana" {
-  name                 = "facilitator-grafana"
-  image_tag_mutability = "IMMUTABLE"
-
-  image_scanning_configuration {
-    scan_on_push = true
-  }
-
-  tags = {
-    Name = "facilitator-grafana"
-  }
-}
 
 # ----------------------------------------------------------------------------
 # ACM Certificate ($0 - avoids re-validation wait on re-enable)
@@ -624,7 +584,7 @@ resource "aws_ecs_task_definition" "observability" {
     # ----- Grafana -----
     {
       name      = "grafana"
-      image     = "${aws_ecr_repository.grafana.repository_url}:${var.observability_image_tag}"
+      image     = "${local.observability_ecr_registry}/facilitator-grafana:${var.observability_image_tag}"
       essential = true
 
       portMappings = [
@@ -677,7 +637,7 @@ resource "aws_ecs_task_definition" "observability" {
     # ----- Prometheus -----
     {
       name      = "prometheus"
-      image     = "${aws_ecr_repository.prometheus.repository_url}:${var.observability_image_tag}"
+      image     = "${local.observability_ecr_registry}/facilitator-prometheus:${var.observability_image_tag}"
       essential = true
 
       portMappings = [
@@ -724,7 +684,7 @@ resource "aws_ecs_task_definition" "observability" {
     # ----- Tempo -----
     {
       name      = "tempo"
-      image     = "${aws_ecr_repository.tempo.repository_url}:${var.observability_image_tag}"
+      image     = "${local.observability_ecr_registry}/facilitator-tempo:${var.observability_image_tag}"
       essential = true
 
       portMappings = [
@@ -862,22 +822,6 @@ output "observability_service_discovery" {
   value       = var.enable_observability ? "observability.facilitator.local" : "disabled"
 }
 
-output "otel_collector_ecr_url" {
-  description = "ECR URL for OTel Collector image"
-  value       = aws_ecr_repository.otel_collector.repository_url
-}
 
-output "prometheus_ecr_url" {
-  description = "ECR URL for Prometheus image"
-  value       = aws_ecr_repository.prometheus.repository_url
-}
 
-output "tempo_ecr_url" {
-  description = "ECR URL for Tempo image"
-  value       = aws_ecr_repository.tempo.repository_url
-}
 
-output "grafana_ecr_url" {
-  description = "ECR URL for Grafana image"
-  value       = aws_ecr_repository.grafana.repository_url
-}

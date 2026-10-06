@@ -120,87 +120,10 @@ resource "aws_cloudwatch_metric_alarm" "near_rpc_errors" {
   }
 }
 
-# ============================================================================
-# CloudWatch Dashboard for NEAR Metrics (Optional)
-# ============================================================================
-
-resource "aws_cloudwatch_dashboard" "near_operations" {
-  dashboard_name = "facilitator-near-operations"
-
-  dashboard_body = jsonencode({
-    widgets = [
-      {
-        type = "metric"
-        properties = {
-          metrics = [
-            ["Facilitator/NEAR", "NEARSettlementSuccess", { stat = "Sum", label = "Settlement Success" }],
-            [".", "NEARSettlementFailure", { stat = "Sum", label = "Settlement Failure" }]
-          ]
-          period = 300
-          stat   = "Sum"
-          region = var.aws_region
-          title  = "NEAR Settlement Operations"
-          yAxis = {
-            left = {
-              min = 0
-            }
-          }
-        }
-      },
-      {
-        type = "metric"
-        properties = {
-          metrics = [
-            ["Facilitator/NEAR", "NEARVerificationSuccess", { stat = "Sum", label = "Verification Success" }],
-            [".", "NEARVerificationFailure", { stat = "Sum", label = "Verification Failure" }]
-          ]
-          period = 300
-          stat   = "Sum"
-          region = var.aws_region
-          title  = "NEAR Payment Verification"
-          yAxis = {
-            left = {
-              min = 0
-            }
-          }
-        }
-      },
-      {
-        type = "metric"
-        properties = {
-          metrics = [
-            ["Facilitator/NEAR", "NEARRPCError", { stat = "Sum" }]
-          ]
-          period = 300
-          stat   = "Sum"
-          region = var.aws_region
-          title  = "NEAR RPC Errors"
-          yAxis = {
-            left = {
-              min = 0
-            }
-          }
-        }
-      },
-      {
-        type = "log"
-        properties = {
-          query   = "SOURCE '/ecs/facilitator-production' | fields @timestamp, @message | filter @message like /near/ or @message like /NEAR/ | sort @timestamp desc | limit 100"
-          region  = var.aws_region
-          title   = "Recent NEAR Log Events"
-          stacked = false
-          view    = "table"
-        }
-      }
-    ]
-  })
-}
+# The facilitator-near-operations dashboard lived here. Removed in COSTO-X402 (lote A);
+# the NEAR alarms above do not depend on it.
 
 # ============================================================================
 # Outputs
 # ============================================================================
 
-output "near_dashboard_url" {
-  description = "CloudWatch Dashboard URL for NEAR operations"
-  value       = "https://console.aws.amazon.com/cloudwatch/home?region=${var.aws_region}#dashboards:name=${aws_cloudwatch_dashboard.near_operations.dashboard_name}"
-}

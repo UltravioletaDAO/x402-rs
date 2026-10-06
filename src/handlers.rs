@@ -23431,13 +23431,19 @@ mod zama_switch_tests {
     /// regressed, the lazily built proxy would otherwise be aimed at the real
     /// Zama endpoint from inside a unit test.
     fn with_dead_fhe_endpoint<T>(f: impl FnOnce() -> T) -> T {
-        const VAR: &str = "FHE_FACILITATOR_URL";
-        let previous = std::env::var(VAR).ok();
-        std::env::set_var(VAR, "http://127.0.0.1:9");
+        with_env("FHE_FACILITATOR_URL", "http://127.0.0.1:9", f)
+    }
+
+    /// Run `f` with `var` set to `value`, restoring what was there even when
+    /// `f` panics, so a failing assertion cannot leak the setting into the
+    /// next test.
+    fn with_env<T>(var: &str, value: &str, f: impl FnOnce() -> T) -> T {
+        let previous = std::env::var(var).ok();
+        std::env::set_var(var, value);
         let out = std::panic::catch_unwind(std::panic::AssertUnwindSafe(f));
         match previous {
-            Some(v) => std::env::set_var(VAR, v),
-            None => std::env::remove_var(VAR),
+            Some(v) => std::env::set_var(var, v),
+            None => std::env::remove_var(var),
         }
         out.unwrap_or_else(|panic| std::panic::resume_unwind(panic))
     }
@@ -23480,42 +23486,38 @@ mod zama_switch_tests {
     /// recorded, so silence here is the early refusal and not a deaf bus.
     #[test]
     fn off_a_refused_probe_is_not_recorded() {
-        const VAR: &str = "X402_EVENTS_PUBLISH_FAILURES";
-        let previous = std::env::var(VAR).ok();
-        std::env::set_var(VAR, "true");
-        let (plain, escaped) = with_dead_fhe_endpoint(|| {
-            with_flag(None, || {
-                block_on(async {
-                    let bus = Arc::new(crate::events::EventBus::from_env());
-                    let mut events = bus.try_subscribe().expect("a subscriber slot");
-                    let published = |rx: &mut tokio::sync::broadcast::Receiver<_>| {
-                        let mut n = 0;
-                        while rx.try_recv().is_ok() {
-                            n += 1;
+        let (plain, escaped) = with_env("X402_EVENTS_PUBLISH_FAILURES", "true", || {
+            with_dead_fhe_endpoint(|| {
+                with_flag(None, || {
+                    block_on(async {
+                        let bus = Arc::new(crate::events::EventBus::from_env());
+                        let mut events = bus.try_subscribe().expect("a subscriber slot");
+                        let published = |rx: &mut tokio::sync::broadcast::Receiver<_>| {
+                            let mut n = 0;
+                            while rx.try_recv().is_ok() {
+                                n += 1;
+                            }
+                            n
+                        };
+                        for body in [FHE_V1, FHE_V2] {
+                            for path in ["/verify", "/settle"] {
+                                let (status, _) = post_on(Arc::clone(&bus), path, body).await;
+                                assert_eq!(status, StatusCode::BAD_REQUEST);
+                            }
                         }
-                        n
-                    };
-                    for body in [FHE_V1, FHE_V2] {
-                        for path in ["/verify", "/settle"] {
-                            let (status, _) = post_on(Arc::clone(&bus), path, body).await;
-                            assert_eq!(status, StatusCode::BAD_REQUEST);
-                        }
-                    }
-                    let plain = published(&mut events);
-                    let escaped_body = FHE_V1.replace("\"fhe-transfer\"", "\"fhe\\u002dtransfer\"");
-                    assert!(!escaped_body.contains(crate::zama::SCHEME));
-                    let (status, refused) =
-                        post_on(Arc::clone(&bus), "/verify", &escaped_body).await;
-                    assert_eq!(status, StatusCode::BAD_REQUEST, "{refused}");
-                    assert_eq!(refused["invalidReason"], "unsupported_scheme", "{refused}");
-                    (plain, published(&mut events))
+                        let plain = published(&mut events);
+                        let escaped_body =
+                            FHE_V1.replace("\"fhe-transfer\"", "\"fhe\\u002dtransfer\"");
+                        assert!(!escaped_body.contains(crate::zama::SCHEME));
+                        let (status, refused) =
+                            post_on(Arc::clone(&bus), "/verify", &escaped_body).await;
+                        assert_eq!(status, StatusCode::BAD_REQUEST, "{refused}");
+                        assert_eq!(refused["invalidReason"], "unsupported_scheme", "{refused}");
+                        (plain, published(&mut events))
+                    })
                 })
             })
         });
-        match previous {
-            Some(v) => std::env::set_var(VAR, v),
-            None => std::env::remove_var(VAR),
-        }
         assert_eq!(plain, 0, "a refused probe was published");
         assert_eq!(
             escaped, 1,

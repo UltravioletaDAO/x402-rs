@@ -92,8 +92,10 @@ Reverse order: the backend first, the advertisement last.
    ```
 
    (`enable_provisioned_concurrency=false` for the reason in "Turning it off",
-   step 2: on `$LATEST` the config fails to create. Drop the flag once the
-   function publishes a version.)
+   step 2: on `$LATEST` the config fails to create. Keep passing it on EVERY
+   later apply -- or set that variable's default to `false` in the same change
+   as step 1 -- until the function publishes a version; a plain `apply` without
+   it tries the create again and fails.)
 
 3. Put the Sepolia RPC URL in the secret (`terraform output
    deployment_instructions`, step 3) and check

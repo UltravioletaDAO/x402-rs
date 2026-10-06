@@ -60,7 +60,7 @@ variable "single_nat_gateway" {
 # the service's rolling deployment. It goes off in its own change once every task is
 # verified in a public subnet.
 variable "enable_nat_gateway" {
-  description = "Create the NAT gateway(s) and their EIPs. false saves ~$31/mo (COSTO-X402 B5) once the facilitator tasks egress through the IGW from the public subnets. Turn it off only in its own apply, after verifying no task runs in a private subnet. Rollback after that: true FIRST (one apply, NAT healthy), then ecs_tasks_in_public_subnets = false in a second apply."
+  description = "Create the NAT gateway(s) and their EIPs. false saves ~$31/mo (COSTO-X402 B5) once the facilitator tasks egress through the IGW from the public subnets. Turn it off only in its own apply, after verifying no task runs in a private subnet. Rollback after that: the deploy never creates the NAT, so first a HAND apply from a branch with this at true (plan -out=nat.tfplan -target=aws_route_table.private, which drags aws_nat_gateway.main and aws_eip.nat; review; apply nat.tfplan), then verify the NAT is available and the private default route is active (not blackhole) on the new NAT, and only then merge that branch and open another PR with ecs_tasks_in_public_subnets = false. Do NOT git revert PR #115 after the NAT is off without those two steps: a PR that changes both values together leaves the tasks with no egress. Runbook: docs/handoffs/COSTO-X402-recorte-aws.md."
   type        = bool
   default     = true
 }

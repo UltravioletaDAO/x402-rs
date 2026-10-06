@@ -265,6 +265,12 @@ variable "ecr_repository_name" {
   default     = "facilitator"
 }
 
+variable "enable_facilitator_ecr_lifecycle" {
+  description = "Attach ecr-facilitator-lifecycle.json to the facilitator ECR repository (COSTO-X402 B15). Expiry is irreversible: true only after scripts/ecr_rollback_anchors.py --tag and --preview exit 0 (ecr-lifecycle.tf). Same value in production.auto.tfvars."
+  type        = bool
+  default     = false
+}
+
 variable "image_tag" {
   description = <<-EOT
     Docker image tag to deploy. Pass it on the command line (`-var image_tag=…`),

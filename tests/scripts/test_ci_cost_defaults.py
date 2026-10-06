@@ -16,6 +16,7 @@ COST_VARIABLES = (
     "enable_nat_gateway",
     "ecs_tasks_in_public_subnets",
     "enable_container_insights",
+    "enable_facilitator_ecr_lifecycle",
 )
 # Fargate's valid memory (MiB) for each CPU size.
 FARGATE_MEMORY = {

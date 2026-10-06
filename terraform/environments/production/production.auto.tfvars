@@ -114,6 +114,8 @@ enable_container_insights = false # COSTO-X402 B8; no-running-tasks alarm moved 
 
 # Container registry
 ecr_repository_name = "facilitator"
+# COSTO-X402 B15: off until scripts/ecr_rollback_anchors.py --tag and --preview exit 0.
+enable_facilitator_ecr_lifecycle = false
 
 # Observability stack (Grafana + Prometheus + Tempo) -- off is $0/month
 enable_observability = false

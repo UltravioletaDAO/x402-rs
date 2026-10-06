@@ -11,8 +11,8 @@
   (dashboards v2-migration y near-operations, alarma v1-traffic-sudden-drop y 4 repos ECR
   de observability fuera del TF). Línea base verde en `origin/main` (c3b694b0).
 - **No hecho, a propósito:** B18 (ver abajo). Ningún `terraform apply`, deploy ni merge.
-- **Falta:** mutaciones, refutador adversarial, merge de `origin/main`, preflight sobre la
-  unión, UN push y UN PR.
+- **Hecho también:** 23 mutaciones (todas en rojo), merge de `origin/main` (al día).
+- **Falta:** refutador adversarial, preflight sobre la unión, UN push y UN PR.
 - **Próximo paso para c0der (en la tanda, no en esta sesión):** ver «Orden de aplicación».
 
 ## Refutaciones del encargo
@@ -41,18 +41,26 @@
 
 ## Orden de aplicación (c0der, en la tanda)
 
-1. Antes del merge (el CI de deploy solo aplica `-target` sobre el servicio y la task
-   definition; la política inline documentada en `docs/CICD_SETUP.md` no incluye
-   `ecs:UpdateCluster*`): aplicar a mano B8
-   `-target=aws_cloudwatch_metric_alarm.orphan_no_running_tasks -target=aws_ecs_cluster.main`.
-2. Antes del merge, si se quiere B5 en su propia ventana: comprobar en los paneles de los
-   proveedores de RPC que no haya allowlist por IP de salida. El merge mueve las tareas a
-   las subredes públicas (`aws_ecs_service.facilitator` está en el `-target` del CI); el
-   NAT sigue vivo hasta un apply completo.
-3. Apply completo: destruye NAT + EIP (B5), los dashboards, la alarma y los 4 repos ECR
-   (lote A). La ruta `0.0.0.0/0` vieja de las tablas privadas queda como blackhole;
-   borrarla con `aws ec2 delete-route` es opcional.
-4. B15: `scripts/ecr_rollback_anchors.py --tag`, después `--preview` en 0, y recién ahí
-   `enable_facilitator_ecr_lifecycle = true` + apply.
-5. Después del deploy de B3: leer `tokio worker threads` en `/ecs/facilitator-production`;
-   `workers=1` → volver a 1024/2048.
+El deploy de `main` aplica con `-target` (lista en `.github/workflows/ci.yaml`). De este PR
+entran en ese apply: `aws_ecs_task_definition.facilitator` (B3),
+`aws_ecs_service.facilitator` (B5: las tareas pasan a las subredes públicas con IP
+pública; es un rolling deployment, el NAT sigue vivo), `aws_cloudwatch_metric_alarm.orphan_no_running_tasks`
+(B8: la alarma pasa a `HealthyHostCount`, válida con Insights prendido o apagado) y
+`aws_lambda_function.balances` (B7). Lo demás NO lo aplica el deploy y el drift gate del
+PR lo va a listar como «Unapplied infrastructure» (esperado): NAT + EIP + ruta privada (B5),
+`aws_ecs_cluster.main` (B8), endpoints gateway con la tabla pública (B5), dashboards,
+alarma y repos ECR (lote A).
+
+1. Antes del merge: confirmar en los paneles de los proveedores de RPC que no haya
+   allowlist por IP de salida (el repo no la tiene; ver arriba).
+2. Merge = deploy: B3, B5 (tareas), B7, alarma de B8. Verificar `/health`, un settle de
+   prueba y el log `tokio worker threads` (`workers=1` → volver a 1024/2048).
+3. Apply completo en la tanda (`terraform plan -out=t.tfplan`, revisar, `apply`): borra NAT
+   + EIP, la ruta por defecto privada, apaga Container Insights, asocia los endpoints
+   gateway a la tabla pública y borra lote A. Antes de borrar el NAT,
+   `ActiveConnectionCount` del NAT en 0.
+4. B15: `python3 scripts/ecr_rollback_anchors.py --tag`, después `--preview` en 0, y recién
+   ahí `enable_facilitator_ecr_lifecycle = true` + apply.
+
+Rollback de cada uno: ver la tabla del PR (todos por tfvars salvo B7, que es revertir el
+commit y redeployar la Lambda).

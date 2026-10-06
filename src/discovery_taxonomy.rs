@@ -772,16 +772,22 @@ impl Taxonomy {
         None
     }
 
-    /// The category a request in words asks for, if the inference rules place
-    /// its text in one: the best one only, ties in file order. Never the
-    /// fallback category -- "data" asks for nothing narrower.
-    pub fn request_category(&self, text: &str) -> Option<&str> {
-        let inference = self.inference.as_ref()?;
+    /// The categories a request in words asks for: every one the inference
+    /// rules place its text in, best first (ties in file order), at most
+    /// `maxCategories` -- never the fallback category, which asks for nothing
+    /// narrower. Empty when its words place it in none.
+    ///
+    /// All of them, not only the best: "tweet sentiment analysis" is `ai` and
+    /// `social/x`, and a sentiment feed of tweets answers it.
+    pub fn request_categories(&self, text: &str) -> Vec<&str> {
+        let Some(inference) = self.inference.as_ref() else {
+            return Vec::new();
+        };
         inference
             .infer(&[terms_of(text)], &self.categories)
             .into_iter()
-            .next()
             .filter(|id| !inference.is_fallback(id))
+            .collect()
     }
 
     /// `ids` as a set of bits, one per category of the closed list, leaving
@@ -1637,6 +1643,15 @@ mod tests {
         );
         // Not part of a segment: `clawhunter` is not Hunter.
         assert_eq!(of(&listing("https://clawhunter.fun/api/v1/tools")), None);
+        // A name that is also a word or a common brand is read only from its
+        // host or a phrase, never from a bare segment: a language-model metric,
+        // another company called Apollo.
+        assert_eq!(of(&listing("https://lm.example/eval/perplexity")), None);
+        assert_eq!(of(&listing("https://apollo.example.com/graphql")), None);
+        assert_eq!(
+            of(&listing("https://api.apollo.io/v1/people")).map(|u| u.0),
+            Some("apollo")
+        );
         // The description, in a form that names the vendor.
         assert_eq!(
             of(&described(
@@ -1689,6 +1704,32 @@ mod tests {
             "Paid essay on tenjin.blog: Exa vs Tavily",
         );
         assert_eq!(of(&essay), None);
+    }
+
+    #[test]
+    fn a_request_asks_for_its_categories_best_first_and_never_the_fallback() {
+        let t = taxonomy();
+        assert_eq!(t.request_categories("stock quote"), ["finance"]);
+        assert_eq!(
+            t.request_categories("solana rpc getLatestBlockhash"),
+            ["rpc", "crypto"]
+        );
+        assert_eq!(t.request_categories("trending meme coins"), ["crypto"]);
+        assert_eq!(
+            t.request_categories("tweet sentiment analysis"),
+            ["ai", "social/x"]
+        );
+        // `data` asks for nothing narrower; a word that places nothing, nothing.
+        assert!(t.request_categories("geocode an address").is_empty());
+        assert!(t.request_categories("lorem ipsum").is_empty());
+        assert!(t.request_categories("").is_empty());
+        // A listing only in `data` agrees with any request.
+        assert_eq!(t.category_bits(&["data"]), 0);
+        assert_ne!(t.category_bits(&["finance"]), 0);
+        assert_eq!(
+            t.category_bits(&["finance", "data"]),
+            t.category_bits(&["finance"])
+        );
     }
 
     #[test]

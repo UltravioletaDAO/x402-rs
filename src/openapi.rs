@@ -2280,20 +2280,24 @@ that SDK needs a release of it that lifts the check. How `q` matches depends on 
   word weighted by how rare it is in the catalog), so one shared word repeated everywhere does
   not beat a listing that does the task: a CSS scraper that says "selector" does not outrank a
   keccak selector tool for `keccak selector`. A word written with digits after it is also
-  read without them (`keccak256` finds `keccak`, `gpt4o` finds `gpt`).
+  read without them, at half weight (`keccak256` finds `keccak`, `gpt4o` finds `gpt`).
 - Under `relevance`, a listing **about something else** does not answer, however many words it
   shares. A request that names a chain (`solana`, `base`, `ethereum`, ...) never gets a listing
   that names only other chains: `solana rpc getLatestBlockhash` against a catalog with no
-  Solana RPC returns nothing rather than a HyperEVM one. A request whose words fall in a
-  category (the inference rules of `categories`, below, applied to `q`: `stock quote` is
-  `finance`, `trending meme coins` is `crypto`) never gets a listing in other categories, and a
-  listing in no category has to cover at least half of the request to stand for it; paid
-  content (`kind: content`) stays in such a result, behind the tools. A listing that names no
-  chain, or is in no category or only in `data`, is never excluded for it, and a listing that
-  contains `q` word for word is always kept: a `q` of up to 128 characters still keeps every
-  listing the substring match below would have kept, ranked after every listing a word scored.
-- At the top of a relevance result no host keeps more than two places, no recipient (`payTo`)
-  more than two, and no templated family (`/stock-history/{ticker}`) more than one: their
+  Solana RPC returns nothing rather than a HyperEVM one. A listing's chains are the ones its
+  host or path names, and the ones its description or schema names in a word that is nothing
+  else (`solana`, `ethereum`; never `base`, `polygon` or `optimism`); the networks it is paid on
+  are never read. A request whose words fall in categories (the inference rules of
+  `categories`, below, applied to `q`: `stock quote` is `finance`, `trending meme coins` is
+  `crypto`) is answered by a listing in the best of them; a listing in a runner-up, or in no
+  category (or only `data`), has to cover at least half of the request, and a listing only in
+  other categories has to cover all of it. Paid content (`kind: content`) stays in such a
+  result at a quarter of its relevance, behind the tools. A listing that contains `q` word for
+  word and was excluded is still kept when `q` is at most 128 characters -- every listing the
+  substring match below would have kept stays -- ranked after every listing a word scored.
+- At the top of a relevance result no host keeps more than two places, no recipient (the
+  `payTo` of a listing's first payment option) more than two, and no templated family
+  (`/stock-history/{ticker}`) more than one: their
   further results follow every other one's, still in relevance order, so a seller with a
   hundred templated endpoints, or one seller on many hosts, cannot fill a page. This is the
   order only: nothing is dropped, `total` is unchanged, and no listing is ever refused or
@@ -2606,16 +2610,24 @@ API can be told from ten search APIs. **`upstreamSource`** is `declared` when th
 at registration (`metadata.upstream` or `extensions.bazaar.upstream`: an id or a name of the list,
 any case; any other value is kept in `metadata` and not published) and `inferred` when the
 listing's host is the vendor's own domain, a path segment or host label names it
-(`/api/hunter/...`), or its description does. Absent when nothing names one, and for content.
+(`/api/hunter/...`; never for `perplexity` or `apollo`, which are also a common word and another
+company's name), or its description names it in a form that is not a common word (`Hunter.io`,
+`Perplexity AI`). Absent when nothing names one; never inferred for content.
 
 **`usage`** says how much the listing was paid for **through this facilitator**:
 `lastSettledAt` (the latest settlement recorded for it), `calls30d` (successful settlements in the
 last 30 days) and `uniquePayers30d` (distinct payers among them), read from the settlements this
-facilitator records, as of `asOf`. **A floor, never a ledger:** a record is written after a
-payment settles and is lost if the store is unreachable, settlements through other facilitators
-are not seen, and a payment counts for a listing only when the URL the buyer paid for is the
-listing's own (any query string, for a listing whose URL has none). `usage` is absent on a
-deployment that records no settlements; zero there would be a claim nobody measured.
+facilitator records, as of `asOf`, refreshed every five minutes. A settlement counts for a
+listing only when it settled on a **mainnet**, paid one of the `(network, payTo)` pairs the
+listing itself declares, by a payer other than that recipient, for the listing's own URL (any
+query string, for a listing whose URL has none): the URL and recipient of a settle are whatever
+its caller sent, and a testnet settle would let anyone write counts onto any listing for faucet
+gas. A seller paying its own listing from fresh wallets on a mainnet is still counted: the
+numbers say how much was paid, not by whom. **A floor, never a ledger:** a record is written after
+a payment settles and is lost if the store is unreachable, and settlements through other
+facilitators are not seen. `usage` is absent
+on a deployment that records no settlements -- zero there would be a claim nobody measured -- and
+on a listing whose URL is a template (`{id}`), which no paid URL equals.
 
 **`hasInputSchema`** is `true` when `extensions.bazaar` declares the input (`info.input`, or an
 `input` property in `schema`); the declaration itself stays in `extensions.bazaar`, with the input

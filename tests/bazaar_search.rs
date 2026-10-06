@@ -919,9 +919,11 @@ async fn stock_quote_puts_quotes_first() {
     want.sort_unstable();
     assert_eq!(top3, want, "{urls:?}");
     // A stock listing that is not a quote follows the quotes.
-    if let Some(at) = urls.iter().position(|u| u == history) {
-        assert!(at >= 3, "{urls:?}");
-    }
+    let at = urls
+        .iter()
+        .position(|u| u == history)
+        .expect("the stock history is still listed");
+    assert!(at >= 3, "{urls:?}");
     // A swap quote is crypto and a saying is not a price: neither answers.
     assert!(!urls.contains(&swap.to_string()), "{urls:?}");
     assert!(!urls.contains(&saying.to_string()), "{urls:?}");
@@ -974,48 +976,66 @@ async fn one_seller_on_many_hosts_keeps_two_places_and_a_family_one() {
         ));
     }
     let registry = registry_with(extra).await;
+    let all = |q: &'static str| {
+        let registry = &registry;
+        async move {
+            let page = registry.list(100, 0, Some(filters(q, None))).await;
+            let urls: Vec<String> = page.items.iter().map(|r| r.url.to_string()).collect();
+            (urls, page.pagination.total)
+        }
+    };
 
-    let (urls, _) = search(&registry, "current weather conditions in a city").await;
+    let (urls, total) = all("current weather conditions in a city").await;
     let resold_at: Vec<usize> = urls
         .iter()
         .enumerate()
         .filter(|(_, u)| u.contains("resold.example"))
         .map(|(i, _)| i)
         .collect();
+    // All six are listed: ranking only, nothing is dropped.
+    assert_eq!(resold_at.len(), 6, "{urls:?}");
+    assert_eq!(total as usize, urls.len());
     // Two keep their rank; the rest wait until every other result was shown.
-    let others_after = urls
-        .iter()
-        .skip(resold_at.get(2).copied().unwrap_or(urls.len()))
-        .filter(|u| !u.contains("resold.example"))
-        .count();
-    assert_eq!(others_after, 0, "{urls:?}");
+    let third = resold_at[2];
     assert!(
-        urls[..resold_at.get(2).copied().unwrap_or(urls.len())]
+        urls[third..].iter().all(|u| u.contains("resold.example")),
+        "{urls:?}"
+    );
+    assert!(
+        urls[..third]
             .iter()
             .any(|u| u.starts_with("https://weather.x402.example")),
         "another seller is shown before the reseller's third: {urls:?}"
     );
 
-    let (urls, total) = search(&registry, "stock quote for a ticker").await;
-    let first_family = urls
+    let (urls, _) = all("stock quote for a ticker").await;
+    let family_at: Vec<usize> = urls
         .iter()
-        .position(|u| u.contains("quotes.family.example"))
-        .expect("the family answers");
-    let second_family = urls
-        .iter()
-        .skip(first_family + 1)
-        .position(|u| u.contains("quotes.family.example"))
-        .map(|p| p + first_family + 1);
-    if let Some(second) = second_family {
-        assert!(
-            urls[first_family + 1..second]
-                .iter()
-                .any(|u| !u.contains("quotes.family.example")),
-            "a family keeps one place: {urls:?}"
-        );
-    }
-    // Ranking only: nothing is dropped.
-    assert!(total as usize >= 3, "{total}");
+        .enumerate()
+        .filter(|(_, u)| u.contains("quotes.family.example"))
+        .map(|(i, _)| i)
+        .collect();
+    assert_eq!(family_at.len(), 3, "{urls:?}");
+    assert!(
+        urls[family_at[0] + 1..family_at[1]]
+            .iter()
+            .any(|u| !u.contains("quotes.family.example")),
+        "a family keeps one place: {urls:?}"
+    );
+}
+
+#[tokio::test]
+async fn a_request_in_two_categories_is_answered_by_either() {
+    // "tweet sentiment analysis" is `ai` first and `social/x` second; a
+    // sentiment feed of tweets is `social/x` and does the job.
+    let feed = "https://tweets.example/sentiment";
+    let registry = registry_with(vec![tool(
+        feed,
+        "Sentiment of recent tweets about a ticker.",
+    )])
+    .await;
+    let (urls, _) = search(&registry, "tweet sentiment analysis").await;
+    assert!(urls.contains(&feed.to_string()), "{urls:?}");
 }
 
 #[test]
@@ -1043,6 +1063,10 @@ fn most_of_the_fixture_catalog_resolves_to_a_category() {
         }
     }
     let n = rows.len();
+    let narrower = rows
+        .iter()
+        .filter(|(r, _)| classify(r).categories.iter().any(|id| *id != "data"))
+        .count();
     println!(
         "CATEGORIES {placed}/{n} placed ({:.0} %), {inferred} inferred, {content} content; tools placed {placed}/{} ({:.0} %); {by_category:?}",
         100.0 * placed as f64 / n as f64,
@@ -1050,4 +1074,6 @@ fn most_of_the_fixture_catalog_resolves_to_a_category() {
         100.0 * placed as f64 / (n - content) as f64,
     );
     assert!(placed * 2 > n, "{placed}/{n}");
+    // And not thanks to the catch-all: over half in a narrower category.
+    assert!(narrower * 2 > n, "{narrower}/{n} outside `data`");
 }

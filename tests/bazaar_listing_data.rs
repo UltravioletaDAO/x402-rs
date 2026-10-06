@@ -829,7 +829,8 @@ fn settled(
         amount: Some("10000".to_string()),
         asset: None,
         resource: Some(url.to_string()),
-        pay_to: None,
+        // The recipient every listing of this file declares (the payai page).
+        pay_to: Some("0x52E29e0d2Aa49bfBfC548C0A9F2196F4aa51f3ea".to_string()),
         description: None,
         scheme: Some("exact".to_string()),
     }
@@ -886,6 +887,17 @@ async fn listings_carry_their_upstream_and_their_usage() {
             now - 3_000,
             "0x3",
         ),
+        // Somebody's settle naming the listing's URL and paying someone else:
+        // not a payment to this listing, so not counted.
+        x402_rs::transaction_store::TransactionRecord {
+            pay_to: Some("0x00000000000000000000000000000000000000ff".to_string()),
+            ..settled(
+                "https://reseller.example.com/search",
+                "0xcc",
+                now - 4_000,
+                "0x4",
+            )
+        },
     ]);
     registry.usage().refresh(&store, now).await.unwrap();
 

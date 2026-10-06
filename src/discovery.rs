@@ -250,34 +250,55 @@ fn host_key(url: &url::Url) -> String {
 }
 
 /// What a relevance result shares the top of the page with
-/// ([`crate::discovery_search::diversify`]): its host, every recipient it
-/// declares, and its templated family when it has one. Grouping by recipient
-/// is how one seller on many hosts, or a reseller paying one address from all
-/// of them, keeps two places and not the page -- in the ranking only: a
-/// first-hand listing is never refused or evicted for it.
+/// ([`crate::discovery_search::diversify`]): its host, the recipient of its
+/// first payment option, and its templated family when it has one. Grouping
+/// by recipient is how one seller on many hosts, or a reseller paying one
+/// address from all of them, keeps two places and not the page -- in the
+/// ranking only: a first-hand listing is never refused or evicted for it.
+///
+/// The FIRST option only: grouped by every recipient it declares, a listing
+/// could add an option paying a competitor's address and spend that
+/// competitor's places with it. The first option is the one a client pays by
+/// default, so pointing it at somebody else pays somebody else.
 fn result_groups(r: &DiscoveryResource) -> Vec<crate::discovery_search::Group> {
     use crate::discovery_search::{pay_to_key, Group};
     let mut groups = vec![Group::Host(host_key(&r.url))];
     groups.extend(
         r.accepts
-            .iter()
+            .first()
             .map(|a| Group::PayTo(pay_to_key(&a.pay_to.to_string()))),
     );
     groups.extend(template_family(&r.url).map(Group::Family));
     groups
 }
 
+/// How much a copy is worth keeping when a full catalog has to shed one,
+/// lowest first.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum Standing {
+    /// Not shown, not on hold: never probed, or not answering a valid 402.
+    Pending = 0,
+    /// Held in quarantine less than
+    /// [`crate::discovery_health::QUARANTINE_PROTECTION_SECS`]: a verdict in
+    /// progress. A newcomer never displaces it, and it goes before any copy
+    /// the public surface shows.
+    Held = 1,
+    /// Shown by the public surface (verified alive).
+    Exposed = 2,
+}
+
 /// One aggregated copy's place in the eviction order. Sorted ascending, the
 /// first is the first to go.
 ///
-/// `exposed` is the first key: a copy the public surface shows is evicted only
-/// after every copy it does not, whatever their class or age. A pending copy
-/// -- not yet verified alive -- never displaces an exposed one.
+/// [`Standing`] is the first key: a copy the public surface shows is evicted
+/// only after every copy it does not, and a copy on hold only after every
+/// pending one, whatever their class or age. A pending copy -- not yet
+/// verified alive -- never displaces either.
 ///
 /// Only aggregated copies are in this order, so that guarantee holds among
 /// them: a first-hand record is never evicted, and counts against the cap
 /// whatever its health.
-type EvictionKey = (bool, EvictionClass, u64, String);
+type EvictionKey = (Standing, EvictionClass, u64, String);
 
 /// Every aggregated copy in `cache`, in the order a full catalog evicts them:
 /// pending before exposed, then by [`EvictionClass`], then oldest
@@ -295,9 +316,18 @@ fn eviction_order(
     cache: &HashMap<String, DiscoveryResource>,
     per_host: Option<usize>,
     exposed: &std::collections::HashSet<String>,
+    held: &std::collections::HashSet<String>,
 ) -> Vec<EvictionKey> {
     let aggregated = |r: &DiscoveryResource| matches!(r.source, DiscoverySource::Aggregated);
-    let shown = |url: &str| exposed.contains(url);
+    let shown = |url: &str| {
+        if exposed.contains(url) {
+            Standing::Exposed
+        } else if held.contains(url) {
+            Standing::Held
+        } else {
+            Standing::Pending
+        }
+    };
 
     // 1. Families: an exposed member stays over a pending one, then the newest
     //    (on a tie, the lowest URL); every other aggregated member is a
@@ -332,8 +362,8 @@ fn eviction_order(
     let mut over_share: std::collections::HashSet<&str> = std::collections::HashSet::new();
     if let Some(per_host) = per_host {
         // Records a host holds, and its aggregated copies as
-        // `(exposed, last_updated, url)`.
-        type Held<'a> = (usize, Vec<(bool, u64, &'a str)>);
+        // `(standing, last_updated, url)`.
+        type Held<'a> = (usize, Vec<(Standing, u64, &'a str)>);
         let mut by_host: HashMap<String, Held> = HashMap::new();
         for (url, r) in cache {
             if duplicates.contains(url.as_str()) {
@@ -438,6 +468,7 @@ impl Admission {
         cache: &HashMap<String, DiscoveryResource>,
         cap: usize,
         exposed: &std::collections::HashSet<String>,
+        held: &std::collections::HashSet<String>,
     ) -> Self {
         let mut admission = Self {
             full: false,
@@ -451,7 +482,7 @@ impl Admission {
             return admission;
         }
         let per_host = crate::discovery_config::max_per_host(cap);
-        let order = eviction_order(cache, per_host, exposed);
+        let order = eviction_order(cache, per_host, exposed, held);
         let duplicates: std::collections::HashSet<&str> = order
             .iter()
             .filter(|(_, class, _, _)| *class == EvictionClass::FamilyDuplicate)
@@ -467,7 +498,11 @@ impl Admission {
         }
         admission.full = true;
         admission.per_host = per_host;
-        let pending = || order.iter().filter(|(shown, _, _, _)| !shown);
+        let pending = || {
+            order
+                .iter()
+                .filter(|(standing, _, _, _)| *standing == Standing::Pending)
+        };
         admission.displaceable = pending()
             .filter(|(_, class, _, _)| *class != EvictionClass::Oldest)
             .count();
@@ -544,33 +579,41 @@ fn enforce_capacity(
     cache: &mut HashMap<String, DiscoveryResource>,
     cap: usize,
     exposed: &std::collections::HashSet<String>,
+    held: &std::collections::HashSet<String>,
 ) -> usize {
     if cap == 0 || cache.len() <= cap {
         return 0;
     }
-    let order = eviction_order(cache, crate::discovery_config::max_per_host(cap), exposed);
+    let order = eviction_order(
+        cache,
+        crate::discovery_config::max_per_host(cap),
+        exposed,
+        held,
+    );
 
     let over = cache.len() - cap;
     let mut dropped = 0;
     let mut by_class = [0usize; 3];
-    let mut exposed_dropped = 0;
-    for (shown, class, _, url) in order.into_iter().take(over) {
+    let mut by_standing = [0usize; 3];
+    for (standing, class, _, url) in order.into_iter().take(over) {
         cache.remove(&url);
         dropped += 1;
         by_class[class as usize] += 1;
-        exposed_dropped += usize::from(shown);
+        by_standing[standing as usize] += 1;
     }
     if by_class[EvictionClass::FamilyDuplicate as usize]
         + by_class[EvictionClass::OverHostShare as usize]
-        + exposed_dropped
+        + by_standing[Standing::Held as usize]
+        + by_standing[Standing::Exposed as usize]
         > 0
     {
         info!(
             family_duplicates = by_class[EvictionClass::FamilyDuplicate as usize],
             over_host_share = by_class[EvictionClass::OverHostShare as usize],
             oldest = by_class[EvictionClass::Oldest as usize],
-            exposed = exposed_dropped,
-            "evicted to capacity: pending copies first, then templated families and crowded hosts"
+            held = by_standing[Standing::Held as usize],
+            exposed = by_standing[Standing::Exposed as usize],
+            "evicted to capacity: pending copies first, then held ones, then templated families and crowded hosts"
         );
     }
     if dropped < over {
@@ -1401,36 +1444,25 @@ impl DiscoveryRegistry {
             .collect()
     }
 
-    /// What trimming and admission protect: [`Self::exposed_in`], and every
-    /// copy `held` in quarantine while its hold is being judged
-    /// ([`crate::discovery_health::HealthTracker::held_in_quarantine`]) -- but
-    /// only on a liveness overlay that has been read
+    /// What trimming and admission protect as exposed: [`Self::exposed_in`] --
+    /// but only on a liveness overlay that has been read
     /// ([`crate::discovery_health::HealthTracker::is_loaded`]). Before that the
     /// records are empty, not a verdict, and every held copy counts as exposed:
     /// a full catalog takes no newcomer and, over its cap, evicts by class and
     /// age alone, as it did before exposure existed. Never verified copies
     /// evicted as pending because one read failed.
     ///
-    /// A copy in quarantine is not shown, so it used to rank as pending and
-    /// go first; a full catalog made room by deleting the very listings whose
-    /// hold a probe was about to re-judge (the drift rule of 2.48.0 lifts most
-    /// of them). Now a newcomer -- pending by definition -- never displaces
-    /// one, as it never displaces an exposed copy.
+    /// Copies on hold in quarantine are protected one rung below
+    /// ([`Standing::Held`], from
+    /// [`crate::discovery_health::HealthTracker::held_in_quarantine`]).
     fn protected_in(
         &self,
         resources: &HashMap<String, DiscoveryResource>,
         health: &HashMap<String, HealthState>,
         observed: &HashMap<String, crate::discovery_terms::ObservedTerms>,
-        held: &std::collections::HashSet<String>,
     ) -> std::collections::HashSet<String> {
         if self.health.is_loaded() {
-            let mut protected = self.exposed_in(resources, health, observed);
-            protected.extend(
-                held.iter()
-                    .filter(|url| resources.contains_key(url.as_str()))
-                    .cloned(),
-            );
-            protected
+            self.exposed_in(resources, health, observed)
         } else {
             resources.keys().cloned().collect()
         }
@@ -1530,6 +1562,7 @@ impl DiscoveryRegistry {
             &mut cache,
             max_resources(),
             &std::collections::HashSet::new(),
+            &std::collections::HashSet::new(),
         );
         if dropped > 0 {
             warn!(
@@ -1628,8 +1661,8 @@ impl DiscoveryRegistry {
         // this one can carry. Without this a follower re-inhales the oversized
         // catalog every time it moves, which is precisely the memory the 2.21.2
         // cap exists to bound.
-        let exposed = self.protected_in(&fresh, &health, &observed, &held);
-        let dropped = enforce_capacity(&mut fresh, max_resources(), &exposed);
+        let exposed = self.protected_in(&fresh, &health, &observed);
+        let dropped = enforce_capacity(&mut fresh, max_resources(), &exposed, &held);
         if dropped > 0 {
             warn!(
                 loaded = loaded,
@@ -2181,7 +2214,7 @@ impl DiscoveryRegistry {
                 }
                 // A floor read from the settlements this facilitator records;
                 // absent where it records none.
-                c.usage = usage.as_ref().map(|u| u.of(&r.url, r.last_settled_at));
+                c.usage = usage.as_ref().and_then(|u| u.of(r));
                 // Price semantics are resolved here, on the response copy only,
                 // for the same reason health and curation are: settleability and
                 // a token's decimals are properties of THIS build and the
@@ -2327,8 +2360,8 @@ impl DiscoveryRegistry {
         // Computed once, against the catalog as it stands. A record that would
         // be evicted the instant it landed is refused at the door instead.
         let cap = max_resources();
-        let exposed = self.protected_in(&cache, &health, &observed, &held);
-        let mut admission = Admission::new(&cache, cap, &exposed);
+        let exposed = self.protected_in(&cache, &health, &observed);
+        let mut admission = Admission::new(&cache, cap, &exposed, &held);
 
         for mut resource in resources {
             // Response-only fields are resolved when a listing is composed.
@@ -2496,8 +2529,8 @@ impl DiscoveryRegistry {
         // gate -- rather than the every-cycle churn it was. Exposure is asked
         // again of the catalog as the import left it: a replaced record may
         // declare another request than the copy it replaced.
-        let exposed = self.protected_in(&cache, &health, &observed, &held);
-        let evicted = enforce_capacity(&mut cache, cap, &exposed);
+        let exposed = self.protected_in(&cache, &health, &observed);
+        let evicted = enforce_capacity(&mut cache, cap, &exposed, &held);
         if evicted > 0 {
             info!(
                 evicted = evicted,
@@ -3957,6 +3990,93 @@ mod tests {
         assert_eq!(listing.items[0].terms_observed_at, None);
     }
 
+    /// Nor its usage, its upstream or its categories: all of them are
+    /// resolved when a listing is composed, never taken from what was sent.
+    #[tokio::test]
+    async fn a_registrant_cannot_assert_its_usage_or_its_upstream() {
+        let registry = DiscoveryRegistry::new();
+        let url = "https://api.selfclaim.example/y";
+        let mut r = create_test_resource(url, None);
+        r.usage = Some(crate::discovery_usage::ListingUsage {
+            last_settled_at: Some(now_secs()),
+            calls_30d: 1_000_000,
+            unique_payers_30d: 1_000,
+            as_of: now_secs(),
+        });
+        r.upstream = Some("openai".to_string());
+        r.upstream_source = Some(crate::discovery_taxonomy::UpstreamSource::Declared);
+        r.categories = vec!["finance".to_string()];
+        r.category_source = Some(crate::discovery_taxonomy::CategorySource::Declared);
+        registry.register(r).await.unwrap();
+
+        let held = registry.get(url).await.unwrap();
+        assert_eq!((held.usage, held.upstream), (None, None));
+        assert_eq!((held.upstream_source, held.category_source), (None, None));
+        assert!(held.categories.is_empty());
+        // No store records settlements here: the listing claims no usage.
+        expose_all(&registry).await;
+        let listing = registry.list(10, 0, None).await;
+        assert_eq!(listing.items[0].usage, None);
+        assert_eq!(listing.items[0].upstream, None);
+    }
+
+    /// A listing that carries the request word for word is kept whatever the
+    /// request's category or chain says: everything the substring test of
+    /// 2.46.1 kept for a `q` of up to 128 characters still comes back.
+    #[tokio::test]
+    async fn a_literal_match_is_never_excluded_by_category() {
+        let registry = DiscoveryRegistry::new();
+        // Two stronger categories than `weather` (crypto, finance), so it is
+        // in neither of the request's.
+        let url = "https://mixed.example/x";
+        registry
+            .register(described(
+                url,
+                "Weather NFT tokens on Solana: crypto staking, DeFi swaps, stock quote and equity dividend data.",
+                1,
+            ))
+            .await
+            .unwrap();
+        expose_all(&registry).await;
+        let class = crate::discovery_taxonomy::classify(&registry.get(url).await.unwrap());
+        assert!(!class.categories.contains(&"weather"), "{class:?}");
+        let r = registry
+            .list(10, 0, search("weather", Some("relevance")))
+            .await;
+        assert_eq!(urls(&r), [url]);
+        // Kept by the literal alone, it ranks as such: below a listing a
+        // word scored that answers the request.
+        registry
+            .register(described(
+                "https://meteo.example/now",
+                "Weather conditions now.",
+                2,
+            ))
+            .await
+            .unwrap();
+        expose_all(&registry).await;
+        let r = registry
+            .list(10, 0, search("weather", Some("relevance")))
+            .await;
+        assert_eq!(urls(&r), ["https://meteo.example/now", url]);
+        // Without the literal it is excluded: `weather radar` asks for
+        // weather, the listing is in other categories, and it does not say
+        // the whole request (`radar` is a word another listing has).
+        registry
+            .register(described(
+                "https://doppler.example/x",
+                "Doppler radar images.",
+                3,
+            ))
+            .await
+            .unwrap();
+        expose_all(&registry).await;
+        let r = registry
+            .list(10, 0, search("weather radar", Some("relevance")))
+            .await;
+        assert!(!urls(&r).contains(&url.to_string()), "{:?}", urls(&r));
+    }
+
     #[tokio::test]
     async fn listing_resolves_price_semantics_without_persisting_them() {
         let registry = DiscoveryRegistry::new();
@@ -4043,7 +4163,10 @@ mod tests {
             aggregated_at("https://a.example/1", 100),
             aggregated_at("https://b.example/2", 200),
         ]);
-        assert_eq!(enforce_capacity(&mut cache, 10, &nothing_exposed()), 0);
+        assert_eq!(
+            enforce_capacity(&mut cache, 10, &nothing_exposed(), &nothing_exposed()),
+            0
+        );
         assert_eq!(cache.len(), 2);
     }
 
@@ -4054,7 +4177,10 @@ mod tests {
             aggregated_at("https://mid.example/2", 200),
             aggregated_at("https://new.example/3", 300),
         ]);
-        assert_eq!(enforce_capacity(&mut cache, 2, &nothing_exposed()), 1);
+        assert_eq!(
+            enforce_capacity(&mut cache, 2, &nothing_exposed(), &nothing_exposed()),
+            1
+        );
         assert!(
             !cache.contains_key("https://old.example/1"),
             "the least recently touched copy is the one we least miss"
@@ -4086,7 +4212,7 @@ mod tests {
             aggregated_at("https://copy.example/2", 9_001),
         ]);
 
-        let dropped = enforce_capacity(&mut cache, 3, &nothing_exposed());
+        let dropped = enforce_capacity(&mut cache, 3, &nothing_exposed(), &nothing_exposed());
         assert_eq!(dropped, 2, "both copies go");
         assert!(cache.contains_key("https://owner.example/x"));
         assert!(cache.contains_key("https://settled.example/x"));
@@ -4100,7 +4226,10 @@ mod tests {
         let mut own_b = create_test_resource("https://owner.example/b", None);
         own_b.last_updated = 2;
         let mut cache = cache_of(vec![own_a, own_b]);
-        assert_eq!(enforce_capacity(&mut cache, 1, &nothing_exposed()), 0);
+        assert_eq!(
+            enforce_capacity(&mut cache, 1, &nothing_exposed(), &nothing_exposed()),
+            0
+        );
         assert_eq!(cache.len(), 2, "over capacity, but nothing is evictable");
     }
 
@@ -4110,7 +4239,10 @@ mod tests {
             aggregated_at("https://a.example/1", 100),
             aggregated_at("https://b.example/2", 200),
         ]);
-        assert_eq!(enforce_capacity(&mut cache, 0, &nothing_exposed()), 0);
+        assert_eq!(
+            enforce_capacity(&mut cache, 0, &nothing_exposed(), &nothing_exposed()),
+            0
+        );
         assert_eq!(cache.len(), 2);
     }
 
@@ -5560,8 +5692,6 @@ mod tests {
         }
     }
 
-    /// `kind` is the listing's own kind: the essay publisher's pay-per-read
-    /// listings are `content`, everything else `api`.
     /// `?category=` reads categories resolved once per catalog generation: a
     /// write that changes the catalog -- a new listing, a listing whose text
     /// now says something else -- is seen by the next request.
@@ -5606,6 +5736,8 @@ mod tests {
         weather(1).await;
     }
 
+    /// `kind` is the listing's own kind: the essay publisher's pay-per-read
+    /// listings are `content`, everything else `api`.
     #[tokio::test]
     async fn the_kind_filter_tells_content_from_apis() {
         let registry = DiscoveryRegistry::new();
@@ -5708,7 +5840,7 @@ mod tests {
             aggregated_at("https://small.example/a", 5),
         ]);
         let order: Vec<(EvictionClass, String)> =
-            eviction_order(&cache, Some(2), &nothing_exposed())
+            eviction_order(&cache, Some(2), &nothing_exposed(), &nothing_exposed())
                 .into_iter()
                 .map(|(_, class, _, url)| (class, url))
                 .collect();
@@ -5730,13 +5862,17 @@ mod tests {
             ]
         );
         // The first-hand record is in no class at all.
-        assert!(!eviction_order(&cache, Some(2), &nothing_exposed())
-            .iter()
-            .any(|(_, _, _, url)| url == "https://big.example/own"));
+        assert!(
+            !eviction_order(&cache, Some(2), &nothing_exposed(), &nothing_exposed())
+                .iter()
+                .any(|(_, _, _, url)| url == "https://big.example/own")
+        );
         // Without a share, only the family is set apart.
-        assert!(!eviction_order(&cache, None, &nothing_exposed())
-            .iter()
-            .any(|(_, class, _, _)| *class == OverHostShare));
+        assert!(
+            !eviction_order(&cache, None, &nothing_exposed(), &nothing_exposed())
+                .iter()
+                .any(|(_, class, _, _)| *class == OverHostShare)
+        );
     }
 
     fn nothing_exposed() -> std::collections::HashSet<String> {
@@ -5762,10 +5898,11 @@ mod tests {
             "https://pack.example/p/2",
             "https://old.example/x",
         ]);
-        let order: Vec<(bool, EvictionClass, String)> = eviction_order(&cache, None, &shown)
-            .into_iter()
-            .map(|(shown, class, _, url)| (shown, class, url))
-            .collect();
+        let order: Vec<(bool, EvictionClass, String)> =
+            eviction_order(&cache, None, &shown, &nothing_exposed())
+                .into_iter()
+                .map(|(standing, class, _, url)| (standing == Standing::Exposed, class, url))
+                .collect();
         use EvictionClass::*;
         assert_eq!(
             order,
@@ -5793,7 +5930,7 @@ mod tests {
             aggregated_at("https://big.example/c", 3),     // pending
         ]);
         let shown = exposed(&["https://pack.example/p/1", "https://big.example/a"]);
-        let order = eviction_order(&cache, Some(2), &shown);
+        let order = eviction_order(&cache, Some(2), &shown, &nothing_exposed());
         let class_of = |url: &str| order.iter().find(|(_, _, _, u)| u == url).unwrap().1;
         assert_eq!(
             class_of("https://pack.example/p/2"),
@@ -5819,14 +5956,14 @@ mod tests {
             aggregated_at("https://b.example/x", 20),
         ]);
         let all = exposed(&["https://a.example/x", "https://b.example/x"]);
-        let mut admission = Admission::new(&cache, 2, &all);
+        let mut admission = Admission::new(&cache, 2, &all, &nothing_exposed());
         assert_eq!(
             admission.admit(&aggregated_at("https://new.example/x", 9_999)),
             Err("over-capacity")
         );
         // With one of them pending, the newcomer displaces that one.
         let one = exposed(&["https://a.example/x"]);
-        let mut admission = Admission::new(&cache, 2, &one);
+        let mut admission = Admission::new(&cache, 2, &one, &nothing_exposed());
         assert_eq!(
             admission.admit(&aggregated_at("https://new.example/x", 9_999)),
             Ok(())
@@ -5836,7 +5973,7 @@ mod tests {
             "https://new.example/x".to_string(),
             aggregated_at("https://new.example/x", 9_999),
         );
-        assert_eq!(enforce_capacity(&mut cache, 2, &one), 1);
+        assert_eq!(enforce_capacity(&mut cache, 2, &one, &nothing_exposed()), 1);
         assert!(
             cache.contains_key("https://a.example/x"),
             "the exposed one stays"
@@ -5858,7 +5995,10 @@ mod tests {
                 .chain((0..80).map(|i| aggregated_at(&format!("https://fam.example/p/{i}"), 2_000)))
                 .collect(),
         );
-        assert_eq!(enforce_capacity(&mut cache, 1_000, &nothing_exposed()), 0);
+        assert_eq!(
+            enforce_capacity(&mut cache, 1_000, &nothing_exposed(), &nothing_exposed()),
+            0
+        );
         assert_eq!(cache.len(), 160);
     }
 
@@ -5873,10 +6013,11 @@ mod tests {
                     .map(|h| aggregated_at(&format!("https://{h}.tie.example/x"), 7))
                     .collect(),
             );
-            let order: Vec<String> = eviction_order(&cache, None, &nothing_exposed())
-                .into_iter()
-                .map(|(_, _, _, url)| url)
-                .collect();
+            let order: Vec<String> =
+                eviction_order(&cache, None, &nothing_exposed(), &nothing_exposed())
+                    .into_iter()
+                    .map(|(_, _, _, url)| url)
+                    .collect();
             assert_eq!(
                 order,
                 [
@@ -6032,6 +6173,38 @@ mod tests {
         assert_eq!((added, skipped), (0, 1));
         assert!(registry.get("https://e.new.example/x").await.is_none());
         assert_eq!(registry.count().await, 3);
+    }
+
+    /// Three rungs: a pending copy goes first, then one on hold, then one the
+    /// public surface shows -- and a templated family keeps its shown member,
+    /// not a newer one on hold.
+    #[test]
+    fn a_hold_ranks_between_pending_and_shown_copies() {
+        let cache = cache_of(vec![
+            aggregated_at("https://pending.example/x", 300),
+            aggregated_at("https://held.example/x", 100),
+            aggregated_at("https://shown.example/x", 50),
+            // One family: the shown member is older than the held one.
+            aggregated_at("https://fam.example/item/1", 10),
+            aggregated_at("https://fam.example/item/2", 400),
+        ]);
+        let shown = exposed(&["https://shown.example/x", "https://fam.example/item/1"]);
+        let held = exposed(&["https://held.example/x", "https://fam.example/item/2"]);
+        let order: Vec<(Standing, String)> = eviction_order(&cache, None, &shown, &held)
+            .into_iter()
+            .map(|(standing, _, _, url)| (standing, url))
+            .collect();
+        assert_eq!(
+            order,
+            [
+                (Standing::Pending, "https://pending.example/x".to_string()),
+                // The held member of the family is its duplicate.
+                (Standing::Held, "https://fam.example/item/2".to_string()),
+                (Standing::Held, "https://held.example/x".to_string()),
+                (Standing::Exposed, "https://fam.example/item/1".to_string()),
+                (Standing::Exposed, "https://shown.example/x".to_string()),
+            ]
+        );
     }
 
     /// A copy held in quarantine is protected like an exposed one while its

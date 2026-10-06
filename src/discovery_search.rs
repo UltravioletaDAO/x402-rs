@@ -94,9 +94,13 @@ const MIN_SCORED: f32 = 1e-6;
 /// relevance ([`SearchIndex::scores`]). Squared: a listing that matches half of
 /// what the request says keeps a quarter of its score.
 const COVERAGE_EXPONENT: i32 = 2;
-/// The least share of a request that names a category a listing outside it
-/// must cover to stay in the result ([`SearchIndex::relevance`]).
+/// The least share of a request in a category that a listing not in its best
+/// category, and in no other one it does not ask for, must cover to stay in
+/// the result ([`SearchIndex::answers_another_request`]).
 const COVERAGE_FLOOR: f32 = 0.5;
+/// The share a listing only in categories the request does not ask for must
+/// cover: all of it, give or take the float sums.
+const WHOLE_REQUEST: f32 = 0.999;
 /// What a content listing keeps of its relevance to a request that names a
 /// category ([`SearchIndex::relevance`]).
 const CONTENT_FOR_A_TASK: f32 = 0.25;
@@ -655,6 +659,29 @@ const CHAINS: &[&[&str]] = &[
     &["berachain"],
 ];
 
+/// Chain names that are also an ordinary word or a ticker: "knowledge base",
+/// "pay with USDC on Base", a "polygon" in a map, "SOL" or "ETH" in a price
+/// list. In a listing they count only in its host and path; a description that
+/// says them does not make the listing about that chain. A request is read
+/// whole: it names what it asks for.
+const AMBIGUOUS_CHAIN_NAMES: &[&str] = &[
+    "base",
+    "polygon",
+    "optimism",
+    "avalanche",
+    "sol",
+    "eth",
+    "btc",
+    "matic",
+    "avax",
+    "bnb",
+    "doge",
+    "ltc",
+    "trx",
+    "xrp",
+    "hbar",
+];
+
 /// Normalized chain name -> its bit (one per group of [`CHAINS`]).
 static CHAIN_BITS: Lazy<HashMap<String, u64>> = Lazy::new(|| {
     let mut map = HashMap::new();
@@ -668,12 +695,32 @@ static CHAIN_BITS: Lazy<HashMap<String, u64>> = Lazy::new(|| {
     map
 });
 
-/// The chains `terms` name, one bit each.
-fn chain_mask<'a>(terms: impl IntoIterator<Item = &'a String>) -> u64 {
-    terms
-        .into_iter()
-        .filter_map(|t| CHAIN_BITS.get(t))
+/// The chains the words of `text` name, one bit each: a word as written, or
+/// a camelCase word whole, never the start of a word (`base64` names no
+/// chain). With `unambiguous_only`, leaving out [`AMBIGUOUS_CHAIN_NAMES`].
+fn chain_mask(text: &str, unambiguous_only: bool) -> u64 {
+    text_terms(text)
+        .iter()
+        .filter(|t| t.kind != TermKind::Lead)
+        .filter(|t| !(unambiguous_only && AMBIGUOUS_CHAIN_NAMES.contains(&t.term.as_str())))
+        .filter_map(|t| CHAIN_BITS.get(&t.term))
         .fold(0, |mask, bit| mask | bit)
+}
+
+/// The chains a listing is about: any chain its host or path names, and the
+/// unambiguous ones its description or declared schema names. Payment
+/// networks (`accepts`) are never read.
+fn listing_chains(r: &DiscoveryResource) -> u64 {
+    let address = format!(
+        "{} {}",
+        r.url.host_str().unwrap_or_default(),
+        path_text(r.url.path())
+    );
+    chain_mask(&address, false)
+        | chain_mask(&r.description, true)
+        | r.extensions
+            .as_ref()
+            .map_or(0, |e| chain_mask(&schema_text(e), true))
 }
 
 /// Normalized word -> every other normalized word that shares a group with it.
@@ -697,8 +744,8 @@ static ALTERNATIVES: Lazy<HashMap<String, Vec<String>>> = Lazy::new(|| {
 fn normalize_word(word: &str) -> Option<String> {
     let words: Vec<String> = text_terms(word)
         .into_iter()
-        .filter(|(_, kind)| *kind == TermKind::Word)
-        .map(|(term, _)| term)
+        .filter(|t| t.kind == TermKind::Word)
+        .map(|t| t.term)
         .collect();
     match words.as_slice() {
         [only] => Some(only.clone()),
@@ -711,7 +758,18 @@ fn normalize_word(word: &str) -> Option<String> {
 /// length cap and [`stem`], each word followed by the extra terms
 /// [`text_terms`] reads from it.
 pub(crate) fn tokenize_into(text: &str, out: &mut Vec<String>) {
-    out.extend(text_terms(text).into_iter().map(|(term, _)| term));
+    out.extend(text_terms(text).into_iter().map(|t| t.term));
+}
+
+/// One term of a text, with what it is and which written word it came from.
+#[derive(Debug, Clone, PartialEq)]
+struct Term {
+    term: String,
+    kind: TermKind,
+    /// Position of the written word (cut on anything that is not a letter or
+    /// a digit) the term came from: `getLatestBlockhash` is one word of three
+    /// terms.
+    word: usize,
 }
 
 /// The copy's own test of a token stays the reference: [`significant`] must
@@ -749,25 +807,27 @@ enum TermKind {
 /// `fi` (`de` is a stopword), `LinkedIn` was `linked`, `WhatsApp` was `whats
 /// app`, `HyperEVM` was `hyper evm`. So the whole word is kept beside its
 /// pieces.
-fn text_terms(text: &str) -> Vec<(String, TermKind)> {
+fn text_terms(text: &str) -> Vec<Term> {
     let keep = |token: &str| significant(token) && token.len() <= MAX_TERM_CHARS;
     let mut out = Vec::new();
-    for raw in text.split(|c: char| !c.is_alphanumeric()) {
-        if raw.is_empty() {
-            continue;
-        }
+    for (word, raw) in text
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|raw| !raw.is_empty())
+        .enumerate()
+    {
+        let term = |term: String, kind| Term { term, kind, word };
         let parts = tokens(&split_camel_case(raw));
         let split = parts.len() > 1;
         for token in parts.iter().filter(|t| keep(t)) {
-            out.push((stem(token), TermKind::Word));
-            if let Some(word) = leading_word(token) {
-                out.push((stem(word), TermKind::Lead));
+            out.push(term(stem(token), TermKind::Word));
+            if let Some(lead) = leading_word(token) {
+                out.push(term(stem(lead), TermKind::Lead));
             }
         }
         if split {
             if let [whole] = tokens(raw).as_slice() {
                 if keep(whole) {
-                    out.push((stem(whole), TermKind::Whole));
+                    out.push(term(stem(whole), TermKind::Whole));
                 }
             }
         }
@@ -1112,6 +1172,8 @@ pub struct IndexDocument {
     categories: u64,
     /// Whether the listing sells content rather than a call to a tool.
     content: bool,
+    /// The chains the listing is about ([`listing_chains`]).
+    chains: u64,
 }
 
 impl IndexDocument {
@@ -1134,6 +1196,7 @@ impl IndexDocument {
             fields: Some(fields),
             categories: taxonomy.category_bits(&class.categories),
             content: class.kind == crate::discovery_taxonomy::Kind::Content,
+            chains: listing_chains(r),
         }
     }
 
@@ -1144,6 +1207,7 @@ impl IndexDocument {
             fields: None,
             categories: 0,
             content: false,
+            chains: 0,
         }
     }
 
@@ -1217,6 +1281,10 @@ pub struct SearchQuery {
     /// One entry per distinct term the caller typed: that term at weight 1,
     /// then its lexicon alternatives.
     concepts: Vec<Vec<(String, f32)>>,
+    /// The written word each concept came from, by concept
+    /// ([`Term::word`]): coverage weighs written words, not the pieces a
+    /// camelCase word is cut into.
+    concept_words: Vec<usize>,
     /// The needle of the substring test, normalized exactly as 2.46.1 did.
     needle: String,
     /// Whether `q` is short enough for the substring test to keep its matches
@@ -1227,10 +1295,13 @@ pub struct SearchQuery {
     one_word: bool,
     /// The chains `q` names ([`CHAINS`]), one bit each; 0 when it names none.
     chains: u64,
-    /// The category `q` asks for, as a bit of
+    /// The categories `q` asks for
+    /// ([`crate::discovery_taxonomy::Taxonomy::request_categories`]), as bits of
     /// [`crate::discovery_taxonomy::Taxonomy::category_bits`]; 0 when its words
     /// place it in none.
-    category: u64,
+    categories: u64,
+    /// The best of them alone.
+    best_category: u64,
 }
 
 impl SearchQuery {
@@ -1246,52 +1317,48 @@ impl SearchQuery {
         let substring_rule = trimmed.chars().count() <= LEGACY_SUBSTRING_MAX_CHARS;
 
         let terms = text_terms(trimmed);
-        // The chains a request names are the words it wrote, whole, never the
-        // start of another one (`base64` names no chain).
-        let chains = chain_mask(
-            terms
-                .iter()
-                .filter(|(_, kind)| *kind != TermKind::Lead)
-                .map(|(term, _)| term),
-        );
+        // A request names a chain by any of its names, the ambiguous ones
+        // included: it says what it asks for.
+        let chains = chain_mask(trimmed, false);
         let mut seen = HashSet::new();
         let mut concepts: Vec<Vec<(String, f32)>> = Vec::new();
+        let mut concept_words = Vec::new();
         // Whether the last word typed opened a concept (and was not a repeat
         // or past the cap): its extra spellings join that concept.
         let mut open = false;
-        for (term, kind) in terms {
-            if kind != TermKind::Word {
+        for t in terms {
+            if t.kind != TermKind::Word {
                 // `keccak256` also finds a listing that writes `Keccak-256`,
                 // and `getLatestBlockhash` one that writes it in one word.
                 if let Some(concept) = concepts.last_mut().filter(|_| open) {
-                    if concept.iter().all(|(t, _)| *t != term) {
-                        concept.push((term, ALTERNATIVE_WEIGHT));
+                    if concept.iter().all(|(term, _)| *term != t.term) {
+                        concept.push((t.term, ALTERNATIVE_WEIGHT));
                     }
                 }
                 continue;
             }
-            open = concepts.len() < MAX_QUERY_TERMS && seen.insert(term.clone());
+            open = concepts.len() < MAX_QUERY_TERMS && seen.insert(t.term.clone());
             if !open {
                 continue;
             }
-            let mut alternatives = vec![(term.clone(), 1.0)];
-            if let Some(more) = ALTERNATIVES.get(&term) {
+            let mut alternatives = vec![(t.term.clone(), 1.0)];
+            if let Some(more) = ALTERNATIVES.get(&t.term) {
                 alternatives.extend(more.iter().map(|a| (a.clone(), ALTERNATIVE_WEIGHT)));
             }
             concepts.push(alternatives);
+            concept_words.push(t.word);
         }
+        let taxonomy = crate::discovery_taxonomy::taxonomy();
+        let asked = taxonomy.request_categories(trimmed);
         Some(Self {
             concepts,
+            concept_words,
             needle,
             substring_rule,
             one_word: !trimmed.contains(char::is_whitespace),
             chains,
-            category: {
-                let taxonomy = crate::discovery_taxonomy::taxonomy();
-                taxonomy
-                    .request_category(trimmed)
-                    .map_or(0, |id| taxonomy.category_bits(&[id]))
-            },
+            categories: taxonomy.category_bits(&asked),
+            best_category: asked.first().map_or(0, |id| taxonomy.category_bits(&[id])),
         })
     }
 
@@ -1388,22 +1455,23 @@ impl SearchIndex {
             };
             let mut length = 0.0f32;
             let mut terms = 0usize;
-            let mut chains = 0u64;
             for (text, weight) in &fields {
                 tokens.clear();
-                for (term, kind) in text_terms(text) {
-                    // The chain a listing names is a word it wrote, whole,
-                    // never the start of another one (`base64` names no chain).
-                    if kind != TermKind::Lead {
-                        chains |= CHAIN_BITS.get(&term).copied().unwrap_or(0);
-                    }
-                    tokens.push(term);
-                }
+                // The start of a word (`web` of `web3`) is a lesser reading of
+                // it than a word the listing wrote.
+                tokens.extend(text_terms(text).into_iter().map(|t| {
+                    let factor = if t.kind == TermKind::Lead {
+                        ALTERNATIVE_WEIGHT
+                    } else {
+                        1.0
+                    };
+                    (t.term, factor)
+                }));
                 tokens.truncate(MAX_FIELD_TERMS.min(per_listing - terms));
                 terms += tokens.len();
-                for t in tokens.drain(..) {
-                    *tf.entry(t).or_insert(0.0) += *weight;
-                    length += *weight;
+                for (t, factor) in tokens.drain(..) {
+                    *tf.entry(t).or_insert(0.0) += *weight * factor;
+                    length += *weight * factor;
                 }
             }
             if held + tf.len() > MAX_INDEX_POSTINGS {
@@ -1420,7 +1488,7 @@ impl SearchIndex {
             }
             ids.insert(document.key, id);
             lengths.push(length);
-            chain_masks.push(chains);
+            chain_masks.push(document.chains);
             category_masks.push(document.categories);
             content_flags.push(document.content);
         }
@@ -1496,17 +1564,52 @@ impl SearchIndex {
         let mut total = vec![0f32; n];
         let mut covered = vec![0f32; n];
         let mut best = vec![0f32; n];
-        let mut information = 0f32;
         let mut touched: Vec<u32> = Vec::new();
-        for concept in &query.concepts {
+
+        // What each concept is worth to the request: the idf of the rarest
+        // spelling of it the index holds (an alternative at its weight); 0
+        // when none is held. Then by written word: a word is worth its most
+        // informative piece, shared among its pieces by their worth, so
+        // `getLatestBlockhash` counts as the one word it was typed as and
+        // not as three ("get" and "latest" are not the request).
+        let importance: Vec<f32> = query
+            .concepts
+            .iter()
+            .map(|concept| {
+                concept
+                    .iter()
+                    .filter_map(|(term, weight)| {
+                        self.postings
+                            .get(term)
+                            .map(|list| weight * self.idf(list.len()))
+                    })
+                    .fold(0f32, f32::max)
+            })
+            .collect();
+        let mut word_worth: HashMap<usize, (f32, f32)> = HashMap::new();
+        for (word, worth) in query.concept_words.iter().zip(&importance) {
+            let entry = word_worth.entry(*word).or_insert((0.0, 0.0));
+            entry.0 = entry.0.max(*worth);
+            entry.1 += worth;
+        }
+        let information: f32 = word_worth.values().map(|(max, _)| max).sum();
+        let credit: Vec<f32> = query
+            .concept_words
+            .iter()
+            .zip(&importance)
+            .map(|(word, worth)| match word_worth.get(word) {
+                Some((max, sum)) if *sum > 0.0 => max * worth / sum,
+                _ => 0.0,
+            })
+            .collect();
+
+        for (c, concept) in query.concepts.iter().enumerate() {
             touched.clear();
-            let mut importance = 0f32;
             for (term, weight) in concept {
                 let Some(list) = self.postings.get(term) else {
                     continue;
                 };
                 let idf = self.idf(list.len());
-                importance = importance.max(weight * idf);
                 for &(doc, tf) in list {
                     let d = doc as usize;
                     let norm = K1 * (1.0 - B + B * self.lengths[d] / self.avg_length);
@@ -1519,10 +1622,13 @@ impl SearchIndex {
                     }
                 }
             }
-            information += importance;
+            // A listing that says only an alternative covers the word in
+            // full: the lexicon is there so `forecast` answers `weather`, and
+            // the alternative's weight is already paid in its score. Crediting
+            // coverage at that weight too measured 32 -> 29 of 36 places.
             for &doc in &touched {
                 total[doc as usize] += best[doc as usize];
-                covered[doc as usize] += importance;
+                covered[doc as usize] += credit[c];
                 best[doc as usize] = 0.0;
             }
         }
@@ -1545,43 +1651,42 @@ impl SearchIndex {
         }
     }
 
-    /// Whether the listing stored under `key` answers some other request than
-    /// `query`, and so does not answer it however many words they share:
+    /// Whether the listing at `id` answers some other request than `query`,
+    /// and so does not answer it however many words they share:
     ///
-    /// - it names one or more chains ([`CHAINS`]), the query names one or
-    ///   more, and none is the same -- "solana rpc" is not answered by a
+    /// - it names one or more chains ([`listing_chains`]), the query names one
+    ///   or more, and none is the same -- "solana rpc" is not answered by a
     ///   HyperEVM RPC;
-    /// - the query's words place it in a category (the inference rules of
-    ///   `config/bazaar_taxonomy.json`, applied to the request), the listing is
-    ///   in one or more, and not in that one -- "keccak selector" asks for a
-    ///   developer tool and a CSS scraper is a page reader; "stock quote" asks
-    ///   for finance and a swap quote is crypto.
+    /// - the query's words place it in categories (the inference rules of
+    ///   `config/bazaar_taxonomy.json`, applied to the request), and the
+    ///   listing is:
+    ///   - in the best of them: it answers;
+    ///   - only in another of them, or in no category (or only the fallback
+    ///     `data`): it has to cover [`COVERAGE_FLOOR`] of the request;
+    ///   - only in other categories: it has to cover the whole request --
+    ///     "keccak selector" asks for a developer tool, and a CSS scraper,
+    ///     which says "selector" and not "keccak", is a page reader; a BTC
+    ///     exchange-rate feed is finance and still says all of "bitcoin
+    ///     price".
     ///
-    /// A listing that names no chain, or is in no category (or only in the
-    /// fallback `data`), is never excluded by either: nothing says it is about
-    /// something else. Empty is a better answer than a wrong one, which a
-    /// router would pay for.
-    fn answers_another_request(&self, query: &SearchQuery, id: usize) -> bool {
-        let disjoint = |asked: u64, listing: Option<&u64>| {
-            asked != 0 && listing.is_some_and(|l| *l != 0 && l & asked == 0)
-        };
-        disjoint(query.chains, self.chains.get(id))
-            || disjoint(query.category, self.categories.get(id))
-    }
-
-    /// Whether the listing at `id` says too little of a request that names
-    /// a category to stand for it: it is not in that category (it is in no
-    /// category, or only in the fallback one -- one in another category does
-    /// not get here, see [`Self::answers_another_request`]), and it covers
-    /// less than [`COVERAGE_FLOOR`] of what the request says. A listing in
-    /// the request's category is kept whatever it covers.
-    fn says_too_little(&self, query: &SearchQuery, id: usize, scores: &Scores) -> bool {
-        query.category != 0
-            && self
-                .categories
-                .get(id)
-                .is_some_and(|c| c & query.category == 0)
-            && scores.coverage.get(id).copied().unwrap_or(0.0) < COVERAGE_FLOOR
+    /// Empty is a better answer than a wrong one, which a router would pay for.
+    fn answers_another_request(&self, query: &SearchQuery, id: usize, scores: &Scores) -> bool {
+        let named = self.chains.get(id).copied().unwrap_or(0);
+        if query.chains != 0 && named != 0 && named & query.chains == 0 {
+            return true;
+        }
+        if query.categories == 0 {
+            return false;
+        }
+        let listing = self.categories.get(id).copied().unwrap_or(0);
+        let coverage = scores.coverage.get(id).copied().unwrap_or(0.0);
+        if listing & query.best_category != 0 {
+            false
+        } else if listing == 0 || listing & query.categories != 0 {
+            coverage < COVERAGE_FLOOR
+        } else {
+            coverage < WHOLE_REQUEST
+        }
     }
 
     fn idf(&self, df: usize) -> f32 {
@@ -1606,11 +1711,10 @@ impl SearchIndex {
     ) -> Option<f32> {
         let id = self.ids.get(key).map(|id| *id as usize);
         let literal = || query.substring_rule && query.legacy_hit(r);
-        let excluded = id.is_some_and(|id| {
-            self.answers_another_request(query, id) || self.says_too_little(query, id, scores)
-        });
-        if excluded && !literal() {
-            return None;
+        if id.is_some_and(|id| self.answers_another_request(query, id, scores)) {
+            // Kept for the substring test of 2.46.1 alone, and ranked as such:
+            // a word a seller put in a tag does not buy its way back up.
+            return literal().then_some(SUBSTRING_ONLY_SCORE);
         }
         let mut scored = id
             .and_then(|id| scores.score.get(id))
@@ -1618,7 +1722,7 @@ impl SearchIndex {
             .unwrap_or(0.0);
         // A request that names a category asks for a tool: an essay that
         // shares its words stays in the result, behind the tools.
-        if query.category != 0 && id.is_some_and(|id| self.content.get(id) == Some(&true)) {
+        if query.categories != 0 && id.is_some_and(|id| self.content.get(id) == Some(&true)) {
             scored *= CONTENT_FOR_A_TASK;
         }
         if scored > 0.0 {
@@ -2269,6 +2373,52 @@ mod tests {
     }
 
     #[test]
+    fn a_listing_that_says_the_whole_request_outranks_one_that_repeats_a_part() {
+        // Words no rule of the vocabulary knows, so only coverage decides:
+        // `ipsum` is the rarer word, and one listing repeats it in its path
+        // and three times in its description; the other says both words once.
+        let mut listings = vec![
+            listing("https://a.example/ipsum", "Ipsum ipsum ipsum."),
+            listing("https://b.example/x", "Lorem ipsum."),
+        ];
+        for host in ["c", "d", "e", "f"] {
+            listings.push(listing(&format!("https://{host}.example/y"), "Lorem."));
+        }
+        let hits = ranked(&listings, "lorem ipsum");
+        assert_eq!(hits[0], "https://b.example/x", "{hits:?}");
+        let (index, _) = index_of(&listings);
+        let scores = index.scores(&SearchQuery::parse("lorem ipsum").unwrap());
+        let id = |key: &str| index.ids[key] as usize;
+        assert_eq!(scores.coverage[id("https://b.example/x")], 1.0);
+        assert!(scores.coverage[id("https://a.example/ipsum")] < 1.0);
+    }
+
+    #[test]
+    fn a_chain_is_a_word_written_whole() {
+        let listings = vec![
+            listing("https://enc.example/x", "Encode base64 strings."),
+            listing("https://evm.example/x", "HyperEVM block explorer."),
+            listing("https://sol.example/x", "Solana block explorer."),
+        ];
+        let (index, _) = index_of(&listings);
+        let mask = |key: &str| index.chains[index.ids[key] as usize];
+        // `base64` is not Base.
+        assert_eq!(mask("https://enc.example/x"), 0);
+        // `HyperEVM` is read whole, not as `hyper` and `evm`.
+        assert_eq!(
+            mask("https://evm.example/x"),
+            CHAIN_BITS["hyperevm"],
+            "{:b}",
+            mask("https://evm.example/x")
+        );
+        // A request naming Solana gets the Solana explorer, not HyperEVM's.
+        assert_eq!(
+            ranked(&listings, "solana block explorer"),
+            ["https://sol.example/x"]
+        );
+    }
+
+    #[test]
     fn the_word_typed_outranks_its_synonym() {
         let listings = vec![
             listing("https://a.example/x", "Hourly forecast."),
@@ -2733,6 +2883,7 @@ mod tests {
         let document = IndexDocument {
             categories: 0,
             content: false,
+            chains: 0,
             key: "https://wide.example/x".to_string(),
             fields: Some(
                 (0..10)
@@ -2748,6 +2899,7 @@ mod tests {
         let one_field = IndexDocument {
             categories: 0,
             content: false,
+            chains: 0,
             key: "https://long.example/x".to_string(),
             fields: Some(vec![(words(0, 3 * MAX_FIELD_TERMS), 1.0)]),
         };
@@ -2774,6 +2926,7 @@ mod tests {
                 fields: Some(fields.clone()),
                 categories: 0,
                 content: false,
+                chains: 0,
             })
             .collect();
         (keys, documents)

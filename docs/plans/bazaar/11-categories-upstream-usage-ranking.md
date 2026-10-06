@@ -63,9 +63,10 @@ A second closed list in the same file (`upstreams`): `exa`, `tavily`, `firecrawl
   fields) or `extensions.bazaar.upstream`, an id or name of the list in any case. Any other value
   is kept and not published, and stops inference, like a category.
 - `inferred`: the host is the vendor's own domain or a subdomain of it; a path segment or host
-  label is the vendor's segment (`/api/hunter/...`); the description names it in a form that is
+  label is the vendor's segment (`/api/hunter/...`; Perplexity and Apollo have none, being a
+  language-model metric and many companies' name); the description names it in a form that is
   not a common word (`hunter.io`, `perplexity ai`, never bare `perplexity`).
-- Never for content. **Not done**: inferring it from response headers. The prober keeps the
+- Never inferred for content; a content listing that declares one publishes it. **Not done**: inferring it from response headers. The prober keeps the
   payment terms of a 402 and no other response header; reading vendor headers is a separate
   change to `discovery_health`.
 
@@ -75,10 +76,17 @@ A second closed list in the same file (`upstreams`): `exa`, `tavily`, `firecrawl
 listing, from the settlements the transaction store records (`TransactionStore::settles_since`,
 implemented for DynamoDB: one Query per day partition from the cursor, filtered to successful
 settles, paginated, at most `MAX_WINDOW_SETTLEMENTS`). Every replica reads the store every
-5 minutes, the first time the whole 30-day window, then only what is newer than the newest record
-it holds, so all replicas serve the same counts. A listing whose URL has a query is counted by that
-exact URL; one without, over every query its buyers sent. An EVM payer in two spellings is one
-payer.
+5 minutes, the first time the whole 30-day window, then from two minutes before its previous read
+(a record is stamped before its fire-and-forget write lands), each settlement counted once by its
+store key, so all replicas serve the same counts a refresh apart. A listing whose URL has a query
+is counted by that exact URL; one without, over every query its buyers sent. A templated URL
+(`{id}`) gets no `usage`: no paid URL equals it. An EVM payer in two spellings is one payer.
+
+**What counts.** The URL and the recipient of a settle are whatever its caller sent, so a settle
+is counted for a listing only when it is on a **mainnet**, pays one of the `(network, payTo)`
+pairs the listing itself declares, and comes from a payer other than that recipient. Otherwise a
+testnet settle would write counts onto any listing for faucet gas. A seller paying itself from
+fresh wallets on mainnet still counts: the numbers say how much was paid, not by whom.
 
 **A floor, never a ledger**, said in the field's doc and in `/docs`: the record is written after a
 settlement resolves and is lost when the store is unreachable; settlements through other
@@ -97,18 +105,22 @@ All under `sort=relevance`; `sort=tier` (the substring search of 2.46.1) is unto
    digits (`keccak256` -> `keccak`); a camelCase word is also kept whole (`DeFi`, `LinkedIn`,
    `HyperEVM`), which the camelCase split had cut into pieces nobody types.
 3. **Another chain is another request.** A request that names a chain never gets a listing that
-   names only other chains (`CHAINS` in `src/discovery_search.rs`: names that are rarely anything
-   else; payment networks are never read).
+   names only other chains (`CHAINS` in `src/discovery_search.rs`). A listing's chains are every
+   name its host or path carries, and from its description or schema only the names that are
+   nothing else (`AMBIGUOUS_CHAIN_NAMES`: `base`, `polygon`, `optimism`... are read there as
+   words); payment networks are never read.
 4. **Another category is another request.** The request's own words go through the inference
-   rules; when they fall in a category, a listing in other categories does not answer it, and a
-   listing in no category (or only `data`) must cover at least half of the request
-   (`COVERAGE_FLOOR`). Content stays in such a result at a quarter of its relevance, behind the
-   tools.
-5. **Literal matches are kept.** A listing that contains the request word for word is never
-   excluded by 3 or 4: everything the substring test of 2.46.1 kept is still kept.
+   rules, every category they reach, best first. A listing in the best one answers; one in a
+   runner-up, or in no category (or only `data`), must cover at least half of the request
+   (`COVERAGE_FLOOR`); one only in other categories must cover all of it (`WHOLE_REQUEST`): a
+   BTC exchange-rate feed is finance and still says all of `bitcoin price`. Content stays in such
+   a result at a quarter of its relevance, behind the tools.
+5. **Literal matches are kept, as such.** A listing excluded by 3 or 4 that contains a `q` of up
+   to 128 characters word for word is still kept -- everything the substring test of 2.46.1 kept
+   stays -- with the substring-only score, after every listing a word scored.
 6. **Grouping by recipient.** At the top of a relevance result a host keeps two places, a payTo
-   two, a templated family one; the rest follow in relevance order. Ranking only: nothing is
-   dropped, and a first-hand listing is never refused or evicted for it.
+   (of the first payment option) two, a templated family one; the rest follow in relevance order.
+   Ranking only: nothing is dropped, and a first-hand listing is never refused or evicted for it.
 7. `ticker` left the price group of the lexicon: a ticker is a symbol, not a price.
 
 Benchmark (`tests/bazaar_search.rs`, top 3 of 36 places, fixture with one seller per host):
@@ -120,9 +132,9 @@ Benchmark (`tests/bazaar_search.rs`, top 3 of 36 places, fixture with one seller
 | 10 held-out paraphrases, EN and ES | 21 / 30 | 25 / 30 |
 
 Latency, debug build, same fixture, two runs each on the same machine: a search p50 49-51 ms
-(2.48.0) vs 47-49 ms; without `q` 82-95 ms vs 74-79 ms. The first search after a catalog write
-rebuilds the index and now also classifies each listing for its category set: 149-155 ms vs
-187-259 ms. The `?category=` filter reads categories resolved once per catalog generation.
+(2.48.0) vs 47-49 ms; without `q` 82-95 ms vs 74-82 ms. The first search after a catalog write
+rebuilds the index and now also classifies each listing for its category set and its chains:
+149-155 ms vs 187-274 ms. The `?category=` filter reads categories resolved once per catalog generation.
 
 ## 6. The quarantine and a full catalog (api.losbeto.xyz)
 
@@ -137,11 +149,13 @@ evicted, held or not). If its feed copy also sits past the per-source cap,
 where 2.48.0 only reads copies of URLs the catalog still holds, an evicted copy does not come back
 by that route; whether it does is read on a running task, not here.
 
-Now a copy quarantined less than `QUARANTINE_PROTECTION_SECS` (7 days: two probes at the longest
-backoff and a day to spare) is protected like an exposed one: a newcomer never displaces it, and
-with no other pending copy left a full catalog takes no newcomer. Past the week it is a listing
-that stayed broken, evictable like any pending copy. Tests:
-`a_full_catalog_never_evicts_a_hold_being_judged` (`src/discovery.rs`) and
+Now eviction has three standings, lowest first: pending, **held** (quarantined less than
+`QUARANTINE_PROTECTION_SECS`, 7 days: two probes at the longest backoff and a day to spare) and
+exposed. A newcomer only ever displaces a pending copy, so it never displaces a hold, and with no
+pending copy left a full catalog takes no newcomer; trimming sheds every pending copy before a
+hold and every hold before an exposed copy. Past the week it is a listing that stayed broken,
+pending again. Tests: `a_full_catalog_never_evicts_a_hold_being_judged`,
+`a_hold_ranks_between_pending_and_shown_copies` (`src/discovery.rs`) and
 `a_hold_is_protected_for_its_window_and_no_longer` (`src/discovery_health.rs`).
 
 This protects what is held from now on; it does not bring back what was already evicted. Whether

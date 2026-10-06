@@ -21,34 +21,45 @@
   `coingecko`, `coinmarketcap`, `openai`, `anthropic`). `declared` from the new
   `metadata.upstream` (stored verbatim, accepted by `POST /discovery/register`) or
   `extensions.bazaar.upstream`; `inferred` from the vendor's own domain, a path
-  segment or host label, or the description. Never for content.
+  segment or host label (never for `perplexity` or `apollo`, which are also a
+  word and another company), or a phrase in the description (`Hunter.io`,
+  `Perplexity AI`, never the bare word). Never inferred for content.
 - **`usage`** on every listing: `lastSettledAt`, `calls30d`, `uniquePayers30d` and
   `asOf`, read every 5 minutes by every replica from the settlements the
   transaction store records (`TransactionStore::settles_since`, a DynamoDB Query
-  per day partition from the newest record held). A floor, never a ledger: the
-  record is fire-and-forget, other facilitators' settlements are not seen, and a
-  payment counts only for the URL that was bought. Absent on a deployment that
-  records no settlements.
+  per day partition from two minutes before the previous read, each settlement
+  counted once). Only a settlement on a mainnet, paying one of the listing's own
+  `(network, payTo)` pairs, for its URL, by a payer other than that recipient,
+  counts: the URL and recipient of a settle are whatever its caller sent. A floor,
+  never a ledger: the record is fire-and-forget and other facilitators'
+  settlements are not seen. Absent on a deployment that records no settlements,
+  and on a templated URL.
 - `GET /discovery/stats`: `byCategorySource` and `byUpstream`.
 
 ### Changed
 
 - **Relevance answers the task, not a shared word.** BM25 is scaled by the square of
   the share of the request a listing covers (each word weighted by its idf); a word
-  followed by digits is also read without them (`keccak256` -> `keccak`) and a
-  camelCase word is also kept whole (`DeFi`, `LinkedIn`, `HyperEVM`).
+  followed by digits is also read without them, at half weight (`keccak256` ->
+  `keccak`), and a camelCase word is also kept whole (`DeFi`, `LinkedIn`,
+  `HyperEVM`).
 - **A listing about something else does not answer.** Under relevance, a request
-  that names a chain never gets a listing that names only other chains, and a
-  request whose words fall in a category (the inference rules applied to `q`)
-  never gets a listing in other categories; a listing in no category must cover at
-  least half of such a request, and paid content stays behind the tools. A listing
-  that contains `q` word for word is always kept. The five requests a router
+  that names a chain never gets a listing that names only other chains (a
+  listing's chains come from its host and path, and from its description or
+  schema only in names that are nothing else: never `base` or `polygon`). A
+  request whose words fall in categories (the inference rules applied to `q`) is
+  answered by a listing in the best of them; one in a runner-up or in no category
+  must cover half the request, one only in other categories all of it, and paid
+  content stays at a quarter of its relevance, behind the tools. A listing that
+  contains a `q` of up to 128 characters word for word is still kept, after every
+  listing a word scored. The five requests a router
   reproduced on 2.48.0 are tests: `keccak selector`, `solana rpc
   getLatestBlockhash` (empty rather than the HyperEVM RPC), `phone number lookup`,
   `stock quote`, `trending meme coins`. Benchmark: 26 -> 32 of 36 as written,
   27 -> 34 with `sort=relevance`, 21 -> 25 of 30 held-out paraphrases.
 - **Grouping by recipient in the ranking.** At the top of a relevance result a
-  `payTo` keeps two places and a templated family one, beside the two per host:
+  `payTo` (of the first payment option) keeps two places and a templated family
+  one, beside the two per host:
   resellers and template families no longer fill the page. Ranking only; nothing is
   dropped, refused or evicted for it.
 - `ticker` is no longer a synonym of `price` / `quote` in the search lexicon.
@@ -57,9 +68,10 @@
 
 - **A full catalog no longer evicts a listing held in quarantine.** A quarantined
   copy is never exposed, so it ranked as pending and was the first thing eviction
-  took, health record (the hold) included; a copy held less than 7 days is now
-  protected like an exposed one, and a full catalog takes no newcomer in its place.
-  Past the week it is evictable again.
+  took, health record (the hold) included. A copy held less than 7 days now ranks
+  between the pending copies and the exposed ones: a full catalog sheds every
+  pending copy before it and never takes a newcomer in its place. Past the week
+  it is pending again.
 - The content cap of the curated tier and the `kind` filter read the listing's kind
   without resolving its categories.
 

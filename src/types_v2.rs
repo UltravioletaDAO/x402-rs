@@ -1485,18 +1485,19 @@ pub struct DiscoveryResource {
 
     /// How `upstream` was obtained: `declared` (the seller's own
     /// `metadata.upstream` or `extensions.bazaar.upstream`) or `inferred`
-    /// (its host, a path segment or its description names it). Response-only;
-    /// absent exactly when `upstream` is.
+    /// (its host, a path segment or its description names it; never for
+    /// content). Response-only; absent exactly when `upstream` is.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub upstream_source: Option<crate::discovery_taxonomy::UpstreamSource>,
 
     /// How much the listing was paid for through this facilitator in the last
     /// 30 days. Response-only, from the settlements this facilitator records
-    /// (`crate::discovery_usage`); absent when this deployment records none.
-    /// A FLOOR, never a ledger: the record is written after a payment settles
-    /// and is lost when the store is unreachable, settlements through other
-    /// facilitators are invisible, and a payment is matched to the listing by
-    /// the URL the buyer paid for.
+    /// (`crate::discovery_usage`); absent when this deployment records none,
+    /// and for a templated URL. Only mainnet settlements paying one of the
+    /// listing's own `(network, payTo)` pairs, for its URL, by a payer other
+    /// than that recipient, count. A FLOOR, never a ledger: the record is
+    /// written after a payment settles and is lost when the store is
+    /// unreachable, and settlements through other facilitators are invisible.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub usage: Option<crate::discovery_usage::ListingUsage>,
 }

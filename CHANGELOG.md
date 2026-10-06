@@ -1,5 +1,83 @@
 # Changelog
 
+## [2.48.0] - 2026-10-04
+
+### Changed
+
+- **The payTo drift check compares recipients per network.** A recipient the
+  listing declares is never a drift, on any network. One it does not declare
+  is a drift when it is offered on a network the listing declares, or on a
+  network the prober cannot name (fails closed: an EVM chain is its chain id,
+  every other family its CAIP-2 namespace, and an unknown namespace such as
+  `aws:base` names nothing). One offered on a network the listing does not
+  declare is an extra way to pay, not a changed one, while the same transport
+  still offers a payable option to a declared recipient on the network it is
+  declared on: the listing is verified and stays listed, the extra recipient is
+  logged at WARN with its network (`paytoswap: live 402 adds a payment option
+  on a network the listing does not declare`) and kept in the observed terms
+  when the catalog can read the option, and it is never adopted into the
+  listing's `accepts`. A mention of the declared address does not count -- in
+  an option nobody can pay, loose in the document, on another chain, or only in
+  the other transport -- and without that offer the extra options are a drift.
+  Each transport is judged on its own and the worse verdict stands. Measured on
+  2026-10-04: api.losbeto.xyz (Base, plus Solana) and one host serving 183
+  listings (Base, Arbitrum and Polygon, plus `stacks:1`) were held for adding a
+  network; x402.tavily.com/search pays another Base recipient than every
+  aggregated copy declares, and stays held.
+- The declared offer that lets an extra network pass is matched as a client
+  matches it: the exact CAIP-2 network (Solana devnet does not stand for
+  mainnet), the asset and recipient as written outside EVM (a Solana mint in
+  another case is another mint; only an EVM address, written with a literal
+  `0x`, is compared in any case), and a scheme the protocol's `Scheme` takes
+  literally (`EXACT`, ` exact ` do not count). Anything else is a drift.
+- That offer must sit in the same list as the extra option: `accepts` and
+  `paymentRequirements` of one document are judged apart, like the two
+  transports, so the declared offer in one does not vouch for an option in the
+  other. A v1 network name counts only as the wire name the derived serde of
+  `Network` reads (`base`, not `base-mainnet`, `bnb` or any other
+  `Network::from_str` alias).
+- An upstream page that does not parse no longer panics when its error preview
+  would cut a multibyte character at byte 500.
+- **The `PAYMENT-REQUIRED` header is decoded as forgivingly as the clients
+  that pay it.** It used to accept only padded standard base64 or unpadded
+  URL-safe base64, so a header in any other spelling Node's `Buffer` or the
+  browser's `atob` reads (unpadded standard, padded URL-safe, mixed alphabets,
+  whitespace or stray characters, extra padding or bytes after it, non-zero
+  trailing bits, a dangling final symbol, invalid UTF-8 in the JSON) counted as
+  absent, and the hijack check judged the body alone: a body keeping the
+  declared offer hid a header paying another recipient. Now either alphabet is
+  read, padding is optional, characters outside the alphabets are skipped,
+  decoding stops at the first `=` and the bytes become text with invalid UTF-8
+  replaced, as `Buffer` does.
+- A drift hold no build with the per-network rule has judged is probed once
+  more straight away instead of after its 72-hour backoff. It still needs two
+  clean challenges in a row to come back.
+- **A newer copy that declares other recipients is re-probed at once.** When an
+  import replaces a listing with a copy whose `(network, payTo)` set differs,
+  the change is logged (`paytoswap: declared recipients ... refreshed from a
+  newer copy`, at WARN when the listing is held for drift) and the listing is
+  queued for revalidation, so a drift hold is
+  re-judged against the source's new terms within the hour. The baseline only
+  ever comes from a catalog source, never from the 402 it is checked against.
+- **The aggregator reads past the per-source cap for copies of listings it
+  already holds.** For the sources in `DISCOVERY_SCAN_SOURCES` (default
+  `coinbase`), after the first `maxItemsPerSource` items it reads up to
+  `DISCOVERY_SCAN_PAGES_PER_CYCLE` (8) pages of `DISCOVERY_SCAN_PAGE_SIZE`
+  (1 000) a cycle, resuming where the previous cycle stopped, and keeps only
+  copies of URLs the catalog holds; nothing new enters the catalog this way.
+  Those copies go through the import's usual rules: the newer copy's terms win,
+  and descriptive gaps are filled from whichever copy has the text. A page that
+  does not parse is stepped over; one the source does not serve is retried next
+  cycle. Measured on 2026-10-04: Coinbase publishes 32 701 resources; all 144
+  listings held from thirdweb are in it, none in the first 1 000; its copy is
+  the newer one for all 144 and names the same recipients on the same networks
+  (two spell Solana `solana:mainnet`, the same family for the drift check), and
+  it carries the description for 139 and the input schema for all 144.
+  Published in `GET /discovery/config` as `catalog.scanPastCap`.
+- `POST /discovery/register` documents `extensions.bazaar` (`info.input`,
+  `info.output`, `schema`) in `/docs`; it was already stored verbatim and is now
+  pinned by tests through the HTTP route.
+
 ## [2.47.0] - 2026-10-02
 
 ### Changed

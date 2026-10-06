@@ -64,6 +64,42 @@ pub fn max_items_per_source() -> usize {
     positive("DISCOVERY_MAX_ITEMS_PER_SOURCE", 1_000) as usize
 }
 
+/// Sources the aggregator reads PAST `max_items_per_source`, keeping only the
+/// copies of listings the catalog already holds (comma-separated ids; empty
+/// disables). Nothing new enters this way: it is how a listing held from one
+/// feed is completed and kept current from another feed that carries the same
+/// URL further down its pages.
+///
+/// Coinbase alone by default, measured 2026-10-04: its feed publishes 32 701
+/// resources, every one of the 144 listings held from thirdweb is in it --
+/// none in the first 1 000 -- and its copies carry the description for 139 of
+/// them and the input schema for all 144, which the thirdweb copies do not.
+pub fn scan_sources() -> Vec<String> {
+    let raw = std::env::var("DISCOVERY_SCAN_SOURCES").unwrap_or_else(|_| "coinbase".to_string());
+    raw.split(',')
+        .map(|s| s.trim().to_ascii_lowercase())
+        .filter(|s| !s.is_empty())
+        .collect()
+}
+
+/// Pages one scanned source is read past the cap in one cycle, resuming where
+/// the last cycle stopped and wrapping at the end of the feed. `0` disables the
+/// scan. Bounded at 16 -- half of Coinbase's feed, ~54 MB -- so a typo cannot
+/// turn one cycle into a crawl of the whole feed.
+///
+/// 8 pages of 1 000 cover Coinbase's 31 700 resources past the cap in four
+/// hourly cycles, for ~27 MB of transfer a cycle.
+pub fn scan_pages_per_cycle() -> usize {
+    num("DISCOVERY_SCAN_PAGES_PER_CYCLE", 8).min(16) as usize
+}
+
+/// Items asked for per scanned page. At most 1 000, the largest page measured
+/// to be honoured (3.4 MB from Coinbase): one page is held in memory at a time,
+/// and nothing of it but the copies of held listings outlives it.
+pub fn scan_page_size() -> usize {
+    positive("DISCOVERY_SCAN_PAGE_SIZE", 1_000).min(1_000) as usize
+}
+
 /// Share of the catalog a host may hold before its copies are the ones a FULL
 /// catalog evicts first, in percent. `0` or `100` disables the rule.
 ///
@@ -229,6 +265,11 @@ pub fn effective() -> serde_json::Value {
             "maxItemsPerSource": max_items_per_source(),
             "maxHostSharePercent": max_host_share_percent(),
             "maxPerHost": max_per_host(max_resources()),
+            "scanPastCap": {
+                "sources": scan_sources(),
+                "pagesPerCycle": scan_pages_per_cycle(),
+                "pageSize": scan_page_size(),
+            },
         },
         "healthProber": {
             "tickSeconds": health_tick_secs(),
@@ -312,6 +353,18 @@ mod tests {
         assert_eq!(max_items_per_source(), 1_000);
         assert_eq!(health_max_rps(), 2);
         assert_eq!(health_concurrency(), 8);
+    }
+
+    #[test]
+    fn the_scan_past_the_cap_is_coinbase_eight_pages_of_a_thousand() {
+        assert_eq!(scan_sources(), ["coinbase"]);
+        assert_eq!(scan_pages_per_cycle(), 8);
+        assert_eq!(scan_page_size(), 1_000);
+        let published = effective();
+        assert_eq!(
+            published["catalog"]["scanPastCap"],
+            json!({"sources": ["coinbase"], "pagesPerCycle": 8, "pageSize": 1000})
+        );
     }
 
     #[test]

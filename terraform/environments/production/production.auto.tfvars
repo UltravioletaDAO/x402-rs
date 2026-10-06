@@ -63,8 +63,8 @@ availability_zones = ["us-east-2a", "us-east-2b"]
 single_nat_gateway = true
 
 # ECS task sizing
-task_cpu    = 1024 # 1 vCPU
-task_memory = 2048 # 2 GB
+task_cpu    = 512  # 0.5 vCPU (COSTO-X402 B3; revert to 1024 if the boot log says workers=1)
+task_memory = 1024 # 1 GB   (COSTO-X402 B3; revert to 2048 together with task_cpu)
 
 # desired_count carries `ignore_changes` on aws_ecs_service.facilitator (main.tf),
 # so Terraform never writes it and this value cannot move the running count.

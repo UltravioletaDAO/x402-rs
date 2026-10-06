@@ -70,15 +70,22 @@ variable "task_cpu" {
     lines). The next deploy answers this with `aws logs filter-log-events` -- no ECS Exec,
     no dedicated investigation -- read that number before touching this value. 1 worker
     keeps 1024; N workers with headroom makes 512 defensible.
+
+    2026-10-06 (COSTO-X402, B3): 512. Measured over the cost assessment of 2026-10-05:
+    CPU 2.6 % average of 1024 units, memory 12 % (max 16.5 %) of 2048 MB, two tasks.
+    At 512/1024 that is ~5 % CPU and ~33 % memory at the observed max, under the 80 %
+    memory autoscaling target. Rollback gate: after the deploy, read the boot line
+    `tokio worker threads` in /ecs/facilitator-production; `workers=1` means revert
+    this default and task_memory (and production.auto.tfvars) to 1024/2048.
   EOT
   type    = number
-  default = 1024
+  default = 512
 }
 
 variable "task_memory" {
-  description = "Fargate task memory in MB"
+  description = "Fargate task memory in MB. 1024 since COSTO-X402 (B3): max observed use was 16.5 % of 2048 (~340 MB), and no container in the task sets its own hard limit. Must stay a valid Fargate pair with task_cpu (512 -> 1024..4096)."
   type        = number
-  default     = 2048
+  default     = 1024
 }
 
 variable "desired_count" {

@@ -1,5 +1,68 @@
 # Changelog
 
+## [2.49.0] - 2026-10-06
+
+### Added
+
+- **Categories for the listings that declare none.** A listing that declares no
+  category at all, and is not paid content, is placed by deterministic rules over
+  its host, path, description and the field names of its declared schema (never
+  its tags): phrases in `config/bazaar_taxonomy.json` (`inference`), at most two
+  categories, best first, `data` only when nothing narrower fits. Served as
+  `categorySource: inferred`; a declared category, even one that maps to nothing,
+  is never overruled. On the fixture catalog shaped after the live one: 2 -> 1 154
+  of 1 999 listings (58 %), 71 % of the tools. Every rule is tested against a
+  listing it must place and a near miss it must not.
+- **Category `rpc`** (blockchain node access: JSON-RPC methods), with the aliases
+  `json-rpc`, `jsonrpc`, `rpc-node`, `rpc-provider`.
+- **`upstream` and `upstreamSource`** on every listing: the service it resells or
+  wraps, from a closed list (`exa`, `tavily`, `firecrawl`, `serpapi`,
+  `brave-search`, `jina`, `perplexity`, `hunter`, `apollo`, `fullenrich`,
+  `coingecko`, `coinmarketcap`, `openai`, `anthropic`). `declared` from the new
+  `metadata.upstream` (stored verbatim, accepted by `POST /discovery/register`) or
+  `extensions.bazaar.upstream`; `inferred` from the vendor's own domain, a path
+  segment or host label, or the description. Never for content.
+- **`usage`** on every listing: `lastSettledAt`, `calls30d`, `uniquePayers30d` and
+  `asOf`, read every 5 minutes by every replica from the settlements the
+  transaction store records (`TransactionStore::settles_since`, a DynamoDB Query
+  per day partition from the newest record held). A floor, never a ledger: the
+  record is fire-and-forget, other facilitators' settlements are not seen, and a
+  payment counts only for the URL that was bought. Absent on a deployment that
+  records no settlements.
+- `GET /discovery/stats`: `byCategorySource` and `byUpstream`.
+
+### Changed
+
+- **Relevance answers the task, not a shared word.** BM25 is scaled by the square of
+  the share of the request a listing covers (each word weighted by its idf); a word
+  followed by digits is also read without them (`keccak256` -> `keccak`) and a
+  camelCase word is also kept whole (`DeFi`, `LinkedIn`, `HyperEVM`).
+- **A listing about something else does not answer.** Under relevance, a request
+  that names a chain never gets a listing that names only other chains, and a
+  request whose words fall in a category (the inference rules applied to `q`)
+  never gets a listing in other categories; a listing in no category must cover at
+  least half of such a request, and paid content stays behind the tools. A listing
+  that contains `q` word for word is always kept. The five requests a router
+  reproduced on 2.48.0 are tests: `keccak selector`, `solana rpc
+  getLatestBlockhash` (empty rather than the HyperEVM RPC), `phone number lookup`,
+  `stock quote`, `trending meme coins`. Benchmark: 26 -> 32 of 36 as written,
+  27 -> 34 with `sort=relevance`, 21 -> 25 of 30 held-out paraphrases.
+- **Grouping by recipient in the ranking.** At the top of a relevance result a
+  `payTo` keeps two places and a templated family one, beside the two per host:
+  resellers and template families no longer fill the page. Ranking only; nothing is
+  dropped, refused or evicted for it.
+- `ticker` is no longer a synonym of `price` / `quote` in the search lexicon.
+
+### Fixed
+
+- **A full catalog no longer evicts a listing held in quarantine.** A quarantined
+  copy is never exposed, so it ranked as pending and was the first thing eviction
+  took, health record (the hold) included; a copy held less than 7 days is now
+  protected like an exposed one, and a full catalog takes no newcomer in its place.
+  Past the week it is evictable again.
+- The content cap of the curated tier and the `kind` filter read the listing's kind
+  without resolving its categories.
+
 ## [2.48.0] - 2026-10-04
 
 ### Changed

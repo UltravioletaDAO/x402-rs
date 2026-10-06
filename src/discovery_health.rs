@@ -54,6 +54,10 @@ const RECOVER_AFTER_OK: u32 = 2;
 const HEALTHY_REPROBE_SECS: u64 = 7 * 24 * 3600;
 /// Backoff schedule (seconds) for quarantined resources, indexed by fail streak.
 const BACKOFF_SECS: [u64; 4] = [3600, 6 * 3600, 24 * 3600, 72 * 3600];
+/// How long a quarantine hold keeps a copy out of a full catalog's eviction
+/// order ([`HealthTracker::held_in_quarantine`]): two probes at the longest
+/// backoff, and a day to spare.
+pub const QUARANTINE_PROTECTION_SECS: u64 = 7 * 24 * 3600;
 /// Max probes issued to a single host in one tick (politeness for mega-hosts).
 const MAX_PER_HOST_PER_TICK: usize = 3;
 /// Probe request timeout.
@@ -1022,6 +1026,47 @@ impl HealthTracker {
             .iter()
             .map(|(u, r)| (u.clone(), r.to_state()))
             .collect()
+    }
+
+    /// The URLs held in quarantine for less than
+    /// [`QUARANTINE_PROTECTION_SECS`] at `now`: holds still being judged.
+    ///
+    /// What a full catalog must not evict to make room
+    /// (`DiscoveryRegistry::protected_in`). A quarantined listing is not
+    /// exposed, so until 2.49.0 it counted as pending and was the FIRST thing
+    /// eviction took -- and eviction also prunes its health record, the
+    /// evidence of the hold, so the copy that came back (if the feed still
+    /// offered it inside its first page) started again from nothing, and the
+    /// one that did not never came back at all. A hold is a verdict in
+    /// progress: two clean probes lift it, and the next probe of a drift hold
+    /// comes 72 hours after the last. Protected for a week, it gets two of
+    /// them; past that it is a listing that stayed broken, and evictable like
+    /// any other pending copy.
+    pub async fn held_in_quarantine(&self, now: u64) -> std::collections::HashSet<String> {
+        self.records
+            .read()
+            .await
+            .iter()
+            .filter(|(_, r)| {
+                r.status == HealthStatus::Quarantined
+                    && r.quarantined_at
+                        .is_some_and(|at| now.saturating_sub(at) < QUARANTINE_PROTECTION_SECS)
+            })
+            .map(|(url, _)| url.clone())
+            .collect()
+    }
+
+    /// Test hook: leave `url` quarantined since `at` for `reason`, as the
+    /// prober would have.
+    #[cfg(test)]
+    pub(crate) async fn quarantine_for_test(&self, url: &str, reason: QuarantineReason, at: u64) {
+        let record: HealthRecord = serde_json::from_value(serde_json::json!({
+            "status": HealthStatus::Quarantined,
+            "quarantined_at": at,
+            "quarantine_reason": reason,
+        }))
+        .expect("a quarantined record");
+        self.records.write().await.insert(url.to_string(), record);
     }
 
     /// Test hook: leave a URL in `status`, as the prober would have. Built
@@ -3044,6 +3089,51 @@ mod tests {
 
     async fn status_of(t: &HealthTracker, url: &str) -> HealthStatus {
         t.snapshot().await.get(url).unwrap().status
+    }
+
+    /// A hold protects its copy from eviction for exactly the window, from the
+    /// moment it was put in place; anything not quarantined, or quarantined at
+    /// an unknown moment, is not a hold being judged.
+    #[tokio::test]
+    async fn a_hold_is_protected_for_its_window_and_no_longer() {
+        let t = HealthTracker::new();
+        let now = now_secs();
+        let window = QUARANTINE_PROTECTION_SECS;
+        t.quarantine_for_test("https://new.example/x", QuarantineReason::PayToDrift, now)
+            .await;
+        t.quarantine_for_test(
+            "https://edge.example/x",
+            QuarantineReason::FailStreak,
+            now - window + 1,
+        )
+        .await;
+        t.quarantine_for_test(
+            "https://expired.example/x",
+            QuarantineReason::PayToDrift,
+            now - window,
+        )
+        .await;
+        t.set_status_for_test("https://undated.example/x", HealthStatus::Quarantined)
+            .await;
+        t.set_status_for_test("https://alive.example/x", HealthStatus::Alive)
+            .await;
+        // Real probes: three failures put the record on hold, dated by them.
+        let probed = "https://probed.example/x";
+        for _ in 0..QUARANTINE_AFTER_FAILS {
+            t.record_probe(probed, ProbeClass::Fail, Some(404), 10, None)
+                .await;
+        }
+        let mut held: Vec<String> = t.held_in_quarantine(now).await.into_iter().collect();
+        held.sort();
+        assert_eq!(
+            held,
+            [
+                "https://edge.example/x",
+                "https://new.example/x",
+                "https://probed.example/x"
+            ],
+            "only holds younger than the window"
+        );
     }
 
     #[tokio::test]

@@ -46,14 +46,27 @@ const PAY_TO: &str = "0x1234567890123456789012345678901234567890";
 const NEWEST: u64 = 1_790_000_000;
 
 fn usdc(amount: u64) -> CatalogPaymentOption {
+    usdc_to(amount, PAY_TO)
+}
+
+fn usdc_to(amount: u64, pay_to: &str) -> CatalogPaymentOption {
     CatalogPaymentOption::new(
         CatalogScheme::Known(Scheme::Exact),
         Caip2NetworkId::eip155(8453),
         MixedAddress::Evm(USDC_BASE.parse().unwrap()),
         TokenAmount::from(amount),
-        MixedAddress::Evm(PAY_TO.parse().unwrap()),
+        MixedAddress::Evm(pay_to.parse().unwrap()),
         300,
     )
+}
+
+/// One seller per host: a recipient derived from the host, so two hosts never
+/// share one by accident (the search groups results by recipient).
+fn pay_to_of(url: &Url) -> String {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    url.host_str().unwrap_or_default().hash(&mut hasher);
+    format!("0x{:040x}", hasher.finish())
 }
 
 fn strings(v: &serde_json::Value) -> Vec<String> {
@@ -91,17 +104,20 @@ fn catalog_rows() -> Vec<(DiscoveryResource, bool)> {
                 .and_then(|v| v.as_bool())
                 .unwrap_or(false);
             let text = |key: &str| row.get(key).and_then(|v| v.as_str()).map(str::to_string);
+            let url = Url::parse(&text("url").expect("every row has a url")).expect("fixture url");
+            let pay_to = pay_to_of(&url);
             let mut r = DiscoveryResource::new(
-                Url::parse(&text("url").expect("every row has a url")).expect("fixture url"),
+                url,
                 text("type").unwrap_or_else(|| "http".to_string()),
                 text("description").unwrap_or_default(),
-                vec![usdc(1_000 + (n as u64 % 50) * 1_000)],
+                vec![usdc_to(1_000 + (n as u64 % 50) * 1_000, &pay_to)],
             );
             r.last_updated = NEWEST - n as u64;
             let (category, provider, tags) =
                 (text("category"), text("provider"), strings(&row["tags"]));
             if category.is_some() || provider.is_some() || !tags.is_empty() {
                 r.metadata = Some(DiscoveryMetadata {
+                    upstream: None,
                     category,
                     provider,
                     tags,
@@ -696,4 +712,342 @@ async fn a_full_catalog_makes_room_from_families_and_crowded_hosts_first() {
     assert!(five.2 >= off.2, "{rows:?}");
     assert!(five.1 <= off.1, "{rows:?}");
     assert!(five.1 < 1_043 / 2, "{rows:?}");
+}
+
+// ============================================================================
+// The router's five (2026-10-06)
+// ============================================================================
+//
+// A router partner re-tested the Bazaar on 2.48.0 and reproduced five
+// requests that came back wrong. Each is a test here, over the fixture
+// catalog (so every word carries the weight it has in a catalog shaped like
+// the real one) plus the listings that made it wrong: one that does the job
+// and the ones that only share its words.
+
+/// A first-hand listing with one seller per host.
+fn tool(url: &str, description: &str) -> DiscoveryResource {
+    let url = Url::parse(url).unwrap();
+    let pay_to = pay_to_of(&url);
+    DiscoveryResource::new(
+        url,
+        "http".to_string(),
+        description.to_string(),
+        vec![usdc_to(5_000, &pay_to)],
+    )
+}
+
+/// `r` declaring the request it takes: `method`, with `fields`.
+fn taking(mut r: DiscoveryResource, method: &str, fields: &[&str]) -> DiscoveryResource {
+    let fields: serde_json::Map<String, serde_json::Value> = fields
+        .iter()
+        .map(|f| (f.to_string(), serde_json::json!("example")))
+        .collect();
+    let slot = if method == "GET" {
+        "queryParams"
+    } else {
+        "body"
+    };
+    r.extensions = Some(serde_json::json!({
+        "bazaar": {"info": {"input": {"type": "http", "method": method, slot: fields}}}
+    }));
+    r
+}
+
+/// The exposed fixture catalog plus `extra`, every listing verified alive.
+async fn registry_with(extra: Vec<DiscoveryResource>) -> DiscoveryRegistry {
+    let registry = DiscoveryRegistry::new();
+    for r in exposed_catalog().into_iter().chain(extra) {
+        registry
+            .register(r)
+            .await
+            .expect("fixture listing registers");
+    }
+    expose_all(&registry).await;
+    registry
+}
+
+/// The first ten URLs for `q`, in the default order, and how many matched.
+async fn search(registry: &DiscoveryRegistry, q: &str) -> (Vec<String>, u32) {
+    let page = registry.list(10, 0, Some(filters(q, None))).await;
+    let urls = page.items.iter().map(|r| r.url.to_string()).collect();
+    (urls, page.pagination.total)
+}
+
+#[tokio::test]
+async fn keccak_selector_finds_the_keccak_tool_and_not_the_css_scraper() {
+    let keccak = "https://evm.tools.example/keccak256";
+    let css = "https://scrape.example/css-selector";
+    let registry = registry_with(vec![
+        tool(
+            keccak,
+            "Keccak256 of a function signature: the 4-byte function selector and the event topic.",
+        ),
+        taking(
+            tool(
+                css,
+                "Scrape a page and return the text of every element a CSS selector matches.",
+            ),
+            "POST",
+            &["url", "selector"],
+        ),
+    ])
+    .await;
+    let (urls, _) = search(&registry, "keccak selector").await;
+    assert_eq!(urls.first().map(String::as_str), Some(keccak), "{urls:?}");
+    assert!(
+        !urls.contains(&css.to_string()),
+        "a page reader does not answer a request for a developer tool: {urls:?}"
+    );
+}
+
+#[tokio::test]
+async fn a_request_for_one_chain_never_gets_another_chains_service() {
+    let hyperevm = "https://rpc.hyperevm.example/";
+    let distractors = vec![
+        tool(
+            hyperevm,
+            "HyperEVM JSON-RPC endpoint: eth_blockNumber, eth_getBalance, eth_call and the latest block.",
+        ),
+        tool(
+            "https://data.example/solana/volume",
+            "Daily Solana DEX volume.",
+        ),
+        tool(
+            "https://news.example/crypto/latest",
+            "Get the latest crypto news.",
+        ),
+    ];
+    // No Solana RPC in the catalog: nothing. Empty is better than wrong.
+    let registry = registry_with(distractors.clone()).await;
+    let (urls, total) = search(&registry, "solana rpc getLatestBlockhash").await;
+    assert_eq!(total, 0, "{urls:?}");
+
+    // With one, it comes first, and the HyperEVM one is not offered.
+    let solana = "https://solana-rpc.example/";
+    let mut listings = distractors;
+    listings.push(taking(
+        tool(
+            solana,
+            "Solana JSON-RPC: getLatestBlockhash, getBalance, sendTransaction.",
+        ),
+        "POST",
+        &["method", "params"],
+    ));
+    let registry = registry_with(listings).await;
+    let (urls, _) = search(&registry, "solana rpc getLatestBlockhash").await;
+    assert_eq!(urls.first().map(String::as_str), Some(solana), "{urls:?}");
+    assert!(!urls.contains(&hyperevm.to_string()), "{urls:?}");
+
+    // And a request for HyperEVM finds that one, not Solana's.
+    let (urls, _) = search(&registry, "hyperevm rpc").await;
+    assert_eq!(urls.first().map(String::as_str), Some(hyperevm), "{urls:?}");
+    assert!(!urls.contains(&solana.to_string()), "{urls:?}");
+}
+
+#[tokio::test]
+async fn phone_number_lookup_finds_a_lookup_before_any_essay_or_sender() {
+    // The publisher's own lookup tool sits on the host of its 379 essays, one
+    // of them titled with the request's two first words.
+    let tool_url = "https://tenjin.blog/api/phone-lookup";
+    let sms = "https://sms.example/send";
+    let random = "https://random.example/number";
+    let registry = registry_with(vec![
+        taking(
+            tool(
+                tool_url,
+                "Phone number lookup: carrier, line type and owner name for a number.",
+            ),
+            "POST",
+            &["phone"],
+        ),
+        tool(sms, "Send an SMS message to a phone number."),
+        tool(random, "Random number generator."),
+    ])
+    .await;
+    let lookups = [
+        tool_url,
+        "https://tenjin.sh/api/phone-lookup",
+        "https://numverify.x402.example/validate",
+        "https://callerid.x402.example/lookup",
+    ];
+    let (urls, _) = search(&registry, "phone number lookup").await;
+    assert!(
+        lookups.contains(&urls[0].as_str()),
+        "a lookup comes first: {urls:?}"
+    );
+    assert!(
+        urls[..3].contains(&tool_url.to_string()),
+        "the publisher's tool is not crowded out by its own essays: {urls:?}"
+    );
+    let last_lookup = urls
+        .iter()
+        .rposition(|u| lookups.contains(&u.as_str()))
+        .unwrap();
+    assert!(
+        urls[..last_lookup]
+            .iter()
+            .all(|u| lookups.contains(&u.as_str())),
+        "no essay or other listing ahead of a lookup: {urls:?}"
+    );
+    assert!(!urls.contains(&sms.to_string()), "{urls:?}");
+    assert!(!urls.contains(&random.to_string()), "{urls:?}");
+}
+
+#[tokio::test]
+async fn stock_quote_puts_quotes_first() {
+    let swap = "https://dex.example/swap/quote";
+    let saying = "https://quotes.example/daily";
+    let history = "https://history.example/stock-history/AAPL";
+    let registry = registry_with(vec![
+        tool(
+            swap,
+            "Swap quote from a DEX aggregator: best route for a token pair.",
+        ),
+        tool(saying, "Inspirational quote of the day."),
+        tool(history, "Daily stock history for a ticker."),
+    ])
+    .await;
+    let quotes = [
+        "https://markets.x402.example/v1/quote",
+        "https://finance.x402.example/stocks/price",
+        "https://api.losbeto.xyz/stock-quote",
+    ];
+    let (urls, _) = search(&registry, "stock quote").await;
+    let mut top3: Vec<&str> = urls[..3].iter().map(String::as_str).collect();
+    top3.sort_unstable();
+    let mut want = quotes.to_vec();
+    want.sort_unstable();
+    assert_eq!(top3, want, "{urls:?}");
+    // A stock listing that is not a quote follows the quotes.
+    if let Some(at) = urls.iter().position(|u| u == history) {
+        assert!(at >= 3, "{urls:?}");
+    }
+    // A swap quote is crypto and a saying is not a price: neither answers.
+    assert!(!urls.contains(&swap.to_string()), "{urls:?}");
+    assert!(!urls.contains(&saying.to_string()), "{urls:?}");
+}
+
+#[tokio::test]
+async fn trending_meme_coins_is_not_a_meme_generator() {
+    let generator = "https://memes.example/generator";
+    let trending = "https://dex.example/trending";
+    let hot = "https://coins.example/memecoins/hot";
+    let registry = registry_with(vec![
+        tool(
+            generator,
+            "Meme generator: put your caption on a trending meme template.",
+        ),
+        tool(
+            trending,
+            "Trending meme coins on Solana and Base by 24h volume.",
+        ),
+        tool(hot, "The memecoins traders are buying right now."),
+    ])
+    .await;
+    let (urls, _) = search(&registry, "trending meme coins").await;
+    assert_eq!(urls.first().map(String::as_str), Some(trending), "{urls:?}");
+    assert!(urls.contains(&hot.to_string()), "{urls:?}");
+    assert!(
+        !urls.contains(&generator.to_string()),
+        "an image tool does not answer a request for crypto data: {urls:?}"
+    );
+}
+
+#[tokio::test]
+async fn one_seller_on_many_hosts_keeps_two_places_and_a_family_one() {
+    // Six hosts, one recipient: a reseller. Three of one templated family.
+    let reseller = "0x00000000000000000000000000000000000000aa";
+    let mut extra: Vec<DiscoveryResource> = (0..6)
+        .map(|i| {
+            let mut r = tool(
+                &format!("https://mirror{i}.resold.example/weather/now"),
+                "Current weather conditions for a city: temperature, wind, humidity.",
+            );
+            r.accepts = vec![usdc_to(5_000, reseller)];
+            r
+        })
+        .collect();
+    for ticker in ["AAPL", "MSFT", "NVDA"] {
+        extra.push(tool(
+            &format!("https://quotes.family.example/quote/{ticker}"),
+            "Current stock quote for a ticker symbol.",
+        ));
+    }
+    let registry = registry_with(extra).await;
+
+    let (urls, _) = search(&registry, "current weather conditions in a city").await;
+    let resold_at: Vec<usize> = urls
+        .iter()
+        .enumerate()
+        .filter(|(_, u)| u.contains("resold.example"))
+        .map(|(i, _)| i)
+        .collect();
+    // Two keep their rank; the rest wait until every other result was shown.
+    let others_after = urls
+        .iter()
+        .skip(resold_at.get(2).copied().unwrap_or(urls.len()))
+        .filter(|u| !u.contains("resold.example"))
+        .count();
+    assert_eq!(others_after, 0, "{urls:?}");
+    assert!(
+        urls[..resold_at.get(2).copied().unwrap_or(urls.len())]
+            .iter()
+            .any(|u| u.starts_with("https://weather.x402.example")),
+        "another seller is shown before the reseller's third: {urls:?}"
+    );
+
+    let (urls, total) = search(&registry, "stock quote for a ticker").await;
+    let first_family = urls
+        .iter()
+        .position(|u| u.contains("quotes.family.example"))
+        .expect("the family answers");
+    let second_family = urls
+        .iter()
+        .skip(first_family + 1)
+        .position(|u| u.contains("quotes.family.example"))
+        .map(|p| p + first_family + 1);
+    if let Some(second) = second_family {
+        assert!(
+            urls[first_family + 1..second]
+                .iter()
+                .any(|u| !u.contains("quotes.family.example")),
+            "a family keeps one place: {urls:?}"
+        );
+    }
+    // Ranking only: nothing is dropped.
+    assert!(total as usize >= 3, "{total}");
+}
+
+#[test]
+fn most_of_the_fixture_catalog_resolves_to_a_category() {
+    // The fixture is shaped after the catalog of 2026-10-01; on 2.48.0 the
+    // real one placed 200 of 1 765 listings (11 %) in a category, all from
+    // what the seller declared. The paid essays are content and stay out.
+    use x402_rs::discovery_taxonomy::{classify, CategorySource, Kind};
+    let rows = catalog_rows();
+    let (mut placed, mut inferred, mut content) = (0usize, 0usize, 0usize);
+    let mut by_category: std::collections::BTreeMap<&str, usize> = Default::default();
+    for (r, _) in &rows {
+        let c = classify(r);
+        if c.kind == Kind::Content {
+            content += 1;
+        }
+        if !c.categories.is_empty() {
+            placed += 1;
+        }
+        if c.source == Some(CategorySource::Inferred) {
+            inferred += 1;
+        }
+        for id in c.categories {
+            *by_category.entry(id).or_default() += 1;
+        }
+    }
+    let n = rows.len();
+    println!(
+        "CATEGORIES {placed}/{n} placed ({:.0} %), {inferred} inferred, {content} content; tools placed {placed}/{} ({:.0} %); {by_category:?}",
+        100.0 * placed as f64 / n as f64,
+        n - content,
+        100.0 * placed as f64 / (n - content) as f64,
+    );
+    assert!(placed * 2 > n, "{placed}/{n}");
 }

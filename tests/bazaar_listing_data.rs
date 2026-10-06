@@ -527,6 +527,7 @@ fn listing(url: &str, category: Option<&str>) -> DiscoveryResource {
         base.accepts.clone(),
     );
     r.metadata = category.map(|c| DiscoveryMetadata {
+        upstream: None,
         category: Some(c.to_string()),
         provider: None,
         tags: Vec::new(),
@@ -567,9 +568,13 @@ async fn listings_carry_kind_and_category_from_the_closed_list() {
 
     let acme = get("demand-company-acme-revenue");
     assert_eq!(acme.kind, Some(Kind::Api));
+    // It declares nothing; since 2.49.0 what it says about itself places it,
+    // and says so: `revenue` is finance.
+    assert_eq!(acme.categories.first().map(String::as_str), Some("finance"));
+    assert_eq!(acme.category_source, Some(CategorySource::Inferred));
     assert!(
-        acme.categories.is_empty() && acme.category_source.is_none(),
-        "declared nothing, so no category is guessed"
+        acme.metadata.as_ref().is_none_or(|m| m.category.is_none()),
+        "and nothing is written into what the seller declared"
     );
     assert_eq!(acme.has_input_schema, Some(true));
 
@@ -624,6 +629,7 @@ async fn the_sellers_declared_category_is_served_exactly_as_declared() {
     empty.description = String::new();
     let mut other = coinbase_copy_with_text();
     other.metadata = Some(DiscoveryMetadata {
+        upstream: None,
         category: Some("finance".to_string()),
         provider: Some("Someone".to_string()),
         tags: vec!["revenue".to_string()],
@@ -757,6 +763,185 @@ async fn the_category_filter_finds_every_spelling_and_still_the_raw_one() {
     assert_eq!(count("twitter").await, 0);
 }
 
+/// A transaction store that answers the usage counters from a list.
+#[derive(Debug, Default)]
+struct RecordedSettles(Vec<x402_rs::transaction_store::TransactionRecord>);
+
+#[async_trait::async_trait]
+impl x402_rs::transaction_store::TransactionStore for RecordedSettles {
+    async fn record(
+        &self,
+        _: x402_rs::transaction_store::TransactionRecord,
+    ) -> Result<(), x402_rs::transaction_store::TransactionStoreError> {
+        Ok(())
+    }
+    async fn recent(
+        &self,
+        _: usize,
+        _: Option<&str>,
+    ) -> Result<
+        Vec<x402_rs::transaction_store::TransactionRecord>,
+        x402_rs::transaction_store::TransactionStoreError,
+    > {
+        Ok(Vec::new())
+    }
+    async fn aggregates(
+        &self,
+    ) -> Result<
+        Vec<x402_rs::transaction_store::Aggregate>,
+        x402_rs::transaction_store::TransactionStoreError,
+    > {
+        Ok(Vec::new())
+    }
+    async fn settles_since(
+        &self,
+        since_ms: u64,
+    ) -> Result<
+        Option<Vec<x402_rs::transaction_store::TransactionRecord>>,
+        x402_rs::transaction_store::TransactionStoreError,
+    > {
+        Ok(Some(
+            self.0
+                .iter()
+                .filter(|r| r.ts >= since_ms)
+                .cloned()
+                .collect(),
+        ))
+    }
+    fn store_type(&self) -> &'static str {
+        "recorded"
+    }
+}
+
+fn settled(
+    url: &str,
+    payer: &str,
+    ts: u64,
+    tx: &str,
+) -> x402_rs::transaction_store::TransactionRecord {
+    x402_rs::transaction_store::TransactionRecord {
+        ts,
+        kind: "settle".to_string(),
+        network: "base".to_string(),
+        ok: true,
+        payer: Some(payer.to_string()),
+        tx: Some(tx.to_string()),
+        amount: Some("10000".to_string()),
+        asset: None,
+        resource: Some(url.to_string()),
+        pay_to: None,
+        description: None,
+        scheme: Some("exact".to_string()),
+    }
+}
+
+/// What a router reads beside the price since 2.49.0: who the listing
+/// resells, and how much it was paid for through us -- and the counts of both
+/// on `/discovery/stats`.
+#[tokio::test]
+async fn listings_carry_their_upstream_and_their_usage() {
+    let registry = DiscoveryRegistry::new();
+    let mut declared = listing("https://reseller.example.com/search", None);
+    declared.metadata = Some(DiscoveryMetadata {
+        upstream: Some("Exa".to_string()),
+        ..Default::default()
+    });
+    registry.register(declared).await.unwrap();
+    registry
+        .register(listing(
+            "https://stableenrich.dev/api/hunter/email-finder",
+            None,
+        ))
+        .await
+        .unwrap();
+    registry
+        .register(listing("https://quiet.example.com/x", Some("finance")))
+        .await
+        .unwrap();
+    expose_all(&registry).await;
+
+    // Before the store was read, no listing claims a count.
+    let listed = registry.list(100, 0, None).await.items;
+    assert!(listed.iter().all(|r| r.usage.is_none()));
+    let body = serde_json::to_value(&listed[0]).unwrap();
+    assert!(body.get("usage").is_none(), "{body}");
+
+    let now = 1_790_000_000_000u64;
+    let store = RecordedSettles(vec![
+        settled(
+            "https://reseller.example.com/search?q=rust",
+            "0xAA",
+            now - 1_000,
+            "0x1",
+        ),
+        settled(
+            "https://reseller.example.com/search?q=go",
+            "0xaa",
+            now - 2_000,
+            "0x2",
+        ),
+        settled(
+            "https://reseller.example.com/search",
+            "0xbb",
+            now - 3_000,
+            "0x3",
+        ),
+    ]);
+    registry.usage().refresh(&store, now).await.unwrap();
+
+    let listed = registry.list(100, 0, None).await.items;
+    let get = |needle: &str| by_url(&listed, needle);
+
+    let reseller = get("reseller.example.com");
+    assert_eq!(reseller.upstream.as_deref(), Some("exa"));
+    assert_eq!(
+        reseller.upstream_source,
+        Some(x402_rs::discovery_taxonomy::UpstreamSource::Declared)
+    );
+    let usage = reseller.usage.clone().unwrap();
+    assert_eq!((usage.calls_30d, usage.unique_payers_30d), (3, 2));
+    assert_eq!(usage.last_settled_at, Some((now - 1_000) / 1000));
+    let body = serde_json::to_value(&reseller).unwrap();
+    assert_eq!(body["upstream"], "exa");
+    assert_eq!(body["upstreamSource"], "declared");
+    assert_eq!(body["usage"]["calls30d"], 3);
+    assert_eq!(body["usage"]["uniquePayers30d"], 2);
+
+    let hunter = get("stableenrich.dev");
+    assert_eq!(hunter.upstream.as_deref(), Some("hunter"));
+    assert_eq!(
+        hunter.upstream_source,
+        Some(x402_rs::discovery_taxonomy::UpstreamSource::Inferred)
+    );
+    assert_eq!(hunter.categories, vec!["people".to_string()]);
+    assert_eq!(hunter.category_source, Some(CategorySource::Inferred));
+
+    // Read, recorded nothing: zero, which is now a claim we can make.
+    let quiet = get("quiet.example.com");
+    assert_eq!(quiet.upstream, None);
+    let usage = quiet.usage.clone().unwrap();
+    assert_eq!((usage.calls_30d, usage.unique_payers_30d), (0, 0));
+
+    // Response-only: the held records carry none of it.
+    let held = registry
+        .get("https://reseller.example.com/search")
+        .await
+        .unwrap();
+    assert_eq!((held.upstream, held.usage), (None, None));
+    assert_eq!(
+        held.metadata.unwrap().upstream.as_deref(),
+        Some("Exa"),
+        "the seller's declaration is kept as written"
+    );
+
+    let stats = registry.stats().await;
+    assert_eq!(stats["byUpstream"]["exa"], 1);
+    assert_eq!(stats["byUpstream"]["hunter"], 1);
+    assert_eq!(stats["byCategorySource"]["declared"], 1);
+    assert_eq!(stats["byCategorySource"]["inferred"], 1);
+    assert_eq!(stats["byCategorySource"]["none"], 1);
+}
+
 // ============================================================================
 // Measuring a real catalog
 // ============================================================================
@@ -799,6 +984,7 @@ fn snapshot_report() {
     let mut by_source_of_category: BTreeMap<String, usize> = BTreeMap::new();
     let mut no_category = 0usize;
     let mut by_kind: HashMap<&str, usize> = HashMap::new();
+    let mut by_upstream: BTreeMap<&str, usize> = BTreeMap::new();
     let (mut vip_before, mut vip_after, mut vip_content_before, mut vip_content_after) =
         (0, 0, 0, 0);
 
@@ -841,6 +1027,9 @@ fn snapshot_report() {
         spellings.extend(declared);
 
         let class = classify(r);
+        if let Some((id, _)) = x402_rs::discovery_taxonomy::upstream(r) {
+            *by_upstream.entry(id).or_default() += 1;
+        }
         if class.categories.is_empty() {
             no_category += 1;
         }
@@ -887,7 +1076,13 @@ fn snapshot_report() {
         "AFTER  categories: {with_category} listings resolve to at least one of {} closed-list ids in use: {by_category:?}",
         canonical.len()
     );
+    println!(
+        "AFTER  {:.1} % of the records resolve to a category; {:.1} % of the tools (kind api)",
+        100.0 * with_category as f64 / n.max(1) as f64,
+        100.0 * with_category as f64 / by_kind.get("api").copied().unwrap_or(0).max(1) as f64
+    );
     println!("AFTER  categorySource: {by_source_of_category:?}");
+    println!("AFTER  upstream: {by_upstream:?}");
     println!("AFTER  kind: {by_kind:?}");
     println!(
         "vip tier: before {vip_before} (content {vip_content_before}) -> after {vip_after} (content {vip_content_after})"

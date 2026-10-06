@@ -249,6 +249,24 @@ fn host_key(url: &url::Url) -> String {
         .to_ascii_lowercase()
 }
 
+/// What a relevance result shares the top of the page with
+/// ([`crate::discovery_search::diversify`]): its host, every recipient it
+/// declares, and its templated family when it has one. Grouping by recipient
+/// is how one seller on many hosts, or a reseller paying one address from all
+/// of them, keeps two places and not the page -- in the ranking only: a
+/// first-hand listing is never refused or evicted for it.
+fn result_groups(r: &DiscoveryResource) -> Vec<crate::discovery_search::Group> {
+    use crate::discovery_search::{pay_to_key, Group};
+    let mut groups = vec![Group::Host(host_key(&r.url))];
+    groups.extend(
+        r.accepts
+            .iter()
+            .map(|a| Group::PayTo(pay_to_key(&a.pay_to.to_string()))),
+    );
+    groups.extend(template_family(&r.url).map(Group::Family));
+    groups
+}
+
 /// One aggregated copy's place in the eviction order. Sorted ascending, the
 /// first is the first to go.
 ///
@@ -884,7 +902,19 @@ pub struct DiscoveryRegistry {
     index_budget: Arc<std::sync::Mutex<crate::discovery_search::RebuildBudget>>,
     /// How many times this process started a rebuild of the search index.
     index_builds: Arc<AtomicU64>,
+    /// Usage counters, read from the transaction store
+    /// ([`crate::discovery_usage::spawn_refresher`]).
+    usage: Arc<crate::discovery_usage::UsageTracker>,
+    /// Every listing's closed-list categories, for `?category=`, with the
+    /// catalog generation they were resolved at ([`Self::categories_of`]).
+    categories: Arc<std::sync::RwLock<Option<ResolvedCategories>>>,
 }
+
+/// Catalog key -> the closed-list categories the listing resolves to.
+type ListingCategories = HashMap<String, Vec<&'static str>>;
+
+/// [`ListingCategories`] with the catalog generation they were resolved at.
+type ResolvedCategories = (u64, Arc<ListingCategories>);
 
 /// The catalog held for writing ([`DiscoveryRegistry::write_catalog`]).
 ///
@@ -1027,6 +1057,8 @@ impl Clone for DiscoveryRegistry {
             index_rebuild: Arc::clone(&self.index_rebuild),
             index_budget: Arc::clone(&self.index_budget),
             index_builds: Arc::clone(&self.index_builds),
+            usage: Arc::clone(&self.usage),
+            categories: Arc::clone(&self.categories),
         }
     }
 }
@@ -1062,6 +1094,8 @@ impl DiscoveryRegistry {
             index_rebuild: Arc::new(tokio::sync::Mutex::new(())),
             index_budget: Arc::new(std::sync::Mutex::new(Default::default())),
             index_builds: Arc::new(AtomicU64::new(0)),
+            usage: Arc::new(crate::discovery_usage::UsageTracker::new()),
+            categories: Arc::new(std::sync::RwLock::new(None)),
         }
     }
 
@@ -1092,6 +1126,12 @@ impl DiscoveryRegistry {
     /// The curation manifest (WS-C). Used to build attestation targets.
     pub fn curation(&self) -> Arc<crate::discovery_curation::CurationManifest> {
         Arc::clone(&self.curation)
+    }
+
+    /// The usage counters, for the task that refreshes them from the
+    /// transaction store and for `list()`.
+    pub fn usage(&self) -> Arc<crate::discovery_usage::UsageTracker> {
+        Arc::clone(&self.usage)
     }
 
     /// The on-chain reputation cache (WS-E), for the attestation task to fill.
@@ -1182,6 +1222,8 @@ impl DiscoveryRegistry {
         let mut by_health: HashMap<String, u64> = HashMap::new();
         let mut by_kind: HashMap<&'static str, u64> = HashMap::new();
         let mut by_category: HashMap<&'static str, u64> = HashMap::new();
+        let mut by_category_source: HashMap<&'static str, u64> = HashMap::new();
+        let mut by_upstream: HashMap<&'static str, u64> = HashMap::new();
         let (mut no_description, mut no_input_schema) = (0u64, 0u64);
         let mut by_host: HashMap<String, u64> = HashMap::new();
         let (mut total, mut visible) = (0u64, 0u64);
@@ -1239,6 +1281,16 @@ impl DiscoveryRegistry {
                 for id in class.categories {
                     *by_category.entry(id).or_insert(0) += 1;
                 }
+                let source = match class.source {
+                    Some(crate::discovery_taxonomy::CategorySource::Declared) => "declared",
+                    Some(crate::discovery_taxonomy::CategorySource::Normalized) => "normalized",
+                    Some(crate::discovery_taxonomy::CategorySource::Inferred) => "inferred",
+                    None => "none",
+                };
+                *by_category_source.entry(source).or_insert(0) += 1;
+                if let Some((id, _)) = crate::discovery_taxonomy::upstream(r) {
+                    *by_upstream.entry(id).or_insert(0) += 1;
+                }
                 // What a router cannot use without guessing.
                 if r.description.trim().is_empty() {
                     no_description += 1;
@@ -1272,6 +1324,8 @@ impl DiscoveryRegistry {
             "byHealth": by_health,
             "byKind": by_kind,
             "byCategory": by_category,
+            "byCategorySource": by_category_source,
+            "byUpstream": by_upstream,
             "noDescription": no_description,
             "noInputSchema": no_input_schema,
             "generatedAt": now,
@@ -1347,21 +1401,36 @@ impl DiscoveryRegistry {
             .collect()
     }
 
-    /// What trimming and admission protect: [`Self::exposed_in`] -- but only on a
-    /// liveness overlay that has been read
+    /// What trimming and admission protect: [`Self::exposed_in`], and every
+    /// copy `held` in quarantine while its hold is being judged
+    /// ([`crate::discovery_health::HealthTracker::held_in_quarantine`]) -- but
+    /// only on a liveness overlay that has been read
     /// ([`crate::discovery_health::HealthTracker::is_loaded`]). Before that the
     /// records are empty, not a verdict, and every held copy counts as exposed:
     /// a full catalog takes no newcomer and, over its cap, evicts by class and
     /// age alone, as it did before exposure existed. Never verified copies
     /// evicted as pending because one read failed.
+    ///
+    /// A copy in quarantine is not shown, so it used to rank as pending and
+    /// go first; a full catalog made room by deleting the very listings whose
+    /// hold a probe was about to re-judge (the drift rule of 2.48.0 lifts most
+    /// of them). Now a newcomer -- pending by definition -- never displaces
+    /// one, as it never displaces an exposed copy.
     fn protected_in(
         &self,
         resources: &HashMap<String, DiscoveryResource>,
         health: &HashMap<String, HealthState>,
         observed: &HashMap<String, crate::discovery_terms::ObservedTerms>,
+        held: &std::collections::HashSet<String>,
     ) -> std::collections::HashSet<String> {
         if self.health.is_loaded() {
-            self.exposed_in(resources, health, observed)
+            let mut protected = self.exposed_in(resources, health, observed);
+            protected.extend(
+                held.iter()
+                    .filter(|url| resources.contains_key(url.as_str()))
+                    .cloned(),
+            );
+            protected
         } else {
             resources.keys().cloned().collect()
         }
@@ -1498,6 +1567,8 @@ impl DiscoveryRegistry {
             index_rebuild: Arc::new(tokio::sync::Mutex::new(())),
             index_budget: Arc::new(std::sync::Mutex::new(Default::default())),
             index_builds: Arc::new(AtomicU64::new(0)),
+            usage: Arc::new(crate::discovery_usage::UsageTracker::new()),
+            categories: Arc::new(std::sync::RwLock::new(None)),
         })
     }
 
@@ -1536,6 +1607,7 @@ impl DiscoveryRegistry {
         // replacement.
         let health = self.health.snapshot().await;
         let observed = self.terms.snapshot().await;
+        let held = self.health.held_in_quarantine(now_secs()).await;
 
         // Asked again: a registration can arrive while the object is in flight,
         // and the read that started before it would erase it.
@@ -1556,7 +1628,7 @@ impl DiscoveryRegistry {
         // this one can carry. Without this a follower re-inhales the oversized
         // catalog every time it moves, which is precisely the memory the 2.21.2
         // cap exists to bound.
-        let exposed = self.protected_in(&fresh, &health, &observed);
+        let exposed = self.protected_in(&fresh, &health, &observed, &held);
         let dropped = enforce_capacity(&mut fresh, max_resources(), &exposed);
         if dropped > 0 {
             warn!(
@@ -1594,6 +1666,46 @@ impl DiscoveryRegistry {
             generation: &self.catalog_generation,
             moved: false,
         }
+    }
+
+    /// The closed-list categories of every listing in `resources`, which the
+    /// caller holds under the catalog guard: resolved once per catalog
+    /// generation and reused. Since 2.49.0 resolving them reads each listing's
+    /// text (the inference rules of `config/bazaar_taxonomy.json`), and
+    /// `?category=` asks it of every listing; per request that would be a pass
+    /// over the whole catalog's text.
+    fn categories_of(
+        &self,
+        resources: &HashMap<String, DiscoveryResource>,
+    ) -> Arc<ListingCategories> {
+        let generation = self.catalog_generation.load(Ordering::Acquire);
+        if let Some((at, resolved)) = self
+            .categories
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_ref()
+        {
+            if *at == generation {
+                return Arc::clone(resolved);
+            }
+        }
+        let resolved: Arc<ListingCategories> = Arc::new(
+            resources
+                .iter()
+                .map(|(key, r)| {
+                    (
+                        key.clone(),
+                        crate::discovery_taxonomy::classify(r).categories,
+                    )
+                })
+                .collect(),
+        );
+        *self
+            .categories
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) =
+            Some((generation, Arc::clone(&resolved)));
+        resolved
     }
 
     /// The index searches rank with now, if one was built.
@@ -1904,6 +2016,7 @@ impl DiscoveryRegistry {
         let now = now_secs();
         let reputation = self.reputation.read().await.clone();
         let suppressed = self.suppressed_snapshot().await;
+        let usage = self.usage.snapshot();
         let health_filter = filters.as_ref().and_then(|f| f.health.clone());
         let tier_filter = filters.as_ref().and_then(|f| f.tier.clone());
         // `q` is matched and ranked by `discovery_search`, and the router
@@ -1944,6 +2057,11 @@ impl DiscoveryRegistry {
         };
 
         let resources = self.resources.read().await;
+        // Resolved once per catalog generation, and only when asked for.
+        let categories = filters
+            .as_ref()
+            .and_then(|f| f.category.as_ref())
+            .map(|_| self.categories_of(&resources));
 
         // Cap limit at 100 to prevent abuse
         let limit = limit.min(100);
@@ -1953,7 +2071,7 @@ impl DiscoveryRegistry {
         // + annotation.
         let mut scored: Vec<(&DiscoveryResource, Option<CurationInfo>, f32)> = resources
             .iter()
-            .filter(|(_, r)| self.matches_filters(r, &filters))
+            .filter(|(key, r)| self.matches_filters(key, r, &filters, categories.as_deref()))
             .filter(|(_, r)| constraints.admits(r))
             // Exposure: only what is verified alive leaves this registry. No
             // parameter widens it; the rest is probed and waits, unseen. It
@@ -2027,12 +2145,11 @@ impl DiscoveryRegistry {
                 let sb = rb * crate::discovery_search::tier_boost(tier_of(cb));
                 sb.total_cmp(&sa).then_with(|| catalog_order(a, ca, b, cb))
             });
-            // Then no host takes more than its turn at the top. Only here: a
-            // listing without `q`, or ordered by tier, keeps its exact order,
-            // because consumers walk it by `offset`.
-            scored = crate::discovery_search::diversify_by_host(scored, |(r, _, _)| {
-                r.url.host_str().unwrap_or_default()
-            });
+            // Then no host, recipient or templated family takes more than its
+            // turn at the top. Only here: a listing without `q`, or ordered by
+            // tier, keeps its exact order, because consumers walk it by
+            // `offset`.
+            scored = crate::discovery_search::diversify(scored, |(r, _, _)| result_groups(r));
         } else {
             scored.sort_by(|(a, ca, _), (b, cb, _)| catalog_order(a, ca, b, cb));
         }
@@ -2058,6 +2175,13 @@ impl DiscoveryRegistry {
                 c.categories = class.categories.iter().map(|id| id.to_string()).collect();
                 c.category_source = class.source;
                 c.has_input_schema = Some(r.has_input_schema());
+                if let Some((id, source)) = crate::discovery_taxonomy::upstream(r) {
+                    c.upstream = Some(id.to_string());
+                    c.upstream_source = Some(source);
+                }
+                // A floor read from the settlements this facilitator records;
+                // absent where it records none.
+                c.usage = usage.as_ref().map(|u| u.of(&r.url, r.last_settled_at));
                 // Price semantics are resolved here, on the response copy only,
                 // for the same reason health and curation are: settleability and
                 // a token's decimals are properties of THIS build and the
@@ -2197,12 +2321,13 @@ impl DiscoveryRegistry {
         // makes room from pending copies only.
         let health = self.health.snapshot().await;
         let observed = self.terms.snapshot().await;
+        let held = self.health.held_in_quarantine(now).await;
 
         let mut cache = self.write_catalog().await;
         // Computed once, against the catalog as it stands. A record that would
         // be evicted the instant it landed is refused at the door instead.
         let cap = max_resources();
-        let exposed = self.protected_in(&cache, &health, &observed);
+        let exposed = self.protected_in(&cache, &health, &observed, &held);
         let mut admission = Admission::new(&cache, cap, &exposed);
 
         for mut resource in resources {
@@ -2371,7 +2496,7 @@ impl DiscoveryRegistry {
         // gate -- rather than the every-cycle churn it was. Exposure is asked
         // again of the catalog as the import left it: a replaced record may
         // declare another request than the copy it replaced.
-        let exposed = self.protected_in(&cache, &health, &observed);
+        let exposed = self.protected_in(&cache, &health, &observed, &held);
         let evicted = enforce_capacity(&mut cache, cap, &exposed);
         if evicted > 0 {
             info!(
@@ -2500,8 +2625,10 @@ impl DiscoveryRegistry {
     /// Check if a resource matches the given filters.
     fn matches_filters(
         &self,
+        key: &str,
         resource: &DiscoveryResource,
         filters: &Option<DiscoveryFilters>,
+        categories: Option<&ListingCategories>,
     ) -> bool {
         let Some(f) = filters else {
             return true;
@@ -2522,7 +2649,12 @@ impl DiscoveryRegistry {
                 let taxonomy = crate::discovery_taxonomy::taxonomy();
                 taxonomy
                     .canonical(category)
-                    .is_some_and(|wanted| taxonomy.classify(resource).categories.contains(&wanted))
+                    .is_some_and(|wanted| match categories {
+                        Some(resolved) => {
+                            resolved.get(key).is_some_and(|ids| ids.contains(&wanted))
+                        }
+                        None => taxonomy.classify(resource).categories.contains(&wanted),
+                    })
             };
             if !(declared || resolved()) {
                 return false;
@@ -2929,6 +3061,7 @@ mod tests {
 
         if let Some(cat) = category {
             resource.metadata = Some(DiscoveryMetadata {
+                upstream: None,
                 category: Some(cat.to_string()),
                 provider: Some("Test Provider".to_string()),
                 tags: vec!["test".to_string()],
@@ -5131,9 +5264,19 @@ mod tests {
         let registry = DiscoveryRegistry::new();
         registry
             .register(described(
+                "https://tenjin.blog/api/read/how-to-find-a-persons-work-email",
+                "Paid essay: how to find a person's work email.",
+                500,
+            ))
+            .await
+            .unwrap();
+        // Shares one word of four with the request: since 2.49.0 it says too
+        // little of a request in a category (`people`) to stand for it.
+        registry
+            .register(described(
                 "https://tenjin.blog/api/read/why-email-is-dead",
                 "Paid essay: why email is dead.",
-                500,
+                400,
             ))
             .await
             .unwrap();
@@ -5150,10 +5293,12 @@ mod tests {
             .list(10, 0, search("find a person's work email", None))
             .await;
         assert_eq!(urls(&r)[0], "https://mailfinder.example.com/find");
+        assert_eq!(urls(&r).len(), 2, "{:?}", urls(&r));
         assert_eq!(
             r.items[1].curation.as_ref().map(|c| c.tier),
             Some(Tier::Verified),
-            "the essay is still listed, after the service, and as content it is not `vip`"
+            "the essay that says the whole request is still listed, after the service, \
+             and as content it is not `vip`"
         );
     }
 
@@ -5417,6 +5562,50 @@ mod tests {
 
     /// `kind` is the listing's own kind: the essay publisher's pay-per-read
     /// listings are `content`, everything else `api`.
+    /// `?category=` reads categories resolved once per catalog generation: a
+    /// write that changes the catalog -- a new listing, a listing whose text
+    /// now says something else -- is seen by the next request.
+    #[tokio::test]
+    async fn the_category_filter_follows_every_write() {
+        let registry = DiscoveryRegistry::new();
+        let weather = |n: usize| {
+            let filter = Some(DiscoveryFilters {
+                category: Some("weather".to_string()),
+                ..Default::default()
+            });
+            let registry = &registry;
+            async move {
+                let total = registry.list(100, 0, filter).await.pagination.total;
+                assert_eq!(total as usize, n);
+            }
+        };
+        registry
+            .register(described(
+                "https://a.example/forecast",
+                "Seven-day weather forecast.",
+                1,
+            ))
+            .await
+            .unwrap();
+        expose_all(&registry).await;
+        weather(1).await;
+        registry
+            .register(described(
+                "https://b.example/now",
+                "Current weather conditions.",
+                2,
+            ))
+            .await
+            .unwrap();
+        expose_all(&registry).await;
+        weather(2).await;
+        // The first one rewritten to sell something else.
+        let mut changed = described("https://a.example/forecast", "Stock quote by ticker.", 3);
+        changed.description = "Stock quote by ticker.".to_string();
+        registry.update(changed).await.unwrap();
+        weather(1).await;
+    }
+
     #[tokio::test]
     async fn the_kind_filter_tells_content_from_apis() {
         let registry = DiscoveryRegistry::new();
@@ -5842,6 +6031,81 @@ mod tests {
             .unwrap();
         assert_eq!((added, skipped), (0, 1));
         assert!(registry.get("https://e.new.example/x").await.is_none());
+        assert_eq!(registry.count().await, 3);
+    }
+
+    /// A copy held in quarantine is protected like an exposed one while its
+    /// hold is being judged: a full catalog makes room from another pending
+    /// copy, and with none left takes no newcomer. Past the protection window
+    /// the copy is evictable again, like any pending one.
+    ///
+    /// Why: api.losbeto.xyz was held for a payTo drift (a network its catalog
+    /// copy did not declare, which 2.48.0 stopped calling a drift) while the
+    /// catalog sat at 2 000 of 2 000, and was no longer in it once the rule
+    /// changed. A quarantined copy is not exposed, so it ranked as pending and
+    /// went first, and its health record -- the hold itself -- went with it.
+    #[tokio::test]
+    async fn a_full_catalog_never_evicts_a_hold_being_judged() {
+        use crate::discovery_health::QUARANTINE_PROTECTION_SECS;
+        use crate::types_v2::QuarantineReason;
+        let _cap = CapGuard::set("3");
+        let registry = DiscoveryRegistry::new();
+        let now = now_secs();
+        let base = now - 3_600;
+        three_held(&registry, base).await;
+        // The OLDEST copy is held for a drift: by date alone it would go first.
+        registry
+            .health()
+            .quarantine_for_test(
+                "https://a.held.example/x",
+                QuarantineReason::PayToDrift,
+                now - 3_600,
+            )
+            .await;
+        let newer = aggregated_at("https://d.new.example/x", base + 10);
+        let (added, _, _) = registry
+            .bulk_import(vec![newer], ImportPolicy::Filtered)
+            .await
+            .unwrap();
+        assert_eq!(added, 1);
+        assert_eq!(registry.count().await, 3);
+        assert!(registry.get("https://a.held.example/x").await.is_some());
+        assert!(registry.get("https://b.held.example/x").await.is_none());
+
+        // A fail-streak hold is a verdict in progress too. With every
+        // evictable copy held, a newcomer has nothing to take the place of.
+        for url in ["https://c.held.example/x", "https://d.new.example/x"] {
+            registry
+                .health()
+                .quarantine_for_test(url, QuarantineReason::FailStreak, now - 60)
+                .await;
+        }
+        let newest = aggregated_at("https://e.new.example/x", base + 20);
+        let (added, _, skipped) = registry
+            .bulk_import(vec![newest], ImportPolicy::Filtered)
+            .await
+            .unwrap();
+        assert_eq!((added, skipped), (0, 1));
+        assert!(registry.get("https://a.held.example/x").await.is_some());
+
+        // A hold older than the window is a listing that stayed broken: it is
+        // evictable again, and the newcomer takes its place.
+        registry
+            .health()
+            .quarantine_for_test(
+                "https://a.held.example/x",
+                QuarantineReason::PayToDrift,
+                now - QUARANTINE_PROTECTION_SECS,
+            )
+            .await;
+        let later = aggregated_at("https://f.new.example/x", base + 30);
+        let (added, _, _) = registry
+            .bulk_import(vec![later], ImportPolicy::Filtered)
+            .await
+            .unwrap();
+        assert_eq!(added, 1);
+        assert!(registry.get("https://a.held.example/x").await.is_none());
+        assert!(registry.get("https://f.new.example/x").await.is_some());
         assert_eq!(registry.count().await, 3);
     }
 

@@ -82,11 +82,18 @@ store key, so all replicas serve the same counts a refresh apart. A listing whos
 is counted by that exact URL; one without, over every query its buyers sent. A templated URL
 (`{id}`) gets no `usage`: no paid URL equals it. An EVM payer in two spellings is one payer.
 
-**What counts.** The URL and the recipient of a settle are whatever its caller sent, so a settle
-is counted for a listing only when it is on a **mainnet**, pays one of the `(network, payTo)`
-pairs the listing itself declares, and comes from a payer other than that recipient. Otherwise a
-testnet settle would write counts onto any listing for faucet gas. A seller paying itself from
-fresh wallets on mainnet still counts: the numbers say how much was paid, not by whom.
+**What counts.** The URL, the recipient and the amount of a settle are whatever its caller sent,
+so a settle is counted for a listing only when it is on a **mainnet**, matches one of the
+listing's own payment options -- the same network, recipient, asset and scheme, and for `exact`
+at least the option's price -- and comes from a payer other than that recipient. Otherwise a
+testnet settle, or one atomic unit to the right address, would write counts onto any listing for
+faucet gas. The amount the store records is the one the payment requirements named; `exact`
+verification refuses to settle for less on every chain family (EVM `assert_enough_value`; Solana,
+Stellar, NEAR, Algorand, Sui, XRPL and Hedera compare it too), so it is a floor of what moved. Under another scheme (`upto`) it is
+the declared maximum and is not compared. `usage.lastSettledAt` is the latest counted settlement,
+never the listing's own `lastSettledAt` (which a `discoverable` settle moves without these
+checks). A seller paying itself at its price from fresh wallets on mainnet still counts: the
+numbers say how much was paid, not by whom.
 
 **A floor, never a ledger**, said in the field's doc and in `/docs`: the record is written after a
 settlement resolves and is lost when the store is unreachable; settlements through other
@@ -107,8 +114,10 @@ All under `sort=relevance`; `sort=tier` (the substring search of 2.46.1) is unto
 3. **Another chain is another request.** A request that names a chain never gets a listing that
    names only other chains (`CHAINS` in `src/discovery_search.rs`). A listing's chains are every
    name its host or path carries, and from its description or schema only the names that are
-   nothing else (`AMBIGUOUS_CHAIN_NAMES`: `base`, `polygon`, `optimism`... are read there as
-   words); payment networks are never read.
+   nothing else (`AMBIGUOUS_CHAIN_NAMES`: `base`, `polygon`, `optimism`, `linea`... are read
+   there as words); payment networks are never read. In a request and a listing alike, a name
+   inside an ordinary phrase (`NOT_A_CHAIN`: `base de datos`, `knowledge base`, `en línea`...)
+   names no chain.
 4. **Another category is another request.** The request's own words go through the inference
    rules, every category they reach, best first. A listing in the best one answers; one in a
    runner-up, or in no category (or only `data`), must cover at least half of the request
@@ -118,8 +127,10 @@ All under `sort=relevance`; `sort=tier` (the substring search of 2.46.1) is unto
 5. **Literal matches are kept, as such.** A listing excluded by 3 or 4 that contains a `q` of up
    to 128 characters word for word is still kept -- everything the substring test of 2.46.1 kept
    stays -- with the substring-only score, after every listing a word scored.
-6. **Grouping by recipient.** At the top of a relevance result a host keeps two places, a payTo
-   (of the first payment option) two, a templated family one; the rest follow in relevance order.
+6. **Grouping by recipient.** At the top of a relevance result a host keeps two places, a set of
+   recipients two, a templated family one; the rest follow in relevance order. The set is every
+   `payTo` a listing's options pay, as one group: grouped by each recipient, or by the first, a
+   listing could name a competitor's address in an option and spend the competitor's places.
    Ranking only: nothing is dropped, and a first-hand listing is never refused or evicted for it.
 7. `ticker` left the price group of the lexicon: a ticker is a symbol, not a price.
 
@@ -134,7 +145,8 @@ Benchmark (`tests/bazaar_search.rs`, top 3 of 36 places, fixture with one seller
 Latency, debug build, same fixture, two runs each on the same machine: a search p50 49-51 ms
 (2.48.0) vs 47-49 ms; without `q` 82-95 ms vs 74-82 ms. The first search after a catalog write
 rebuilds the index and now also classifies each listing for its category set and its chains:
-149-155 ms vs 187-274 ms. The `?category=` filter reads categories resolved once per catalog generation.
+149-155 ms vs 268-333 ms (three runs, after the round-2 changes; a debug build, as every
+number of this section). The `?category=` filter reads categories resolved once per catalog generation.
 
 ## 6. The quarantine and a full catalog (api.losbeto.xyz)
 

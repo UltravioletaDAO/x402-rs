@@ -819,6 +819,10 @@ fn settled(
     ts: u64,
     tx: &str,
 ) -> x402_rs::transaction_store::TransactionRecord {
+    // The option every listing of this file declares (the payai page), paid
+    // at its price on Base.
+    let option = by_url(&page("payai"), "weather").accepts[0].clone();
+    assert_eq!(option.network.to_string(), "eip155:8453");
     x402_rs::transaction_store::TransactionRecord {
         ts,
         kind: "settle".to_string(),
@@ -826,13 +830,12 @@ fn settled(
         ok: true,
         payer: Some(payer.to_string()),
         tx: Some(tx.to_string()),
-        amount: Some("10000".to_string()),
-        asset: None,
+        amount: Some(option.amount.to_string()),
+        asset: Some(option.asset.to_string()),
         resource: Some(url.to_string()),
-        // The recipient every listing of this file declares (the payai page).
-        pay_to: Some("0x52E29e0d2Aa49bfBfC548C0A9F2196F4aa51f3ea".to_string()),
+        pay_to: Some(option.pay_to.to_string()),
         description: None,
-        scheme: Some("exact".to_string()),
+        scheme: Some(option.scheme.to_string()),
     }
 }
 

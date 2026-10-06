@@ -22,14 +22,19 @@
 //!
 //! # What counts
 //!
-//! A successful settle on a **mainnet**, paying one of the `(network, payTo)`
-//! pairs the listing itself declares, for the listing's own URL (any query
+//! A successful settle on a **mainnet** that matches one of the listing's own
+//! payment options -- the same network, recipient, asset and scheme, and for
+//! `exact` at least the option's price -- for the listing's own URL (any query
 //! string, for a listing whose URL has none), by a payer that is not that
-//! recipient. The URL and the recipient of a settle are whatever its caller
-//! sent, so a settle on a testnet, or one paying somebody else, would let anyone
-//! write counts onto any listing for the price of faucet gas; neither counts.
-//! A payer paying a listing it controls from many fresh wallets is still
-//! counted: the numbers say how much was paid, not by whom.
+//! recipient. The URL, recipient and amount of a settle are whatever its
+//! caller sent, so a settle on a testnet, one paying somebody else, or one of a
+//! single atomic unit would let anyone write counts onto any listing for the
+//! price of faucet gas; none counts. The amount recorded is the one the payment
+//! requirements named, which `exact` verification refuses to settle for less
+//! than on every chain family; under another scheme (`upto`) it is the declared
+//! maximum, so it is not compared. A payer paying a listing it controls, at its
+//! price, from many fresh wallets is still counted: the numbers say how much
+//! was paid, not by whom.
 //!
 //! # A floor, not a ledger
 //!
@@ -49,6 +54,8 @@ use std::sync::{Arc, RwLock};
 
 use serde::{Deserialize, Serialize};
 use tracing::{debug, info, warn};
+
+use alloy::primitives::U256;
 
 use crate::network::Network;
 use crate::transaction_store::{TransactionRecord, TransactionStore};
@@ -80,9 +87,9 @@ const READ_MARGIN_MS: u64 = 120_000;
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ListingUsage {
-    /// The latest settlement recorded for the listing, Unix seconds: in the
-    /// window, or the listing's own `lastSettledAt` when that is later.
-    /// Absent when there is none.
+    /// The latest settlement counted for the listing in the window, Unix
+    /// seconds; absent when there is none. Never the listing's own
+    /// `lastSettledAt`, which a settle moves without these checks.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_settled_at: Option<u64>,
     /// Successful settlements recorded for the listing in the last
@@ -133,10 +140,15 @@ struct Settlement {
     /// Where it settled, and who it paid ([`pay_to_key`]).
     network: Network,
     pay_to: Arc<str>,
+    /// What it paid in ([`pay_to_key`]), under which scheme, and the amount
+    /// the payment requirements named, in atomic units.
+    asset: Arc<str>,
+    scheme: Arc<str>,
+    amount: U256,
     /// The payer as a grouping key (an EVM address in lowercase).
     payer: Arc<str>,
     /// The record's own key in the store, so a record read twice counts once.
-    store_key: String,
+    store_key: Arc<str>,
 }
 
 /// The settlements of the window at one moment, indexed by the URL bought.
@@ -156,19 +168,23 @@ impl UsageSnapshot {
     ///
     /// Counted: the window's settlements of the listing's URL (that exact URL
     /// for a listing whose URL has a query; any query its buyers sent for one
-    /// whose URL has none) that paid one of the `(network, payTo)` pairs the
-    /// listing declares. `lastSettledAt` is the latest of those, or the
-    /// listing's own `lastSettledAt` when that is later.
+    /// whose URL has none) that match one of the listing's payment options
+    /// ([`Price::paid_by`]). `lastSettledAt` is the latest of those.
     pub fn of(&self, listing: &DiscoveryResource) -> Option<ListingUsage> {
         if is_template(&listing.url) {
             return None;
         }
-        let recipients: HashSet<(Network, String)> = listing
+        let prices: Vec<Price> = listing
             .accepts
             .iter()
             .filter_map(|option| {
-                let network = Network::from_caip2(&option.network.to_string())?;
-                Some((network, pay_to_key(&option.pay_to.to_string())))
+                Some(Price {
+                    network: Network::from_caip2(&option.network.to_string())?,
+                    pay_to: pay_to_key(&option.pay_to.to_string()),
+                    asset: pay_to_key(&option.asset.to_string()),
+                    scheme: option.scheme.to_string(),
+                    amount: option.amount.0,
+                })
             })
             .collect();
         let positions = usage_keys(listing.url.as_str()).and_then(|(exact, path)| {
@@ -185,19 +201,40 @@ impl UsageSnapshot {
             .into_iter()
             .flatten()
             .filter_map(|i| self.settlements.get(*i as usize))
-            .filter(|s| recipients.contains(&(s.network, s.pay_to.to_string())))
+            .filter(|s| prices.iter().any(|price| price.paid_by(s)))
         {
             calls += 1;
             last_ms = last_ms.max(s.ts_ms);
             payers.insert(&s.payer);
         }
-        let window_last = (last_ms > 0).then_some(last_ms / 1000);
         Some(ListingUsage {
-            last_settled_at: window_last.max(listing.last_settled_at),
+            last_settled_at: (last_ms > 0).then_some(last_ms / 1000),
             calls_30d: calls,
             unique_payers_30d: payers.len() as u64,
             as_of: self.as_of,
         })
+    }
+}
+
+/// One payment option of a listing, as a settlement is matched against it.
+struct Price {
+    network: Network,
+    pay_to: String,
+    asset: String,
+    scheme: String,
+    amount: U256,
+}
+
+impl Price {
+    /// Whether `s` paid this option: the same network, recipient, asset and
+    /// scheme, and under `exact` at least its price -- a single atomic unit
+    /// to the right address is not a call of the listing.
+    fn paid_by(&self, s: &Settlement) -> bool {
+        self.network == s.network
+            && *self.pay_to == *s.pay_to
+            && *self.asset == *s.asset
+            && *self.scheme == *s.scheme
+            && (self.scheme != "exact" || s.amount >= self.amount)
     }
 }
 
@@ -213,7 +250,7 @@ pub struct UsageTracker {
 struct Window {
     /// Oldest first.
     settlements: std::collections::VecDeque<Settlement>,
-    seen: HashSet<String>,
+    seen: HashSet<Arc<str>>,
     /// When the previous read was made, once the whole window was read.
     read_at: Option<u64>,
     /// Interned strings, so 48 000 settlements of a few hundred listings hold
@@ -282,8 +319,13 @@ impl UsageTracker {
         let Some(records) = store.settles_since(since).await? else {
             return Ok(None);
         };
+        // A read cut at the cap stopped at its newest record: the next one
+        // goes on from there, not from now.
+        let cut = (records.len() >= MAX_WINDOW_SETTLEMENTS)
+            .then(|| records.iter().map(|r| r.ts).max())
+            .flatten();
         let added = Self::ingest(&mut window, records, start);
-        window.read_at = Some(now_ms);
+        window.read_at = Some(cut.unwrap_or(now_ms));
         let snapshot = Self::count(&window, now_ms);
         drop(window);
         *self
@@ -294,19 +336,29 @@ impl UsageTracker {
     }
 
     /// Fold `records` into the window, keeping only successful settles of the
-    /// window, on a mainnet, of a URL no longer than a listing's may be, paid
-    /// by somebody other than their recipient, and not already held.
+    /// window, on a mainnet, of a URL no longer than a listing's may be, that
+    /// say what they paid, paid by somebody other than their recipient, and
+    /// not already held.
     fn ingest(window: &mut Window, records: Vec<TransactionRecord>, start: u64) -> usize {
         let mut added = 0;
         for r in records {
             if r.kind != "settle" || !r.ok || r.ts < start {
                 continue;
             }
-            let (Some(resource), Some(payer), Some(pay_to)) = (
+            let (Some(resource), Some(payer), Some(pay_to), Some(asset), Some(scheme)) = (
                 r.resource.as_deref(),
                 r.payer.as_deref(),
                 r.pay_to.as_deref(),
+                r.asset.as_deref(),
+                r.scheme.as_deref(),
             ) else {
+                continue;
+            };
+            let Some(amount) = r
+                .amount
+                .as_deref()
+                .and_then(|a| U256::from_str_radix(a.trim(), 10).ok())
+            else {
                 continue;
             };
             // A URL is what the caller of /settle sent: bounded like a
@@ -324,8 +376,8 @@ impl UsageTracker {
             let Some((exact, path)) = usage_keys(resource) else {
                 continue;
             };
-            let store_key = r.sort_key();
-            if !window.seen.insert(store_key.clone()) {
+            let store_key: Arc<str> = Arc::from(r.sort_key());
+            if !window.seen.insert(Arc::clone(&store_key)) {
                 continue;
             }
             let settlement = Settlement {
@@ -334,6 +386,9 @@ impl UsageTracker {
                 path: window.intern(&path),
                 network,
                 pay_to: window.intern(&pay_to),
+                asset: window.intern(&pay_to_key(asset)),
+                scheme: window.intern(scheme.trim()),
+                amount,
                 payer: window.intern(&payer),
                 store_key,
             };
@@ -587,18 +642,14 @@ mod tests {
             .of(&listing("https://api.example.com/quote?t=MSFT"))
             .unwrap();
         assert_eq!((u.calls_30d, u.unique_payers_30d), (1, 1));
-        // Nothing recorded: zero, and no date unless the listing has one.
-        let quiet = listing("https://quiet.example.com/x");
+        // Nothing recorded: zero and no date -- not even the listing's own
+        // `lastSettledAt`, which a settle moves without these checks.
+        let mut quiet = listing("https://quiet.example.com/x");
+        quiet.last_settled_at = Some(1_700_000_000);
         let u = snap.of(&quiet).unwrap();
         assert_eq!(
             (u.calls_30d, u.unique_payers_30d, u.last_settled_at),
             (0, 0, None)
-        );
-        let mut dated = quiet.clone();
-        dated.last_settled_at = Some(1_700_000_000);
-        assert_eq!(
-            snap.of(&dated).unwrap().last_settled_at,
-            Some(1_700_000_000)
         );
         // A template cannot be matched by a paid URL: no count, not zero.
         assert_eq!(
@@ -607,12 +658,13 @@ mod tests {
         );
     }
 
-    /// The URL, the network and the recipient of a settle are what its caller
-    /// sent. Only a mainnet payment to a recipient the listing itself declares,
-    /// by somebody else, counts: anything else would let anyone write counts
-    /// onto any listing for the price of faucet gas.
+    /// The URL, the network, the recipient and the amount of a settle are
+    /// what its caller sent. Only a mainnet payment matching an option the
+    /// listing itself declares -- recipient, asset, scheme and at least its
+    /// price -- by somebody else, counts: anything else would let anyone write
+    /// counts onto any listing for the price of faucet gas.
     #[tokio::test]
-    async fn only_mainnet_payments_to_the_listings_own_recipient_count() {
+    async fn only_mainnet_payments_matching_the_listings_own_option_count() {
         let url = "https://api.example.com/quote";
         let s = store(vec![
             settle(NOW - DAY_MS, url, "0xa1", "0x1"),
@@ -661,23 +713,57 @@ mod tests {
                 network: "eip155:8453".into(),
                 ..settle(NOW - DAY_MS, url, "0xa9", "0x9")
             },
+            // More than the price counts; one atomic unit does not.
+            TransactionRecord {
+                amount: Some("20000".into()),
+                ..settle(NOW - DAY_MS, url, "0xb1", "0xb1")
+            },
+            TransactionRecord {
+                amount: Some("1".into()),
+                ..settle(NOW - DAY_MS, url, "0xb2", "0xb2")
+            },
+            // Another asset, another scheme, no amount, an amount that is not
+            // a number.
+            TransactionRecord {
+                asset: Some("0x00000000000000000000000000000000000000ee".into()),
+                ..settle(NOW - DAY_MS, url, "0xb3", "0xb3")
+            },
+            TransactionRecord {
+                scheme: Some("upto".into()),
+                amount: Some("99999999".into()),
+                ..settle(NOW - DAY_MS, url, "0xb4", "0xb4")
+            },
+            TransactionRecord {
+                amount: None,
+                ..settle(NOW - DAY_MS, url, "0xb5", "0xb5")
+            },
+            TransactionRecord {
+                amount: Some("ten".into()),
+                ..settle(NOW - DAY_MS, url, "0xb6", "0xb6")
+            },
         ]);
         let tracker = UsageTracker::new();
         tracker.refresh(&s, NOW).await.unwrap();
-        let u = tracker.snapshot().unwrap().of(&listing(url)).unwrap();
-        assert_eq!((u.calls_30d, u.unique_payers_30d), (2, 2), "{u:?}");
+        let snap = tracker.snapshot().unwrap();
+        let u = snap.of(&listing(url)).unwrap();
+        assert_eq!((u.calls_30d, u.unique_payers_30d), (3, 3), "{u:?}");
+        // Under another scheme the amount recorded is a declared maximum, not
+        // what moved: it is not compared.
+        let mut upto = listing(url);
+        upto.accepts[0].scheme = CatalogScheme::Unsupported("upto".to_string());
+        let u = snap.of(&upto).unwrap();
+        assert_eq!(u.calls_30d, 1, "{u:?}");
     }
 
     #[tokio::test]
     async fn a_later_read_starts_before_the_previous_one_and_counts_nothing_twice() {
-        let s = store(vec![settle(
-            NOW - DAY_MS,
-            "https://a.example/x",
-            "0x1",
-            "0xa",
-        )]);
+        let s = store(vec![
+            settle(NOW - DAY_MS, "https://a.example/x", "0x1", "0xa"),
+            // Inside the margin: the next read reads it again.
+            settle(NOW - 60_000, "https://a.example/x", "0x4", "0xd"),
+        ]);
         let tracker = UsageTracker::new();
-        tracker.refresh(&s, NOW).await.unwrap();
+        assert_eq!(tracker.refresh(&s, NOW).await.unwrap(), Some(2));
         // Recorded by another task just before the first read, visible only
         // after it; and one recorded after it.
         s.records
@@ -705,7 +791,7 @@ mod tests {
             .unwrap()
             .of(&listing("https://a.example/x"))
             .unwrap();
-        assert_eq!((u.calls_30d, u.unique_payers_30d), (3, 3));
+        assert_eq!((u.calls_30d, u.unique_payers_30d), (4, 4));
         // A read that finds only what it already holds adds nothing.
         assert_eq!(tracker.refresh(&s, NOW + 310_000).await.unwrap(), Some(0));
     }

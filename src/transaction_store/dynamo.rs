@@ -249,7 +249,9 @@ impl TransactionStore for DynamoTransactionStore {
                     .table_name(&self.table_name)
                     .key_condition_expression("pk = :pk AND #sk >= :from")
                     .filter_expression("#kind = :settle AND #ok = :yes")
-                    .projection_expression("#ts, #kind, #ok, #net, #payer, #payto, #res, #tx")
+                    .projection_expression(
+                        "#ts, #kind, #ok, #net, #payer, #payto, #res, #tx, #amount, #asset, #scheme",
+                    )
                     .expression_attribute_names("#sk", "sk")
                     .expression_attribute_names("#ts", "ts")
                     .expression_attribute_names("#kind", "kind")
@@ -259,6 +261,9 @@ impl TransactionStore for DynamoTransactionStore {
                     .expression_attribute_names("#payto", "pay_to")
                     .expression_attribute_names("#res", "resource")
                     .expression_attribute_names("#tx", "tx")
+                    .expression_attribute_names("#amount", "amount")
+                    .expression_attribute_names("#asset", "asset")
+                    .expression_attribute_names("#scheme", "scheme")
                     .expression_attribute_values(":pk", Self::s(&pk))
                     .expression_attribute_values(":from", Self::s(&from))
                     .expression_attribute_values(":settle", Self::s("settle"))

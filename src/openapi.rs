@@ -2286,8 +2286,10 @@ that SDK needs a release of it that lifts the check. How `q` matches depends on 
   that names only other chains: `solana rpc getLatestBlockhash` against a catalog with no
   Solana RPC returns nothing rather than a HyperEVM one. A listing's chains are the ones its
   host or path names, and the ones its description or schema names in a word that is nothing
-  else (`solana`, `ethereum`; never `base`, `polygon` or `optimism`); the networks it is paid on
-  are never read. A request whose words fall in categories (the inference rules of
+  else (`solana`, `ethereum`; never `base`, `polygon`, `optimism` or `linea`); the networks it is
+  paid on are never read. A chain name inside an ordinary phrase (`base de datos`,
+  `knowledge base`, `en línea`) names no chain, in a request or a listing. A request whose words
+  fall in categories (the inference rules of
   `categories`, below, applied to `q`: `stock quote` is `finance`, `trending meme coins` is
   `crypto`) is answered by a listing in the best of them; a listing in a runner-up, or in no
   category (or only `data`), has to cover at least half of the request, and a listing only in
@@ -2295,8 +2297,9 @@ that SDK needs a release of it that lifts the check. How `q` matches depends on 
   result at a quarter of its relevance, behind the tools. A listing that contains `q` word for
   word and was excluded is still kept when `q` is at most 128 characters -- every listing the
   substring match below would have kept stays -- ranked after every listing a word scored.
-- At the top of a relevance result no host keeps more than two places, no recipient (the
-  `payTo` of a listing's first payment option) more than two, and no templated family
+- At the top of a relevance result no host keeps more than two places, no set of recipients
+  (every `payTo` a listing's options pay, as one group, so naming a competitor's address in one
+  option does not spend the competitor's places) more than two, and no templated family
   (`/stock-history/{ticker}`) more than one: their
   further results follow every other one's, still in relevance order, so a seller with a
   hundred templated endpoints, or one seller on many hosts, cannot fill a page. This is the
@@ -2615,15 +2618,19 @@ company's name), or its description names it in a form that is not a common word
 `Perplexity AI`). Absent when nothing names one; never inferred for content.
 
 **`usage`** says how much the listing was paid for **through this facilitator**:
-`lastSettledAt` (the latest settlement recorded for it), `calls30d` (successful settlements in the
-last 30 days) and `uniquePayers30d` (distinct payers among them), read from the settlements this
-facilitator records, as of `asOf`, refreshed every five minutes. A settlement counts for a
-listing only when it settled on a **mainnet**, paid one of the `(network, payTo)` pairs the
-listing itself declares, by a payer other than that recipient, for the listing's own URL (any
-query string, for a listing whose URL has none): the URL and recipient of a settle are whatever
-its caller sent, and a testnet settle would let anyone write counts onto any listing for faucet
-gas. A seller paying its own listing from fresh wallets on a mainnet is still counted: the
-numbers say how much was paid, not by whom. **A floor, never a ledger:** a record is written after
+`lastSettledAt` (the latest settlement counted for it in the window -- never the listing's own
+top-level `lastSettledAt`), `calls30d` (successful settlements in the last 30 days) and
+`uniquePayers30d` (distinct payers among them), read from the settlements this facilitator
+records, as of `asOf`, refreshed every five minutes. A settlement counts for a listing only when
+it settled on a **mainnet** and matches one of the listing's own payment options -- the same
+network, recipient, asset and scheme, and for `exact` at least the option's price -- by a payer
+other than that recipient, for the listing's own URL (any query string, for a listing whose URL
+has none): the URL, recipient and amount of a settle are whatever its caller sent, and a testnet
+settle, or one atomic unit to the right address, would let anyone write counts onto any listing
+for faucet gas. The amount compared is the one the payment requirements named, which `exact`
+verification never settles for less than; under another scheme (`upto`) it is a declared
+maximum and is not compared. A seller paying its own listing at its price from fresh wallets on
+a mainnet is still counted: the numbers say how much was paid, not by whom. **A floor, never a ledger:** a record is written after
 a payment settles and is lost if the store is unreachable, and settlements through other
 facilitators are not seen. `usage` is absent
 on a deployment that records no settlements -- zero there would be a claim nobody measured -- and

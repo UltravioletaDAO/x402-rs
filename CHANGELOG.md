@@ -28,12 +28,14 @@
   `asOf`, read every 5 minutes by every replica from the settlements the
   transaction store records (`TransactionStore::settles_since`, a DynamoDB Query
   per day partition from two minutes before the previous read, each settlement
-  counted once). Only a settlement on a mainnet, paying one of the listing's own
-  `(network, payTo)` pairs, for its URL, by a payer other than that recipient,
-  counts: the URL and recipient of a settle are whatever its caller sent. A floor,
-  never a ledger: the record is fire-and-forget and other facilitators'
-  settlements are not seen. Absent on a deployment that records no settlements,
-  and on a templated URL.
+  counted once). Only a settlement on a mainnet that matches one of the listing's
+  own payment options -- network, recipient, asset and scheme, and for `exact` at
+  least its price -- for its URL, by a payer other than that recipient, counts:
+  the URL, recipient and amount of a settle are whatever its caller sent.
+  `usage.lastSettledAt` is the latest of those, never the listing's own
+  `lastSettledAt`. A floor, never a ledger: the record is fire-and-forget and
+  other facilitators' settlements are not seen. Absent on a deployment that
+  records no settlements, and on a templated URL.
 - `GET /discovery/stats`: `byCategorySource` and `byUpstream`.
 
 ### Changed
@@ -46,7 +48,9 @@
 - **A listing about something else does not answer.** Under relevance, a request
   that names a chain never gets a listing that names only other chains (a
   listing's chains come from its host and path, and from its description or
-  schema only in names that are nothing else: never `base` or `polygon`). A
+  schema only in names that are nothing else: never `base`, `polygon` or
+  `linea`; and in neither a request nor a listing is a name inside an ordinary
+  phrase a chain: `base de datos`, `knowledge base`, `en línea`). A
   request whose words fall in categories (the inference rules applied to `q`) is
   answered by a listing in the best of them; one in a runner-up or in no category
   must cover half the request, one only in other categories all of it, and paid
@@ -58,8 +62,9 @@
   `stock quote`, `trending meme coins`. Benchmark: 26 -> 32 of 36 as written,
   27 -> 34 with `sort=relevance`, 21 -> 25 of 30 held-out paraphrases.
 - **Grouping by recipient in the ranking.** At the top of a relevance result a
-  `payTo` (of the first payment option) keeps two places and a templated family
-  one, beside the two per host:
+  set of recipients (every `payTo` a listing's options pay, as one group: naming
+  a competitor's address in one option does not spend the competitor's places)
+  keeps two places and a templated family one, beside the two per host:
   resellers and template families no longer fill the page. Ranking only; nothing is
   dropped, refused or evicted for it.
 - `ticker` is no longer a synonym of `price` / `quote` in the search lexicon.

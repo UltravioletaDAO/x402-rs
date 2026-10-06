@@ -250,24 +250,30 @@ fn host_key(url: &url::Url) -> String {
 }
 
 /// What a relevance result shares the top of the page with
-/// ([`crate::discovery_search::diversify`]): its host, the recipient of its
-/// first payment option, and its templated family when it has one. Grouping
-/// by recipient is how one seller on many hosts, or a reseller paying one
-/// address from all of them, keeps two places and not the page -- in the
-/// ranking only: a first-hand listing is never refused or evicted for it.
+/// ([`crate::discovery_search::diversify`]): its host, the set of recipients
+/// its payment options pay, and its templated family when it has one.
+/// Grouping by recipients is how one seller on many hosts, or a reseller
+/// paying one address from all of them, keeps two places and not the page --
+/// in the ranking only: a first-hand listing is never refused or evicted for
+/// it.
 ///
-/// The FIRST option only: grouped by every recipient it declares, a listing
-/// could add an option paying a competitor's address and spend that
-/// competitor's places with it. The first option is the one a client pays by
-/// default, so pointing it at somebody else pays somebody else.
+/// The WHOLE set, as one group: grouped by each recipient it names, or by its
+/// first, a listing could name a competitor's address in an option (first or
+/// not, on a network nobody pays on) and spend that competitor's places with
+/// it. A set that also holds its own address is not the competitor's set.
 fn result_groups(r: &DiscoveryResource) -> Vec<crate::discovery_search::Group> {
     use crate::discovery_search::{pay_to_key, Group};
     let mut groups = vec![Group::Host(host_key(&r.url))];
-    groups.extend(
-        r.accepts
-            .first()
-            .map(|a| Group::PayTo(pay_to_key(&a.pay_to.to_string()))),
-    );
+    let recipients: std::collections::BTreeSet<String> = r
+        .accepts
+        .iter()
+        .map(|a| pay_to_key(&a.pay_to.to_string()))
+        .collect();
+    if !recipients.is_empty() {
+        groups.push(Group::PayTo(
+            recipients.into_iter().collect::<Vec<_>>().join(" "),
+        ));
+    }
     groups.extend(template_family(&r.url).map(Group::Family));
     groups
 }

@@ -94,9 +94,9 @@ const MIN_SCORED: f32 = 1e-6;
 /// relevance ([`SearchIndex::scores`]). Squared: a listing that matches half of
 /// what the request says keeps a quarter of its score.
 const COVERAGE_EXPONENT: i32 = 2;
-/// The least share of a request in a category that a listing not in its best
-/// category, and in no other one it does not ask for, must cover to stay in
-/// the result ([`SearchIndex::answers_another_request`]).
+/// The least share of a request in categories that a listing outside the best
+/// of them must cover to stay in the result, when it is in another of them
+/// (whatever else it is in) or in none ([`SearchIndex::answers_another_request`]).
 const COVERAGE_FLOOR: f32 = 0.5;
 /// The share a listing only in categories the request does not ask for must
 /// cover: all of it, give or take the float sums.
@@ -680,6 +680,24 @@ const AMBIGUOUS_CHAIN_NAMES: &[&str] = &[
     "trx",
     "xrp",
     "hbar",
+    "linea",
+];
+
+/// Phrases in which a chain name is an ordinary word, in English or Spanish
+/// ("base de datos" is a database, "en línea" is online): their words name no
+/// chain, in a request or a listing. Written as [`tokens`] reads each word
+/// (lowercase, no accents), stopwords included, consecutive.
+const NOT_A_CHAIN: &[&str] = &[
+    "base de datos",
+    "bases de datos",
+    "knowledge base",
+    "data base",
+    "code base",
+    "base currency",
+    "moneda base",
+    "base price",
+    "precio base",
+    "en linea",
 ];
 
 /// Normalized chain name -> its bit (one per group of [`CHAINS`]).
@@ -697,14 +715,41 @@ static CHAIN_BITS: Lazy<HashMap<String, u64>> = Lazy::new(|| {
 
 /// The chains the words of `text` name, one bit each: a word as written, or
 /// a camelCase word whole, never the start of a word (`base64` names no
-/// chain). With `unambiguous_only`, leaving out [`AMBIGUOUS_CHAIN_NAMES`].
+/// chain), nor a word of a [`NOT_A_CHAIN`] phrase. With `unambiguous_only`,
+/// leaving out [`AMBIGUOUS_CHAIN_NAMES`].
 fn chain_mask(text: &str, unambiguous_only: bool) -> u64 {
-    text_terms(text)
-        .iter()
+    let named: Vec<(usize, u64)> = text_terms(text)
+        .into_iter()
         .filter(|t| t.kind != TermKind::Lead)
         .filter(|t| !(unambiguous_only && AMBIGUOUS_CHAIN_NAMES.contains(&t.term.as_str())))
-        .filter_map(|t| CHAIN_BITS.get(&t.term))
-        .fold(0, |mask, bit| mask | bit)
+        .filter_map(|t| CHAIN_BITS.get(&t.term).map(|bit| (t.word, *bit)))
+        .collect();
+    if named.is_empty() {
+        return 0;
+    }
+    // The same words, in the same order, as `text_terms` numbers them.
+    let words: Vec<String> = text
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|raw| !raw.is_empty())
+        .map(|raw| tokens(raw).concat())
+        .collect();
+    let mut ordinary = vec![false; words.len()];
+    for phrase in NOT_A_CHAIN {
+        let phrase: Vec<&str> = phrase.split(' ').collect();
+        for start in 0..(words.len() + 1).saturating_sub(phrase.len()) {
+            if words[start..start + phrase.len()]
+                .iter()
+                .zip(&phrase)
+                .all(|(word, p)| word == p)
+            {
+                ordinary[start..start + phrase.len()].fill(true);
+            }
+        }
+    }
+    named
+        .into_iter()
+        .filter(|(word, _)| !ordinary.get(*word).copied().unwrap_or(false))
+        .fold(0, |mask, (_, bit)| mask | bit)
 }
 
 /// The chains a listing is about: any chain its host or path names, and the
@@ -1742,8 +1787,8 @@ impl SearchIndex {
 /// Results of one host that keep their rank in a relevance-ordered result.
 pub const MAX_RESULTS_PER_HOST: usize = 2;
 
-/// Results paying one recipient that keep their rank in a relevance-ordered
-/// result, whatever hosts they are on.
+/// Results paying one set of recipients that keep their rank in a
+/// relevance-ordered result, whatever hosts they are on.
 pub const MAX_RESULTS_PER_PAY_TO: usize = 2;
 
 /// Results of one templated family (`/stock-history/{ticker}`) that keep their
@@ -1756,7 +1801,8 @@ pub const MAX_RESULTS_PER_FAMILY: usize = 1;
 pub enum Group {
     /// The listing's host, lowercase.
     Host(String),
-    /// A recipient one of its options pays ([`pay_to_key`]).
+    /// The recipients its options pay, as one set ([`pay_to_key`] each,
+    /// sorted, space-separated).
     PayTo(String),
     /// Its templated family (host and path with the variable segments
     /// written `*`), when it belongs to one.
@@ -2415,6 +2461,31 @@ mod tests {
         assert_eq!(
             ranked(&listings, "solana block explorer"),
             ["https://sol.example/x"]
+        );
+    }
+
+    #[test]
+    fn a_chain_name_in_an_ordinary_phrase_names_no_chain() {
+        // A database, online, in Spanish; a knowledge base in a path.
+        assert_eq!(chain_mask("base de datos de criptomonedas", false), 0);
+        assert_eq!(chain_mask("precios de criptomonedas en línea", false), 0);
+        assert_eq!(chain_mask("kb.example knowledge base search", false), 0);
+        // The same names, said as chains.
+        assert_eq!(
+            chain_mask("usdc balance on base", false),
+            CHAIN_BITS["base"]
+        );
+        assert_eq!(chain_mask("linea rpc", false), CHAIN_BITS["linea"]);
+        // `línea` in a listing's description is a word.
+        assert_eq!(chain_mask("Datos de mercado en línea", true), 0);
+        // A request in Spanish is answered by a listing that names chains.
+        let listings = vec![listing(
+            "https://prices.example/x",
+            "Live prices for Bitcoin and Ethereum.",
+        )];
+        assert_eq!(
+            ranked(&listings, "precios de criptomonedas en línea"),
+            ["https://prices.example/x"]
         );
     }
 

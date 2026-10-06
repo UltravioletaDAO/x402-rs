@@ -1493,11 +1493,12 @@ pub struct DiscoveryResource {
     /// How much the listing was paid for through this facilitator in the last
     /// 30 days. Response-only, from the settlements this facilitator records
     /// (`crate::discovery_usage`); absent when this deployment records none,
-    /// and for a templated URL. Only mainnet settlements paying one of the
-    /// listing's own `(network, payTo)` pairs, for its URL, by a payer other
-    /// than that recipient, count. A FLOOR, never a ledger: the record is
-    /// written after a payment settles and is lost when the store is
-    /// unreachable, and settlements through other facilitators are invisible.
+    /// and for a templated URL. Only mainnet settlements matching one of the
+    /// listing's own payment options (network, payTo, asset, scheme, and for
+    /// `exact` at least its price), for its URL, by a payer other than that
+    /// recipient, count. A FLOOR, never a ledger: the record is written after
+    /// a payment settles and is lost when the store is unreachable, and
+    /// settlements through other facilitators are invisible.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub usage: Option<crate::discovery_usage::ListingUsage>,
 }

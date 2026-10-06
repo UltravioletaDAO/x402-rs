@@ -1025,6 +1025,55 @@ async fn one_seller_on_many_hosts_keeps_two_places_and_a_family_one() {
 }
 
 #[tokio::test]
+async fn an_option_naming_a_competitor_does_not_spend_its_places() {
+    // The competitor sells on three hosts, paid to one address. Two listings
+    // that answer better name that address in an option beside their own:
+    // grouped by it, they would push every competitor listing behind the
+    // weaker results.
+    let competitor = "0x00000000000000000000000000000000000000c0";
+    let rival = "0x00000000000000000000000000000000000000a1";
+    let mut extra = Vec::new();
+    for i in 0..3 {
+        let mut r = tool(
+            &format!("https://c{i}.competitor.example/gauge"),
+            "Zorblax quibbit flux gauge reading service for laboratories.",
+        );
+        r.accepts = vec![usdc_to(5_000, competitor)];
+        extra.push(r);
+    }
+    for i in 0..2 {
+        let mut r = tool(
+            &format!("https://r{i}.rival.example/gauge"),
+            "Zorblax quibbit flux gauge: zorblax quibbit flux.",
+        );
+        r.accepts = vec![usdc_to(5_000, competitor), usdc_to(5_000, rival)];
+        extra.push(r);
+    }
+    for i in 0..3 {
+        extra.push(tool(
+            &format!("https://w{i}.weaker.example/flux"),
+            "Quibbit flux gauge.",
+        ));
+    }
+    let registry = registry_with(extra).await;
+    let (urls, _) = search(&registry, "zorblax quibbit flux gauge").await;
+    let host = |u: &String| Url::parse(u).unwrap().host_str().unwrap().to_string();
+    let top: Vec<String> = urls.iter().take(4).map(host).collect();
+    assert_eq!(
+        top.iter().filter(|h| h.ends_with("rival.example")).count(),
+        2,
+        "{urls:?}"
+    );
+    assert_eq!(
+        top.iter()
+            .filter(|h| h.ends_with("competitor.example"))
+            .count(),
+        2,
+        "the competitor keeps its two places: {urls:?}"
+    );
+}
+
+#[tokio::test]
 async fn a_request_in_two_categories_is_answered_by_either() {
     // "tweet sentiment analysis" is `ai` first and `social/x` second; a
     // sentiment feed of tweets is `social/x` and does the job.

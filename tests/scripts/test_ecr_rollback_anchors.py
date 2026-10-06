@@ -153,6 +153,12 @@ class AnchorTest(unittest.TestCase):
         by = {a["digest"]: a for a in anchors}
         self.assertEqual(by[digest(1)]["children"], [digest(101), digest(102)])
 
+    def test_an_in_flight_rollback_is_an_anchor(self):
+        ecs, ecr = world()
+        ecs.in_flight = [9]
+        anchors, _ = collect(ecs, ecr, last=2)
+        self.assertIn(digest(4), {a["digest"] for a in anchors})
+
     def test_last_widens_the_window(self):
         anchors, _ = collect(*world(), last=5)
         self.assertLessEqual({digest(3), digest(4)}, {a["digest"] for a in anchors})

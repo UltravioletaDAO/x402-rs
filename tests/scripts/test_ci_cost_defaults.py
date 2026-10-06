@@ -70,6 +70,46 @@ class CostDefaultsTest(unittest.TestCase):
         for path in sorted(TF.glob("*.tf")):
             self.assertNotIn('"ECS/ContainerInsights"', path.read_text(encoding="utf-8"), path.name)
 
+    def test_tasks_in_public_subnets_keep_the_nat_guard(self):
+        if "ecs_tasks_in_public_subnets" not in defaults():
+            self.skipTest("B5 not in this tree")
+        main = (TF / "main.tf").read_text(encoding="utf-8")
+        service = block(main, 'resource "aws_ecs_service" "facilitator"')
+        self.assertIn("var.ecs_tasks_in_public_subnets ? aws_subnet.public[*].id : aws_subnet.private[*].id", service)
+        self.assertRegex(service, r"assign_public_ip\s*=\s*var\.ecs_tasks_in_public_subnets\n")
+        self.assertRegex(service, r"condition\s*=\s*var\.enable_nat_gateway \|\| var\.ecs_tasks_in_public_subnets\n")
+        self.assertRegex(main, r"nat_gateway_count\s*=\s*var\.enable_nat_gateway \? local\.nat_count : 0\n")
+        for header in ('resource "aws_eip" "nat"', 'resource "aws_nat_gateway" "main"'):
+            self.assertRegex(block(main, header), r"count\s*=\s*local\.nat_gateway_count\n", header)
+        for name in ("dynamodb", "s3"):
+            self.assertIn("aws_route_table.public.id", block(main, f'resource "aws_vpc_endpoint" "{name}"'), name)
+
+    def test_tasks_take_no_inbound_from_the_internet(self):
+        main = (TF / "main.tf").read_text(encoding="utf-8")
+        sg = block(main, 'resource "aws_security_group" "ecs_tasks"')
+        ingress = re.findall(r"^  ingress \{(.*?)^  \}", sg, re.S | re.M)
+        self.assertEqual(len(ingress), 2)
+        for rule in ingress:
+            self.assertNotIn("cidr_blocks", rule)
+            self.assertNotIn("ipv6_cidr_blocks", rule)
+            self.assertRegex(rule, r"from_port\s*=\s*8080\n")
+
+    def test_no_running_tasks_alarm_reads_the_alb(self):
+        if defaults()["enable_container_insights"] != "false":
+            self.skipTest("Container Insights is on")
+        alarm = block((TF / "alerts-imported.tf").read_text(encoding="utf-8"),
+                      'resource "aws_cloudwatch_metric_alarm" "orphan_no_running_tasks"')
+        for pattern in (r'metric_name\s*=\s*"HealthyHostCount"', r'namespace\s*=\s*"AWS/ApplicationELB"',
+                        r"LoadBalancer\s*=\s*aws_lb\.main\.arn_suffix", r"TargetGroup\s*=\s*aws_lb_target_group\.main\.arn_suffix",
+                        r'comparison_operator\s*=\s*"LessThanThreshold"', r"threshold\s*=\s*1\n",
+                        r'treat_missing_data\s*=\s*"breaching"', r'statistic\s*=\s*"Minimum"'):
+            self.assertRegex(alarm, pattern)
+
+
+def block(text: str, header: str) -> str:
+    start = text.index(header + " {")
+    return text[start:text.index("\n}\n", start)]
+
 
 if __name__ == "__main__":
     unittest.main()

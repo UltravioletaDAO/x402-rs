@@ -1,6 +1,34 @@
-# X402-LAMBDA-ESTUDIO — estudio Lambda (solo docs)
+# X402-LAMBDA-ESTUDIO / X402-LAMBDA-PLAN — estudio Lambda (solo docs)
 
-## Estado
+## Estado (X402-LAMBDA-PLAN, 2026-10-06): qué está hecho, qué falta, próximo paso
+
+- Hecho: `docs/estudios/lambda.md` suma el resumen de 5 líneas para el dueño (arriba), §10 coste
+  (hoy 137,13 / fase 1 50,64 / Lambda 7,41-37,80 USD/mes en las filas que cambian; x10 incluido),
+  §11 rendimiento por paso y pico, §12 plan por fases 0-3 con archivo, criterio, prueba, rollback y talla.
+- Falta: nada del encargo. Las cifras pesimista/central se cierran con la consulta de solo lectura
+  de §10.5 (`RequestCount` × `TargetResponseTime` por target group) y la de Athena de la tarea 0.8,
+  que este PR no corre (no toca AWS).
+- Próximo paso: que el dueño decida si arranca la fase 0 (recomendado ya, mejora el Fargate de hoy).
+
+## Refutaciones al encargo X402-LAMBDA-PLAN
+
+- "Function URL o API Gateway HTTP (1 USD/M)": Function URL no tiene cargo propio y API Gateway
+  corta a 30 s (§3), inviable para `/settle`. El plan usa un target group `lambda` del ALB
+  existente (0 USD de integración, +0,53 USD/mes de LCU).
+- "Hoy: 2 tareas": es el piso (`production.auto.tfvars:73`); la auditoría midió 2,862 de promedio
+  y el pico de 5.913 req/h pide 7 tareas al autoscaling (techo 3). El coste usa 2 para no inflar
+  el ahorro; §10.5 da la sensibilidad.
+- "EventBridge de los 12 loops": de las 12 filas que dejan de ser `tokio::spawn`, 9 necesitan
+  schedule y 3 pasan a perezosas en el request (§10.3).
+- "NAT ~31": por fórmula son 32,85 de horas + 8,75 de datos (agosto) + 3,65 de la EIP.
+- "Fargate ~36 tras la fase 1": correcto, pero B5 de #115 da una IPv4 pública por tarea
+  (+7,30 USD/mes), que la fase 1 suma y Lambda no.
+- "p50/p90/p99 medidos por paso": no existen por ruta; solo el ALB entero y el p99 por target
+  group. §11 lo dice y la tarea 0.8 los mide.
+- "Plan ejecutable con ahorro": con 10x tráfico y el caso pesimista de espera de settle, Lambda
+  cuesta más que la fase 1 (221 contra 72 USD/mes).
+
+## Estado (X402-LAMBDA-ESTUDIO, ronda anterior)
 
 - Hecho: medición en código y `docs/estudios/lambda.md` (veredicto: viable con cambios; híbrido
   lecturas-en-Lambda / escrituras-en-Fargate primero).

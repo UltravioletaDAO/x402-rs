@@ -1,4 +1,12 @@
-# ¿El facilitador puede correr en AWS Lambda? (X402-LAMBDA-ESTUDIO)
+# ¿El facilitador puede correr en AWS Lambda? (X402-LAMBDA-ESTUDIO, X402-LAMBDA-PLAN)
+
+## Para el dueño (5 líneas)
+
+1. **Ahorro:** contra la fase 1 del recorte (50,64 USD/mes en las filas que cambian), todo en Lambda cuesta 7,41 USD/mes (central) a 37,80 (pesimista): **ahorra 13-43 USD/mes**; el híbrido intermedio, ~20. La fase 1 ya baja hoy de 137,13 a 50,64 (§10).
+2. **Rendimiento:** no mejora la experiencia. En caliente queda igual (verify y settle los domina el RPC o la cadena; las lecturas suman unos ms) y el p99 empeora por los arranques en frío (+1-4 s al request que los dispara, **[HIPÓTESIS]**). El pico de 5.913 req/h ocupa 1-3 entornos y la capacidad sobra en los dos mundos (§11).
+3. **Trabajo:** L. Son unos 13 PRs en 4 fases, y el grueso es la fase 0 (nonces en DynamoDB, toca dinero). Lleva 6-10 semanas de calendario, la mayoría ventanas de canary de 7-14 días **[ESTIMADO]** (§12).
+4. **Riesgo que decide el número:** Lambda cobra la espera del recibo de cada settle. Con 10x tráfico, el caso pesimista cuesta más que Fargate (221 contra 72 USD/mes). La duración media del target group `writes` (§10.5) cierra el rango y se mide en 5 minutos.
+5. **Recomendación:** hacer **ya** solo la fase 0, que arregla fallos de hoy (carrera de nonce NEAR/Stellar, jobs y tope ERC-8004 que se pierden en cada deploy) y no depende de Lambda. Migrar (fases 1-3) solo si la medición del punto 4 confirma el caso central y después de 30 días de la fase 1 del recorte estable: no antes de diciembre de 2026.
 
 Estudio de solo lectura, fase 2 del recorte de costes. Medido sobre `main` en `c3b694b0`
 (2026-10-06). Ningún cambio de código, de Terraform ni de AWS acompaña a este documento.
@@ -34,7 +42,8 @@ del proceso (DynamoDB) o un pool de firmantes con un lease por EOA; (b) sacar de
 corrección: el tope diario ERC-8004, los jobs de registro y el rate limiting (§5).
 
 El ahorro que motiva el cambio, 45-50 USD/mes sobre la fase 1, es **[ESTIMADO]** de c0der y no
-sale del código; §7.3 da el techo que se ve en la configuración.
+sale del código; §7.3 da el techo que se ve en la configuración. **§10 lo reemplaza** con el
+modelo fila por fila: 13-43 USD/mes con todo en Lambda, ~17-20 con el híbrido de una tarea.
 
 ## 1. Nonces y concurrencia por familia
 
@@ -374,7 +383,7 @@ En la configuración: 2 tareas de 1 vCPU y 2 GB, piso 2 y techo 3
 70 USD/mes de cómputo **[ESTIMADO, revalidar con Cost Explorer]**, y es el **techo** del ahorro:
 el ALB se queda (lo usa el plan), el híbrido A conserva una tarea Fargate, y las funciones de
 EventBridge cuestan (health prober cada minuto). El ahorro de 45-50 USD/mes de c0der es
-**[ESTIMADO]** y para el híbrido A parece optimista **[HIPÓTESIS]**.
+**[ESTIMADO]** y para el híbrido A parece optimista **[HIPÓTESIS]**. §10.4-10.5 lo cuantifican.
 
 ## 8. Plan de migración sin riesgo
 
@@ -409,3 +418,299 @@ Todo detrás del mismo dominio y del mismo ALB.
 - Precios y volumen reales (§7.3).
 - Los límites marcados **[DOC AWS]**: se citan de memoria de la documentación pública y deben
   revalidarse en la fecha de implementación.
+
+## 10. Coste mensual: hoy, fase 1 del recorte y Lambda (X402-LAMBDA-PLAN)
+
+Mes de 730 h, `us-east-2`. Etiquetas como arriba: **[DOC AWS]** = precio público de lista (revalidar
+el día que se implemente), **[ESTIMADO]** = cifra que no sale ni del código ni de una medición, y
+**[MEDIDO c0der]** = CloudWatch del ALB `facilitator-production` del 2026-10-06. El script que
+calcula cada cifra es reproducible a mano con la fórmula de su fila.
+
+### 10.1 Entradas
+
+| Entrada | Valor | Fuente |
+|---|---|---|
+| Requests HTTP al mes (R) | 754.683 | [MEDIDO c0der], 30 días |
+| Pico horario | 5.913 req/h = 1,64 req/s | [MEDIDO c0der], últimos 7 días |
+| Bytes procesados | 43,9 GB/mes (~58 KB/request) | [MEDIDO c0der] |
+| TargetResponseTime | p50 3,7 ms · p90 61 ms · p99 6,55 s | [MEDIDO c0der], 7 días, todo el ALB |
+| p99 de lecturas (TG `main`) | 0,10-0,59 s | `terraform/environments/production/latency-split.tf:150-153` (2026-09-01) |
+| p99 de escrituras (TG `writes`) | 7,0-7,7 s | `terraform/environments/production/latency-split.tf:185-186` |
+| Fargate x86 | 0,04048 USD/vCPU-h + 0,004445 USD/GB-h | Price List, `docs/handoffs/2026-09-09-auditoria-arquitectura-costos-y-ui.md:114` |
+| NAT Gateway | 0,045 USD/h + 0,045 USD/GB | [DOC AWS]; agosto facturó 33,48 h + 8,75 datos (auditoría `:100-101`) |
+| IPv4 pública | 0,005 USD/h por dirección | [DOC AWS] |
+| Endpoint de interfaz (Secrets Manager) | 0,01 USD/h, 1 AZ | `terraform/environments/production/variables.tf:35` |
+| ALB | 0,0225 USD/h + 0,008 USD/LCU-h; un LCU = 1 GB/h a targets IP y **0,4 GB/h a targets Lambda** | [DOC AWS] |
+| Lambda | 0,20 USD por millón de requests; arm64 0,0000133334 USD/GB-s; la fase INIT se factura | [DOC AWS] |
+| Function URL | 0 USD (sin cargo propio) | [DOC AWS] |
+| API Gateway HTTP API | 1,00 USD por millón | [DOC AWS]; **no sirve para `/settle`** (corta a 30 s, §3) |
+| DynamoDB on-demand | 0,625 USD por millón de WRU · 0,125 USD por millón de RRU | [DOC AWS] |
+| EventBridge Scheduler | 14 M invocaciones gratis al mes, luego 1 USD/M | [DOC AWS] |
+| CloudWatch Logs | 0,50 USD/GB ingerido | [DOC AWS] |
+| Secrets Manager API | 0,05 USD por 10.000 llamadas | [DOC AWS] |
+
+No se descuenta el free tier de Lambda (1 M requests y 400.000 GB-s al mes): es de la cuenta y lo
+comparten la Lambda de balances y los otros proyectos de UVD. Si quedara libre, el caso central de
+Lambda bajaría a casi 0.
+
+### 10.2 Memoria y duración que se recomiendan
+
+- **Función de lecturas: 1024 MB, arm64.** Con 1769 MB Lambda da 1 vCPU **[DOC AWS]**, así que
+  1024 MB ≈ 0,58 vCPU: lo mismo que la tarea de 0,5 vCPU de la fase 1. Le alcanza la memoria para
+  el catálogo de 15 MB y su índice (`src/discovery_owner.rs:8`). Bajar a 512 MB alarga el arranque
+  en frío, que es CPU (parseo e índice, §4.2).
+- **Función de escrituras: 512 MB, arm64.** El settle pasa casi todo el tiempo esperando el recibo
+  (§3). Lambda cobra esa espera por GB-s, y la mitad de memoria es la mitad de coste.
+- **arm64** necesita compilar para `aarch64-unknown-linux-musl` (o gnu sobre `provided.al2023`).
+  El precedente de Emporium es x86_64 (§6), y las crates nativas (OpenSSL, `hiero-sdk-proto`) en
+  arm64 **[HIPÓTESIS]** hay que probarlas en la fase 0. En x86_64 los GB-s cuestan un 25 % más
+  (0,0000166667) y las cifras de abajo suben en esa proporción.
+- **Duración por request.** Solo hay percentiles del ALB entero, así que se arma con tramos:
+
+| Tramo | Fracción | Central (representante) | Pesimista (borde superior) | Función |
+|---|---|---|---|---|
+| ≤ p50 | 50 % | 2 ms | 3,7 ms | lecturas |
+| p50-p90 | 40 % | 20 ms | 61 ms | lecturas |
+| p90-p99 | 9 % | 0,63 s (media geométrica de 61 ms y 6,55 s) | 6,55 s | escrituras |
+| > p99 | 1 % | 10 s | 90 s (recibo de Base, `src/chain/evm.rs:1180`) | escrituras |
+
+  El caso pesimista además cobra los tramos de escritura a 1 GB. Que el 10 % lento sea "escrituras"
+  es una aproximación **[HIPÓTESIS]**; la medición de §10.5 la reemplaza.
+
+  - Central: GB-s HTTP = R × (0,5 × 0,002 + 0,4 × 0,020) × 1 GB + R × (0,09 × 0,63 + 0,01 × 10) × 0,5 GB = **65.922 GB-s**.
+  - Pesimista: GB-s HTTP = R × (0,5 × 0,0037 + 0,4 × 0,061 + 0,09 × 6,55 + 0,01 × 90) × 1 GB = **1.143.911 GB-s**.
+- **Arranques en frío (C al mes) × init (I) × 1 GB.** Central: C = 3.000 (unos 100 por día) e
+  I = 2 s, que da 6.000 GB-s. Pesimista: C = 30.000 e I = 5 s, que da 150.000 GB-s. **[HIPÓTESIS]**: el
+  init no está medido (§4.2) y C depende de qué tan en ráfaga llega el tráfico (§11.3).
+
+### 10.3 Los loops de fondo en EventBridge
+
+De las 16 filas de §2.2, 12 dejan de ser `tokio::spawn`. Tres (3, 11 y 13) pasan a ser perezosas
+dentro del request y no tienen schedule ni coste propio. Las otras nueve pasan a schedules de
+EventBridge contra una función worker:
+
+| Loop (§2.2) | Invocaciones/mes | Duración central / pesimista | Memoria | USD central / pesimista |
+|---|---|---|---|---|
+| 6 Health prober (tick 60 s, timeout por probe 12 s, `src/discovery_health.rs:60`) | 43.800 | 5 s / 15 s | 1 GB | 2,92 / 8,76 |
+| 12 Recuperación de Hedera (30 s → 1 min) | 43.800 | 1 s / 3 s | 0,5 GB | 0,29 / 0,88 |
+| 8 Stuck tx monitor (120 s, `src/stuck_tx_monitor.rs:54`) | 21.900 | 2 s / 6 s | 0,5 GB | 0,29 / 0,88 |
+| 10 Autoverify (600 s) | 4.380 | 2 s / 10 s | 0,5 GB | 0,06 / 0,29 |
+| 4 Agregación del Bazaar (3600 s) | 730 | 60 s / 300 s | 2 GB | 1,17 / 5,84 |
+| 7 Atestación ERC-8004 (configurable; se supone horaria) | 730 | 2 s / 10 s | 0,5 GB | 0,01 / 0,05 |
+| 14 Sweeper DX402 (se supone horario) | 730 | 5 s / 30 s | 0,5 GB | 0,02 / 0,15 |
+| 9 Chain identity (reprobe horario) | 730 | 2 s / 10 s | 0,5 GB | 0,01 / 0,05 |
+| 5 Crawler (diario, hoy apagado) | 30 | 300 s / 900 s | 1 GB | 0,12 / 0,36 |
+| **Total** | **116.830** | | | **4,89 / 17,25** |
+
+Fórmula de cada fila: invocaciones × duración × GB × 0,0000133334. Las duraciones son
+**[HIPÓTESIS]**. La más grande, el health prober, está acotada por código: a lo sumo
+`DISCOVERY_HEALTH_CONCURRENCY` (8) probes en vuelo de 12 s como máximo (`src/main.rs:441-449`).
+EventBridge Scheduler queda dentro de las 14 M invocaciones gratis: 0 USD.
+
+### 10.4 Tabla de coste (solo las filas que cambian entre columnas)
+
+| Fila | Fórmula | Hoy | Fase 1 del recorte | Lambda: central / pesimista |
+|---|---|---:|---:|---:|
+| Fargate | tareas × 730 × (vCPU × 0,04048 + GB × 0,004445) | **72,08** (2 × 1 vCPU/2 GB) | **36,04** (2 × 0,5/1) | 0 |
+| Container Insights | handoff 2026-08-07, `docs/COST_RIGHTSIZING_HANDOFF_2026-08-07.md:17` | 12,50 [ESTIMADO, rango 10-15] | 0 (B8 de #115) | 0 |
+| NAT: horas | 0,045 × 730 | 32,85 | 0 (paso e de #115) | 0 |
+| NAT: datos | agosto facturado | 8,75 | 0 | 0 |
+| IPv4 pública | direcciones × 0,005 × 730 | 3,65 (EIP del NAT) | **7,30** (una por tarea, B5 de #115) | 0 |
+| Endpoint Secrets Manager | 0,01 × 730 | 7,30 | 7,30 | 0 (Lambda fuera de la VPC, ver §12 fase 3) |
+| Lambda: requests | (R + 116.830) × 0,20 / 10⁶ | — | — | 0,17 / 0,17 |
+| Lambda: GB-s HTTP | §10.2 × 0,0000133334 | — | — | 0,88 / 15,25 |
+| Lambda: GB-s init | C × I × 1 GB × 0,0000133334 | — | — | 0,08 / 2,00 |
+| Lambda: loops (EventBridge) | §10.3 | — | — | 4,89 / 17,25 |
+| ALB: LCU extra por target Lambda | (43,9/720/0,4 − 43,9/720/1) × 0,008 × 730 | — | — | 0,53 / 0,53 |
+| Function URL / API Gateway | ALB target `lambda`: 0. API GW: R × 1/10⁶ = 0,75, descartado (§3) | — | — | 0 / 0 |
+| DynamoDB nuevo (nonces, leases, contadores) | WRU × 0,625 / 10⁶; ver abajo | — | — | 0,64 / 1,11 |
+| Logs de plataforma y boot | (invocaciones × 350 B o 1 KB + C × 20 KB o 50 KB) × 0,50/GB | — | — | 0,18 / 1,19 |
+| Secrets Manager en el init | C × 2 llamadas (`BatchGetSecretValue`, 29 secretos) × 0,05/10⁴ | — | — | 0,03 / 0,30 |
+| **Total de las filas que cambian** | | **137,13** | **50,64** | **7,41 / 37,80** |
+| **Ahorro mensual neto contra la fase 1** | 50,64 − Lambda | | | **43,23 / 12,84** |
+
+Desglose de DynamoDB (on-demand, todo con escritura condicional o `ADD`). En el central suma
+1,02 M WRU y en el pesimista 1,78 M:
+
+- nonces EVM/NEAR/Stellar: 2 WRU por settle, con settles ≤ 10 % de R;
+- leases de los loops: 1 WRU por invocación;
+- rate limiting: 1 WRU por request en el central, 2 en el pesimista (IP y cliente);
+- tope ERC-8004, jobs de registro y veredictos de autoverify: unos miles al mes;
+- almacenamiento: con TTL no llega a centavos.
+
+Si en vez de DynamoDB el rate limiting va a WAF, la fila es 5 (web ACL) + 2 × 1 (reglas) +
+0,60 × R / 10⁶ = **7,45 USD/mes** **[DOC AWS]**, y el ahorro central baja a 36.
+
+**Lo que no cambia entre columnas** y por eso queda fuera de la suma:
+
+- ALB: 16,43 USD/mes de horas, LCU base y las IPv4 de sus nodos. Lo usan las tres columnas.
+- Transferencia a internet: los mismos 43,9 GB.
+- Tablas DynamoDB existentes: nonces, idempotencia, transacciones, Hedera y DX402.
+- S3 del discovery, almacenamiento de los secretos (0,40 USD por secreto), ECR, métricas custom
+  y alarmas.
+
+### 10.5 Sensibilidad y la medición que cierra el rango
+
+- **"Hoy: 2 tareas" es el piso, no el promedio.** El autoscaling apunta a 15 req/min por tarea
+  con techo 3 (`terraform/environments/production/production.auto.tfvars:73-77`). El tráfico
+  medio, 17,5 req/min, entra en 2 tareas; el pico, 98,6 req/min, pide 7 y se queda en 3. La
+  auditoría del 2026-09-09 midió 2,862 tareas de promedio (auditoría `:60`). Con ese promedio,
+  Fargate hoy es 103,15 USD y en la fase 1 51,57, y el ahorro de Lambda sube unos 15 USD. Las
+  cifras de arriba usan 2 tareas para no inflar el ahorro.
+- **La incógnita que más pesa es la espera del settle** (filas HTTP pesimista, 15,25, y loops,
+  17,25). Se cierra midiendo en CloudWatch, por target group, `RequestCount` (Sum) y
+  `TargetResponseTime` (Average) de `writes` y `main` en 30 días. Así:
+  - GB-s de escrituras = Σ(Average × RequestCount) × 0,5;
+  - GB-s de lecturas = lo mismo × 1.
+
+  Es una consulta de solo lectura; este estudio no la corre (no toca AWS).
+- **Híbrido (fin de la fase 1 del plan):** lecturas en Lambda; escrituras, `/mcp`, `/events` y
+  los loops en Fargate.
+  - Con **1 tarea** de 0,5 vCPU: 18,02 + 3,65 (IPv4) + 7,30 (endpoint) + 1,39-5,12 (Lambda de
+    lecturas) = **30,36-34,09 USD**, que ahorra **~17-20** contra la fase 1. Choca con
+    `min_capacity = 2 # a single task is not a service` (`production.auto.tfvars:73`): un solo
+    escritor es una caída de escrituras de minutos en cada reemplazo.
+  - Con **2 tareas**: **52,03-55,76 USD**, más caro que la fase 1. El híbrido solo tiene sentido
+    como paso de canary, no como destino.
+- **Escenario x10 (7,55 M requests/mes; pico 16,4 req/s):**
+
+| | Fase 1 (3 tareas, techo del autoscaling) | Lambda central | Lambda pesimista | Híbrido, 1 tarea |
+|---|---:|---:|---:|---:|
+| USD/mes | 72,31 (54,06 + 3 IPv4 10,95 + endpoint 7,30) | 28,05 | 221,43 | 41,89-80,16 |
+| Ahorro contra la fase 1 | — | **+44,26** | **−149,12** | +30,42 / −7,85 |
+
+  Supuestos del x10:
+  - Lambda escala casi lineal, a 3,04 USD por millón de requests en el central y 27,03 en el
+    pesimista.
+  - Los loops no escalan.
+  - Los arranques en frío crecen ×3 en el central y ×10 en el pesimista.
+  - Que 3 tareas de 0,5 vCPU aguanten x10 es una **[HIPÓTESIS]**.
+- **Punto de equilibrio contra la fase 1:**
+  - central: (50,64 − 5,12 fijo) / 3,04 ≈ **15 M requests/mes (x20)**;
+  - pesimista: (50,64 − 17,4) / 27,03 ≈ **1,2 M requests/mes (x1,6)**.
+
+  Si el tráfico crece y la espera del settle se parece al pesimista, Lambda deja de ahorrar
+  antes de llegar a x2.
+
+## 11. Rendimiento por paso del flujo
+
+### 11.1 Qué se mide hoy
+
+El ALB no tiene métricas por ruta. Hay tres fuentes:
+
+- el ALB entero ([MEDIDO c0der]): p50 3,7 ms, p90 61 ms, p99 6,55 s;
+- el target group `main`, que sirve lecturas, `/verify` y `/mcp`: p99 0,10-0,59 s;
+- el target group `writes` (`/settle`, `/feedback*`, `/register`, `/dx402/anchor`): p99 7,0-7,7 s
+  (`latency-split.tf:128-137`, `:150-153`, `:185-186`).
+
+Los p50 y p90 por paso salen de los access logs del ALB, que ya están encendidos
+(`alb_access_logs_enabled = true`, `production.auto.tfvars`): una consulta de Athena por
+`request_url` sobre `target_processing_time`. No se corrió acá. Mientras tanto, la tabla usa el
+p50/p90 global para las lecturas, que son la mayoría del tráfico **[HIPÓTESIS]**.
+
+### 11.2 Tabla por paso
+
+Supuestos de las columnas Lambda **[HIPÓTESIS]**, a medir en el canary de la fase 1:
+
+- Lambda tibio = la invocación ALB → Lambda y la conversión del evento suman 1-10 ms.
+- Si el rate limiting pasa a DynamoDB, esa puerta suma 5-10 ms por la escritura condicional.
+- Arranque en frío = el init de §4: 1-4 s con el snapshot del Bazaar en el init, 0,3-1 s con
+  discovery perezoso (§4.4). Lo paga solo el request que crea el entorno.
+
+| Paso | Hoy (medido) | Lambda tibio | Lambda en frío | Veredicto |
+|---|---|---|---|---|
+| `/supported`, `/networks.json`, `/accepts` | p50 3,7 ms · p90 61 ms · p99 ≤ 0,59 s (TG `main`) | p50 5-20 ms · p90 65-80 ms · p99 igual | +0,3-4 s | p50 empeora unos ms; p90 igual; **p99 empeora** con los arranques en frío |
+| Discovery (`/discovery/resources`, búsqueda) | igual que la fila anterior | igual que la fila anterior | +0,5-2 s si el catálogo de 15 MB se carga perezoso en el primer uso | igual en caliente; **peor en frío** |
+| `/verify` | dentro del p99 de `main` (≤ 0,59 s); objetivo de `/verify` p99 < 1 s a 50 concurrentes (`docs/handoffs/2026-08-20-diagnostico-performance-facilitador.md:639`) | igual + 1-10 ms; el pool HTTP al RPC vive con el entorno | +init y el handshake TLS al RPC de la red en la primera llamada (50-300 ms) | **igual** en caliente; peor en frío |
+| `/settle` EVM | p99 7,0-7,7 s (`writes`); Base hasta 90 s, Ethereum hasta 900 s; la réplica sin lease reenvía al holder (`src/handlers.rs:1718-1747`) | igual: la cadena domina. Se va el salto de reenvío y entra una escritura condicional de nonce (+5-10 ms) | +init (≤ 4 s sobre una espera de 2-90 s) | **igual** |
+| `/settle` Solana | confirmación ≤ 90 s, sondeo de 500 ms (`src/chain/solana.rs:2513-2516`) | igual | +init | **igual** |
+| `/settle` NEAR | `broadcast_tx_commit`, ≤ 10 s | igual + el lock de nonce de la fase 0 | +init | **igual** |
+| `/settle` Stellar y XRPL | sondeo de 1 s, hasta 30 intentos | igual (la granularidad de 1 s domina) | +init | **igual** |
+| `/settle` Algorand | sondeo de 500 ms, hasta 20 | igual | +init | **igual** |
+| `/settle` Sui y Hedera | quorum driver; Hedera ≤ 45 s | igual | +init | **igual** |
+| MCP `POST /mcp` | va a `main` y hereda la latencia de la herramienta: `x402_settle` sale del p99 de lecturas, porque hoy cae en `main` | igual: es stateless y JSON (`src/mcp.rs:1015-1023`) | +init | **igual**, si se rutea al riel de escrituras (§12 fase 1) |
+| `GET /events` (SSE) | streaming | no funciona tras un target Lambda (§3) | — | **se pierde** si Fargate se apaga sin decidir dónde vive |
+
+Lo único que **mejora**: el health prober y la agregación dejan de compartir CPU con los
+settles. En una tarea de 1 vCPU, los probes producían picos de CPU del 60-100 % cada minuto
+(`src/main.rs:428-436`). En la fase 1 del recorte la tarea tiene la mitad de CPU, así que ese
+riesgo crece. En Lambda cada loop corre en su propio entorno.
+
+### 11.3 El pico de 5.913 req/h
+
+- **Concurrencia (ley de Little):**
+  - lecturas ≈ 1,64 × 0,9 × 0,02 s ≈ 0,03 entornos;
+  - escrituras ≈ 1,64 × 0,1 × 0,63-6,55 s ≈ 0,1-1,1 entornos.
+
+  Total: **1-3 entornos simultáneos**. A 1,64 req/s llega un request cada 0,6 s, así que el
+  entorno de lecturas no llega a enfriarse; los arranques en frío vienen de ráfagas (N requests
+  en el mismo instante crean N entornos) y del reciclado periódico de entornos **[HIPÓTESIS]**.
+  La forma de las ráfagas no está medida; en el canary, `ConcurrentExecutions` y `Init Duration`
+  la dan.
+- **Fargate hoy:** 2-3 tareas con admisión de 512 en vuelo cada una (`src/rate_policy.rs:1126`).
+  El pico pide 7 tareas al autoscaling y recibe 3, sin colas observadas. Ningún lado se queda
+  corto.
+- **Lambda:** escala en segundos. La concurrencia de la cuenta (1000 por defecto) y la tasa de
+  escalado (1000 entornos cada 10 s por función) **[DOC AWS]** sobran con 1-3. La concurrencia
+  reservada propuesta (50 lecturas, 20 escrituras) es un techo de gasto y de carga sobre los RPC,
+  no una limitación.
+- **x10 (16,4 req/s de pico):** 1-11 entornos. Fargate se queda en 3 tareas de 0,5 vCPU por el
+  techo del autoscaling **[HIPÓTESIS: suficiente]**.
+
+## 12. Plan ejecutable por fases
+
+Reglas para todas las fases:
+
+- cada tarea es un PR propio contra `main`;
+- en las fases 1-3, un cambio de pesos del ALB por apply;
+- nada se apaga antes de que su reemplazo pase el criterio de salida.
+
+Tallas: S ≤ 1 día, M 2-4 días, L ≥ 1 semana de trabajo efectivo **[ESTIMADO]**, sin contar la
+ventana de observación.
+
+### Fase 0: prerequisitos que también mejoran el Fargate de hoy (L)
+
+| # | Tarea (archivo y cambio) | Mejora hoy en Fargate | Criterio de salida | Cómo se prueba | Rollback | Talla |
+|---|---|---|---|---|---|---|
+| 0.1 | Asignador de nonce EVM en DynamoDB. Nuevo `src/nonce_allocator.rs` con `UpdateItem` condicional por `(chain, EOA)` en `facilitator-nonces` (`terraform/environments/production/main.tf:637-639`), detrás de `PendingNonceManager` (`src/chain/evm.rs:3160`). Conserva la deriva y los huecos de `NonceState` (`src/chain/evm.rs:3195`, `:3237`) y `NONCE_TRUST_CHAIN_AFTER_DRIFT`. Interruptor `NONCE_ALLOCATOR=lease\|dynamo` (default `lease`). | Las 2 tareas firman EVM sin reenviar al holder; desaparecen el salto de `src/handlers.rs:1718-1747` y la espera de handover del lease (TTL 30 s, margen 10 s, `src/writer_lease.rs:159-176`). | 7 días en producción con `dynamo` y 2 tareas firmando: 0 `nonce too low` / `replacement underpriced`, 0 `evm_signer_transactions_stuck` (`src/stuck_tx_monitor.rs`), tasa de settles OK ≥ la semana anterior. | Unitarios con N asignadores concurrentes contra DynamoDB Local: nunca un nonce repetido. Testnet (Base Sepolia): 100 settles concurrentes desde 2 procesos. | `NONCE_ALLOCATOR=lease` y redeploy; el lease sigue en el código. | L |
+| 0.2 | NEAR y Stellar con el mismo asignador o con lock por cuenta: `src/chain/near.rs:755`, `src/chain/stellar.rs:1621-1632`. | Cierra la carrera que **ya existe** dentro de un proceso (§1.2, §1.3). | 7 días sin `InvalidNonce` (NEAR) ni `tx_bad_seq` (Stellar). | Test de 2 settles concurrentes por familia con mocks del RPC: el segundo usa nonce+1. | Interruptor por familia. | M |
+| 0.3 | Sacar de los handlers los `tokio::spawn` que sobreviven a la respuesta (§2.3): `await` de idempotencia (`src/handlers.rs:5946`) y `track_settlement` (`:5844`); mint ERC-8004 asíncrono (`:11117-11129`) a una cola SQS con DLQ (nuevo `terraform/environments/production/erc8004-queue.tf`). Drenaje del discovery (`src/discovery.rs:1756`) y revalidación (`src/discovery_revalidation.rs:288`) con `await` o a la misma cola. | Un deploy o un scale-in ya no pierde el mint que respondió 202. | `grep` en CI: ningún `tokio::spawn` en `src/handlers.rs` fuera de una lista permitida; DLQ vacía 7 días. | Test que manda SIGTERM a mitad de un `/register` y verifica que el job sigue en la cola. | Revert del PR; la cola queda sin consumidores. | M |
+| 0.4 | Estado por proceso a DynamoDB: tope diario (`src/erc8004/daily_cap.rs:83-93`) como contador atómico `(red, día)`; jobs de registro (`src/erc8004/register_jobs.rs:52-55`) como tabla; veredictos de autoverify (`src/payment_operator/autoverify.rs:39-44`) escritos por el loop y leídos por `/supported`. | Hoy un cambio de lease (cada deploy) o un reinicio **borra** los jobs y reinicia el tope (`src/erc8004/register_jobs.rs:53-55`). | Un deploy en medio de un registro: el `GET` del jobId responde el estado real; el tope del día sobrevive a un reinicio. | Unitarios del contador con escritura condicional y prueba manual del deploy en staging o testnet. | Interruptor `ERC8004_STATE=memory\|dynamo`. | M |
+| 0.5 | `NONCE_STORE_TABLE_NAME` obligatorio en modo Lambda: fail-closed en `src/nonce_store.rs:522-541`. | — (Fargate ya la tiene) | El binario Lambda no arranca sin la variable. | Unitario. | Revert. | S |
+| 0.6 | Modo `FACILITATOR_RUNTIME=lambda` en `src/main.rs`: apaga writer lease (`:162`), discovery owner (`:171`) y loops (`:343-545`); registry y overlays perezosos (§4.4). | Arranque más rápido también en ECS si se reutiliza lo perezoso. | `cargo run` con el modo: `/health` en < 1 s locales, sin loops en los logs. | Test de integración del router con el modo y un medidor de tiempo del init por paso (cierra §4.2). | Variable ausente = comportamiento de hoy. | M |
+| 0.7 | Binario `src/bin/lambda.rs` (`bootstrap`): saca de `main()` la construcción del `Router` a una función compartida y llama `lambda_http::run` (feature `alb`; la dependencia entra en **ese** PR, no en este). `ConnectInfo` por defecto para `src/client_ip.rs:74-80`. Secretos con `BatchGetSecretValue` en el init (§4.3). Build `aarch64` con rustls u OpenSSL `vendored`. | — | El ZIP compila en CI; un evento ALB de prueba devuelve `/supported` idéntico al de Fargate (comparación byte a byte del JSON normalizado). | `cargo lambda` o `lambda_http` con eventos de prueba en tests. | No se despliega hasta la fase 1. | M |
+| 0.8 | Medición: consulta de Athena por ruta sobre los access logs y `RequestCount` y `TargetResponseTime` por TG (§10.5). | Da p50/p90/p99 por paso también para Fargate. | La tabla de §11.2 con cifras medidas, no globales. | — | — | S |
+
+### Fase 1: lecturas en Lambda, mismo dominio, pesos 5 % → 50 % → 100 % (M)
+
+| # | Tarea | Criterio de salida | Cómo se prueba | Rollback | Talla |
+|---|---|---|---|---|---|
+| 1.1 | Nuevo `terraform/environments/production/lambda-facilitator.tf`: `aws_lambda_function` de lecturas (arm64, `provided.al2023`, 1024 MB, timeout 60 s, concurrencia reservada 50, **fuera de la VPC**, porque dentro necesitaría NAT para los RPC). Log group con `var.log_retention_days`. Rol IAM de lectura (S3 del discovery, tablas DynamoDB, Secrets). `aws_lb_target_group` `target_type = "lambda"`, `aws_lb_target_group_attachment` y `aws_lambda_permission`, como en `lambda-balances.tf:217-252`. | `terraform plan` solo agrega recursos; peso 0. | El plan revisado y un invoke directo con evento ALB. | `destroy` de lo agregado. | M |
+| 1.2 | Antes de mover pesos: `/mcp` y `/events` a reglas que los fijen en Fargate. `/mcp` al riel `writes` (`latency-split.tf:128-137`), porque lleva `x402_settle`. `/events` a `main` con prioridad propia. | `curl` a `/mcp` y `/events` respondido por Fargate (header de versión o log). | Smoke test de MCP `tools/list` y `x402_supported`. | Quitar las reglas. | S |
+| 1.3 | `default_action` del listener (`main.tf:495-498`) a `forward` por peso (patrón de `latency-split.tf:111-125`): `main` 95, `reads-lambda` 5. | **5 %, 7 días:** 5xx de Lambda ≤ 5xx de `main` + 0,1 pp; p99 del TG Lambda < 2 s (umbral de `latency_reads_p99`); Throttles = 0; `Init Duration` p99 < 3 s; `/supported` igual en las dos rutas (hash del JSON normalizado). | Alarmas nuevas copiadas de `latency_reads_p99` para el TG Lambda, más Errors, Throttles y un filtro de métrica sobre `Init Duration`. | Pesos `main` 100 en un apply (segundos). | S |
+| 1.4 | Pesos 50/50 y luego 0/100. | **50 %, 7 días** y **100 %, 7 días** con los mismos umbrales; coste diario de Lambda en Cost Explorer ≤ 0,20 USD (1,39-5,12 al mes, §10.5). | Las mismas alarmas. | Pesos atrás. | S |
+| 1.5 | Build y deploy del ZIP en `.github/workflows/ci.yaml`: otro PR, que sí toca workflows. | Cada release publica imagen y ZIP con el mismo `VERSION`. | El CI. | Revert. | M |
+
+Al cerrar la fase 1, Fargate sigue con 2 tareas. Bajar a 1 ahorra unos 20 USD (§10.5) contra
+`min_capacity = 2`: la decisión es del dueño.
+
+### Fase 2: escrituras y loops (L)
+
+| # | Tarea | Criterio de salida | Cómo se prueba | Rollback | Talla |
+|---|---|---|---|---|---|
+| 2.1 | Función de escrituras (512 MB, timeout 900 s, concurrencia reservada 20) con `TX_RECEIPT_TIMEOUT_SECS` por debajo del timeout (p. ej. 840 s), para devolver `SettlementUnconfirmed` y no un corte (§3). Requiere 0.1-0.5 en `dynamo` desde hace ≥ 7 días. | — | Invoke directo en testnet por familia. | No recibe tráfico. | M |
+| 2.2 | Regla `writes` (`latency-split.tf:111-125`) a tres target groups: `main` 0, `writes` (Fargate) 95, `writes-lambda` 5. Como Fargate y Lambda usan **el mismo** asignador de 0.1, firmar desde los dos a la vez es seguro, y no hace falta rutear por familia (el ALB tampoco puede: la red viaja en el cuerpo). | **5 % → 50 % → 100 %, 14 días cada uno:** éxito de settles por familia ≥ Fargate; p99 < 15 s (umbral de `latency_writes_p99`); 0 errores de nonce; DLQ de ERC-8004 vacía. | Las alarmas de `latency_writes_p99` y del stuck monitor, ahora como worker. | Pesos `writes` Fargate 100; no hay nonces que reconciliar porque el asignador es compartido. | M |
+| 2.3 | Worker `src/bin/worker.rs` con un evento por loop (§10.3). Schedules en `terraform/environments/production/lambda-facilitator-jobs.tf`. Cada job toma un lease DynamoDB, para que el owner de Fargate y el worker no corran el mismo loop a la vez. El stuck monitor guarda su "cabeza vista" en DynamoDB, porque necesita 10 min de historia (`src/stuck_tx_monitor.rs:47-50`). | 7 días con los loops en Lambda y el owner de Fargate apagado por variable: catálogo actualizado cada hora, overlays de health al día, alarmas de stuck tx vivas (inyectar un caso en testnet). | Un test por job con su evento y un apply en canary. | Encender de nuevo el owner de Fargate (variable) y apagar los schedules. | L |
+| 2.4 | `/mcp` del riel Fargate al de escrituras Lambda por peso, como en 2.2. | Igual que 2.2. | Smoke test de MCP. | Pesos atrás. | S |
+
+### Fase 3: apagar Fargate, listo para volver (S)
+
+| # | Tarea | Criterio de salida | Cómo se prueba | Rollback | Talla |
+|---|---|---|---|---|---|
+| 3.1 | Decidir `/events` (pregunta abierta): Function URL con response streaming en un subdominio, o quitar `/events/live` de `static/bazaar.html:117` y `static/dx402.html:160`. | Ninguna página enlaza a algo que no responde. | Smoke test. | — | S |
+| 3.2 | `min_capacity = 0` y `desired_count` 0 por CLI (`production.auto.tfvars:72-74`; `desired_count` tiene `ignore_changes`). Los target groups `main` y `writes` quedan registrados con peso 0. La task definition sigue al día en cada release (CI) y la imagen se conserva en ECR (anclas de `scripts/ecr_rollback_anchors.py`, B15 de #115). | 30 días con Fargate en 0 sin rollback; Cost Explorer: Fargate 0. | Simulacro de vuelta (abajo) en una ventana. | **Runbook de vuelta:** `min_capacity = 2`, apply, esperar `HealthyHostCount = 2`, pesos a Fargate 100. Tiempo ~5-10 min **[HIPÓTESIS]**; medirlo en el simulacro. | S |
+| 3.3 | Endpoint de Secrets Manager (7,30 USD): quitarlo solo si Fargate sigue en 0 a los 30 días. Para volver, las tareas en subred pública (B5) llegan al endpoint público de Secrets Manager. Verificar antes que `private_dns_enabled` (`main.tf:376`) no deje un nombre colgado. | Fargate arranca sin el endpoint en el simulacro. | Simulacro. | Re-crear el endpoint (apply). | S |
+
+**Total:** fase 0 L (8 PRs), fase 1 M (5), fase 2 L (4), fase 3 S (3): unos 20 PRs chicos, o 13
+si se agrupan los S. Calendario de 6-10 semanas **[ESTIMADO]**, la mayoría ventanas de
+observación (7 + 7 + 7 días en la fase 1 y 14 × 3 en la fase 2).

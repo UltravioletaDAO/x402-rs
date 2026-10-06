@@ -2452,8 +2452,10 @@ mod tests {
         ];
         let (index, _) = index_of(&listings);
         let mask = |key: &str| index.chains[index.ids[key] as usize];
-        // `base64` is not Base.
+        // `base64` is not Base: not in a description, and not where every
+        // name is read either, a request or a path.
         assert_eq!(mask("https://enc.example/x"), 0);
+        assert_eq!(chain_mask("base64 encode", false), 0);
         // Nor is the network a description says it is paid on.
         assert_eq!(mask("https://px.example/x"), 0);
         // `HyperEVM` is read whole, not as `hyper` and `evm`.
@@ -2513,8 +2515,9 @@ mod tests {
             CHAIN_BITS["base"]
         );
         assert_eq!(chain_mask("linea rpc", false), CHAIN_BITS["linea"]);
-        // `línea` in a listing's description is a word.
+        // `línea` in a listing's description is a word, in a phrase or not.
         assert_eq!(chain_mask("Datos de mercado en línea", true), 0);
+        assert_eq!(chain_mask("Línea de crédito para comercios", true), 0);
         // A request in Spanish is answered by a listing that names chains.
         let listings = vec![listing(
             "https://prices.example/x",

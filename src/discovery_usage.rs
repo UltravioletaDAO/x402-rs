@@ -216,6 +216,17 @@ impl UsageSnapshot {
     }
 }
 
+/// How far a read of `records` reached: `now_ms`, or for a read the store cut
+/// at `cap` records (it answers oldest first), the newest one it returned --
+/// the rest is still to read, and the next read goes on from there.
+fn read_up_to(records: &[TransactionRecord], cap: usize, now_ms: u64) -> u64 {
+    if records.len() >= cap {
+        records.iter().map(|r| r.ts).max().unwrap_or(now_ms)
+    } else {
+        now_ms
+    }
+}
+
 /// One payment option of a listing, as a settlement is matched against it.
 struct Price {
     network: Network,
@@ -319,13 +330,9 @@ impl UsageTracker {
         let Some(records) = store.settles_since(since).await? else {
             return Ok(None);
         };
-        // A read cut at the cap stopped at its newest record: the next one
-        // goes on from there, not from now.
-        let cut = (records.len() >= MAX_WINDOW_SETTLEMENTS)
-            .then(|| records.iter().map(|r| r.ts).max())
-            .flatten();
+        let read_at = read_up_to(&records, MAX_WINDOW_SETTLEMENTS, now_ms);
         let added = Self::ingest(&mut window, records, start);
-        window.read_at = Some(cut.unwrap_or(now_ms));
+        window.read_at = Some(read_at);
         let snapshot = Self::count(&window, now_ms);
         drop(window);
         *self
@@ -800,6 +807,17 @@ mod tests {
         assert_eq!((u.calls_30d, u.unique_payers_30d), (4, 4));
         // A read that finds only what it already holds adds nothing.
         assert_eq!(tracker.refresh(&s, NOW + 310_000).await.unwrap(), Some(0));
+    }
+
+    #[test]
+    fn a_read_cut_at_the_cap_goes_on_from_its_newest_record() {
+        let read = [
+            settle(NOW - 9_000, "https://a.example/x", "0x1", "0xa"),
+            settle(NOW - 5_000, "https://a.example/x", "0x2", "0xb"),
+        ];
+        assert_eq!(read_up_to(&read, 2, NOW), NOW - 5_000);
+        assert_eq!(read_up_to(&read, 3, NOW), NOW);
+        assert_eq!(read_up_to(&[], 3, NOW), NOW);
     }
 
     #[tokio::test]

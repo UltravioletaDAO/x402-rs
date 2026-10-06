@@ -19,9 +19,19 @@
   corregido «el drift gate lo lista» (hoy el gate muere sin listar: ver «Rojos de base»);
   paso e con el orden merge → `plan -out` desde `main` y las filas esperadas. La guarda
   mecánica del NAT (punto 2 del refutador) queda para el PR del paso e.
+- **Ronda R3 (COSTO-X402-R3) hecha: el drift gate lista en vez de morir.** `row()` del
+  step `Report changes the deploy will never apply` (`.github/workflows/ci.yaml`) ya no
+  falla con un recurso borrado (fila `delete` con «(removed from the configuration)» y
+  «(whole resource)»); las anotaciones `Unapplied infrastructure` y la lista
+  `Drift the pipeline will never apply:` salen ANTES del summary; el gate sigue en rojo
+  (`exit 1`) si `uncovered.addrs` no está vacío. En el step `Plan`, `|| code=$?` en el plan
+  completo. Tests: `tests/scripts/test_drift_gate_report.py` (ver «R3: drift gate»).
 - **No hecho, a propósito:** B18 (ver abajo). Ningún `terraform apply`, deploy ni merge.
   Apagar el NAT NO es parte de este PR: es el paso e de abajo, en un PR aparte.
-- **Falta:** nada en este PR. c0der decide el merge.
+- **Falta:** el run del CI de este push: el gate va a seguir ROJO por diseño (lote A y
+  endpoints gateway quedan fuera del deploy) y ahora tiene que imprimir la lista. Leerla en
+  el log del job `Terraform plan (drift gate)` y compararla con las filas esperadas del
+  paso e. c0der decide el merge.
 - **Próximo paso para c0der:** «Orden de aplicación», paso a.
 
 ## Refutaciones del encargo
@@ -66,10 +76,9 @@ El deploy de `main` aplica con `-target` (lista en `.github/workflows/ci.yaml`),
   (B8, step `Deploy observability`).
 
 Lo demás NO lo aplica el deploy: endpoints gateway con la tabla pública (B5), dashboards,
-alarma y 4 repos ECR (lote A). **El drift gate NO los lista hoy:** el step `Report changes
-the deploy will never apply` muere en la primera fila de un recurso que ya no está
-declarado en ningún `.tf` (lote A), antes de las anotaciones `Unapplied infrastructure`
-(ver «Rojos de base»). Para la lista, leer el plan a mano:
+alarma y 4 repos ECR (lote A). **El drift gate los lista desde R3** (antes moría en la
+primera fila de un recurso borrado; ver «Rojos de base») y sale rojo con ellos: es el rojo
+esperado de este PR. Para leer el plan a mano:
 
 ```
 terraform plan -input=false -lock=false -out=full.tfplan
@@ -158,9 +167,8 @@ devuelve `protected: false` y `required_status_checks.contexts: []`; `GET
 /repos/.../rules/branches/main` devuelve `[]` (ningún ruleset). El check
 `Terraform plan (drift gate)` no es requerido para mergear. Con b aplicado y el NAT en
 `true`, lo único que el plan completo debería mostrar fuera del deploy es lote A (que
-también se puede aplicar antes), pero el gate hoy no lo lista: va rojo sin anotaciones
-(ver «Rojos de base»). La lista sale del plan leído a mano (comando en «Alcance del
-deploy»).
+también se puede aplicar antes); desde R3 el gate lo lista en las anotaciones y en
+`Drift the pipeline will never apply:` (antes iba rojo sin anotaciones).
 
 ## Rojos de base
 
@@ -176,7 +184,62 @@ deploy»).
   gate)`): el step termina en `Process completed with exit code 1.` sin ninguna línea de
   salida (que muera justo en `row()` es inferido: el log no dice la línea). El bug está en
   `main` y no lo introduce este PR (que no toca `.github/workflows/`); lo destapa lote A, el primer borrado de
-  recursos. c0der: abrirle fila (arreglo probable: `|| true` en esa asignación).
-- Observado en el mismo run, sin diagnosticar: el step anterior imprime `Full plan exit
-  code: 0`, aunque este PR borra recursos que el plan completo debería mostrar (con
-  `-detailed-exitcode`, cambios = 2).
+  recursos. **Arreglado en este PR en R3** (c0der decidió el arreglo dentro de #115): ver
+  «R3: drift gate».
+- Observado en el mismo run: el step anterior imprime `Full plan exit code: 0`, aunque
+  este PR borra recursos (con `-detailed-exitcode`, cambios = 2). **Diagnosticado en R3:**
+  `hashicorp/setup-terraform@v3` instala un wrapper (`terraform_wrapper` por defecto) que
+  devuelve 0 cuando terraform sale 2 (`wrapper/terraform.js`: `if (exitCode === 0 ||
+  exitCode === 2) return;`). No es un bug del gate (el step `Report` no usa `code`), pero
+  el `code=$?` pelado dependía de ese wrapper: sin él, `bash -e` cortaba el step en 2 y en
+  1 antes de imprimir el log. R3 lo deja en `|| code=$?`.
+
+## R3: drift gate
+
+**Bug** (en `main`): en `row()`, `file=$(grep -lE ... ./*.tf | head -1 | sed ...)` bajo
+`set -o pipefail` y el `bash -e` del runner. Un recurso borrado del `.tf` (lote A) no
+matchea, `grep` sale 1 y el step muere en esa fila, antes de las anotaciones y la lista.
+
+**Cambio** (`.github/workflows/ci.yaml`, job `plan`):
+- `row()`: `grep ... || true`, primera línea con `read` (sin `head`/`sed` en tubería),
+  acción con `action_of()` (`first // "?"`, no muere sin fila); sin `.tf`: «(removed from
+  the configuration)» si la acción tiene `delete`, `?` si no; `delete` puro: atributos
+  «(whole resource)»; el `jq` de atributos con `|| attrs="?"`.
+- Anotaciones `::error title=Unapplied infrastructure::<addr> (<acción>)` y la lista
+  `<acción> <addr>` ANTES de armar el summary: si algo del summary fallara, el rojo ya dijo
+  sobre qué es.
+- El `exit 1` con `uncovered.addrs` no vacío queda igual (decisión REF-X402-115).
+- Step `Plan`: `code=0; terraform plan ... || code=$?`.
+
+**Tests** (`tests/scripts/test_drift_gate_report.py`, 12): ejecutan el texto de los dos
+steps tal cual está en `ci.yaml`, con `bash -e`, un `terraform` falso que imprime planes de
+fixture y `jq`/`grep`/`comm` reales. Sin AWS ni Terraform. Un test compara la extracción por
+texto con la de PyYAML y fija que el step no declara `shell:`.
+
+**Bordes revisados:** recurso borrado sin `.tf` (fuera y dentro del alcance del deploy);
+`count = 0` (`aws_nat_gateway.main[0]`: la dirección con índice sigue declarada en
+`main.tf`); replace `delete+create` (lista atributos, no «whole resource»); `update` de un
+recurso sin `.tf` (`?`); solo borrados (sigue rojo); plan limpio con `no-op`/`read`
+(verde, `**Clean.**`); plan completo con 0, 2 y 1 (el 1 imprime el log). Que las
+direcciones de fixture no estén entre los `-target` del deploy (test propio). Sin
+mayúsculas, espacios ni rutas: las direcciones las arma Terraform.
+
+**Mutaciones** (a mano, revertidas con `git checkout --`, árbol limpio):
+
+| # | Mutación | Cae |
+|---|---|---|
+| M0 | `ci.yaml` de antes de R3 entero (la versión que crashea) | 7 tests, entre ellos `test_a_destroyed_resource_is_a_row_not_a_crash` |
+| M1 | `file=$(grep ... \| head -1 \| sed ...)` de `main` en `row()` | `test_a_destroyed_resource_is_a_row_not_a_crash`, `test_only_destroys_still_go_red`, `test_a_destroy_inside_the_deploys_reach_is_a_pending_row`, `test_an_undeclared_change_that_is_not_a_destroy_says_unknown` |
+| M2 | sin `\|\| true` en el `grep` | los mismos 4 |
+| M3 | ablandar: sin `exit 1` | 5 tests (`test_only_destroys_still_go_red`, ...) |
+| M4 | borrado sin `.tf` → `?` | 3 tests |
+| M5 | `terraform plan` pelado + `code=$?` | `test_a_full_plan_with_changes_does_not_end_the_step`, `test_a_broken_full_plan_prints_its_log` |
+| M6 | anotación sin acción | `test_a_destroyed_resource_is_a_row_not_a_crash` |
+| M7 | lista con `cat uncovered.addrs` | 2 tests |
+| M8 | sin la rama «(whole resource)» | 3 tests |
+| M9 | anotaciones solo después del summary (orden de `main`) | 2 tests |
+
+**Lista exacta que imprime el gate en rojo:** no medida acá (el `plan` necesita
+credenciales AWS y no se usan). La imprime el job `Terraform plan (drift gate)` del run de
+este push. Esperada por el diff (inferido, no medido): los 7 borrados de lote A y el update
+de `route_table_ids` de `aws_vpc_endpoint.dynamodb` y `aws_vpc_endpoint.s3`.

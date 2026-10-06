@@ -1,5 +1,31 @@
 # Changelog
 
+## [2.49.0] - 2026-10-06
+
+### Changed
+
+- **Zama `fhe-transfer` is switched off, and switchable** (decision 171).
+  `ENABLE_ZAMA` (Terraform `enable_zama`, default `false` in production and in
+  `production.auto.tfvars`) decides whether this facilitator offers the scheme;
+  only `true` or `1` turn it on, anything else is off. Off: `fhe-transfer` is
+  gone from `/supported` (and with it from `/networks.json`, `/accepts` and the
+  MCP `x402_supported` tool); `POST /verify` and `/settle` answer such a
+  payment `400` with `invalidReason`/`errorReason` `unsupported_scheme` and
+  never call the FHE Lambda; `/discovery` marks an `fhe-transfer` offer
+  `settleable: false` with the new reason `scheme-not-served`; and the landing
+  card, `/networks`, `/x402`, `/bazaar`, `/docs`, the MCP tool schemas,
+  `llms.txt`, `llms-full.txt`, `index.md`, `skill.md` and `.well-known/x402`
+  stop naming it (`src/zama.rs`, one table of cuts applied when served; the
+  skills index re-stamps the digest of the `skill.md` it serves). On, every
+  one of those is byte for byte what it was. The proxy code stays.
+- **The Zama stack is one switch** (`terraform/environments/zama-testnet`,
+  `enable_zama`, default `false`): every resource and data source is counted,
+  `moved.tf` keeps the existing addresses, the artifacts bucket gains
+  `force_destroy` and the RPC secret is deleted without a recovery window, so
+  `false` leaves the state empty and `true` rebuilds it. Order: deploy the
+  facilitator off first, then destroy the stack; the README's "On/off" has the
+  one-time apply that has to come before the destroy and the way back.
+
 ## [2.48.0] - 2026-10-04
 
 ### Changed

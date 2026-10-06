@@ -10,6 +10,91 @@ This directory contains Terraform configuration for the **x402-zama FHE Payment 
 - **Domain**: `zama-facilitator.ultravioletadao.xyz`
 - **Cost Estimate**: ~$15/month
 
+## On/off (`enable_zama`)
+
+**Status: OFF** (decision 171, 2026-10-06). The scheme only ever drew
+vulnerability scanners, so it is switched off but not deleted: the proxy code
+stays in `src/fhe_proxy.rs` and this stack stays in the repository.
+
+There are two switches with the same name, in two separate Terraform states,
+and the order between them is the whole point:
+
+| Switch | Lives in | Off means |
+|---|---|---|
+| `enable_zama` (facilitator) | `terraform/environments/production/production.auto.tfvars` -> `ENABLE_ZAMA` in the ECS task (`src/zama.rs`) | `fhe-transfer` is gone from `/supported`, `/networks.json`, `/accepts`, the landing, `/networks`, `/x402`, `/bazaar`, `/docs`, the MCP tool schemas and the agent documents; `/discovery` marks such offers `settleable: false` (`scheme-not-served`); `POST /verify` and `/settle` answer `400 unsupported_scheme` without calling the Lambda |
+| `enable_zama` (this stack) | `variables.tf` here (default `false`) | every resource in this state is destroyed: Lambda, provisioned concurrency, API Gateway, custom domain, certificate + validation records, DNS record, artifacts bucket, RPC secret, IAM role, log groups, alarms, budget |
+
+Both default to `false`. On, both are exactly what they were before the switch existed.
+
+### Turning it off
+
+The advertisement goes first, the backend second: the other way round leaves
+`/supported` offering a scheme whose Lambda is gone.
+
+1. **Facilitator.** Merge the change that sets `enable_zama = false` in
+   production; CI deploys it. Check it is live before touching this stack:
+   `/supported` must list no `fhe-transfer` kind.
+2. **One apply with the stack still on.** Terraform destroys with the
+   arguments stored in the STATE, not the ones in the config, so the bucket's
+   `force_destroy` and the secret's `recovery_window_in_days = 0` have to reach
+   the state before the destroy can use them:
+
+   ```bash
+   cd terraform/environments/zama-testnet
+   terraform init
+   terraform apply -var enable_zama=true
+   ```
+
+   Expected plan: 24 `has moved to ...[0]` lines (`moved.tf`), the bucket and
+   the secret updated in place, **0 to destroy**. If it wants to ADD
+   something, the state was already missing it (the provisioned-concurrency
+   config is the likely one) -- read it before approving. It must never
+   destroy anything at this step.
+3. **Optional: keep the Lambda package**, so turning it back on needs no
+   rebuild: copy `handler.zip` out of the bucket `terraform output s3_bucket`
+   names. The destroy deletes every version of it.
+4. **Destroy:**
+
+   ```bash
+   terraform apply   # enable_zama defaults to false
+   ```
+
+   Expected plan: 0 to add, 0 to change, everything in this state to destroy.
+   Afterwards `terraform state list` prints nothing and
+   `zama-facilitator.ultravioletadao.xyz` stops resolving. The RPC secret is
+   deleted at once, value included (it is a third-party testnet RPC URL; revoke
+   the key at its provider if it should not outlive the stack).
+
+If step 2 was skipped, the destroy stops at `BucketNotEmpty` and the secret is
+only *scheduled* for deletion (30 days). Empty the bucket (all versions) and
+apply again; turning the stack back on inside those 30 days then needs
+`aws secretsmanager restore-secret --secret-id zama-facilitator-sepolia-rpc`
+followed by `terraform import 'aws_secretsmanager_secret.sepolia_rpc[0]' <arn>`.
+
+### Turning it back on
+
+Reverse order: the backend first, the advertisement last.
+
+1. Set `default = true` for `enable_zama` in `variables.tf` here (or pass it
+   on every run -- with the default at `false`, a later plain `apply`
+   destroys the stack again).
+2. The Lambda reads its code from the artifacts bucket, so the bucket and the
+   package come first:
+
+   ```bash
+   terraform apply -target='aws_s3_bucket.lambda_artifacts[0]'
+   aws s3 cp handler.zip s3://<bucket>/handler.zip   # bucket: terraform output s3_bucket
+   terraform apply
+   ```
+
+3. Put the Sepolia RPC URL in the secret (`terraform output
+   deployment_instructions`, step 3) and check
+   `https://zama-facilitator.ultravioletadao.xyz/health`.
+4. **Facilitator last:** `enable_zama = true` in
+   `terraform/environments/production/production.auto.tfvars`; CI deploys it,
+   `/supported` lists `fhe-transfer` on `ethereum-sepolia` again and the
+   landing card comes back.
+
 ## Architecture Components
 
 ```

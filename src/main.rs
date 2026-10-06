@@ -108,6 +108,7 @@ mod types_v2;
 mod upto;
 mod version;
 mod writer_lease;
+mod zama;
 
 use discovery::DiscoveryRegistry;
 #[allow(unused_imports)]
@@ -214,6 +215,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     if payment_operator::is_enabled() {
         payment_operator::autoverify::spawn(Arc::clone(&provider_cache));
     }
+
+    // Which way the Zama fhe-transfer switch is (ENABLE_ZAMA, default off).
+    zama::log_startup_state();
 
     let facilitator =
         FacilitatorLocal::new(Arc::clone(&provider_cache), Arc::clone(&compliance_checker));

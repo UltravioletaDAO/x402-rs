@@ -2537,9 +2537,11 @@ own price is fresh and a stored record cannot keep claiming a freshness nobody r
   is never published as `"0"`. An `"0"` you do see was declared as zero by the source.
 - `settleable` (bool) and `unsupportedReason` say whether **this facilitator** can settle the
   option, which is a narrower question than whether the offer is real. `false` with
-  `unknown-scheme`, `network-not-served` or `upto-proxy-not-deployed` still describes a
-  genuine listing that some other facilitator may serve. `network-not-served` means the
-  network is not in this facilitator's `/supported`, even when its name is a known chain.
+  `unknown-scheme`, `network-not-served`, `upto-proxy-not-deployed` or `scheme-not-served`
+  still describes a genuine listing that some other facilitator may serve. `network-not-served`
+  means the network is not in this facilitator's `/supported`, even when its name is a known
+  chain; `scheme-not-served` means this build implements the scheme but this deployment has
+  it switched off, so it is not in `/supported` either.
 - `assetSymbol` and `assetDecimals` are resolved per **deployment**, and are absent when the
   asset is not one we have registered -- absent means unknown, which is not the same as six
   decimals and a dollar sign. USDC is 6 decimals on Base, 18 on BSC and 7 on Stellar.
@@ -3720,6 +3722,7 @@ pub fn swagger_routes() -> Router {
     let mut api_doc = ApiDoc::openapi();
     api_doc.info.version = crate::version::facilitator_version().to_string();
     crate::receipts::document_api(&mut api_doc);
+    gate_zama_prose(&mut api_doc);
 
     // `/openapi.json` is an ALIAS for the document Swagger UI already serves at
     // `/api-docs/openapi.json`. Two reasons it exists, and neither is cosmetic:
@@ -3767,6 +3770,42 @@ pub fn swagger_routes() -> Router {
             }),
         )
         .merge(SwaggerUi::new("/docs").url("/api-docs/openapi.json", api_doc))
+}
+
+/// While `ENABLE_ZAMA` is off, take `fhe-transfer` out of the prose of every
+/// operation -- the `/supported` scheme list, the `/settle` failure notes, the
+/// `/discovery` scheme vocabulary -- through the same cuts as every other
+/// surface ([`crate::zama::text`]). On, the document is left exactly as built.
+fn gate_zama_prose(doc: &mut utoipa::openapi::OpenApi) {
+    if crate::zama::is_enabled() {
+        return;
+    }
+    for item in doc.paths.paths.values_mut() {
+        let operations = [
+            &mut item.get,
+            &mut item.put,
+            &mut item.post,
+            &mut item.delete,
+            &mut item.options,
+            &mut item.head,
+            &mut item.patch,
+            &mut item.trace,
+        ];
+        for operation in operations.into_iter().flatten() {
+            for prose in [&mut operation.summary, &mut operation.description]
+                .into_iter()
+                .flatten()
+            {
+                let gated = match crate::zama::text(prose) {
+                    std::borrow::Cow::Owned(gated) => Some(gated),
+                    std::borrow::Cow::Borrowed(_) => None,
+                };
+                if let Some(gated) = gated {
+                    *prose = gated;
+                }
+            }
+        }
+    }
 }
 
 /// Pull the first fenced ```json block that follows `heading` out of a Markdown
@@ -4272,5 +4311,62 @@ mod tests {
             .expect("the submit example is an EVM network")
             .chain_id;
         assert_eq!(example["authorization"]["chainId"], chain_id);
+    }
+
+    /// `/docs` names `fhe-transfer` only while ENABLE_ZAMA is on
+    /// ([`crate::zama`]): the `/supported` scheme list, the `/settle` failure
+    /// notes and the `/discovery` scheme vocabulary. Off is the default, and
+    /// off nothing in the served spec names the scheme or Zama.
+    #[test]
+    fn the_spec_names_fhe_transfer_only_while_zama_is_on() {
+        use axum::body::Body;
+        use axum::http::Request;
+        use tower::ServiceExt;
+
+        let served = |flag| {
+            crate::zama::with_flag(flag, || {
+                tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .unwrap()
+                    .block_on(async {
+                        let response = swagger_routes()
+                            .oneshot(
+                                Request::builder()
+                                    .uri("/openapi.json")
+                                    .body(Body::empty())
+                                    .unwrap(),
+                            )
+                            .await
+                            .unwrap();
+                        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+                            .await
+                            .unwrap();
+                        let doc: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+                        doc.to_string()
+                    })
+            })
+        };
+
+        let off = served(None).to_ascii_lowercase();
+        for name in ["fhe-transfer", "fhe_transfer", "zama"] {
+            assert!(
+                !off.contains(name),
+                "the spec names {name} with ENABLE_ZAMA off"
+            );
+        }
+        assert!(
+            off.contains("scheme-not-served"),
+            "the discovery reason is documented"
+        );
+
+        let on = served(Some("true"));
+        for passage in [
+            "- `fhe_transfer` - FHE encrypted transfer via Zama",
+            "`fhe-transfer` settles on the FHE facilitator's side",
+            "`exact | upto | escrow | commerce | fhe-transfer`",
+        ] {
+            assert!(on.contains(passage), "on, the spec lost {passage:?}");
+        }
     }
 }

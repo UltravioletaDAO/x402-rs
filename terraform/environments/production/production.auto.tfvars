@@ -114,6 +114,11 @@ ecr_repository_name = "facilitator"
 # Observability stack (Grafana + Prometheus + Tempo) -- off is $0/month
 enable_observability = false
 
+# Zama fhe-transfer: off (decision 171, 2026-10-06). Deploy this BEFORE
+# destroying terraform/environments/zama-testnet, and turn it back on only
+# AFTER that stack is up again -- see its README.md, "On/off".
+enable_zama = false
+
 # Arc: real v1/v2 canaries and replay checks passed on both networks, 2026-09-16.
 arc_testnet_enabled = true
 arc_mainnet_enabled = true

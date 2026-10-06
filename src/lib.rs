@@ -68,6 +68,7 @@ pub mod types_v2;
 pub mod upto;
 pub mod version;
 pub mod writer_lease;
+pub mod zama;
 
 // Hidden re-exports just for macro expansion.
 #[doc(hidden)]

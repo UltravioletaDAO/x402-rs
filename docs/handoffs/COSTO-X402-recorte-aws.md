@@ -144,8 +144,9 @@ el deploy).
    `-target`).
 
 **NO revertir el PR #115 con git revert después de e sin hacer antes (1) y (2).** Un
-revert pone las dos variables a la vez, el deploy mueve las tareas a las subredes privadas
-y no crea el NAT: **un PR que cambia los dos valores juntos deja las tareas sin salida.**
+revert vuelve a la configuración de `main` de una sola vez (tareas en las subredes
+privadas, NAT sin flag): el deploy mueve las tareas, que está en su `-target`, y no crea el
+NAT, que no lo está: **un PR que cambia los dos valores juntos deja las tareas sin salida.**
 
 El resto de los rollbacks: ver la tabla del PR (todos por tfvars salvo B7, que es revertir
 el commit y redeployar la Lambda).
@@ -171,10 +172,10 @@ deploy»).
   title=Unapplied infrastructure::`, sin `Drift the pipeline will never apply:` y con la
   tabla del summary cortada. Reproducido local con un `row()` mínimo bajo `bash -e`
   (sale 1 en la primera dirección sin `.tf`; la fila siguiente y el resto del step no se
-  escriben). Coherente con el run del head `e3ba941e` (job `Terraform plan (drift gate)`): el step termina
-  en `Process completed with exit code 1.` sin ninguna línea de salida (que muera
-  justo en `row()` es inferido: el log no dice la línea). El bug está en `main` y no lo introduce
-  este PR (que no toca `.github/workflows/`); lo destapa lote A, el primer borrado de
+  escriben). Coherente con el run del head `e3ba941e` (job `Terraform plan (drift
+  gate)`): el step termina en `Process completed with exit code 1.` sin ninguna línea de
+  salida (que muera justo en `row()` es inferido: el log no dice la línea). El bug está en
+  `main` y no lo introduce este PR (que no toca `.github/workflows/`); lo destapa lote A, el primer borrado de
   recursos. c0der: abrirle fila (arreglo probable: `|| true` en esa asignación).
 - Observado en el mismo run, sin diagnosticar: el step anterior imprime `Full plan exit
   code: 0`, aunque este PR borra recursos que el plan completo debería mostrar (con

@@ -109,8 +109,8 @@ quicknode_secret_name = "facilitator-quicknode-base-rpc"
 escrow_lifecycle_auth = "log"
 
 # CloudWatch
-log_retention_days        = 30   # 7 lost the 2026-08-10 incident to expiry
-enable_container_insights = true # this IS what the cluster runs -- verified with --include SETTINGS
+log_retention_days        = 30    # 7 lost the 2026-08-10 incident to expiry
+enable_container_insights = false # COSTO-X402 B8; no-running-tasks alarm moved to ALB HealthyHostCount
 
 # Container registry
 ecr_repository_name = "facilitator"

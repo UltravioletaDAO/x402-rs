@@ -249,9 +249,14 @@ variable "enable_container_insights" {
     docs/COST_RIGHTSIZING_HANDOFF_2026-08-07.md still recommends turning this off
     deliberately (~$10-15/mo) -- that recommendation was never wrong, only the claim that it
     had already happened.
+
+    2026-10-06 (COSTO-X402, B8): turned off on purpose. The one alarm that read
+    ECS/ContainerInsights (facilitator-production-no-running-tasks) now reads the ALB's
+    HealthyHostCount instead (alerts-imported.tf); tests/scripts/test_ci_cost_defaults.py
+    fails if any alarm reads that namespace while this default is false.
   EOT
   type    = bool
-  default = true
+  default = false
 }
 
 variable "ecr_repository_name" {

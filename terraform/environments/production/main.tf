@@ -73,7 +73,9 @@ resource "aws_subnet" "private" {
 #   single_nat_gateway = false  -> one NAT per AZ (multi-AZ resilience, ~$32/mo per extra NAT)
 #   enable_nat_gateway = false  -> no NAT and no EIP at all (COSTO-X402 B5). Only valid while
 #                                  ecs_tasks_in_public_subnets = true: the tasks then reach the
-#                                  internet through the IGW with their own public IP.
+#                                  internet through the IGW with their own public IP. Never in
+#                                  the same apply that moves the tasks: nothing orders the NAT
+#                                  destroy after the service's rolling deployment.
 # The private route tables and subnets stay either way: the Secrets Manager endpoint ENI
 # lives in a private subnet and the gateway endpoints attach to these tables, so turning the
 # NAT back on is `enable_nat_gateway = true` in one apply, nothing else to recreate.

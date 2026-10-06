@@ -55,10 +55,14 @@ variable "single_nat_gateway" {
 # defaults (terraform.tfvars is gitignored), and aws_ecs_service.facilitator is in its
 # -target list, so ecs_tasks_in_public_subnets reaches AWS on the merge's deploy. The NAT
 # itself is outside every -target list: only a hand apply destroys or recreates it.
+# The NAT stays on in the change that moves the tasks (REF-X402-115 P2-1): the guard below
+# reads variables, not where the tasks run, and no graph edge orders the NAT destroy after
+# the service's rolling deployment. It goes off in its own change once every task is
+# verified in a public subnet.
 variable "enable_nat_gateway" {
-  description = "Create the NAT gateway(s) and their EIPs. false since COSTO-X402 B5 (~$31/mo): the facilitator tasks egress through the IGW from the public subnets. Rollback: true here and in production.auto.tfvars, one apply."
+  description = "Create the NAT gateway(s) and their EIPs. false saves ~$31/mo (COSTO-X402 B5) once the facilitator tasks egress through the IGW from the public subnets. Turn it off only in its own apply, after verifying no task runs in a private subnet. Rollback after that: true FIRST (one apply, NAT healthy), then ecs_tasks_in_public_subnets = false in a second apply."
   type        = bool
-  default     = false
+  default     = true
 }
 
 variable "ecs_tasks_in_public_subnets" {

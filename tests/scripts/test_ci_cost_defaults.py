@@ -84,6 +84,42 @@ class CostDefaultsTest(unittest.TestCase):
         for name in ("dynamodb", "s3"):
             self.assertIn("aws_route_table.public.id", block(main, f'resource "aws_vpc_endpoint" "{name}"'), name)
 
+    def test_nat_stays_on_in_the_change_that_moves_the_tasks(self):
+        # REF-X402-115 P2-1: the service precondition reads variables, not where the tasks
+        # run, and no graph edge orders the NAT destroy after the rolling deployment. The
+        # NAT goes off in its own change, after every task is verified in a public subnet;
+        # that change flips this assertion together with the two values.
+        d, t = defaults(), tfvars()
+        if "enable_nat_gateway" not in d:
+            self.skipTest("B5 not in this tree")
+        self.assertEqual(d["enable_nat_gateway"], "true", "variables.tf default")
+        self.assertEqual(t.get("enable_nat_gateway"), "true", "production.auto.tfvars")
+
+    def test_writer_lease_egress_is_by_security_group(self):
+        # The tasks now sit in the public subnets: a CIDR of the private subnets here would
+        # drop the forward between peers on the way out.
+        sg = block((TF / "main.tf").read_text(encoding="utf-8"), 'resource "aws_security_group" "ecs_tasks"')
+        egress = [r for r in re.findall(r"^  egress \{(.*?)^  \}", sg, re.S | re.M)
+                  if re.search(r"from_port\s*=\s*8080\n", r)]
+        self.assertEqual(len(egress), 1)
+        self.assertRegex(egress[0], r"to_port\s*=\s*8080\n")
+        self.assertRegex(egress[0], r'protocol\s*=\s*"tcp"\n')
+        self.assertRegex(egress[0], r"self\s*=\s*true\n")
+        self.assertNotIn("cidr_blocks", egress[0])
+
+    def test_secrets_manager_endpoint_resolves_privately(self):
+        # Private DNS is what sends the tasks' secretsmanager calls to the endpoint ENI from
+        # any subnet; the endpoint SG admits by the tasks' SG, not by a private-subnet CIDR.
+        main = (TF / "main.tf").read_text(encoding="utf-8")
+        endpoint = block(main, 'resource "aws_vpc_endpoint" "secretsmanager"')
+        self.assertRegex(endpoint, r"private_dns_enabled\s*=\s*true\n")
+        self.assertRegex(endpoint, r"security_group_ids\s*=\s*\[aws_security_group\.vpc_endpoints\.id\]\n")
+        sg = block(main, 'resource "aws_security_group" "vpc_endpoints"')
+        ingress = re.findall(r"^  ingress \{(.*?)^  \}", sg, re.S | re.M)
+        self.assertEqual(len(ingress), 1)
+        self.assertRegex(ingress[0], r"security_groups\s*=\s*\[aws_security_group\.ecs_tasks\.id\]\n")
+        self.assertNotIn("cidr_blocks", ingress[0])
+
     def test_tasks_take_no_inbound_from_the_internet(self):
         main = (TF / "main.tf").read_text(encoding="utf-8")
         sg = block(main, 'resource "aws_security_group" "ecs_tasks"')

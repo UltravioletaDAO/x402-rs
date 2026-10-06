@@ -51,6 +51,22 @@ variable "single_nat_gateway" {
   default     = true
 }
 
+# COSTO-X402 B5. Defaults MUST match production.auto.tfvars: CI's deploy applies on the
+# defaults (terraform.tfvars is gitignored), and aws_ecs_service.facilitator is in its
+# -target list, so ecs_tasks_in_public_subnets reaches AWS on the merge's deploy. The NAT
+# itself is outside every -target list: only a hand apply destroys or recreates it.
+variable "enable_nat_gateway" {
+  description = "Create the NAT gateway(s) and their EIPs. false since COSTO-X402 B5 (~$31/mo): the facilitator tasks egress through the IGW from the public subnets. Rollback: true here and in production.auto.tfvars, one apply."
+  type        = bool
+  default     = false
+}
+
+variable "ecs_tasks_in_public_subnets" {
+  description = "Run the facilitator tasks in the public subnets with assign_public_ip = true (COSTO-X402 B5). The outbound address stops being the NAT EIP and becomes each task's own, changing on every task replacement. false puts them back in the private subnets, which needs enable_nat_gateway = true."
+  type        = bool
+  default     = true
+}
+
 variable "task_cpu" {
   description = <<-EOT
     Fargate task CPU units (1024 = 1 vCPU).

@@ -61,6 +61,10 @@ environment = "production"
 vpc_cidr           = "10.1.0.0/16"
 availability_zones = ["us-east-2a", "us-east-2b"]
 single_nat_gateway = true
+# COSTO-X402 B5: no NAT; the tasks egress from the public subnets with their own IP.
+# Rollback: both values flipped, one apply (the NAT and its EIP are recreated).
+enable_nat_gateway          = false
+ecs_tasks_in_public_subnets = true
 
 # ECS task sizing
 task_cpu    = 512  # 0.5 vCPU (COSTO-X402 B3; revert to 1024 if the boot log says workers=1)

@@ -816,6 +816,13 @@ resource "aws_ecs_service" "observability" {
     assign_public_ip = false
   }
 
+  lifecycle {
+    precondition {
+      condition     = var.enable_nat_gateway
+      error_message = "The observability task runs in the private subnets and pulls its images through the NAT: set enable_nat_gateway = true before enable_observability = true."
+    }
+  }
+
   load_balancer {
     target_group_arn = aws_lb_target_group.grafana[0].arn
     container_name   = "grafana"

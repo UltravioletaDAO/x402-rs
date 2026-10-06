@@ -2743,12 +2743,18 @@ mod tests {
         assert!(off.contains("exact | upto | escrow | commerce. GET /supported"));
         assert!(off.contains("Payment scheme: exact, upto, escrow or commerce."));
 
+        // On, each of the three descriptions is back as it was. Five
+        // occurrences in all: x402_verify and x402_settle share the payment
+        // envelope schema, which names it twice, and the x402_supported
+        // output schema names it once.
         let on = listed(Some("true"));
-        assert_eq!(
-            on.matches("fhe-transfer").count(),
-            3,
-            "on: every schema names it"
-        );
-        assert!(on.contains("Payment scheme: exact, upto, escrow, commerce or fhe-transfer."));
+        for description in [
+            "x402 v1 ONLY (in v2 this is accepted.scheme). exact | upto | escrow | commerce | fhe-transfer. GET /supported lists what this facilitator serves.",
+            "exact | upto | escrow | commerce | fhe-transfer. GET /supported lists what this facilitator serves.",
+            "Payment scheme: exact, upto, escrow, commerce or fhe-transfer.",
+        ] {
+            assert!(on.contains(description), "on lost {description:?}");
+        }
+        assert_eq!(on.matches("fhe-transfer").count(), 5);
     }
 }

@@ -46,10 +46,14 @@ The advertisement goes first, the backend second: the other way round leaves
    ```
 
    Expected plan: 24 `has moved to ...[0]` lines (`moved.tf`), the bucket and
-   the secret updated in place, **0 to destroy**. If it wants to ADD
-   something, the state was already missing it (the provisioned-concurrency
-   config is the likely one) -- read it before approving. It must never
-   destroy anything at this step.
+   the secret updated in place, **0 to destroy**. It must never destroy
+   anything at this step. If it wants to ADD something, the state was already
+   missing it. The likely one is
+   `aws_lambda_provisioned_concurrency_config.zama[0]`: its qualifier is the
+   function's `version`, and without `publish = true` that is `$LATEST`, which
+   AWS refuses for provisioned concurrency -- so it probably never existed. In
+   that case add `-var enable_provisioned_concurrency=false` to this command
+   rather than approving a create that will fail.
 3. **Optional: keep the Lambda package**, so turning it back on needs no
    rebuild: copy `handler.zip` out of the bucket `terraform output s3_bucket`
    names. The destroy deletes every version of it.
@@ -84,14 +88,21 @@ Reverse order: the backend first, the advertisement last.
    ```bash
    terraform apply -target='aws_s3_bucket.lambda_artifacts[0]'
    aws s3 cp handler.zip s3://<bucket>/handler.zip   # bucket: terraform output s3_bucket
-   terraform apply
+   terraform apply -var enable_provisioned_concurrency=false
    ```
+
+   (`enable_provisioned_concurrency=false` for the reason in "Turning it off",
+   step 2: on `$LATEST` the config fails to create. Drop the flag once the
+   function publishes a version.)
 
 3. Put the Sepolia RPC URL in the secret (`terraform output
    deployment_instructions`, step 3) and check
    `https://zama-facilitator.ultravioletadao.xyz/health`.
 4. **Facilitator last:** `enable_zama = true` in
-   `terraform/environments/production/production.auto.tfvars`; CI deploys it,
+   `terraform/environments/production/production.auto.tfvars` AND the same
+   value as the `default` of `enable_zama` in that directory's `variables.tf`
+   (`tests/scripts/test_ci_zama_switch.py` holds the two equal, so a run
+   without the tfvars file cannot land on the other value). CI deploys it,
    `/supported` lists `fhe-transfer` on `ethereum-sepolia` again and the
    landing card comes back.
 
@@ -178,7 +189,7 @@ Reverse order: the backend first, the advertisement last.
 ### Prerequisites
 
 1. AWS CLI configured with credentials for account `<AWS_ACCOUNT_ID>`
-2. Terraform >= 1.0 installed
+2. Terraform >= 1.1 installed (the `moved` blocks in `moved.tf` need it)
 3. Route53 hosted zone for `ultravioletadao.xyz` (already exists)
 4. Lambda deployment package (`handler.zip`) ready
 

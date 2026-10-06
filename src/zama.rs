@@ -148,7 +148,9 @@ const CUTS: &[Cut] = &[
     // The MCP tool schemas and the /discovery prose in /docs.
     Cut::Text(" | fhe-transfer", ""),
     Cut::Text(", commerce or fhe-transfer", " or commerce"),
-    // /docs: the /supported scheme list and the /settle failure prose.
+    // /docs: the /supported scheme list, the /settle failure prose, and the
+    // count the /skill.md and /.well-known/x402 entries give.
+    Cut::Text("the five schemes", "the four schemes"),
     Cut::Line("- `fhe_transfer` - FHE encrypted transfer via Zama"),
     Cut::Text(
         " `fhe-transfer` settles on the FHE facilitator's side: its `502` carries\n\
@@ -288,26 +290,32 @@ fn div_span(doc: &str, at: usize) -> Option<(usize, usize)> {
 /// The lines from the selector at `at` through the rule's closing `}`, plus
 /// the blank line that separates it from the next rule.
 fn css_rule_span(doc: &str, at: usize) -> Option<(usize, usize)> {
-    let mut cursor = line_end(doc, at);
-    while cursor < doc.len() {
+    let selector_end = line_end(doc, at);
+    // A rule written on one line closes on its own selector line.
+    let mut close = doc[at..selector_end].contains('}').then_some(selector_end);
+    let mut cursor = selector_end;
+    while close.is_none() && cursor < doc.len() {
         let end = line_end(doc, cursor);
         if doc[cursor..end].trim() == "}" {
-            let after = line_end(doc, end);
-            let end = if end < doc.len() && doc[end..after].trim().is_empty() {
-                after
-            } else {
-                end
-            };
-            return Some((line_start(doc, at), end));
+            close = Some(end);
         }
         cursor = end;
     }
-    None
+    let end = close?;
+    let after = line_end(doc, end);
+    let end = if end < doc.len() && doc[end..after].trim().is_empty() {
+        after
+    } else {
+        end
+    };
+    Some((line_start(doc, at), end))
 }
 
-/// Serialises the tests that set [`ENV_ENABLED`]. Shared by every module that
-/// tests both states, so a parallel `cargo test` cannot read one test's value
-/// in another (CI runs `--test-threads=1`; a laptop may not).
+/// Serialises the tests that SET [`ENV_ENABLED`], across every module that
+/// tests both states. Tests that only read it implicitly (anything serving a
+/// document) assume the default and do not take this lock, so they are only
+/// isolated from these by `--test-threads=1` -- which CI uses and CLAUDE.md
+/// requires.
 #[cfg(test)]
 pub(crate) static TEST_FLAG: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
@@ -406,6 +414,13 @@ mod tests {
         assert!(Cut::Div("<div class=\"network-badge zama\"")
             .apply(doc)
             .is_none());
+    }
+
+    /// A rule on one line ends on that line; it must not eat the next rule.
+    #[test]
+    fn a_one_line_css_rule_is_cut_alone() {
+        let doc = "  .network-badge.zama { x: 1; }\n\n  .b {\n    y: 2;\n  }\n";
+        assert_eq!(redact(doc), "  .b {\n    y: 2;\n  }\n");
     }
 
     #[test]

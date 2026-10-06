@@ -1269,13 +1269,47 @@ fn fhe_gate(operation: Operation) -> Option<Response> {
     (!crate::zama::is_enabled()).then(|| fhe_disabled_refusal(operation))
 }
 
+/// [`fhe_gate`] for an `fhe-transfer` payment, answered before the request is
+/// routed -- and so before it is recorded.
+///
+/// Off, the scheme is one this deployment does not serve, and a request for a
+/// scheme it does not serve (an unknown one fails to deserialize) never reached
+/// `/events` or `/transactions`. The traffic behind decision 171 was scanners
+/// probing exactly this scheme; recording each probe would keep publishing its
+/// name in those feeds. The substring test keeps the common path to one
+/// `contains`; a scheme name spelled with JSON escapes misses it and is still
+/// refused by the same gate inside the alternate-scheme block, recorded as
+/// `scheme_disabled` like a disabled `upto`.
+fn fhe_disabled_refusal_early(body_str: &str, operation: Operation) -> Option<Response> {
+    if !body_str.contains(crate::zama::SCHEME) {
+        return None;
+    }
+    let body: serde_json::Value = serde_json::from_str(body_str).ok()?;
+    (payload_scheme(&body) == Some(crate::zama::SCHEME))
+        .then(|| fhe_gate(operation))
+        .flatten()
+}
+
+/// The scheme a payment names: `paymentPayload.scheme` in x402 v1,
+/// `paymentPayload.accepted.scheme` in v2.
+fn payload_scheme(body: &serde_json::Value) -> Option<&str> {
+    let payload = body.get("paymentPayload")?;
+    payload.get("scheme").and_then(|s| s.as_str()).or_else(|| {
+        payload
+            .get("accepted")
+            .and_then(|a| a.get("scheme"))
+            .and_then(|s| s.as_str())
+    })
+}
+
 /// The answer to an `fhe-transfer` payment while `ENABLE_ZAMA` is off
 /// ([`crate::zama`]).
 ///
 /// A 400 in the shape the call answers with -- `isValid`/`invalidReason` for a
-/// verify, `success`/`errorReason` for a settle -- carrying the x402 reason
-/// token `unsupported_scheme`, so a client that switches on the token needs no
-/// new case. Nothing was sent to the FHE facilitator, so there is no
+/// verify, `success`/`errorReason` for a settle -- carrying `unsupported_scheme`,
+/// the x402 specification's token for a scheme the facilitator does not serve
+/// (not one of `FacilitatorErrorReason::CANONICAL`, which this answer does not
+/// go through). Nothing was sent to the FHE facilitator, so there is no
 /// `retryable` to speak of: the same request fails the same way until the
 /// scheme is back in `/supported`.
 fn fhe_disabled_refusal(operation: Operation) -> Response {
@@ -4241,6 +4275,11 @@ where
         return refusal;
     }
 
+    // fhe-transfer while ENABLE_ZAMA is off: refused here, unrecorded.
+    if let Some(refusal) = fhe_disabled_refusal_early(body_str, Operation::Verify) {
+        return refusal;
+    }
+
     // Check for special schemes BEFORE trying to parse as standard types
     // These schemes may have different payload structures that don't match standard x402 types
     // Alternate schemes resolve inside this block and yield an outcome instead
@@ -4292,7 +4331,7 @@ where
 
         if scheme == Some(crate::zama::SCHEME) {
             if let Some(response) = fhe_gate(Operation::Verify) {
-                warn!("fhe-transfer verify requested but ENABLE_ZAMA is off");
+                info!("fhe-transfer verify refused: ENABLE_ZAMA is off");
                 return Some(AltSchemeOutcome {
                     response,
                     detail: detail(false, scheme, Some("scheme_disabled")),
@@ -5125,6 +5164,11 @@ where
         return refusal;
     }
 
+    // Same for fhe-transfer while ENABLE_ZAMA is off: nothing was settled.
+    if let Some(refusal) = fhe_disabled_refusal_early(body_str, Operation::Settle) {
+        return refusal;
+    }
+
     // F4: idempotency cache lookup against canonical body bytes. The hash
     // is sha256(body_str) which intentionally matches across v1 raw body
     // and v2 PAYMENT-SIGNATURE transports — a retry with the same logical
@@ -5278,7 +5322,7 @@ where
 
         if scheme == Some(crate::zama::SCHEME) {
             if let Some(response) = fhe_gate(Operation::Settle) {
-                warn!("fhe-transfer settle requested but ENABLE_ZAMA is off");
+                info!("fhe-transfer settle refused: ENABLE_ZAMA is off");
                 return Some(AltSchemeOutcome {
                     response,
                     detail: detail(false, scheme, Some("scheme_disabled")),
@@ -19443,7 +19487,11 @@ mod human_surface_tests {
             let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
                 .await
                 .unwrap();
-            assert_eq!(bytes, LLMS_FULL_TXT.as_bytes(), "{headers:?}");
+            assert_eq!(
+                bytes,
+                crate::zama::surface(LLMS_FULL_TXT).as_bytes(),
+                "{headers:?}"
+            );
         }
     }
 
@@ -23340,9 +23388,17 @@ mod zama_switch_tests {
     }
 
     async fn post(path: &str, body: &str) -> (StatusCode, serde_json::Value) {
+        post_on(Arc::new(crate::events::EventBus::from_env()), path, body).await
+    }
+
+    async fn post_on(
+        bus: Arc<crate::events::EventBus>,
+        path: &str,
+        body: &str,
+    ) -> (StatusCode, serde_json::Value) {
         let router = verify_settle_routes::<NoChain>()
             .layer(Extension(Arc::new(DiscoveryRegistry::new())))
-            .layer(Extension(Arc::new(crate::events::EventBus::from_env())))
+            .layer(Extension(bus))
             .layer(Extension(
                 crate::transaction_store::create_transaction_store().await,
             ))
@@ -23369,6 +23425,23 @@ mod zama_switch_tests {
         )
     }
 
+    /// Run `f` with the FHE proxy pointed at a closed local port.
+    ///
+    /// These tests prove a request does NOT reach the proxy; if that ever
+    /// regressed, the lazily built proxy would otherwise be aimed at the real
+    /// Zama endpoint from inside a unit test.
+    fn with_dead_fhe_endpoint<T>(f: impl FnOnce() -> T) -> T {
+        const VAR: &str = "FHE_FACILITATOR_URL";
+        let previous = std::env::var(VAR).ok();
+        std::env::set_var(VAR, "http://127.0.0.1:9");
+        let out = std::panic::catch_unwind(std::panic::AssertUnwindSafe(f));
+        match previous {
+            Some(v) => std::env::set_var(VAR, v),
+            None => std::env::remove_var(VAR),
+        }
+        out.unwrap_or_else(|panic| std::panic::resume_unwind(panic))
+    }
+
     /// The scheme as x402 v1 names it (`paymentPayload.scheme`) and as v2
     /// does (`paymentPayload.accepted.scheme`).
     const FHE_V1: &str = r#"{"x402Version":1,"paymentPayload":{"x402Version":1,"scheme":"fhe-transfer","network":"ethereum-sepolia","payload":{}},"paymentRequirements":{"scheme":"fhe-transfer","network":"ethereum-sepolia","payTo":"0x0000000000000000000000000000000000000001","asset":"0x0000000000000000000000000000000000000002","maxAmountRequired":"1"}}"#;
@@ -23379,23 +23452,75 @@ mod zama_switch_tests {
     /// proxy would answer 200 or 502, never this 400).
     #[test]
     fn off_verify_and_settle_refuse_the_scheme_before_the_proxy() {
-        with_flag(None, || {
-            block_on(async {
-                for body in [FHE_V1, FHE_V2] {
-                    let (status, verify) = post("/verify", body).await;
-                    assert_eq!(status, StatusCode::BAD_REQUEST, "{verify}");
-                    assert_eq!(verify["isValid"], false, "{verify}");
-                    assert_eq!(verify["invalidReason"], "unsupported_scheme", "{verify}");
-                    assert!(verify["hint"].as_str().unwrap().contains("/supported"));
+        with_dead_fhe_endpoint(|| {
+            with_flag(None, || {
+                block_on(async {
+                    for body in [FHE_V1, FHE_V2] {
+                        let (status, verify) = post("/verify", body).await;
+                        assert_eq!(status, StatusCode::BAD_REQUEST, "{verify}");
+                        assert_eq!(verify["isValid"], false, "{verify}");
+                        assert_eq!(verify["invalidReason"], "unsupported_scheme", "{verify}");
+                        assert!(verify["hint"].as_str().unwrap().contains("/supported"));
 
-                    let (status, settle) = post("/settle", body).await;
-                    assert_eq!(status, StatusCode::BAD_REQUEST, "{settle}");
-                    assert_eq!(settle["success"], false, "{settle}");
-                    assert_eq!(settle["errorReason"], "unsupported_scheme", "{settle}");
-                    assert!(settle.get("retryable").is_none(), "{settle}");
-                }
+                        let (status, settle) = post("/settle", body).await;
+                        assert_eq!(status, StatusCode::BAD_REQUEST, "{settle}");
+                        assert_eq!(settle["success"], false, "{settle}");
+                        assert_eq!(settle["errorReason"], "unsupported_scheme", "{settle}");
+                        assert!(settle.get("retryable").is_none(), "{settle}");
+                    }
+                })
             })
         });
+    }
+
+    /// Off, a refused probe is not recorded: it reaches neither `/events` nor
+    /// `/transactions`, even with failures published as production does
+    /// (`X402_EVENTS_PUBLISH_FAILURES=true`). The control -- the scheme name
+    /// spelled with a JSON escape, which only the in-block gate catches -- IS
+    /// recorded, so silence here is the early refusal and not a deaf bus.
+    #[test]
+    fn off_a_refused_probe_is_not_recorded() {
+        const VAR: &str = "X402_EVENTS_PUBLISH_FAILURES";
+        let previous = std::env::var(VAR).ok();
+        std::env::set_var(VAR, "true");
+        let (plain, escaped) = with_dead_fhe_endpoint(|| {
+            with_flag(None, || {
+                block_on(async {
+                    let bus = Arc::new(crate::events::EventBus::from_env());
+                    let mut events = bus.try_subscribe().expect("a subscriber slot");
+                    let published = |rx: &mut tokio::sync::broadcast::Receiver<_>| {
+                        let mut n = 0;
+                        while rx.try_recv().is_ok() {
+                            n += 1;
+                        }
+                        n
+                    };
+                    for body in [FHE_V1, FHE_V2] {
+                        for path in ["/verify", "/settle"] {
+                            let (status, _) = post_on(Arc::clone(&bus), path, body).await;
+                            assert_eq!(status, StatusCode::BAD_REQUEST);
+                        }
+                    }
+                    let plain = published(&mut events);
+                    let escaped_body = FHE_V1.replace("\"fhe-transfer\"", "\"fhe\\u002dtransfer\"");
+                    assert!(!escaped_body.contains(crate::zama::SCHEME));
+                    let (status, refused) =
+                        post_on(Arc::clone(&bus), "/verify", &escaped_body).await;
+                    assert_eq!(status, StatusCode::BAD_REQUEST, "{refused}");
+                    assert_eq!(refused["invalidReason"], "unsupported_scheme", "{refused}");
+                    (plain, published(&mut events))
+                })
+            })
+        });
+        match previous {
+            Some(v) => std::env::set_var(VAR, v),
+            None => std::env::remove_var(VAR),
+        }
+        assert_eq!(plain, 0, "a refused probe was published");
+        assert_eq!(
+            escaped, 1,
+            "the control must be recorded, or this test hears nothing"
+        );
     }
 
     /// On, the branch lets the request through to the proxy, as before.

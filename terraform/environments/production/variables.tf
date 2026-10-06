@@ -479,8 +479,9 @@ variable "enable_zama" {
     this one last. Full runbook: terraform/environments/zama-testnet/README.md,
     "On/off".
 
-    Set in production.auto.tfvars, which CI applies; the default here is the
-    same value so a run without that file cannot silently turn it on.
+    Set in production.auto.tfvars, which CI applies, and keep the default here
+    the same value so a run without that file cannot land on the other one
+    (tests/scripts/test_ci_zama_switch.py fails when they differ). Flip BOTH.
   EOT
   type        = bool
   default     = false

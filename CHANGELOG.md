@@ -10,8 +10,10 @@
   only `true` or `1` turn it on, anything else is off. Off: `fhe-transfer` is
   gone from `/supported` (and with it from `/networks.json`, `/accepts` and the
   MCP `x402_supported` tool); `POST /verify` and `/settle` answer such a
-  payment `400` with `invalidReason`/`errorReason` `unsupported_scheme` and
-  never call the FHE Lambda; `/discovery` marks an `fhe-transfer` offer
+  payment `400` with `invalidReason`/`errorReason` `unsupported_scheme`, never
+  call the FHE Lambda and do not record the refusal in `/events` or
+  `/transactions` (like any scheme not served here: the traffic was scanners
+  probing it); `/discovery` marks an `fhe-transfer` offer
   `settleable: false` with the new reason `scheme-not-served`; and the landing
   card, `/networks`, `/x402`, `/bazaar`, `/docs`, the MCP tool schemas,
   `llms.txt`, `llms-full.txt`, `index.md`, `skill.md` and `.well-known/x402`

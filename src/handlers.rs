@@ -606,6 +606,9 @@ fn negotiated_response(
                 .find(|(candidate, _)| *candidate == media)
                 .map(|(_, body)| *body)
                 .unwrap_or_default();
+            // As this process serves it: without the fhe-transfer passages
+            // while ENABLE_ZAMA is off (crate::zama).
+            let body = crate::zama::surface(body);
             Response::builder()
                 .status(status)
                 .header("content-type", format!("{media}; charset=utf-8"))
@@ -661,6 +664,7 @@ const APPLICATION_JSON_UTF8: &str = "application/json; charset=utf-8";
 /// pages do. Until 2026-09-13 this was the one path that declared nothing, and
 /// it is the path every new agentic document gets added through.
 fn text_surface(body: &'static str, content_type: &'static str) -> Response<String> {
+    let body = crate::zama::surface(body);
     Response::builder()
         .status(StatusCode::OK)
         .header("content-type", content_type)
@@ -758,6 +762,7 @@ const CONTENT_LANGUAGE_EN: &str = "en";
 /// per handler because the failure is silent: a page added with a hand-written
 /// `content-type` line and no `content-language` looks perfect in a browser.
 fn html_page(body: &'static str) -> Response<String> {
+    let body = crate::zama::surface(body);
     Response::builder()
         .status(StatusCode::OK)
         .header("content-type", "text/html; charset=utf-8")
@@ -921,10 +926,40 @@ pub async fn get_oauth_protected_resource() -> impl IntoResponse {
 /// `GET /.well-known/agent-skills/index.json`: the downloadable-skills index.
 #[instrument(skip_all)]
 pub async fn get_agent_skills_index() -> impl IntoResponse {
-    text_surface(
-        include_str!("../static/.well-known/agent-skills/index.json"),
-        APPLICATION_JSON_UTF8,
-    )
+    text_surface(agent_skills_index(), APPLICATION_JSON_UTF8)
+}
+
+/// The skills index on disk, whose `digest` is that of `static/skill.md`
+/// (`the_skills_index_digest_matches_skill_md`).
+const AGENT_SKILLS_INDEX: &str = include_str!("../static/.well-known/agent-skills/index.json");
+
+/// The skills index as served: its `digest` is the digest of the `skill.md`
+/// THIS process serves.
+///
+/// With ENABLE_ZAMA off, `/skill.md` goes out without its fhe-transfer line
+/// ([`crate::zama`]), so the digest on disk no longer describes it -- and a
+/// client that verifies a stale digest concludes the file was tampered with.
+/// Only the digest string is replaced, so on the document is the file byte
+/// for byte, and off it differs in those 64 characters alone.
+fn agent_skills_index() -> &'static str {
+    let served = crate::zama::surface(SKILL_MD);
+    if std::ptr::eq(served, SKILL_MD) {
+        return AGENT_SKILLS_INDEX;
+    }
+    static RESTAMPED: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    RESTAMPED
+        .get_or_init(|| {
+            use sha2::{Digest, Sha256};
+            let index: serde_json::Value = serde_json::from_str(AGENT_SKILLS_INDEX)
+                .expect("static/.well-known/agent-skills/index.json must be valid JSON");
+            let published = index["skills"][0]["digest"]
+                .as_str()
+                .expect("the skill entry must publish a digest");
+            let lf = served.replace("\r\n", "\n");
+            let actual = format!("sha256:{:x}", Sha256::digest(lf.as_bytes()));
+            AGENT_SKILLS_INDEX.replace(published, &actual)
+        })
+        .as_str()
 }
 
 /// `GET /.well-known/mcp/server-card.json`: where the MCP server lives, and
@@ -1218,6 +1253,84 @@ fn unconfirmed_alt_settlement(
         body["transaction"] = json!(tx);
     }
     (StatusCode::BAD_GATEWAY, Json(body)).into_response()
+}
+
+/// Which of the two payment calls an answer is for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Operation {
+    Verify,
+    Settle,
+}
+
+/// Where the `fhe-transfer` branch of `/verify` and `/settle` stops while
+/// `ENABLE_ZAMA` is off: `Some(refusal)`, and the FHE facilitator is never
+/// called. `None` while on, and the request goes to the proxy as it always did.
+fn fhe_gate(operation: Operation) -> Option<Response> {
+    (!crate::zama::is_enabled()).then(|| fhe_disabled_refusal(operation))
+}
+
+/// [`fhe_gate`] for an `fhe-transfer` payment, answered before the request is
+/// routed -- and so before it is recorded.
+///
+/// Off, the scheme is one this deployment does not serve, and a request for a
+/// scheme it does not serve (an unknown one fails to deserialize) never reached
+/// `/events` or `/transactions`. The traffic behind decision 171 was scanners
+/// probing exactly this scheme; recording each probe would keep publishing its
+/// name in those feeds. The substring test keeps the common path to one
+/// `contains`; a scheme name spelled with JSON escapes misses it and is still
+/// refused by the same gate inside the alternate-scheme block, recorded as
+/// `scheme_disabled` like a disabled `upto`.
+fn fhe_disabled_refusal_early(body_str: &str, operation: Operation) -> Option<Response> {
+    if !body_str.contains(crate::zama::SCHEME) {
+        return None;
+    }
+    let body: serde_json::Value = serde_json::from_str(body_str).ok()?;
+    (payload_scheme(&body) == Some(crate::zama::SCHEME))
+        .then(|| fhe_gate(operation))
+        .flatten()
+}
+
+/// The scheme a payment names: `paymentPayload.scheme` in x402 v1,
+/// `paymentPayload.accepted.scheme` in v2.
+fn payload_scheme(body: &serde_json::Value) -> Option<&str> {
+    let payload = body.get("paymentPayload")?;
+    payload.get("scheme").and_then(|s| s.as_str()).or_else(|| {
+        payload
+            .get("accepted")
+            .and_then(|a| a.get("scheme"))
+            .and_then(|s| s.as_str())
+    })
+}
+
+/// The answer to an `fhe-transfer` payment while `ENABLE_ZAMA` is off
+/// ([`crate::zama`]).
+///
+/// A 400 in the shape the call answers with -- `isValid`/`invalidReason` for a
+/// verify, `success`/`errorReason` for a settle -- carrying `unsupported_scheme`,
+/// the x402 specification's token for a scheme the facilitator does not serve
+/// (not one of `FacilitatorErrorReason::CANONICAL`, which this answer does not
+/// go through). Nothing was sent to the FHE facilitator, so there is no
+/// `retryable` to speak of: the same request fails the same way until the
+/// scheme is back in `/supported`.
+fn fhe_disabled_refusal(operation: Operation) -> Response {
+    const REASON: &str = "unsupported_scheme";
+    let message = format!("{} is not offered by this facilitator", crate::zama::SCHEME);
+    let hint = "GET /supported lists the schemes and networks this facilitator serves";
+    let body = match operation {
+        Operation::Verify => json!({
+            "isValid": false,
+            "invalidReason": REASON,
+            "message": message,
+            "hint": hint,
+        }),
+        Operation::Settle => json!({
+            "success": false,
+            "errorReason": REASON,
+            "message": message,
+            "hint": hint,
+        }),
+    };
+    (StatusCode::BAD_REQUEST, Json(body)).into_response()
 }
 
 /// The answer to an `fhe-transfer` settle the FHE facilitator did not complete.
@@ -3220,14 +3333,15 @@ pub async fn get_bazaar() -> impl IntoResponse {
 /// content is a change of route.
 #[instrument(skip_all)]
 pub async fn get_uv_css() -> impl IntoResponse {
+    let css = crate::zama::surface(UV_CSS);
     (
         StatusCode::OK,
         [
             ("content-type", "text/css; charset=utf-8"),
             ("cache-control", "public, max-age=3600"),
         ],
-        Extension(StaticBody(UV_CSS)),
-        UV_CSS,
+        Extension(StaticBody(css)),
+        css,
     )
 }
 
@@ -3237,14 +3351,15 @@ pub async fn get_uv_css() -> impl IntoResponse {
 /// 39-row table of `/networks` never draws.
 #[instrument(skip_all)]
 pub async fn get_x402_js() -> impl IntoResponse {
+    let script = crate::zama::surface(X402_JS);
     (
         StatusCode::OK,
         [
             ("content-type", "application/javascript; charset=utf-8"),
             ("cache-control", "public, max-age=3600"),
         ],
-        Extension(StaticBody(X402_JS)),
-        X402_JS,
+        Extension(StaticBody(script)),
+        script,
     )
 }
 
@@ -4160,6 +4275,11 @@ where
         return refusal;
     }
 
+    // fhe-transfer while ENABLE_ZAMA is off: refused here, unrecorded.
+    if let Some(refusal) = fhe_disabled_refusal_early(body_str, Operation::Verify) {
+        return refusal;
+    }
+
     // Check for special schemes BEFORE trying to parse as standard types
     // These schemes may have different payload structures that don't match standard x402 types
     // Alternate schemes resolve inside this block and yield an outcome instead
@@ -4209,7 +4329,15 @@ where
             })
         });
 
-        if scheme == Some("fhe-transfer") {
+        if scheme == Some(crate::zama::SCHEME) {
+            if let Some(response) = fhe_gate(Operation::Verify) {
+                info!("fhe-transfer verify refused: ENABLE_ZAMA is off");
+                return Some(AltSchemeOutcome {
+                    response,
+                    detail: detail(false, scheme, Some("scheme_disabled")),
+                });
+            }
+
             info!("Detected fhe-transfer scheme, routing to Zama Lambda facilitator");
 
             match FHE_PROXY.verify(&json_value).await {
@@ -5036,6 +5164,11 @@ where
         return refusal;
     }
 
+    // Same for fhe-transfer while ENABLE_ZAMA is off: nothing was settled.
+    if let Some(refusal) = fhe_disabled_refusal_early(body_str, Operation::Settle) {
+        return refusal;
+    }
+
     // F4: idempotency cache lookup against canonical body bytes. The hash
     // is sha256(body_str) which intentionally matches across v1 raw body
     // and v2 PAYMENT-SIGNATURE transports — a retry with the same logical
@@ -5187,7 +5320,15 @@ where
             })
         });
 
-        if scheme == Some("fhe-transfer") {
+        if scheme == Some(crate::zama::SCHEME) {
+            if let Some(response) = fhe_gate(Operation::Settle) {
+                info!("fhe-transfer settle refused: ENABLE_ZAMA is off");
+                return Some(AltSchemeOutcome {
+                    response,
+                    detail: detail(false, scheme, Some("scheme_disabled")),
+                });
+            }
+
             info!("Detected fhe-transfer scheme, routing settle to Zama Lambda facilitator");
 
             match FHE_PROXY.settle(&json_value).await {
@@ -18113,7 +18254,7 @@ mod agentic_surface_tests {
     /// own paths, so the honest options are a hand-kept table that fails loudly
     /// or no check at all. Adding a route without adding a row here is caught by
     /// `the_table_covers_every_route`.
-    const SURFACES: &[(&str, &str)] = &[
+    pub(super) const SURFACES: &[(&str, &str)] = &[
         ("/llms.txt", "text/plain"),
         ("/llms-full.txt", "text/plain"),
         ("/robots.txt", "text/plain"),
@@ -18904,7 +19045,13 @@ mod markdown_negotiation_tests {
         assert_eq!(status, StatusCode::OK);
         assert_eq!(ctype, "text/markdown; charset=utf-8");
         assert!(vary.to_ascii_lowercase().contains("accept"));
-        assert_eq!(body, INDEX_MD, "/ must serve /index.md byte for byte");
+        // As served: without the fhe-transfer passages while ENABLE_ZAMA is
+        // off (crate::zama), the file itself while on.
+        assert_eq!(
+            body,
+            crate::zama::surface(INDEX_MD),
+            "/ must serve /index.md byte for byte"
+        );
     }
 
     /// The header that would break a substring implementation.
@@ -19294,7 +19441,7 @@ mod human_surface_tests {
         let compressed = axum::body::to_bytes(response.into_body(), usize::MAX)
             .await
             .unwrap();
-        assert_eq!(gunzip(&compressed), LLMS_FULL_TXT);
+        assert_eq!(gunzip(&compressed), crate::zama::surface(LLMS_FULL_TXT));
         assert!(
             compressed.len() * 2 < LLMS_FULL_TXT.len(),
             "gzip saved less than half: {} -> {} bytes",
@@ -19325,7 +19472,7 @@ mod human_surface_tests {
         let compressed = axum::body::to_bytes(response.into_body(), usize::MAX)
             .await
             .unwrap();
-        assert_eq!(gunzip(&compressed), INDEX_HTML);
+        assert_eq!(gunzip(&compressed), crate::zama::surface(INDEX_HTML));
     }
 
     /// No `Accept-Encoding`, or gzip refused with `q=0`: no gzip. Both still
@@ -19340,7 +19487,11 @@ mod human_surface_tests {
             let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
                 .await
                 .unwrap();
-            assert_eq!(bytes, LLMS_FULL_TXT.as_bytes(), "{headers:?}");
+            assert_eq!(
+                bytes,
+                crate::zama::surface(LLMS_FULL_TXT).as_bytes(),
+                "{headers:?}"
+            );
         }
     }
 
@@ -22882,5 +23033,508 @@ mod erc8004_register_gate_tests {
         assert_eq!(doc["mint"]["status"], "complete", "{doc}");
         assert_eq!(doc["owner"], owner.to_string(), "{doc}");
         assert_eq!(node.sent().len(), 1);
+    }
+}
+
+/// `ENABLE_ZAMA` ([`crate::zama`]) on every surface this file serves.
+///
+/// Decision 171 (2026-10-06) switched `fhe-transfer` off but kept it
+/// switchable, so each surface is checked in BOTH states: off, nothing served
+/// names the scheme and a payment for it is refused before the FHE Lambda is
+/// called; on, every document is the file on disk byte for byte and the
+/// scheme is where it always was.
+#[cfg(test)]
+mod zama_switch_tests {
+    use super::*;
+    use crate::zama::with_flag;
+    use axum::body::Body;
+    use axum::http::Request;
+    use sha2::{Digest, Sha256};
+    use std::borrow::Borrow;
+    use tower::ServiceExt;
+
+    /// The words that name the scheme or its provider.
+    const NAMES: [&str; 3] = ["fhe-transfer", "fhe_transfer", "zama"];
+
+    fn names_in(body: &str) -> Vec<&'static str> {
+        let lower = body.to_ascii_lowercase();
+        NAMES.into_iter().filter(|n| lower.contains(n)).collect()
+    }
+
+    /// The switch is read per call, so each state runs inside [`with_flag`],
+    /// which is synchronous -- hence a runtime per call rather than
+    /// `#[tokio::test]` holding the flag's lock across an await.
+    fn block_on<F: std::future::Future>(future: F) -> F::Output {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+            .block_on(future)
+    }
+
+    async fn get_body(router: Router, path: &str, accept: Option<&str>) -> (StatusCode, String) {
+        let mut request = Request::builder().uri(path);
+        if let Some(accept) = accept {
+            request = request.header("accept", accept);
+        }
+        let response = router
+            .oneshot(request.body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        let status = response.status();
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        (status, String::from_utf8(bytes.to_vec()).unwrap())
+    }
+
+    async fn body_of(response: Response) -> String {
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        String::from_utf8(bytes.to_vec()).unwrap()
+    }
+
+    /// One served surface: how to reach it, and the file it is built from
+    /// when it is served from one file verbatim.
+    struct Surface {
+        label: &'static str,
+        human: bool,
+        path: &'static str,
+        accept: Option<&'static str>,
+        file: Option<&'static str>,
+    }
+
+    const LLMS_FULL_TXT: &str = include_str!("../static/llms-full.txt");
+    const WELL_KNOWN_X402: &str = include_str!("../static/.well-known/x402");
+
+    /// Every document `agentic_routes` and `human_page_routes` serve. The
+    /// agentic half is `agentic_surface_tests::SURFACES`, which a test of its
+    /// own keeps complete; the human half is every route of
+    /// `human_page_routes`.
+    fn surface(
+        label: &'static str,
+        human: bool,
+        path: &'static str,
+        accept: Option<&'static str>,
+        file: Option<&'static str>,
+    ) -> Surface {
+        Surface {
+            label,
+            human,
+            path,
+            accept,
+            file,
+        }
+    }
+
+    fn surfaces() -> Vec<Surface> {
+        let mut all = vec![
+            surface("landing", true, "/", None, Some(INDEX_HTML)),
+            surface(
+                "landing as markdown",
+                true,
+                "/",
+                Some("text/markdown"),
+                Some(INDEX_MD),
+            ),
+            surface("bazaar", true, "/bazaar", None, Some(BAZAAR_HTML)),
+            surface("networks", true, "/networks", None, Some(NETWORKS_HTML)),
+            surface("x402", true, "/x402", None, Some(X402_HTML)),
+            surface("dx402", true, "/dx402", None, Some(DX402_HTML)),
+            surface("erc8004", true, "/erc8004", None, Some(ERC8004_HTML)),
+            surface("integrar", true, "/integrar", None, Some(INTEGRAR_HTML)),
+            surface(
+                "events viewer",
+                true,
+                "/events/live",
+                None,
+                Some(EVENTS_VIEWER_HTML),
+            ),
+            surface("stats", true, "/stats", None, Some(STATS_HTML)),
+        ];
+        let verbatim: [(&'static str, &'static str); 6] = [
+            ("/llms.txt", LLMS_TXT),
+            ("/llms-full.txt", LLMS_FULL_TXT),
+            ("/index.md", INDEX_MD),
+            ("/skill.md", SKILL_MD),
+            ("/.well-known/x402", WELL_KNOWN_X402),
+            ("/.well-known/agent-skills/index.json", AGENT_SKILLS_INDEX),
+        ];
+        for &(path, _) in super::agentic_surface_tests::SURFACES {
+            let source = verbatim
+                .iter()
+                .find(|(p, _)| *p == path)
+                .map(|(_, source)| *source);
+            all.push(surface(path, false, path, None, source));
+        }
+        all
+    }
+
+    async fn serve(surface: &Surface) -> (StatusCode, String) {
+        let router = if surface.human {
+            human_page_routes()
+        } else {
+            agentic_routes()
+        };
+        get_body(router, surface.path, surface.accept).await
+    }
+
+    /// The landing, the agent documents and the pages that named the scheme
+    /// before the switch existed -- the ones it must come back to when on.
+    const NAMED_IT: [&str; 9] = [
+        "landing",
+        "landing as markdown",
+        "bazaar",
+        "networks",
+        "x402",
+        "/llms.txt",
+        "/llms-full.txt",
+        "/skill.md",
+        "/.well-known/x402",
+    ];
+
+    /// Off (the default, unset): no page, no agent document, no stylesheet
+    /// names the scheme or Zama.
+    #[test]
+    fn off_no_served_document_names_the_scheme() {
+        with_flag(None, || {
+            block_on(async {
+                for surface in surfaces() {
+                    let (status, body) = serve(&surface).await;
+                    assert_eq!(status, StatusCode::OK, "{}", surface.label);
+                    assert!(
+                        names_in(&body).is_empty(),
+                        "{} still names {:?} with ENABLE_ZAMA off",
+                        surface.label,
+                        names_in(&body)
+                    );
+                }
+                for (label, response) in [
+                    ("/uv.css", get_uv_css().await.into_response()),
+                    ("/x402.js", get_x402_js().await.into_response()),
+                ] {
+                    let body = body_of(response).await;
+                    assert!(names_in(&body).is_empty(), "{label}: {:?}", names_in(&body));
+                }
+            })
+        });
+    }
+
+    /// On, every document is the file on disk, byte for byte -- the switch
+    /// changes nothing it does not have to -- and the scheme is back where it
+    /// was named.
+    #[test]
+    fn on_every_document_is_the_file_byte_for_byte() {
+        with_flag(Some("true"), || {
+            block_on(async {
+                for surface in surfaces() {
+                    let (status, body) = serve(&surface).await;
+                    assert_eq!(status, StatusCode::OK, "{}", surface.label);
+                    if let Some(file) = surface.file {
+                        assert!(body == file, "{} is not its file when on", surface.label);
+                    }
+                    if NAMED_IT.contains(&surface.label) {
+                        assert!(
+                            body.contains("fhe-transfer"),
+                            "{} lost fhe-transfer with ENABLE_ZAMA on",
+                            surface.label
+                        );
+                    }
+                }
+                assert_eq!(body_of(get_uv_css().await.into_response()).await, UV_CSS);
+                assert_eq!(body_of(get_x402_js().await.into_response()).await, X402_JS);
+            })
+        });
+    }
+
+    /// Off, `.well-known/x402` is still JSON and lists every other scheme.
+    #[test]
+    fn off_the_x402_discovery_document_drops_only_that_scheme() {
+        let names = |doc: &str| -> Vec<String> {
+            let doc: serde_json::Value =
+                serde_json::from_str(doc).expect(".well-known/x402 must stay valid JSON");
+            doc["x402"]["schemes"]
+                .as_array()
+                .expect("schemes")
+                .iter()
+                .map(|s| s["name"].as_str().unwrap().to_string())
+                .collect()
+        };
+        let x402 = Surface {
+            label: "/.well-known/x402",
+            human: false,
+            path: "/.well-known/x402",
+            accept: None,
+            file: None,
+        };
+        let on = with_flag(Some("true"), || block_on(serve(&x402))).1;
+        let off = with_flag(None, || block_on(serve(&x402))).1;
+        let expected: Vec<String> = names(&on)
+            .into_iter()
+            .filter(|n| n != crate::zama::SCHEME)
+            .collect();
+        assert_eq!(names(&off), expected);
+        assert!(names(&on).iter().any(|n| n == crate::zama::SCHEME));
+        assert_eq!(expected.len(), names(&on).len() - 1);
+    }
+
+    /// Off, the landing loses the card and nothing else: one network badge
+    /// fewer, and every `<div` it opens still closes.
+    #[test]
+    fn off_the_landing_loses_the_card_and_keeps_its_structure() {
+        let landing = Surface {
+            label: "landing",
+            human: true,
+            path: "/",
+            accept: None,
+            file: None,
+        };
+        let on = with_flag(Some("true"), || block_on(serve(&landing))).1;
+        let off = with_flag(None, || block_on(serve(&landing))).1;
+        let balance = |html: &str| {
+            html.matches("<div").count() as i64 - html.matches("</div>").count() as i64
+        };
+        assert_eq!(balance(&off), balance(&on));
+        let badges = |html: &str| html.matches("class=\"network-badge ").count();
+        assert_eq!(badges(&off), badges(&on) - 1);
+        assert!(
+            off.contains("data-tokens=\"hedera-testnet\""),
+            "the card before it survives"
+        );
+        assert!(
+            off.contains("<!-- Wallet Addresses -->"),
+            "what follows it survives"
+        );
+    }
+
+    /// The skills index publishes the digest of the `skill.md` actually served,
+    /// in both states.
+    #[test]
+    fn the_served_skills_digest_matches_the_served_skill_md() {
+        for flag in [None, Some("true")] {
+            let (skill, index) = with_flag(flag, || {
+                block_on(async {
+                    (
+                        get_body(agentic_routes(), "/skill.md", None).await.1,
+                        get_body(
+                            agentic_routes(),
+                            "/.well-known/agent-skills/index.json",
+                            None,
+                        )
+                        .await
+                        .1,
+                    )
+                })
+            });
+            let index: serde_json::Value = serde_json::from_str(&index).unwrap();
+            let actual = format!(
+                "sha256:{:x}",
+                Sha256::digest(skill.replace("\r\n", "\n").as_bytes())
+            );
+            assert_eq!(index["skills"][0]["digest"], actual, "flag {flag:?}");
+        }
+    }
+
+    struct NoProviders;
+
+    impl ProviderMap for NoProviders {
+        type Value = NetworkProvider;
+        fn by_network<N: Borrow<crate::network::Network>>(
+            &self,
+            _network: N,
+        ) -> Option<&Self::Value> {
+            None
+        }
+        fn values(&self) -> impl Iterator<Item = &Self::Value> + Send {
+            std::iter::empty()
+        }
+    }
+
+    /// A facilitator with no chain at all: an `fhe-transfer` payment never
+    /// reaches it either way (that branch answers before it), so whatever
+    /// answers comes from the switch.
+    #[derive(Clone)]
+    struct NoChain {
+        providers: Arc<NoProviders>,
+    }
+
+    impl HasProviderMap for NoChain {
+        type Map = NoProviders;
+        fn provider_map(&self) -> &Self::Map {
+            &self.providers
+        }
+    }
+
+    impl Facilitator for NoChain {
+        type Error = FacilitatorLocalError;
+        async fn verify(
+            &self,
+            _r: &crate::types::VerifyRequest,
+        ) -> Result<crate::types::VerifyResponse, Self::Error> {
+            Err(FacilitatorLocalError::ContractCall("no chain here".into()))
+        }
+        async fn settle(
+            &self,
+            _r: &crate::types::SettleRequest,
+        ) -> Result<crate::types::SettleResponse, Self::Error> {
+            Err(FacilitatorLocalError::ContractCall("no chain here".into()))
+        }
+        async fn supported(
+            &self,
+        ) -> Result<crate::types::SupportedPaymentKindsResponse, Self::Error> {
+            Ok(crate::types::SupportedPaymentKindsResponse { kinds: vec![] })
+        }
+    }
+
+    async fn post(path: &str, body: &str) -> (StatusCode, serde_json::Value) {
+        post_on(Arc::new(crate::events::EventBus::from_env()), path, body).await
+    }
+
+    async fn post_on(
+        bus: Arc<crate::events::EventBus>,
+        path: &str,
+        body: &str,
+    ) -> (StatusCode, serde_json::Value) {
+        let router = verify_settle_routes::<NoChain>()
+            .layer(Extension(Arc::new(DiscoveryRegistry::new())))
+            .layer(Extension(bus))
+            .layer(Extension(
+                crate::transaction_store::create_transaction_store().await,
+            ))
+            .with_state(NoChain {
+                providers: Arc::new(NoProviders),
+            });
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(path)
+                    .header("content-type", "application/json")
+                    .header("x-forwarded-for", "203.0.113.9")
+                    .body(Body::from(body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let status = response.status();
+        let body = body_of(response).await;
+        (
+            status,
+            serde_json::from_str(&body).unwrap_or(serde_json::Value::Null),
+        )
+    }
+
+    /// Run `f` with the FHE proxy pointed at a closed local port.
+    ///
+    /// These tests prove a request does NOT reach the proxy; if that ever
+    /// regressed, the lazily built proxy would otherwise be aimed at the real
+    /// Zama endpoint from inside a unit test.
+    fn with_dead_fhe_endpoint<T>(f: impl FnOnce() -> T) -> T {
+        with_env("FHE_FACILITATOR_URL", "http://127.0.0.1:9", f)
+    }
+
+    /// Run `f` with `var` set to `value`, restoring what was there even when
+    /// `f` panics, so a failing assertion cannot leak the setting into the
+    /// next test.
+    fn with_env<T>(var: &str, value: &str, f: impl FnOnce() -> T) -> T {
+        let previous = std::env::var(var).ok();
+        std::env::set_var(var, value);
+        let out = std::panic::catch_unwind(std::panic::AssertUnwindSafe(f));
+        match previous {
+            Some(v) => std::env::set_var(var, v),
+            None => std::env::remove_var(var),
+        }
+        out.unwrap_or_else(|panic| std::panic::resume_unwind(panic))
+    }
+
+    /// The scheme as x402 v1 names it (`paymentPayload.scheme`) and as v2
+    /// does (`paymentPayload.accepted.scheme`).
+    const FHE_V1: &str = r#"{"x402Version":1,"paymentPayload":{"x402Version":1,"scheme":"fhe-transfer","network":"ethereum-sepolia","payload":{}},"paymentRequirements":{"scheme":"fhe-transfer","network":"ethereum-sepolia","payTo":"0x0000000000000000000000000000000000000001","asset":"0x0000000000000000000000000000000000000002","maxAmountRequired":"1"}}"#;
+    const FHE_V2: &str = r#"{"x402Version":2,"paymentPayload":{"x402Version":2,"accepted":{"scheme":"fhe-transfer","network":"eip155:11155111"},"payload":{}},"paymentRequirements":{"scheme":"fhe-transfer","network":"eip155:11155111","payTo":"0x0000000000000000000000000000000000000001","asset":"0x0000000000000000000000000000000000000002","amount":"1"}}"#;
+
+    /// Off, both calls refuse the scheme with the x402 token and never reach
+    /// the FHE facilitator (no network is touched; a request that reached the
+    /// proxy would answer 200 or 502, never this 400).
+    #[test]
+    fn off_verify_and_settle_refuse_the_scheme_before_the_proxy() {
+        with_dead_fhe_endpoint(|| {
+            with_flag(None, || {
+                block_on(async {
+                    for body in [FHE_V1, FHE_V2] {
+                        let (status, verify) = post("/verify", body).await;
+                        assert_eq!(status, StatusCode::BAD_REQUEST, "{verify}");
+                        assert_eq!(verify["isValid"], false, "{verify}");
+                        assert_eq!(verify["invalidReason"], "unsupported_scheme", "{verify}");
+                        assert!(verify["hint"].as_str().unwrap().contains("/supported"));
+
+                        let (status, settle) = post("/settle", body).await;
+                        assert_eq!(status, StatusCode::BAD_REQUEST, "{settle}");
+                        assert_eq!(settle["success"], false, "{settle}");
+                        assert_eq!(settle["errorReason"], "unsupported_scheme", "{settle}");
+                        assert!(settle.get("retryable").is_none(), "{settle}");
+                    }
+                })
+            })
+        });
+    }
+
+    /// Off, a refused probe is not recorded: it reaches neither `/events` nor
+    /// `/transactions`, even with failures published as production does
+    /// (`X402_EVENTS_PUBLISH_FAILURES=true`). The control -- the scheme name
+    /// spelled with a JSON escape, which only the in-block gate catches -- IS
+    /// recorded, so silence here is the early refusal and not a deaf bus.
+    #[test]
+    fn off_a_refused_probe_is_not_recorded() {
+        let (plain, escaped) = with_env("X402_EVENTS_PUBLISH_FAILURES", "true", || {
+            with_dead_fhe_endpoint(|| {
+                with_flag(None, || {
+                    block_on(async {
+                        let bus = Arc::new(crate::events::EventBus::from_env());
+                        let mut events = bus.try_subscribe().expect("a subscriber slot");
+                        let published = |rx: &mut tokio::sync::broadcast::Receiver<_>| {
+                            let mut n = 0;
+                            while rx.try_recv().is_ok() {
+                                n += 1;
+                            }
+                            n
+                        };
+                        for body in [FHE_V1, FHE_V2] {
+                            for path in ["/verify", "/settle"] {
+                                let (status, _) = post_on(Arc::clone(&bus), path, body).await;
+                                assert_eq!(status, StatusCode::BAD_REQUEST);
+                            }
+                        }
+                        let plain = published(&mut events);
+                        let escaped_body =
+                            FHE_V1.replace("\"fhe-transfer\"", "\"fhe\\u002dtransfer\"");
+                        assert!(!escaped_body.contains(crate::zama::SCHEME));
+                        let (status, refused) =
+                            post_on(Arc::clone(&bus), "/verify", &escaped_body).await;
+                        assert_eq!(status, StatusCode::BAD_REQUEST, "{refused}");
+                        assert_eq!(refused["invalidReason"], "unsupported_scheme", "{refused}");
+                        (plain, published(&mut events))
+                    })
+                })
+            })
+        });
+        assert_eq!(plain, 0, "a refused probe was published");
+        assert_eq!(
+            escaped, 1,
+            "the control must be recorded, or this test hears nothing"
+        );
+    }
+
+    /// On, the branch lets the request through to the proxy, as before.
+    #[test]
+    fn on_the_gate_lets_the_scheme_through_to_the_proxy() {
+        with_flag(Some("true"), || {
+            assert!(fhe_gate(Operation::Verify).is_none());
+            assert!(fhe_gate(Operation::Settle).is_none());
+        });
+        with_flag(None, || {
+            assert!(fhe_gate(Operation::Verify).is_some());
+            assert!(fhe_gate(Operation::Settle).is_some());
+        });
     }
 }

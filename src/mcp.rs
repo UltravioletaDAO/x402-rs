@@ -313,7 +313,7 @@ fn payment_envelope_schema(operation: &str) -> Value {
                     "x402Version": { "type": "integer", "enum": [1, 2] },
                     "scheme": {
                         "type": "string",
-                        "description": "x402 v1 ONLY (in v2 this is accepted.scheme). exact | upto | escrow | commerce | fhe-transfer. GET /supported lists what this facilitator serves."
+                        "description": crate::zama::text("x402 v1 ONLY (in v2 this is accepted.scheme). exact | upto | escrow | commerce | fhe-transfer. GET /supported lists what this facilitator serves.")
                     },
                     "network": {
                         "type": "string",
@@ -420,7 +420,7 @@ fn payment_envelope_schema(operation: &str) -> Value {
                 "type": "object",
                 "description": "x402 v2 ONLY. What is being charged. Replaces the rest of the v1 paymentRequirements. Unknown keys are ignored, so a 402 offer carrying extras (maxAmountRequired, resource, description, mimeType) can be forwarded unedited.",
                 "properties": {
-                    "scheme": { "type": "string", "description": "exact | upto | escrow | commerce | fhe-transfer. GET /supported lists what this facilitator serves." },
+                    "scheme": { "type": "string", "description": crate::zama::text("exact | upto | escrow | commerce | fhe-transfer. GET /supported lists what this facilitator serves.") },
                     "network": {
                         "type": "string",
                         "description": "The chain as a CAIP-2 identifier (\"eip155:8453\"). CAIP-2 ONLY here: unlike the v1 paymentRequirements.network, this field refuses the bare x402 v1 name (\"base\"). An offer taken straight out of GET /discovery/resources is already CAIP-2 and can be used unmodified."
@@ -524,7 +524,7 @@ fn supported_output_schema() -> Value {
                         },
                         "scheme": {
                             "type": "string",
-                            "description": "Payment scheme: exact, upto, escrow, commerce or fhe-transfer."
+                            "description": crate::zama::text("Payment scheme: exact, upto, escrow, commerce or fhe-transfer.")
                         },
                         "network": {
                             "type": "string",
@@ -2727,5 +2727,34 @@ mod tests {
             .map(str::to_string)
             .collect();
         assert_eq!(parsed, vec!["a.example", "b.example:8080"]);
+    }
+
+    /// The tool schemas name `fhe-transfer` among the schemes only while
+    /// ENABLE_ZAMA is on ([`crate::zama`]); off (the default) they list the
+    /// other four and still point at GET /supported.
+    #[test]
+    fn the_tool_schemas_name_fhe_transfer_only_while_zama_is_on() {
+        let listed =
+            |flag| crate::zama::with_flag(flag, || serde_json::to_string(&tools()).unwrap());
+        let off = listed(None);
+        for name in ["fhe-transfer", "fhe_transfer", "zama"] {
+            assert!(!off.to_ascii_lowercase().contains(name), "off names {name}");
+        }
+        assert!(off.contains("exact | upto | escrow | commerce. GET /supported"));
+        assert!(off.contains("Payment scheme: exact, upto, escrow or commerce."));
+
+        // On, each of the three descriptions is back as it was. Five
+        // occurrences in all: x402_verify and x402_settle share the payment
+        // envelope schema, which names it twice, and the x402_supported
+        // output schema names it once.
+        let on = listed(Some("true"));
+        for description in [
+            "x402 v1 ONLY (in v2 this is accepted.scheme). exact | upto | escrow | commerce | fhe-transfer. GET /supported lists what this facilitator serves.",
+            "exact | upto | escrow | commerce | fhe-transfer. GET /supported lists what this facilitator serves.",
+            "Payment scheme: exact, upto, escrow, commerce or fhe-transfer.",
+        ] {
+            assert!(on.contains(description), "on lost {description:?}");
+        }
+        assert_eq!(on.matches("fhe-transfer").count(), 5);
     }
 }

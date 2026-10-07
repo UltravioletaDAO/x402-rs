@@ -1,5 +1,26 @@
 # Terraform Variables for Zama Facilitator (Testnet)
 
+# ============================================================================
+# On/off
+# ============================================================================
+
+variable "enable_zama" {
+  description = <<-EOT
+    The whole stack, on or off. false (the default) destroys every resource in
+    this state -- Lambda, API Gateway, custom domain + certificate + DNS,
+    artifacts bucket, RPC secret, IAM role, log groups, alarms and budget --
+    and true builds all of it again (main.tf, `local.zama_count`).
+
+    Decision 171 (2026-10-06): off. The production facilitator has its own
+    switch with the same name (terraform/environments/production) that stops
+    it from advertising fhe-transfer; flip and deploy THAT one first. The
+    order, the one-time apply that lets the bucket and the secret be deleted,
+    and how to turn it back on: README.md, "On/off".
+  EOT
+  type        = bool
+  default     = false
+}
+
 variable "aws_region" {
   description = "AWS region"
   type        = string

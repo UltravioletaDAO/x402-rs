@@ -153,7 +153,7 @@
       "explorer": "https://sepolia.etherscan.io",
       "explorerPaths": {"tx": "/tx/{tx}", "address": "/address/{address}"},
       "facilitatorWallet": "0x34033041a5944B8F10f8E4D8496Bfb84f1A293A8",
-      "_note": "Production publishes no `exact` entry here: RPC_URL_ETHEREUM_SEPOLIA is not configured, so no EVM provider is built for it. /supported serves fhe-transfer (Zama), escrow and commerce on it instead. The USDC deployment stays in src/network.rs and would be served the moment the RPC is set; then flip exactServed and list [\"usdc\"]."
+      "_note": "Production publishes no `exact` entry here: RPC_URL_ETHEREUM_SEPOLIA is not configured, so no EVM provider is built for it. /supported serves escrow and commerce on it instead (and fhe-transfer, Zama, only while ENABLE_ZAMA is on). The USDC deployment stays in src/network.rs and would be served the moment the RPC is set; then flip exactServed and list [\"usdc\"]."
     },
     "base-sepolia": {
       "displayName": "Base Sepolia",

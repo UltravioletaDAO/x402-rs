@@ -600,6 +600,12 @@ pub fn settleability(
     let Some(known) = scheme.as_known() else {
         return (false, Some("unknown-scheme"));
     };
+    // A scheme this build implements but this deployment has switched off:
+    // `fhe-transfer` while ENABLE_ZAMA is off (crate::zama). The offer is
+    // real; we just do not settle it here.
+    if known == Scheme::FheTransfer && !crate::zama::is_enabled() {
+        return (false, Some(crate::zama::SCHEME_NOT_SERVED));
+    }
     let Some(network) = network.filter(|n| served.contains(n)) else {
         return (false, Some("network-not-served"));
     };
@@ -941,5 +947,70 @@ pub fn parse_catalog_address(raw: &str) -> Option<MixedAddress> {
     match parsed {
         MixedAddress::Offchain(_) => None,
         other => Some(other),
+    }
+}
+
+#[cfg(test)]
+mod zama_switch_tests {
+    use super::*;
+
+    /// An `fhe-transfer` offer on a network this process serves is settleable
+    /// here only while ENABLE_ZAMA is on; off, it is a real offer we do not
+    /// settle, said with its own reason rather than `unknown-scheme`.
+    #[test]
+    fn fhe_transfer_is_settleable_only_while_zama_is_on() {
+        let served: HashSet<Network> = [Network::EthereumSepolia].into();
+        let fhe = CatalogScheme::from(Scheme::FheTransfer);
+        let check = || settleability(&fhe, Some(Network::EthereumSepolia), &served);
+
+        let off = (false, Some(crate::zama::SCHEME_NOT_SERVED));
+        assert_eq!(crate::zama::with_flag(None, check), off);
+        assert_eq!(crate::zama::with_flag(Some("false"), check), off);
+        assert_eq!(crate::zama::with_flag(Some("true"), check), (true, None));
+
+        // The switch touches its own scheme and nothing else.
+        let exact = CatalogScheme::from(Scheme::Exact);
+        assert_eq!(
+            crate::zama::with_flag(None, || settleability(
+                &exact,
+                Some(Network::EthereumSepolia),
+                &served
+            )),
+            (true, None)
+        );
+    }
+
+    /// What `/discovery` actually publishes for the offer, through `annotate`.
+    #[test]
+    fn a_listed_fhe_transfer_offer_says_why_it_is_not_settleable() {
+        let served: HashSet<Network> = [Network::EthereumSepolia].into();
+        let option = || {
+            CatalogPaymentOption::new(
+                CatalogScheme::parse("fhe-transfer").unwrap(),
+                Caip2NetworkId::eip155(11155111),
+                serde_json::from_value(serde_json::json!(
+                    "0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238"
+                ))
+                .unwrap(),
+                TokenAmount::from(1_000u64),
+                serde_json::from_value(serde_json::json!(
+                    "0x52E29e0d2Aa49bfBfC548C0A9F2196F4aa51f3ea"
+                ))
+                .unwrap(),
+                300,
+            )
+        };
+        let annotated = |flag| {
+            crate::zama::with_flag(flag, || {
+                let mut o = option();
+                o.annotate(&served);
+                (o.settleable, o.unsupported_reason)
+            })
+        };
+        assert_eq!(
+            annotated(None),
+            (Some(false), Some("scheme-not-served".to_string()))
+        );
+        assert_eq!(annotated(Some("true")), (Some(true), None));
     }
 }

@@ -382,13 +382,16 @@ where
         // Only the v1 form is pushed: the mirroring pass derives
         // `eip155:11155111` from the Network enum, so the CAIP-2 id is never
         // typed out here to drift away from `Network::to_caip2`.
-        kinds.push(SupportedPaymentKind {
-            x402_version: X402Version::V1,
-            scheme: Scheme::FheTransfer,
-            network: "ethereum-sepolia".to_string(),
-            network_aliases: None,
-            extra: None, // FHE proxy handles fee_payer internally
-        });
+        // Only while ENABLE_ZAMA is on (decision 171: off) -- see crate::zama.
+        if crate::zama::is_enabled() {
+            kinds.push(SupportedPaymentKind {
+                x402_version: X402Version::V1,
+                scheme: Scheme::FheTransfer,
+                network: "ethereum-sepolia".to_string(),
+                network_aliases: None,
+                extra: None, // FHE proxy handles fee_payer internally
+            });
+        }
 
         // Add x402r escrow/commerce scheme support (PaymentOperator-based escrow)
         // Dynamically advertise all networks with deployed PaymentOperator contracts
@@ -1524,6 +1527,39 @@ mod escrow_supported_tests {
             Some(v) => std::env::set_var("ENABLE_PAYMENT_OPERATOR", v),
             None => std::env::remove_var("ENABLE_PAYMENT_OPERATOR"),
         }
+    }
+
+    /// `fhe-transfer` is in `/supported`, under both names of its chain, only
+    /// while ENABLE_ZAMA is on ([`crate::zama`]; decision 171: off). Off is
+    /// what an unset variable means.
+    #[test]
+    fn supported_lists_fhe_transfer_only_while_zama_is_on() {
+        let facilitator = FacilitatorLocal::new(
+            crate::payment_operator::test_rpc::Providers(HashMap::new()),
+            Arc::new(Box::new(NoScreening) as Box<dyn ComplianceChecker>),
+        );
+        let fhe = |flag| {
+            crate::zama::with_flag(flag, || {
+                tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .unwrap()
+                    .block_on(facilitator.supported())
+                    .unwrap()
+                    .kinds
+                    .into_iter()
+                    .filter(|k| k.scheme == Scheme::FheTransfer)
+                    .map(|k| (k.x402_version, k.network))
+                    .collect::<Vec<_>>()
+            })
+        };
+        assert!(fhe(None).is_empty(), "unset must be off");
+        assert!(fhe(Some("false")).is_empty());
+        assert!(fhe(Some("yes")).is_empty(), "only true/1 turn it on");
+        let on = fhe(Some("true"));
+        assert_eq!(on.len(), 2, "{on:?}");
+        assert!(on.contains(&(X402Version::V1, "ethereum-sepolia".to_string())));
+        assert!(on.contains(&(X402Version::V2, Network::EthereumSepolia.to_caip2())));
     }
 }
 

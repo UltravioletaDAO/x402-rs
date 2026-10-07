@@ -61,10 +61,22 @@ environment = "production"
 vpc_cidr           = "10.1.0.0/16"
 availability_zones = ["us-east-2a", "us-east-2b"]
 single_nat_gateway = true
+# COSTO-X402 B5: the tasks egress from the public subnets with their own IP. The NAT stays
+# on until every task is verified public; it goes off in its own one-variable change.
+# Rollback after it is off (the deploy never creates the NAT): from a branch with
+# enable_nat_gateway = true, a HAND apply `terraform plan -out=nat.tfplan
+# -target=aws_route_table.private` (drags aws_nat_gateway.main and aws_eip.nat), review,
+# `apply nat.tfplan`; verify the NAT `available` and the private default route `active`
+# (not blackhole) on the new NAT; only then merge that branch, and then another PR with
+# ecs_tasks_in_public_subnets = false. Do NOT git revert PR #115 after the NAT is off
+# without the first two steps: a PR that changes both values together leaves the tasks
+# with no egress. Full runbook: docs/handoffs/COSTO-X402-recorte-aws.md.
+enable_nat_gateway          = true
+ecs_tasks_in_public_subnets = true
 
 # ECS task sizing
-task_cpu    = 1024 # 1 vCPU
-task_memory = 2048 # 2 GB
+task_cpu    = 512  # 0.5 vCPU (COSTO-X402 B3; revert to 1024 if the boot log says workers=1)
+task_memory = 1024 # 1 GB   (COSTO-X402 B3; revert to 2048 together with task_cpu)
 
 # desired_count carries `ignore_changes` on aws_ecs_service.facilitator (main.tf),
 # so Terraform never writes it and this value cannot move the running count.
@@ -105,11 +117,13 @@ quicknode_secret_name = "facilitator-quicknode-base-rpc"
 escrow_lifecycle_auth = "log"
 
 # CloudWatch
-log_retention_days        = 30   # 7 lost the 2026-08-10 incident to expiry
-enable_container_insights = true # this IS what the cluster runs -- verified with --include SETTINGS
+log_retention_days        = 30    # 7 lost the 2026-08-10 incident to expiry
+enable_container_insights = false # COSTO-X402 B8; no-running-tasks alarm moved to ALB HealthyHostCount
 
 # Container registry
 ecr_repository_name = "facilitator"
+# COSTO-X402 B15: off until scripts/ecr_rollback_anchors.py --tag and --preview exit 0.
+enable_facilitator_ecr_lifecycle = false
 
 # Observability stack (Grafana + Prometheus + Tempo) -- off is $0/month
 enable_observability = false

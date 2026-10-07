@@ -308,12 +308,8 @@ jobs:
             exit 1
           fi
 
-          # `|| code=$?`, never a bare call: the runner's shell is `bash -e`, so a bare
-          # plan ends this step on its own exit status -- 2 (changes) before the echo
-          # below, 1 before the error branch can print the log. setup-terraform's
-          # wrapper hides that today by reporting 2 as 0; nothing here may rely on it.
-          code=0
-          terraform plan -input=false -lock=false -no-color -detailed-exitcode -out=full.tfplan > full.log 2>&1 || code=$?
+          terraform plan -input=false -lock=false -no-color -detailed-exitcode -out=full.tfplan > full.log 2>&1
+          code=$?
           # -detailed-exitcode: 0 = empty, 2 = changes present, 1 = the plan itself broke.
           if [ "$code" = "1" ]; then
             echo "::error title=Drift gate failed::terraform plan errored; see the log below."
@@ -343,55 +339,20 @@ jobs:
 
           # A row nobody can act on is a row that gets muted. Each one carries the
           # action, the file that declares it, and which attributes actually differ.
-          #
-          # Nothing in the rows may fail. This step runs under the runner's `bash -e`
-          # plus pipefail, and on #115 (2026-10-06) the first resource deleted from
-          # the configuration -- declared in no .tf any more, so the declaring-file
-          # grep exits 1 -- ended the step on that row: no annotation, no list, half a
-          # table, just "exit code 1". The annotations and the plain list now go out
-          # BEFORE the summary is built, so the red always says what it is about.
-          # tests/scripts/test_drift_gate_report.py runs this step on fixture plans.
-          action_of() {
-            jq -r --arg a "$1" '[.resource_changes[]? | select(.address==$a) | .change.actions | join("+")] | first // "?"' full.json
-          }
           row() {
             addr="$1"
             base="${addr%%[*}"; rtype="${base%%.*}"; rname="${base#*.}"
-            files=$(grep -lE "^resource[[:space:]]+\"$rtype\"[[:space:]]+\"$rname\"" ./*.tf 2>/dev/null || true)
-            file=""
-            IFS= read -r file <<< "$files" || true
-            file="${file#./}"
-            action=$(action_of "$addr")
-            if [ -z "$file" ]; then
-              case "$action" in
-                *delete*) file="(removed from the configuration)" ;;
-                *) file="?" ;;
-              esac
-            fi
-            if [ "$action" = "delete" ]; then
-              attrs="(whole resource)"
-            else
-              attrs=$(jq -r --arg a "$addr" '
-                .resource_changes[] | select(.address==$a) | .change
-                | (.before // {}) as $b | (.after // {}) as $x
-                | [ ($b|keys) + ($x|keys) | unique | .[] ]
-                | map(select($b[.] != $x[.]))
-                | if length > 6 then (.[0:6] + ["..."]) else . end
-                | join(", ")' full.json) || attrs="?"
-            fi
-            printf '| `%s` | `%s` | %s | %s |\n' "$action" "$addr" "$file" "${attrs:--}"
+            file=$(grep -lE "^resource[[:space:]]+\"$rtype\"[[:space:]]+\"$rname\"" ./*.tf 2>/dev/null | head -1 | sed 's|^\./||')
+            action=$(jq -r --arg a "$addr" '.resource_changes[] | select(.address==$a) | .change.actions | join("+")' full.json)
+            attrs=$(jq -r --arg a "$addr" '
+              .resource_changes[] | select(.address==$a) | .change
+              | (.before // {}) as $b | (.after // {}) as $x
+              | [ ($b|keys) + ($x|keys) | unique | .[] ]
+              | map(select($b[.] != $x[.]))
+              | if length > 6 then (.[0:6] + ["..."]) else . end
+              | join(", ")' full.json)
+            printf '| `%s` | `%s` | %s | %s |\n' "$action" "$addr" "${file:-?}" "${attrs:--}"
           }
-
-          if [ -s uncovered.addrs ]; then
-            while read -r a; do
-              [ -n "$a" ] && echo "::error title=Unapplied infrastructure::${a} ($(action_of "$a")) differs from AWS and no deploy step targets it."
-            done < uncovered.addrs
-            echo
-            echo "Drift the pipeline will never apply:"
-            while read -r a; do
-              [ -n "$a" ] && printf '%s %s\n' "$(action_of "$a")" "$a"
-            done < uncovered.addrs
-          fi
 
           {
             echo "## Terraform drift gate"
@@ -429,6 +390,12 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
           if [ -s uncovered.addrs ]; then
+            while read -r a; do
+              [ -n "$a" ] && echo "::error title=Unapplied infrastructure::${a} differs from AWS and no deploy step targets it."
+            done < uncovered.addrs
+            echo
+            echo "Drift the pipeline will never apply:"
+            cat uncovered.addrs
             exit 1
           fi
           echo "No unapplied infrastructure."

@@ -684,33 +684,6 @@ def fetch_all_balances() -> dict[str, str | None]:
 
 METRIC_NAMESPACE = "Facilitator/Chains"
 
-# The chains an alarm reads Facilitator/Chains for: the keys of local.monitored_chains in
-# terraform/environments/production/alerts.tf (evm_fee_cap_gwei, hedera-mainnet and
-# hand_set_floors). arc-mainnet and hedera-mainnet stay listed even while alerts.tf
-# switches their alarms off: two spare series are cheaper than an alarm that is turned
-# back on and finds no data. Every other chain is still read and still returned to the
-# landing page; it is only not published, because a custom metric no alarm reads is
-# paid every month for nothing (COSTO-X402 B7: 85 series, 27 networks without any
-# alarm). tests/scripts/test_chain_metrics_balances.py fails if this drifts.
-MONITORED_CHAINS = frozenset({
-    "arbitrum-mainnet",
-    "arc-mainnet",
-    "avalanche-mainnet",
-    "base-mainnet",
-    "celo-mainnet",
-    "ethereum-mainnet",
-    "hedera-mainnet",
-    "monad-mainnet",
-    "optimism-mainnet",
-    "polygon-mainnet",
-    "sui-mainnet",
-    "solana-mainnet",
-    "stellar-mainnet",
-    "near-mainnet",
-    "algorand-mainnet",
-    "xrpl-mainnet",
-})
-
 
 def publish_chain_metrics(balances: dict[str, str | None]) -> None:
     """
@@ -733,8 +706,6 @@ def publish_chain_metrics(balances: dict[str, str | None]) -> None:
         data = []
 
         for network, balance in balances.items():
-            if network not in MONITORED_CHAINS:
-                continue
             healthy = balance is not None
             data.append({
                 "MetricName": "ChainRpcHealthy",
@@ -755,7 +726,7 @@ def publish_chain_metrics(balances: dict[str, str | None]) -> None:
                     # the balance rather than guessing a value an alarm would act on.
                     print(f"[WARN] non-numeric balance for {network}: {balance!r}")
 
-        # PutMetricData caps at 1000 metrics per call; we send ~32. Chunk anyway so
+        # PutMetricData caps at 1000 metrics per call; we send ~80. Chunk anyway so
         # adding chains never silently truncates the tail.
         for i in range(0, len(data), 1000):
             cw.put_metric_data(Namespace=METRIC_NAMESPACE, MetricData=data[i:i + 1000])

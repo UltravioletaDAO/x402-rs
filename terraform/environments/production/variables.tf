@@ -51,26 +51,6 @@ variable "single_nat_gateway" {
   default     = true
 }
 
-# COSTO-X402 B5. Defaults MUST match production.auto.tfvars: CI's deploy applies on the
-# defaults (terraform.tfvars is gitignored), and aws_ecs_service.facilitator is in its
-# -target list, so ecs_tasks_in_public_subnets reaches AWS on the merge's deploy. The NAT
-# itself is outside every -target list: only a hand apply destroys or recreates it.
-# The NAT stays on in the change that moves the tasks (REF-X402-115 P2-1): the guard below
-# reads variables, not where the tasks run, and no graph edge orders the NAT destroy after
-# the service's rolling deployment. It goes off in its own change once every task is
-# verified in a public subnet.
-variable "enable_nat_gateway" {
-  description = "Create the NAT gateway(s) and their EIPs. false saves ~$31/mo (COSTO-X402 B5) once the facilitator tasks egress through the IGW from the public subnets. Turn it off only in its own apply, after verifying no task runs in a private subnet. Rollback after that: the deploy never creates the NAT, so first a HAND apply from a branch with this at true (plan -out=nat.tfplan -target=aws_route_table.private, which drags aws_nat_gateway.main and aws_eip.nat; review; apply nat.tfplan), then verify the NAT is available and the private default route is active (not blackhole) on the new NAT, and only then merge that branch and open another PR with ecs_tasks_in_public_subnets = false. Do NOT git revert PR #115 after the NAT is off without those two steps: a PR that changes both values together leaves the tasks with no egress. Runbook: docs/handoffs/COSTO-X402-recorte-aws.md."
-  type        = bool
-  default     = true
-}
-
-variable "ecs_tasks_in_public_subnets" {
-  description = "Run the facilitator tasks in the public subnets with assign_public_ip = true (COSTO-X402 B5). The outbound address stops being the NAT EIP and becomes each task's own, changing on every task replacement. false puts them back in the private subnets, which needs enable_nat_gateway = true."
-  type        = bool
-  default     = true
-}
-
 variable "task_cpu" {
   description = <<-EOT
     Fargate task CPU units (1024 = 1 vCPU).
@@ -90,22 +70,15 @@ variable "task_cpu" {
     lines). The next deploy answers this with `aws logs filter-log-events` -- no ECS Exec,
     no dedicated investigation -- read that number before touching this value. 1 worker
     keeps 1024; N workers with headroom makes 512 defensible.
-
-    2026-10-06 (COSTO-X402, B3): 512. Measured over the cost assessment of 2026-10-05:
-    CPU 2.6 % average of 1024 units, memory 12 % (max 16.5 %) of 2048 MB, two tasks.
-    At 512/1024 that is ~5 % CPU and ~33 % memory at the observed max, under the 80 %
-    memory autoscaling target. Rollback gate: after the deploy, read the boot line
-    `tokio worker threads` in /ecs/facilitator-production; `workers=1` means revert
-    this default and task_memory (and production.auto.tfvars) to 1024/2048.
   EOT
   type    = number
-  default = 512
+  default = 1024
 }
 
 variable "task_memory" {
-  description = "Fargate task memory in MB. 1024 since COSTO-X402 (B3): max observed use was 16.5 % of 2048 (~340 MB), and no container in the task sets its own hard limit. Must stay a valid Fargate pair with task_cpu (512 -> 1024..4096)."
+  description = "Fargate task memory in MB"
   type        = number
-  default     = 1024
+  default     = 2048
 }
 
 variable "desired_count" {
@@ -253,26 +226,15 @@ variable "enable_container_insights" {
     docs/COST_RIGHTSIZING_HANDOFF_2026-08-07.md still recommends turning this off
     deliberately (~$10-15/mo) -- that recommendation was never wrong, only the claim that it
     had already happened.
-
-    2026-10-06 (COSTO-X402, B8): turned off on purpose. The one alarm that read
-    ECS/ContainerInsights (facilitator-production-no-running-tasks) now reads the ALB's
-    HealthyHostCount instead (alerts-imported.tf); tests/scripts/test_ci_cost_defaults.py
-    fails if any alarm reads that namespace while this default is false.
   EOT
   type    = bool
-  default = false
+  default = true
 }
 
 variable "ecr_repository_name" {
   description = "ECR repository name"
   type        = string
   default     = "facilitator"
-}
-
-variable "enable_facilitator_ecr_lifecycle" {
-  description = "Attach ecr-facilitator-lifecycle.json to the facilitator ECR repository (COSTO-X402 B15). Expiry is irreversible: true only after scripts/ecr_rollback_anchors.py --tag and --preview exit 0 (ecr-lifecycle.tf). Same value in production.auto.tfvars."
-  type        = bool
-  default     = false
 }
 
 variable "image_tag" {

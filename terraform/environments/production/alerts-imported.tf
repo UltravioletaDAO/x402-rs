@@ -97,29 +97,23 @@ resource "aws_cloudwatch_metric_alarm" "orphan_latency_p99" {
   }
 }
 
-# COSTO-X402 B8: this alarm read ECS/ContainerInsights RunningTaskCount, which stops
-# existing once Container Insights is off -- and with treat_missing_data = breaching it
-# would then sit in ALARM forever. Same name, same actions, same evaluation; the metric is
-# now the ALB's HealthyHostCount for the facilitator target group, which AWS publishes
-# every minute whatever the traffic, without Container Insights. It is the stricter
-# signal: a task that runs but fails /health is not counted.
 resource "aws_cloudwatch_metric_alarm" "orphan_no_running_tasks" {
   alarm_name          = "facilitator-production-no-running-tasks"
   comparison_operator = "LessThanThreshold"
   evaluation_periods  = 2
   datapoints_to_alarm = 2
-  metric_name         = "HealthyHostCount"
-  namespace           = "AWS/ApplicationELB"
+  metric_name         = "RunningTaskCount"
+  namespace           = "ECS/ContainerInsights"
   period              = 300
   statistic           = "Minimum"
   threshold           = 1
   treat_missing_data  = "breaching"
 
-  alarm_description = "Facilitator has zero healthy targets behind the ALB -- service is DOWN, all EM escrow/reputation ops fail"
+  alarm_description = "Facilitator has zero running ECS tasks -- service is DOWN, all EM escrow/reputation ops fail"
 
   dimensions = {
-    LoadBalancer = aws_lb.main.arn_suffix
-    TargetGroup  = aws_lb_target_group.main.arn_suffix
+    ServiceName = aws_ecs_service.facilitator.name
+    ClusterName = aws_ecs_cluster.main.name
   }
 
   alarm_actions = [

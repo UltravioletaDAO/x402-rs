@@ -71,22 +71,13 @@ resource "aws_subnet" "private" {
 # NAT configuration:
 #   single_nat_gateway = true   -> one NAT in AZ-0 (cheapest, AZ-0 outage drops egress for ALL private subnets)
 #   single_nat_gateway = false  -> one NAT per AZ (multi-AZ resilience, ~$32/mo per extra NAT)
-#   enable_nat_gateway = false  -> no NAT and no EIP at all (COSTO-X402 B5). Only valid while
-#                                  ecs_tasks_in_public_subnets = true: the tasks then reach the
-#                                  internet through the IGW with their own public IP. Never in
-#                                  the same apply that moves the tasks: nothing orders the NAT
-#                                  destroy after the service's rolling deployment.
-# The private route tables and subnets stay either way: the Secrets Manager endpoint ENI
-# lives in a private subnet and the gateway endpoints attach to these tables, so turning the
-# NAT back on is `enable_nat_gateway = true` in one apply, nothing else to recreate.
 locals {
-  nat_count         = var.single_nat_gateway ? 1 : length(var.availability_zones)
-  nat_gateway_count = var.enable_nat_gateway ? local.nat_count : 0
+  nat_count = var.single_nat_gateway ? 1 : length(var.availability_zones)
 }
 
 # Elastic IPs for NAT (one per NAT gateway)
 resource "aws_eip" "nat" {
-  count  = local.nat_gateway_count
+  count  = local.nat_count
   domain = "vpc"
 
   tags = {
@@ -97,7 +88,7 @@ resource "aws_eip" "nat" {
 # NAT Gateway(s) for private subnets to reach internet.
 # Placed in the matching public subnet so traffic stays in-AZ when multi-AZ.
 resource "aws_nat_gateway" "main" {
-  count         = local.nat_gateway_count
+  count         = local.nat_count
   allocation_id = aws_eip.nat[count.index].id
   subnet_id     = aws_subnet.public[count.index].id
 
@@ -129,16 +120,9 @@ resource "aws_route_table" "private" {
   count  = local.nat_count
   vpc_id = aws_vpc.main.id
 
-  # Without a NAT there is no default route here. `route` is an attributes-as-blocks
-  # argument: zero blocks leaves the existing entry unmanaged, so after the NAT is
-  # destroyed its old 0.0.0.0/0 entry shows as a blackhole until someone deletes it
-  # (`aws ec2 delete-route`). Harmless: no task runs in these subnets in that mode.
-  dynamic "route" {
-    for_each = var.enable_nat_gateway ? [count.index] : []
-    content {
-      cidr_block     = "0.0.0.0/0"
-      nat_gateway_id = aws_nat_gateway.main[route.value].id
-    }
+  route {
+    cidr_block     = "0.0.0.0/0"
+    nat_gateway_id = aws_nat_gateway.main[count.index].id
   }
 
   tags = {
@@ -324,8 +308,7 @@ resource "aws_vpc_endpoint" "dynamodb" {
   vpc_id            = aws_vpc.main.id
   service_name      = "com.amazonaws.${data.aws_region.current.name}.dynamodb"
   vpc_endpoint_type = "Gateway"
-  # The public table too: with ecs_tasks_in_public_subnets the tasks route through it.
-  route_table_ids = concat(aws_route_table.private[*].id, [aws_route_table.public.id])
+  route_table_ids   = aws_route_table.private[*].id
 
   tags = {
     Name = "facilitator-${var.environment}-dynamodb-endpoint"
@@ -343,8 +326,7 @@ resource "aws_vpc_endpoint" "s3" {
   vpc_id            = aws_vpc.main.id
   service_name      = "com.amazonaws.${data.aws_region.current.name}.s3"
   vpc_endpoint_type = "Gateway"
-  # The public table too: with ecs_tasks_in_public_subnets the tasks route through it.
-  route_table_ids = concat(aws_route_table.private[*].id, [aws_route_table.public.id])
+  route_table_ids   = aws_route_table.private[*].id
 
   tags = {
     Name = "facilitator-${var.environment}-s3-endpoint"
@@ -1433,15 +1415,10 @@ resource "aws_ecs_service" "facilitator" {
   desired_count   = var.desired_count
   launch_type     = "FARGATE"
 
-  # COSTO-X402 B5: in the public subnets with their own public IP, so egress (RPCs, ECR,
-  # CloudWatch Logs) leaves through the IGW and not a NAT. Inbound is still only the
-  # ecs_tasks SG: 8080 from the ALB SG plus the writer-lease `self` rule, nothing from
-  # 0.0.0.0/0. Peers still forward to each other's PRIVATE address (the ECS metadata
-  # endpoint lists only the ENI's private IPv4, src/writer_lease.rs).
   network_configuration {
-    subnets          = var.ecs_tasks_in_public_subnets ? aws_subnet.public[*].id : aws_subnet.private[*].id
+    subnets          = aws_subnet.private[*].id
     security_groups  = [aws_security_group.ecs_tasks.id]
-    assign_public_ip = var.ecs_tasks_in_public_subnets
+    assign_public_ip = false
   }
 
   load_balancer {
@@ -1462,11 +1439,6 @@ resource "aws_ecs_service" "facilitator" {
   # Allow changes to task definition without destroying the service
   lifecycle {
     ignore_changes = [desired_count]
-
-    precondition {
-      condition     = var.enable_nat_gateway || var.ecs_tasks_in_public_subnets
-      error_message = "enable_nat_gateway = false leaves the private subnets with no route out: the tasks must run in the public subnets (ecs_tasks_in_public_subnets = true) first."
-    }
   }
 
   depends_on = [

@@ -23525,6 +23525,43 @@ mod zama_switch_tests {
         );
     }
 
+    /// The control of [`off_a_refused_probe_is_not_recorded`], against
+    /// `/settle`: the scheme name spelled with a JSON escape misses the early
+    /// refusal, so the gate inside the alternate-scheme block of `/settle` is
+    /// all that stands between it and the FHE facilitator. It refuses it, in
+    /// both x402 versions, and the refusal is recorded as `scheme_disabled`
+    /// (a request that reached the proxy would answer 200 or 502, recorded as
+    /// something else).
+    #[test]
+    fn off_an_escaped_scheme_name_is_refused_by_the_settle_gate() {
+        let recorded = with_env("X402_EVENTS_PUBLISH_FAILURES", "true", || {
+            with_dead_fhe_endpoint(|| {
+                with_flag(None, || {
+                    block_on(async {
+                        let bus = Arc::new(crate::events::EventBus::from_env());
+                        let mut events = bus.try_subscribe().expect("a subscriber slot");
+                        for body in [FHE_V1, FHE_V2] {
+                            let escaped =
+                                body.replace("\"fhe-transfer\"", "\"fhe\\u002dtransfer\"");
+                            assert!(!escaped.contains(crate::zama::SCHEME));
+                            let (status, refused) =
+                                post_on(Arc::clone(&bus), "/settle", &escaped).await;
+                            assert_eq!(status, StatusCode::BAD_REQUEST, "{refused}");
+                            assert_eq!(refused["success"], false, "{refused}");
+                            assert_eq!(refused["errorReason"], "unsupported_scheme", "{refused}");
+                        }
+                        let mut recorded = Vec::new();
+                        while let Ok(event) = events.try_recv() {
+                            recorded.push((event.kind, event.error));
+                        }
+                        recorded
+                    })
+                })
+            })
+        });
+        assert_eq!(recorded, vec![("settle", Some("scheme_disabled")); 2]);
+    }
+
     /// On, the branch lets the request through to the proxy, as before.
     #[test]
     fn on_the_gate_lets_the_scheme_through_to_the_proxy() {

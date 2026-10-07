@@ -395,6 +395,7 @@ fn days_from_civil((y, m, d): (i64, u32, u32)) -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
 
     #[test]
     fn civil_conversions_round_trip() {
@@ -420,5 +421,256 @@ mod tests {
         let march_first_leap = (2024_i64, 3_u32, 1_u32);
         let prev = super::super::civil_from_days(days_from_civil(march_first_leap) - 1);
         assert_eq!(prev, (2024, 2, 29));
+    }
+
+    /// Every attribute the Bazaar usage counters read off a settle record, as
+    /// this store names it: `ingest` (`src/discovery_usage.rs`) keeps only a
+    /// successful settle of the window (`kind`, `ok`, `ts`), matches it on
+    /// `network`, `resource`, `payer`, `pay_to`, `asset`, `scheme` and
+    /// `amount`, and holds it by its sort key (`ts`, `kind`, `tx`).
+    const USAGE_READS: [&str; 11] = [
+        "ts", "kind", "ok", "network", "resource", "payer", "pay_to", "asset", "scheme", "amount",
+        "tx",
+    ];
+
+    const SELLER: &str = "0x1234567890123456789012345678901234567890";
+    const USDC_BASE: &str = "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913";
+    const URL: &str = "https://api.example.com/quote";
+
+    /// A DynamoDB endpoint on localhost that keeps the rows `PutItem` writes
+    /// and answers a `Query` the way DynamoDB does: the rows of the partition
+    /// `:pk` names, each with only the attributes `ProjectionExpression` names
+    /// (`#placeholders` resolved through `ExpressionAttributeNames`), and a 400
+    /// for a declared name or value no expression uses. `UpdateItem` (the
+    /// aggregate) answers `{}`. Records every `Query` body.
+    async fn projecting_stub(queries: Arc<std::sync::Mutex<Vec<serde_json::Value>>>) -> String {
+        use axum::http::{HeaderMap, StatusCode};
+
+        let rows: Arc<std::sync::Mutex<Vec<serde_json::Value>>> = Default::default();
+        let app = axum::Router::new().route(
+            "/",
+            axum::routing::post(move |headers: HeaderMap, body: axum::body::Bytes| {
+                let (rows, queries) = (rows.clone(), queries.clone());
+                async move {
+                    let request: serde_json::Value =
+                        serde_json::from_slice(&body).unwrap_or_default();
+                    let target = headers
+                        .get("x-amz-target")
+                        .and_then(|v| v.to_str().ok())
+                        .unwrap_or_default();
+                    let answer = match target {
+                        "DynamoDB_20120810.PutItem" => {
+                            rows.lock().unwrap().push(request["Item"].clone());
+                            Ok(serde_json::json!({}))
+                        }
+                        "DynamoDB_20120810.Query" => {
+                            queries.lock().unwrap().push(request.clone());
+                            query(&request, &rows.lock().unwrap())
+                        }
+                        _ => Ok(serde_json::json!({})),
+                    };
+                    let (status, body) = match answer {
+                        Ok(body) => (StatusCode::OK, body),
+                        Err(message) => (
+                            StatusCode::BAD_REQUEST,
+                            serde_json::json!({
+                                "__type": "com.amazon.coral.validate#ValidationException",
+                                "message": message,
+                            }),
+                        ),
+                    };
+                    (
+                        status,
+                        [(
+                            axum::http::header::CONTENT_TYPE,
+                            "application/x-amz-json-1.0",
+                        )],
+                        body.to_string(),
+                    )
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        format!("http://{addr}")
+    }
+
+    /// The stub's `Query`: see [`projecting_stub`].
+    fn query(
+        request: &serde_json::Value,
+        rows: &[serde_json::Value],
+    ) -> Result<serde_json::Value, String> {
+        let empty = serde_json::Map::new();
+        let names = request["ExpressionAttributeNames"]
+            .as_object()
+            .unwrap_or(&empty);
+        let values = request["ExpressionAttributeValues"]
+            .as_object()
+            .unwrap_or(&empty);
+        let expressions = [
+            "KeyConditionExpression",
+            "FilterExpression",
+            "ProjectionExpression",
+        ]
+        .iter()
+        .filter_map(|k| request[*k].as_str())
+        .collect::<Vec<_>>()
+        .join(" ");
+        let used: std::collections::HashSet<&str> = expressions
+            .split(|c: char| !(c.is_ascii_alphanumeric() || matches!(c, '_' | '#' | ':')))
+            .collect();
+        if let Some(unused) = names
+            .keys()
+            .chain(values.keys())
+            .find(|k| !used.contains(k.as_str()))
+        {
+            return Err(format!("unused in expressions: {unused}"));
+        }
+        let projection: Option<Vec<&str>> = request["ProjectionExpression"].as_str().map(|p| {
+            p.split(',')
+                .map(|a| {
+                    let a = a.trim();
+                    names.get(a).and_then(|n| n.as_str()).unwrap_or(a)
+                })
+                .collect()
+        });
+        let items: Vec<serde_json::Value> = rows
+            .iter()
+            .filter(|row| Some(&row["pk"]) == values.get(":pk"))
+            .map(|row| match &projection {
+                None => row.clone(),
+                Some(attributes) => attributes
+                    .iter()
+                    .filter_map(|a| row.get(*a).map(|v| (a.to_string(), v.clone())))
+                    .collect::<serde_json::Map<_, _>>()
+                    .into(),
+            })
+            .collect();
+        Ok(serde_json::json!({
+            "Items": items,
+            "Count": items.len(),
+            "ScannedCount": items.len(),
+        }))
+    }
+
+    fn stub_store(endpoint: String) -> DynamoTransactionStore {
+        use aws_sdk_dynamodb::config::{BehaviorVersion, Builder, Credentials, Region};
+
+        let config = Builder::new()
+            .behavior_version(BehaviorVersion::latest())
+            .endpoint_url(endpoint)
+            .region(Region::new("us-east-2"))
+            .credentials_provider(Credentials::new("test", "test", None, None, "test"))
+            .build();
+        DynamoTransactionStore::new(
+            aws_sdk_dynamodb::Client::from_conf(config),
+            "facilitator-transactions".to_string(),
+            DEFAULT_TTL_DAYS,
+        )
+    }
+
+    /// `settles_since` reads through a projection, and DynamoDB answers an
+    /// attribute the projection leaves out by leaving it out, with no error.
+    /// Leave out one the usage counters read and `ingest` skips every
+    /// settlement: `usage` reads zero in production while every store the rest
+    /// of the suite reads through is a stub that returns whole records. So:
+    /// the projection names each of [`USAGE_READS`], a settle written by
+    /// `record` comes back from `settles_since` with each of them, and the
+    /// usage counters count it.
+    #[tokio::test]
+    async fn the_settles_since_projection_names_every_attribute_usage_reads() {
+        use crate::caip2::Caip2NetworkId;
+        use crate::discovery_price::{CatalogPaymentOption, CatalogScheme};
+        use crate::types::{MixedAddress, Scheme, TokenAmount};
+
+        let queries = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let store = stub_store(projecting_stub(queries.clone()).await);
+        let now = crate::events::now_ms();
+        let written = TransactionRecord {
+            ts: now - 60_000,
+            kind: "settle".into(),
+            network: "base".into(),
+            ok: true,
+            payer: Some("0x00000000000000000000000000000000000000a1".into()),
+            tx: Some("0xfeed".into()),
+            amount: Some("10000".into()),
+            asset: Some(USDC_BASE.into()),
+            resource: Some(URL.into()),
+            pay_to: Some(SELLER.into()),
+            description: Some("not read by the usage counters".into()),
+            scheme: Some("exact".into()),
+        };
+        store
+            .record(written.clone())
+            .await
+            .expect("the stub takes the write");
+
+        let read = store
+            .settles_since(now - 3_600_000)
+            .await
+            .expect("the stub answers the Query")
+            .expect("this store keeps history");
+
+        let request = queries.lock().unwrap().last().cloned().expect("a Query");
+        let projected: Vec<&str> = request["ProjectionExpression"]
+            .as_str()
+            .expect("settles_since reads through a projection")
+            .split(',')
+            .map(|a| {
+                let a = a.trim();
+                request["ExpressionAttributeNames"][a].as_str().unwrap_or(a)
+            })
+            .collect();
+        for attribute in USAGE_READS {
+            assert!(
+                projected.contains(&attribute),
+                "the projection leaves out `{attribute}`: {projected:?}"
+            );
+        }
+
+        assert_eq!(read.len(), 1, "{read:?}");
+        let expected = serde_json::to_value(TransactionRecord {
+            description: None,
+            ..written.clone()
+        })
+        .unwrap();
+        let got = serde_json::to_value(&read[0]).unwrap();
+        for attribute in USAGE_READS {
+            let field = match attribute {
+                "pay_to" => "payTo",
+                other => other,
+            };
+            assert_eq!(
+                got[field], expected[field],
+                "`{attribute}` did not come back"
+            );
+        }
+
+        let listing = crate::types_v2::DiscoveryResource::new(
+            url::Url::parse(URL).unwrap(),
+            "http".to_string(),
+            String::new(),
+            vec![CatalogPaymentOption::new(
+                CatalogScheme::Known(Scheme::Exact),
+                Caip2NetworkId::eip155(8453),
+                MixedAddress::Evm(USDC_BASE.parse().unwrap()),
+                TokenAmount::from(10_000u64),
+                MixedAddress::Evm(SELLER.parse().unwrap()),
+                300,
+            )],
+        );
+        let tracker = crate::discovery_usage::UsageTracker::new();
+        tracker
+            .refresh(&store, now)
+            .await
+            .expect("the stub answers every day of the window");
+        let usage = tracker
+            .snapshot()
+            .expect("read once")
+            .of(&listing)
+            .expect("not a template");
+        assert_eq!(usage.calls_30d, 1, "{usage:?}");
+        assert_eq!(usage.unique_payers_30d, 1, "{usage:?}");
     }
 }

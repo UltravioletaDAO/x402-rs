@@ -98,6 +98,10 @@ refuse a listing on that declaration, and must never read one nobody made.
 - **`hasInputSchema`**: whether `extensions.bazaar` declares the input. Derived; the declaration
   itself stays in `extensions.bazaar`.
 
+**Since 2.49.0** a listing that declares no category at all is placed by deterministic rules over
+its host, path, description and schema, as `inferred` -- see
+`docs/plans/bazaar/11-categories-upstream-usage-ranking.md`. What follows is the declared half.
+
 Resolution order: an operator **override** (host-exact + path-boundary, the curation manifest's
 matcher) decides first; otherwise every value the seller declared — `metadata.category`, then
 `extensions.bazaar.category`, then a `bazaar.category` inside an option's `extra` — normalized
@@ -117,6 +121,7 @@ seller that tags itself `market-data` sells data about the x402 market, not abou
 | `social/reddit` | Read or search Reddit. |
 | `finance` | Markets and money outside crypto: stock quotes, FX, financial statements, market data. |
 | `crypto` | Blockchain and token data: prices, balances, on-chain activity, DeFi. |
+| `rpc` | Blockchain node access: JSON-RPC methods sent to a chain's node (getLatestBlockhash, eth_call, eth_blockNumber). Added in 2.49.0 (doc 11). |
 | `weather` | Weather conditions and forecasts. |
 | `image` | Generate, edit or analyse images. |
 | `human-work` | Work done by people on request, with evidence of it: physical errands, on-site checks, data collection. |

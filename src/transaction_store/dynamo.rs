@@ -226,6 +226,65 @@ impl TransactionStore for DynamoTransactionStore {
         Ok(out)
     }
 
+    async fn settles_since(
+        &self,
+        since_ms: u64,
+    ) -> Result<Option<Vec<TransactionRecord>>, TransactionStoreError> {
+        let mut out = Vec::new();
+        let first = since_ms as i64 / 86_400_000;
+        let today = (crate::events::now_ms() / 86_400_000) as i64;
+        // One Query per day partition, oldest first, each starting at the
+        // cursor's sort key on the cursor's own day; never more days than the
+        // usage window, whatever the cursor says.
+        let first = first.max(today - crate::discovery_usage::USAGE_WINDOW_DAYS as i64);
+        for day in first..=today {
+            let (y, m, d) = super::civil_from_days(day);
+            let pk = format!("day#{y:04}-{m:02}-{d:02}");
+            let from = format!("{:013}", since_ms.max(day as u64 * 86_400_000));
+            let mut start_key = None;
+            loop {
+                let page = self
+                    .client
+                    .query()
+                    .table_name(&self.table_name)
+                    .key_condition_expression("pk = :pk AND #sk >= :from")
+                    .filter_expression("#kind = :settle AND #ok = :yes")
+                    .projection_expression(
+                        "#ts, #kind, #ok, #net, #payer, #payto, #res, #tx, #amount, #asset, #scheme",
+                    )
+                    .expression_attribute_names("#sk", "sk")
+                    .expression_attribute_names("#ts", "ts")
+                    .expression_attribute_names("#kind", "kind")
+                    .expression_attribute_names("#ok", "ok")
+                    .expression_attribute_names("#net", "network")
+                    .expression_attribute_names("#payer", "payer")
+                    .expression_attribute_names("#payto", "pay_to")
+                    .expression_attribute_names("#res", "resource")
+                    .expression_attribute_names("#tx", "tx")
+                    .expression_attribute_names("#amount", "amount")
+                    .expression_attribute_names("#asset", "asset")
+                    .expression_attribute_names("#scheme", "scheme")
+                    .expression_attribute_values(":pk", Self::s(&pk))
+                    .expression_attribute_values(":from", Self::s(&from))
+                    .expression_attribute_values(":settle", Self::s("settle"))
+                    .expression_attribute_values(":yes", AttributeValue::Bool(true))
+                    .set_exclusive_start_key(start_key)
+                    .send()
+                    .await
+                    .map_err(|e| TransactionStoreError::Dynamo(format!("{e:?}")))?;
+                out.extend(page.items().iter().filter_map(Self::from_item));
+                if out.len() >= crate::discovery_usage::MAX_WINDOW_SETTLEMENTS {
+                    return Ok(Some(out));
+                }
+                match page.last_evaluated_key() {
+                    Some(key) if !key.is_empty() => start_key = Some(key.clone()),
+                    _ => break,
+                }
+            }
+        }
+        Ok(Some(out))
+    }
+
     async fn backfill(&self) -> Result<Vec<BackfillRow>, TransactionStoreError> {
         // One bounded Query against its own partition — same shape as
         // `aggregates`, never a scan, and it cannot pick up a live row because

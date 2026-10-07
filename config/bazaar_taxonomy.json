@@ -13,6 +13,7 @@
     "social/reddit": "Read or search Reddit.",
     "finance": "Markets and money outside crypto: stock quotes, FX, financial statements, market data.",
     "crypto": "Blockchain and token data: prices, balances, on-chain activity, DeFi.",
+    "rpc": "Blockchain node access: JSON-RPC methods sent to a chain's node (getLatestBlockhash, eth_call, eth_blockNumber).",
     "weather": "Weather conditions and forecasts.",
     "image": "Generate, edit or analyse images.",
     "human-work": "Work done by people on request, with evidence of it: physical errands, on-site checks, data collection.",
@@ -57,6 +58,10 @@
     "onchain": "crypto",
     "on-chain": "crypto",
     "defi": "crypto",
+    "json-rpc": "rpc",
+    "jsonrpc": "rpc",
+    "rpc-node": "rpc",
+    "rpc-provider": "rpc",
     "image-generation": "image",
     "images": "image",
     "person": "people",
@@ -94,5 +99,142 @@
       "kind": "content",
       "$evidence": "Paid essays, one per URL. Catalog snapshot of 2026-10-01T20:03Z: 379 listings under this prefix, all self_registered, none declaring a category; the publisher's two other listings on this host (/api/answer, /api/phone-lookup) are tools, outside the prefix, and stay api. The publisher asked, in its Bazaar feedback of 2026-10-01, for the essays to be tagged as content and not as tools; the owner of this facilitator approved it on 2026-10-02."
     }
-  ]
+  ],
+  "inference": {
+    "$comment": "Categories for the listings that declare none, from what the listing says about itself: its host, its path, its description and the field names and descriptions of its declared schema (extensions.bazaar). Never tags, never the provider, never a listing that declares any category (a declaration is normalized or left unmapped, never reinterpreted), never content. Each phrase is normalized with the search tokenizer (lowercase, accents and stopwords out, camelCase and letters-then-digits split, light stemming) and matches as consecutive words of one field. A listing scores 2 per distinct `strong` phrase and 1 per distinct `weak` phrase of a rule; a category is assigned when it reaches `threshold`, best first (ties in the order below), at most `maxCategories`. A `fallback` category is assigned only when no other one reaches the threshold. Served as categorySource `inferred`. src/discovery_taxonomy.rs tests every rule against a listing that must match it and one that must not.",
+    "threshold": 2,
+    "maxCategories": 2,
+    "rules": [
+      {
+        "category": "rpc",
+        "strong": ["rpc", "json rpc", "jsonrpc", "blockhash", "eth call", "eth get", "eth block number", "rpc endpoint", "rpc node", "full node", "archive node", "node provider"],
+        "weak": ["node", "block number", "block height", "mempool", "transaction receipt", "get block", "get slot", "send transaction"]
+      },
+      {
+        "category": "social/x",
+        "strong": ["twitter", "tweet", "retweet", "formerly twitter"],
+        "weak": ["follower", "hashtag"]
+      },
+      {
+        "category": "social/reddit",
+        "strong": ["reddit", "subreddit", "redditor"],
+        "weak": []
+      },
+      {
+        "category": "weather",
+        "strong": ["weather", "weather forecast", "meteo", "meteorological", "precipitation", "humidity", "clima", "pronostico", "uv index"],
+        "weak": ["forecast", "temperature", "wind", "rain", "snow", "storm"]
+      },
+      {
+        "category": "people",
+        "strong": ["people search", "person search", "email finder", "find email", "work email", "professional email", "business email", "contact info", "contact information", "linkedin", "phone lookup", "phone number lookup", "reverse phone", "reverse lookup", "caller id", "callerid", "person lookup", "people lookup", "background check", "identity lookup", "contact enrichment", "person enrichment", "people data"],
+        "weak": ["person", "people", "contact", "email", "phone", "carrier", "line type", "profile", "employee"]
+      },
+      {
+        "category": "company",
+        "strong": ["company enrichment", "company data", "company record", "company profile", "company lookup", "company search", "firmographic", "headcount", "org chart", "employee count", "business lookup", "company registry", "corporate registry"],
+        "weak": ["company", "business", "organization", "employer", "industry", "funding", "headquarters", "employee"]
+      },
+      {
+        "category": "web-search",
+        "strong": ["web search", "search engine", "serp", "search result", "google search", "bing search", "search web", "search internet", "internet search", "neural search", "websearch", "web result"],
+        "weak": ["search", "snippet"]
+      },
+      {
+        "category": "page-read",
+        "strong": ["scrape", "scraper", "scraping", "crawl", "crawler", "web page", "webpage", "page content", "extract text", "article text", "readability", "fetch url", "read url", "screenshot"],
+        "weak": ["page", "url", "extract", "read", "fetch", "website", "content", "html", "markdown"]
+      },
+      {
+        "category": "image",
+        "strong": ["image generation", "generate image", "image generator", "text image", "txt2img", "img2img", "stable diffusion", "midjourney", "remove background", "background removal", "upscale", "upscaler", "ocr", "optical character recognition", "image classification", "classify image", "image editing", "edit image", "image recognition", "describe image", "meme generator", "meme maker"],
+        "weak": ["image", "picture", "photo", "illustration", "art", "artwork", "png", "jpeg", "jpg", "generator", "draw", "drawing"]
+      },
+      {
+        "category": "finance",
+        "strong": ["stock price", "stock quote", "stock market", "stock history", "stock data", "share price", "equity", "nasdaq", "nyse", "ticker symbol", "earnings", "options chain", "dividend", "forex", "exchange rate", "currency conversion", "currency exchange", "financial statement", "balance sheet", "income statement", "sec filing", "market cap", "etf", "treasury", "interest rate", "inflation", "macro", "macroeconomic", "gdp", "revenue", "gross profit", "prediction market", "bond yield"],
+        "weak": ["stock", "market", "ticker", "price", "quote", "trading", "profit", "rate", "currency", "fx", "invest", "investment", "portfolio", "fund", "financial", "finance", "bank", "volume"]
+      },
+      {
+        "category": "crypto",
+        "strong": ["crypto", "cryptocurrency", "blockchain", "onchain", "defi", "dex", "nft", "erc20", "erc721", "erc1155", "token price", "token balance", "token holder", "wallet address", "wallet balance", "smart contract", "contract address", "stablecoin", "usdc", "usdt", "bitcoin", "ethereum", "solana", "hyperliquid", "hyperevm", "arbitrum", "memecoin", "meme coin", "airdrop", "staking", "liquidity pool", "uniswap", "swap quote", "bridge quote", "cross chain", "gas price", "evm", "web3", "perp", "whale", "sniper", "debridge", "block explorer", "transaction hash", "tx hash"],
+        "weak": ["token", "wallet", "chain", "coin", "swap", "bridge", "trader", "hash", "transaction", "tx", "gas", "mint", "holder", "trench", "keccak", "eth", "btc", "sol", "base", "polygon", "avalanche", "avax", "bnb", "optimism", "celo", "monad", "sui", "aptos", "tron"]
+      },
+      {
+        "category": "human-work",
+        "strong": ["human worker", "human task", "physical task", "errand", "on site check", "field work", "mechanical turk", "real world task"],
+        "weak": ["human", "task", "worker", "bounty", "gig"]
+      },
+      {
+        "category": "ai",
+        "strong": ["llm", "large language model", "language model", "chat completion", "text completion", "embedding", "inference", "gpt", "claude", "openai", "anthropic", "gemini", "llama", "mistral", "transcribe", "transcription", "speech text", "text speech", "tts", "summarize", "summarization", "sentiment analysis", "chatbot", "rag", "machine translation", "neural network"],
+        "weak": ["ai", "model", "prompt", "chat", "nlp", "translate", "language", "sentiment", "classify", "classification", "completion"]
+      },
+      {
+        "category": "communication",
+        "strong": ["sms", "transactional email", "send email", "push notification", "notification", "messaging", "send message", "text message", "telegram", "discord", "slack", "whatsapp", "irc", "voice call"],
+        "weak": ["send", "message", "email", "inbox", "channel", "chat"]
+      },
+      {
+        "category": "security",
+        "strong": ["security", "vulnerability", "malware", "phishing", "threat", "scam", "rug pull", "honeypot", "fraud", "security audit", "smart contract audit", "dmarc", "dkim", "spf", "ssl certificate", "tls certificate", "penetration test", "exploit", "cve"],
+        "weak": ["risk", "scan", "scanner", "audit"]
+      },
+      {
+        "category": "compliance",
+        "strong": ["compliance", "kyc", "kyb", "aml", "anti money laundering", "sanction", "ofac", "payroll", "regulatory", "gdpr", "tax compliance"],
+        "weak": ["regulation", "license", "licensing", "tax"]
+      },
+      {
+        "category": "reputation",
+        "strong": ["reputation", "trust score", "reputation score", "erc 8004", "credit score"],
+        "weak": ["trust", "score", "rating", "review"]
+      },
+      {
+        "category": "developer-tools",
+        "strong": ["code review", "github", "gitlab", "repository", "npm", "pypi", "sdk", "linter", "compiler", "debugger", "keccak", "function selector", "abi", "calldata", "base64", "regex", "json schema", "unit test", "dns", "whois", "api documentation", "openapi", "swagger", "code generation", "source code"],
+        "weak": ["code", "developer", "encode", "decode", "hash", "json", "hex", "diff", "documentation", "docs", "selector"]
+      },
+      {
+        "category": "research",
+        "strong": ["research", "deep research", "academic", "scholarly", "paper search", "patent", "literature review", "market research"],
+        "weak": ["analysis", "report", "study", "insight", "paper"]
+      },
+      {
+        "category": "advertising",
+        "strong": ["advertising", "advertisement", "ad placement", "sponsored post", "banner ad", "ad slot"],
+        "weak": ["ad", "marketing", "promote", "promotion", "sponsor", "banner"]
+      },
+      {
+        "category": "infrastructure",
+        "strong": ["hosting", "storage", "cdn", "proxy", "vpn", "gpu", "serverless", "facilitator", "payment facilitator", "ipfs", "pinning", "object storage", "key value store", "compute instance", "domain registration", "uptime monitoring"],
+        "weak": ["server", "gateway", "infrastructure", "deploy", "cache", "compute", "uptime", "domain", "database"]
+      },
+      {
+        "category": "data",
+        "fallback": true,
+        "strong": ["dataset", "data pack", "data feed", "csv", "open data", "geocode", "geocoding", "geolocation", "timezone", "time zone", "public holiday", "qr code", "unit conversion", "postal code", "zip code"],
+        "weak": ["data", "lookup", "statistic", "record"]
+      }
+    ]
+  },
+  "upstreams": {
+    "$comment": "The service a listing resells or wraps, so a router can tell ten resellers of one search API from ten search APIs. Closed like the categories: an id below or nothing. Resolved per listing at read time into the response-only `upstream` and `upstreamSource`: `declared` when the seller names it (metadata.upstream, then extensions.bazaar.upstream; an id or a name below, any case), else `inferred`, in this order: the listing's host is one of `hosts` or a subdomain of one; a path segment or a host label equals one of `segments`; a `phrases` entry matches consecutive words of the description. A declaration that maps to nothing is not published and stops inference, like a category. Never inferred for content. `hosts` are each vendor's own domain; a name that is also a common word (perplexity, hunter, apollo, brave) is matched in descriptions only in a form that names the vendor.",
+    "entries": [
+      {"id": "exa", "name": "Exa", "hosts": ["exa.ai"], "segments": ["exa"], "phrases": ["exa"]},
+      {"id": "tavily", "name": "Tavily", "hosts": ["tavily.com"], "segments": ["tavily"], "phrases": ["tavily"]},
+      {"id": "firecrawl", "name": "Firecrawl", "hosts": ["firecrawl.dev"], "segments": ["firecrawl"], "phrases": ["firecrawl"]},
+      {"id": "serpapi", "name": "SerpApi", "hosts": ["serpapi.com"], "segments": ["serpapi"], "phrases": ["serpapi"]},
+      {"id": "brave-search", "name": "Brave Search", "hosts": ["search.brave.com"], "segments": ["brave"], "phrases": ["brave search"]},
+      {"id": "jina", "name": "Jina AI", "hosts": ["jina.ai"], "segments": ["jina"], "phrases": ["jina"]},
+      {"id": "perplexity", "name": "Perplexity", "hosts": ["perplexity.ai"], "segments": [], "phrases": ["perplexity ai", "perplexity sonar"]},
+      {"id": "hunter", "name": "Hunter", "hosts": ["hunter.io"], "segments": ["hunter"], "phrases": ["hunter.io"]},
+      {"id": "apollo", "name": "Apollo", "hosts": ["apollo.io"], "segments": [], "phrases": ["apollo.io"]},
+      {"id": "fullenrich", "name": "FullEnrich", "hosts": ["fullenrich.com"], "segments": ["fullenrich"], "phrases": ["fullenrich"]},
+      {"id": "coingecko", "name": "CoinGecko", "hosts": ["coingecko.com"], "segments": ["coingecko"], "phrases": ["coingecko"]},
+      {"id": "coinmarketcap", "name": "CoinMarketCap", "hosts": ["coinmarketcap.com"], "segments": ["coinmarketcap"], "phrases": ["coinmarketcap"]},
+      {"id": "openai", "name": "OpenAI", "hosts": ["openai.com"], "segments": ["openai"], "phrases": []},
+      {"id": "anthropic", "name": "Anthropic", "hosts": ["anthropic.com"], "segments": ["anthropic"], "phrases": []}
+    ]
+  }
 }

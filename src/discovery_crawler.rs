@@ -272,6 +272,7 @@ impl DiscoveryCrawler {
             .as_secs();
 
         let metadata = resource.metadata.map(|m| DiscoveryMetadata {
+            upstream: None,
             category: m.category,
             provider: m.provider,
             tags: m.tags,
@@ -307,6 +308,9 @@ impl DiscoveryCrawler {
             categories: Vec::new(),
             category_source: None,
             has_input_schema: None,
+            upstream: None,
+            upstream_source: None,
+            usage: None,
         }
     }
 

@@ -84,8 +84,35 @@ const B: f32 = 0.75;
 /// Weight of a lexicon alternative against the word the caller typed.
 const ALTERNATIVE_WEIGHT: f32 = 0.5;
 /// Relevance of a listing kept only by the substring rule: above zero, below
-/// anything a term scored.
-const SUBSTRING_ONLY_SCORE: f32 = 1e-4;
+/// anything a term scored ([`MIN_SCORED`], even after the tier boost).
+const SUBSTRING_ONLY_SCORE: f32 = 1e-9;
+/// The least relevance a listing a term scored is given: coverage can make a
+/// score as small as it likes, and it must still rank above every listing kept
+/// by the substring rule alone.
+const MIN_SCORED: f32 = 1e-6;
+/// Power of the share of the request a listing covers that multiplies its
+/// relevance ([`SearchIndex::scores`]). Squared: a listing that matches half of
+/// what the request says keeps a quarter of its score.
+const COVERAGE_EXPONENT: i32 = 2;
+/// The least share of a request in categories that a listing outside the best
+/// of them must cover to stay in the result, when it is in another of them
+/// (whatever else it is in) or in none ([`SearchIndex::answers_another_request`]).
+const COVERAGE_FLOOR: f32 = 0.5;
+/// The share a listing only in categories the request does not ask for must
+/// cover: all of it, give or take the float sums.
+const WHOLE_REQUEST: f32 = 0.999;
+/// What a content listing keeps of its relevance to a request that names a
+/// category ([`SearchIndex::relevance`]).
+const CONTENT_FOR_A_TASK: f32 = 0.25;
+
+/// What [`SearchIndex::scores`] computes for one query, by document id.
+#[derive(Debug, Clone, Default)]
+pub struct Scores {
+    /// Relevance: BM25 scaled by coverage.
+    score: Vec<f32>,
+    /// The share of the request each listing covers, 0 to 1.
+    coverage: Vec<f32>,
+}
 
 /// Field weights. The path outweighs the description because an aggregated
 /// listing very often has no description at all and `/twitter/search` is
@@ -508,7 +535,9 @@ const LEXICON: &[&[&str]] = &[
         "pricing",
         "quote",
         "rate",
-        "ticker",
+        // Not `ticker`: a ticker is a symbol, not a price. It sat here and in
+        // the stock group, so "Daily stock history for a ticker" covered all
+        // of "stock quote" and took a quote's place (2.49.0).
         "spot",
         "valuation",
         "precio",
@@ -576,6 +605,169 @@ const LEXICON: &[&[&str]] = &[
     ],
 ];
 
+/// Blockchains by the names a listing or a request writes them, each group one
+/// chain.
+///
+/// A request that names a chain never gets a listing that names only OTHER
+/// chains: "solana rpc getLatestBlockhash" against a catalog without a Solana
+/// RPC used to return the HyperEVM one, which shares "rpc" and "get" with it --
+/// an answer a router would pay for and that cannot do the job. Empty is better
+/// than wrong. A listing that names no chain at all (a price feed, a bridge
+/// "between chains") is not excluded, and one that names the requested chain
+/// beside others is kept: only a listing about other chains is.
+///
+/// Only names that are rarely anything else. Left out on purpose: `near`,
+/// `stellar`, `scroll`, `ton`, `blast`, `mantle`, `sonic`, `abstract`, `arc`,
+/// `cosmos` -- ordinary words in a description, where each would make an
+/// unrelated listing look like it is about a chain. `base` stays although it is
+/// a word too: it is the network most x402 payments settle on, and wrongly
+/// reading "knowledge base" as Base only keeps that listing out of requests
+/// that name another chain, which it does not serve anyway. Payment networks
+/// (`accepts`) are never read: what a listing is paid on is not what it is
+/// about.
+const CHAINS: &[&[&str]] = &[
+    &["solana", "sol"],
+    &["ethereum", "eth"],
+    &["bitcoin", "btc"],
+    &["base"],
+    &["arbitrum"],
+    &["optimism"],
+    &["polygon", "matic"],
+    &["avalanche", "avax"],
+    &["bnb", "bsc"],
+    &["hyperevm", "hyperliquid"],
+    &["celo"],
+    &["monad"],
+    &["sui"],
+    &["aptos"],
+    &["tron", "trx"],
+    &["algorand"],
+    &["xrpl", "xrp", "ripple"],
+    &["hedera", "hbar"],
+    &["fogo"],
+    &["unichain"],
+    &["starknet"],
+    &["zksync"],
+    &["linea"],
+    &["cardano"],
+    &["polkadot"],
+    &["dogecoin", "doge"],
+    &["litecoin", "ltc"],
+    &["skale"],
+    &["gnosis"],
+    &["fantom"],
+    &["berachain"],
+];
+
+/// Chain names that are also an ordinary word or a ticker: "knowledge base",
+/// "pay with USDC on Base", a "polygon" in a map, "SOL" or "ETH" in a price
+/// list. In a listing they count only in its host and path; a description that
+/// says them does not make the listing about that chain. A request is read
+/// whole: it names what it asks for.
+const AMBIGUOUS_CHAIN_NAMES: &[&str] = &[
+    "base",
+    "polygon",
+    "optimism",
+    "avalanche",
+    "sol",
+    "eth",
+    "btc",
+    "matic",
+    "avax",
+    "bnb",
+    "doge",
+    "ltc",
+    "trx",
+    "xrp",
+    "hbar",
+    "linea",
+];
+
+/// Phrases in which a chain name is an ordinary word, in English or Spanish
+/// ("base de datos" is a database, "en línea" is online): their words name no
+/// chain, in a request or a listing. Written as [`tokens`] reads each word
+/// (lowercase, no accents), stopwords included, consecutive.
+const NOT_A_CHAIN: &[&str] = &[
+    "base de datos",
+    "bases de datos",
+    "knowledge base",
+    "data base",
+    "code base",
+    "base currency",
+    "moneda base",
+    "base price",
+    "precio base",
+    "en linea",
+];
+
+/// Normalized chain name -> its bit (one per group of [`CHAINS`]).
+static CHAIN_BITS: Lazy<HashMap<String, u64>> = Lazy::new(|| {
+    let mut map = HashMap::new();
+    for (i, group) in CHAINS.iter().enumerate() {
+        for name in *group {
+            if let Some(term) = normalize_word(name) {
+                map.insert(term, 1u64 << i);
+            }
+        }
+    }
+    map
+});
+
+/// The chains the words of `text` name, one bit each: a word as written, or
+/// a camelCase word whole, never the start of a word (`base64` names no
+/// chain), nor a word of a [`NOT_A_CHAIN`] phrase. With `unambiguous_only`,
+/// leaving out [`AMBIGUOUS_CHAIN_NAMES`].
+fn chain_mask(text: &str, unambiguous_only: bool) -> u64 {
+    let named: Vec<(usize, u64)> = text_terms(text)
+        .into_iter()
+        .filter(|t| t.kind != TermKind::Lead)
+        .filter(|t| !(unambiguous_only && AMBIGUOUS_CHAIN_NAMES.contains(&t.term.as_str())))
+        .filter_map(|t| CHAIN_BITS.get(&t.term).map(|bit| (t.word, *bit)))
+        .collect();
+    if named.is_empty() {
+        return 0;
+    }
+    // The same words, in the same order, as `text_terms` numbers them.
+    let words: Vec<String> = text
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|raw| !raw.is_empty())
+        .map(|raw| tokens(raw).concat())
+        .collect();
+    let mut ordinary = vec![false; words.len()];
+    for phrase in NOT_A_CHAIN {
+        let phrase: Vec<&str> = phrase.split(' ').collect();
+        for start in 0..(words.len() + 1).saturating_sub(phrase.len()) {
+            if words[start..start + phrase.len()]
+                .iter()
+                .zip(&phrase)
+                .all(|(word, p)| word == p)
+            {
+                ordinary[start..start + phrase.len()].fill(true);
+            }
+        }
+    }
+    named
+        .into_iter()
+        .filter(|(word, _)| !ordinary.get(*word).copied().unwrap_or(false))
+        .fold(0, |mask, (_, bit)| mask | bit)
+}
+
+/// The chains a listing is about: any chain its host or path names, and the
+/// unambiguous ones its description or declared schema names. Payment
+/// networks (`accepts`) are never read.
+fn listing_chains(r: &DiscoveryResource) -> u64 {
+    let address = format!(
+        "{} {}",
+        r.url.host_str().unwrap_or_default(),
+        path_text(r.url.path())
+    );
+    chain_mask(&address, false)
+        | chain_mask(&r.description, true)
+        | r.extensions
+            .as_ref()
+            .map_or(0, |e| chain_mask(&schema_text(e), true))
+}
+
 /// Normalized word -> every other normalized word that shares a group with it.
 static ALTERNATIVES: Lazy<HashMap<String, Vec<String>>> = Lazy::new(|| {
     let mut map: HashMap<String, Vec<String>> = HashMap::new();
@@ -595,9 +787,12 @@ static ALTERNATIVES: Lazy<HashMap<String, Vec<String>>> = Lazy::new(|| {
 
 /// The one term a single word normalizes to, if it normalizes to exactly one.
 fn normalize_word(word: &str) -> Option<String> {
-    let mut out = Vec::new();
-    tokenize_into(word, &mut out);
-    match out.as_slice() {
+    let words: Vec<String> = text_terms(word)
+        .into_iter()
+        .filter(|t| t.kind == TermKind::Word)
+        .map(|t| t.term)
+        .collect();
+    match words.as_slice() {
         [only] => Some(only.clone()),
         _ => None,
     }
@@ -605,13 +800,99 @@ fn normalize_word(word: &str) -> Option<String> {
 
 /// Split `text` into search terms and append them to `out`: Paarce's
 /// [`tokens`] and [`es_significativo`], after a camelCase split and before a
-/// length cap and [`stem`].
+/// length cap and [`stem`], each word followed by the extra terms
+/// [`text_terms`] reads from it.
 pub(crate) fn tokenize_into(text: &str, out: &mut Vec<String>) {
-    for token in tokens(&split_camel_case(text)) {
-        if es_significativo(&token) && token.len() <= MAX_TERM_CHARS {
-            out.push(stem(&token));
+    out.extend(text_terms(text).into_iter().map(|t| t.term));
+}
+
+/// One term of a text, with what it is and which written word it came from.
+#[derive(Debug, Clone, PartialEq)]
+struct Term {
+    term: String,
+    kind: TermKind,
+    /// Position of the written word (cut on anything that is not a letter or
+    /// a digit) the term came from: `getLatestBlockhash` is one word of three
+    /// terms.
+    word: usize,
+}
+
+/// The copy's own test of a token stays the reference: [`significant`] must
+/// answer exactly as it does (`the_stopword_set_answers_as_paarce_does`).
+const _: fn(&str) -> bool = es_significativo;
+
+/// [`PALABRAS_VACIAS`] as a set.
+static STOPWORDS: Lazy<HashSet<&'static str>> = Lazy::new(|| PALABRAS_VACIAS.into_iter().collect());
+
+/// [`es_significativo`], answered from a set: the copy scans its 197 words
+/// for every token, and every listing's text is split into tokens for the
+/// index and the categories. Same answer, pinned by a test.
+fn significant(token: &str) -> bool {
+    token.chars().count() >= LARGO_MINIMO_SIGNIFICATIVO && !STOPWORDS.contains(token)
+}
+
+/// What a term of a text is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TermKind {
+    /// A word as the tokenizer cuts it.
+    Word,
+    /// A camelCase word written whole: `DeFi` -> `defi`, after `fi`;
+    /// `HyperEVM` -> `hyperevm`, after `hyper` and `evm`.
+    Whole,
+    /// The letters a word starts with when digits follow ([`leading_word`]).
+    Lead,
+}
+
+/// Each search term of `text`, in order: the words, each followed by the word
+/// it starts with when digits follow it, and every camelCase word followed by
+/// its whole spelling.
+///
+/// The camelCase split is what lets a schema's `companyDomain` say "company"
+/// and "domain", and it cut proper names in pieces nobody types: `DeFi` was
+/// `fi` (`de` is a stopword), `LinkedIn` was `linked`, `WhatsApp` was `whats
+/// app`, `HyperEVM` was `hyper evm`. So the whole word is kept beside its
+/// pieces.
+fn text_terms(text: &str) -> Vec<Term> {
+    let keep = |token: &str| significant(token) && token.len() <= MAX_TERM_CHARS;
+    let mut out = Vec::new();
+    for (word, raw) in text
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|raw| !raw.is_empty())
+        .enumerate()
+    {
+        let term = |term: String, kind| Term { term, kind, word };
+        let parts = tokens(&split_camel_case(raw));
+        let split = parts.len() > 1;
+        for token in parts.iter().filter(|t| keep(t)) {
+            out.push(term(stem(token), TermKind::Word));
+            if let Some(lead) = leading_word(token) {
+                out.push(term(stem(lead), TermKind::Lead));
+            }
+        }
+        if split {
+            if let [whole] = tokens(raw).as_slice() {
+                if keep(whole) {
+                    out.push(term(stem(whole), TermKind::Whole));
+                }
+            }
         }
     }
+    out
+}
+
+/// The letters a token starts with when digits follow them, if they make a
+/// word of their own: `keccak256` -> `keccak`, `gpt4o` -> `gpt`, `web3` ->
+/// `web`, a host label `weather0` -> `weather`; `x402` and `v2` have none.
+///
+/// Paarce cuts on anything that is not `[a-z0-9]`, so a seller's `keccak256`
+/// was one term no request for "keccak" could meet, while a CSS scraper that
+/// says "selector" three times met the other word of "keccak selector" and won
+/// it. The whole token stays, so a request for `keccak256` still prefers the
+/// listing that says exactly that.
+fn leading_word(token: &str) -> Option<&str> {
+    let end = token.find(|c: char| !c.is_ascii_lowercase())?;
+    let word = &token[..end];
+    (token[end..].starts_with(|c: char| c.is_ascii_digit()) && significant(word)).then_some(word)
 }
 
 /// `personName` -> `person Name`, `x402Version` -> `x402 Version`.
@@ -674,7 +955,7 @@ fn stem(word: &str) -> String {
 
 /// A URL path with each `%XX` escape read as a separator, so a template
 /// `/item/%7Bid%7D` contributes `item` and `id`, not `7bid`.
-fn path_text(path: &str) -> String {
+pub(crate) fn path_text(path: &str) -> String {
     let bytes = path.as_bytes();
     let mut out = String::with_capacity(path.len());
     let mut i = 0;
@@ -750,7 +1031,7 @@ const MAX_SCHEMA_TEXT: usize = 2_048;
 /// wrote for them. Example values are left out -- `"0xd8da..."` describes
 /// nothing -- and inside an example a key named `title` is a field like any
 /// other, not a schema title.
-fn schema_text(extensions: &serde_json::Value) -> String {
+pub(crate) fn schema_text(extensions: &serde_json::Value) -> String {
     let mut out = String::new();
     if let Some(bazaar) = extensions.get("bazaar") {
         let mut keys_left = MAX_SCHEMA_KEYS;
@@ -932,6 +1213,12 @@ fn clip(text: &str, max: usize) -> &str {
 pub struct IndexDocument {
     key: String,
     fields: Option<Vec<(String, f32)>>,
+    /// The listing's categories ([`crate::discovery_taxonomy::Taxonomy::category_bits`]).
+    categories: u64,
+    /// Whether the listing sells content rather than a call to a tool.
+    content: bool,
+    /// The chains the listing is about ([`listing_chains`]).
+    chains: u64,
 }
 
 impl IndexDocument {
@@ -947,9 +1234,14 @@ impl IndexDocument {
                 fields.push((text.to_string(), weight));
             }
         });
+        let taxonomy = crate::discovery_taxonomy::taxonomy();
+        let class = taxonomy.classify(r);
         Self {
             key: key.to_string(),
             fields: Some(fields),
+            categories: taxonomy.category_bits(&class.categories),
+            content: class.kind == crate::discovery_taxonomy::Kind::Content,
+            chains: listing_chains(r),
         }
     }
 
@@ -958,6 +1250,9 @@ impl IndexDocument {
         Self {
             key: key.to_string(),
             fields: None,
+            categories: 0,
+            content: false,
+            chains: 0,
         }
     }
 
@@ -1031,6 +1326,10 @@ pub struct SearchQuery {
     /// One entry per distinct term the caller typed: that term at weight 1,
     /// then its lexicon alternatives.
     concepts: Vec<Vec<(String, f32)>>,
+    /// The written word each concept came from, by concept
+    /// ([`Term::word`]): coverage weighs written words, not the pieces a
+    /// camelCase word is cut into.
+    concept_words: Vec<usize>,
     /// The needle of the substring test, normalized exactly as 2.46.1 did.
     needle: String,
     /// Whether `q` is short enough for the substring test to keep its matches
@@ -1039,6 +1338,15 @@ pub struct SearchQuery {
     /// Whether `q` is one word: no whitespace in it, however many terms it
     /// splits into (`stock-quote`, `tenjin.blog`).
     one_word: bool,
+    /// The chains `q` names ([`CHAINS`]), one bit each; 0 when it names none.
+    chains: u64,
+    /// The categories `q` asks for
+    /// ([`crate::discovery_taxonomy::Taxonomy::request_categories`]), as bits of
+    /// [`crate::discovery_taxonomy::Taxonomy::category_bits`]; 0 when its words
+    /// place it in none.
+    categories: u64,
+    /// The best of them alone.
+    best_category: u64,
 }
 
 impl SearchQuery {
@@ -1053,28 +1361,49 @@ impl SearchQuery {
         let needle = trimmed.to_ascii_lowercase();
         let substring_rule = trimmed.chars().count() <= LEGACY_SUBSTRING_MAX_CHARS;
 
-        let mut terms = Vec::new();
-        tokenize_into(trimmed, &mut terms);
+        let terms = text_terms(trimmed);
+        // A request names a chain by any of its names, the ambiguous ones
+        // included: it says what it asks for.
+        let chains = chain_mask(trimmed, false);
         let mut seen = HashSet::new();
-        let mut concepts = Vec::new();
-        for term in terms {
-            if concepts.len() >= MAX_QUERY_TERMS {
-                break;
-            }
-            if !seen.insert(term.clone()) {
+        let mut concepts: Vec<Vec<(String, f32)>> = Vec::new();
+        let mut concept_words = Vec::new();
+        // Whether the last word typed opened a concept (and was not a repeat
+        // or past the cap): its extra spellings join that concept.
+        let mut open = false;
+        for t in terms {
+            if t.kind != TermKind::Word {
+                // `keccak256` also finds a listing that writes `Keccak-256`,
+                // and `getLatestBlockhash` one that writes it in one word.
+                if let Some(concept) = concepts.last_mut().filter(|_| open) {
+                    if concept.iter().all(|(term, _)| *term != t.term) {
+                        concept.push((t.term, ALTERNATIVE_WEIGHT));
+                    }
+                }
                 continue;
             }
-            let mut alternatives = vec![(term.clone(), 1.0)];
-            if let Some(more) = ALTERNATIVES.get(&term) {
+            open = concepts.len() < MAX_QUERY_TERMS && seen.insert(t.term.clone());
+            if !open {
+                continue;
+            }
+            let mut alternatives = vec![(t.term.clone(), 1.0)];
+            if let Some(more) = ALTERNATIVES.get(&t.term) {
                 alternatives.extend(more.iter().map(|a| (a.clone(), ALTERNATIVE_WEIGHT)));
             }
             concepts.push(alternatives);
+            concept_words.push(t.word);
         }
+        let taxonomy = crate::discovery_taxonomy::taxonomy();
+        let asked = taxonomy.request_categories(trimmed);
         Some(Self {
             concepts,
+            concept_words,
             needle,
             substring_rule,
             one_word: !trimmed.contains(char::is_whitespace),
+            chains,
+            categories: taxonomy.category_bits(&asked),
+            best_category: asked.first().map_or(0, |id| taxonomy.category_bits(&[id])),
         })
     }
 
@@ -1133,6 +1462,12 @@ pub struct SearchIndex {
     /// The keys of the listings it was built from and does not index: past
     /// [`MAX_INDEX_TEXT_BYTES`] or [`MAX_INDEX_POSTINGS`].
     left_out: HashSet<String>,
+    /// The chains each document names ([`CHAINS`]), by document id.
+    chains: Vec<u64>,
+    /// The categories each document is in, by document id.
+    categories: Vec<u64>,
+    /// Whether each document is content, by document id.
+    content: Vec<bool>,
 }
 
 impl SearchIndex {
@@ -1154,6 +1489,9 @@ impl SearchIndex {
         let mut held = 0usize;
         let mut tokens = Vec::new();
         let mut tf: HashMap<String, f32> = HashMap::new();
+        let mut chain_masks = Vec::new();
+        let mut category_masks = Vec::new();
+        let mut content_flags = Vec::new();
 
         for document in documents {
             let Some(fields) = document.fields.filter(|_| held < MAX_INDEX_POSTINGS) else {
@@ -1164,12 +1502,21 @@ impl SearchIndex {
             let mut terms = 0usize;
             for (text, weight) in &fields {
                 tokens.clear();
-                tokenize_into(text, &mut tokens);
+                // The start of a word (`web` of `web3`) is a lesser reading of
+                // it than a word the listing wrote.
+                tokens.extend(text_terms(text).into_iter().map(|t| {
+                    let factor = if t.kind == TermKind::Lead {
+                        ALTERNATIVE_WEIGHT
+                    } else {
+                        1.0
+                    };
+                    (t.term, factor)
+                }));
                 tokens.truncate(MAX_FIELD_TERMS.min(per_listing - terms));
                 terms += tokens.len();
-                for t in tokens.drain(..) {
-                    *tf.entry(t).or_insert(0.0) += *weight;
-                    length += *weight;
+                for (t, factor) in tokens.drain(..) {
+                    *tf.entry(t).or_insert(0.0) += *weight * factor;
+                    length += *weight * factor;
                 }
             }
             if held + tf.len() > MAX_INDEX_POSTINGS {
@@ -1186,6 +1533,9 @@ impl SearchIndex {
             }
             ids.insert(document.key, id);
             lengths.push(length);
+            chain_masks.push(document.chains);
+            category_masks.push(document.categories);
+            content_flags.push(document.content);
         }
 
         let avg_length = if lengths.is_empty() {
@@ -1200,6 +1550,9 @@ impl SearchIndex {
             avg_length,
             postings,
             left_out,
+            chains: chain_masks,
+            categories: category_masks,
+            content: content_flags,
         }
     }
 
@@ -1235,13 +1588,67 @@ impl SearchIndex {
     /// Relevance of every indexed listing to `query`, by document id.
     ///
     /// BM25 per typed term, taking the best of the term and its lexicon
-    /// alternatives, summed over terms.
-    pub fn scores(&self, query: &SearchQuery) -> Vec<f32> {
+    /// alternatives, summed over terms -- then scaled by how much of the
+    /// request the listing covers ([`COVERAGE_EXPONENT`]).
+    ///
+    /// # Why coverage
+    ///
+    /// BM25 sums what each word earns, and a word saturates rather than
+    /// stops: a listing that repeats ONE word of the request in its path, its
+    /// description and its schema earns nearly twice what a listing earns for
+    /// saying it once. So a CSS scraper that says "selector" everywhere beat a
+    /// keccak selector tool for "keccak selector", and a meme generator beat
+    /// the trending-coins feeds for "trending meme coins": one shared word won
+    /// over the task. Coverage is the share of the request's information (each
+    /// typed word weighted by its idf, so "get" counts for little and
+    /// "keccak" for a lot) that the listing matches, by the word or its
+    /// lexicon alternatives. A word no listing carries is left out of it: it
+    /// cannot tell listings apart, and counting it would sink every one.
+    pub fn scores(&self, query: &SearchQuery) -> Scores {
         let n = self.lengths.len();
         let mut total = vec![0f32; n];
+        let mut covered = vec![0f32; n];
         let mut best = vec![0f32; n];
         let mut touched: Vec<u32> = Vec::new();
-        for concept in &query.concepts {
+
+        // What each concept is worth to the request: the idf of the rarest
+        // spelling of it the index holds (an alternative at its weight); 0
+        // when none is held. Then by written word: a word is worth its most
+        // informative piece, shared among its pieces by their worth, so
+        // `getLatestBlockhash` counts as the one word it was typed as and
+        // not as three ("get" and "latest" are not the request).
+        let importance: Vec<f32> = query
+            .concepts
+            .iter()
+            .map(|concept| {
+                concept
+                    .iter()
+                    .filter_map(|(term, weight)| {
+                        self.postings
+                            .get(term)
+                            .map(|list| weight * self.idf(list.len()))
+                    })
+                    .fold(0f32, f32::max)
+            })
+            .collect();
+        let mut word_worth: HashMap<usize, (f32, f32)> = HashMap::new();
+        for (word, worth) in query.concept_words.iter().zip(&importance) {
+            let entry = word_worth.entry(*word).or_insert((0.0, 0.0));
+            entry.0 = entry.0.max(*worth);
+            entry.1 += worth;
+        }
+        let information: f32 = word_worth.values().map(|(max, _)| max).sum();
+        let credit: Vec<f32> = query
+            .concept_words
+            .iter()
+            .zip(&importance)
+            .map(|(word, worth)| match word_worth.get(word) {
+                Some((max, sum)) if *sum > 0.0 => max * worth / sum,
+                _ => 0.0,
+            })
+            .collect();
+
+        for (c, concept) in query.concepts.iter().enumerate() {
             touched.clear();
             for (term, weight) in concept {
                 let Some(list) = self.postings.get(term) else {
@@ -1260,12 +1667,71 @@ impl SearchIndex {
                     }
                 }
             }
+            // A listing that says only an alternative covers the word in
+            // full: the lexicon is there so `forecast` answers `weather`, and
+            // the alternative's weight is already paid in its score. Crediting
+            // coverage at that weight too measured 32 -> 29 of 36 places.
             for &doc in &touched {
                 total[doc as usize] += best[doc as usize];
+                covered[doc as usize] += credit[c];
                 best[doc as usize] = 0.0;
             }
         }
-        total
+        let coverage: Vec<f32> = covered
+            .iter()
+            .map(|c| {
+                if information > 0.0 {
+                    (c / information).min(1.0)
+                } else {
+                    0.0
+                }
+            })
+            .collect();
+        for (score, share) in total.iter_mut().zip(&coverage) {
+            *score *= share.powi(COVERAGE_EXPONENT);
+        }
+        Scores {
+            score: total,
+            coverage,
+        }
+    }
+
+    /// Whether the listing at `id` answers some other request than `query`,
+    /// and so does not answer it however many words they share:
+    ///
+    /// - it names one or more chains ([`listing_chains`]), the query names one
+    ///   or more, and none is the same -- "solana rpc" is not answered by a
+    ///   HyperEVM RPC;
+    /// - the query's words place it in categories (the inference rules of
+    ///   `config/bazaar_taxonomy.json`, applied to the request), and the
+    ///   listing is:
+    ///   - in the best of them: it answers;
+    ///   - only in another of them, or in no category (or only the fallback
+    ///     `data`): it has to cover [`COVERAGE_FLOOR`] of the request;
+    ///   - only in other categories: it has to cover the whole request --
+    ///     "keccak selector" asks for a developer tool, and a CSS scraper,
+    ///     which says "selector" and not "keccak", is a page reader; a BTC
+    ///     exchange-rate feed is finance and still says all of "bitcoin
+    ///     price".
+    ///
+    /// Empty is a better answer than a wrong one, which a router would pay for.
+    fn answers_another_request(&self, query: &SearchQuery, id: usize, scores: &Scores) -> bool {
+        let named = self.chains.get(id).copied().unwrap_or(0);
+        if query.chains != 0 && named != 0 && named & query.chains == 0 {
+            return true;
+        }
+        if query.categories == 0 {
+            return false;
+        }
+        let listing = self.categories.get(id).copied().unwrap_or(0);
+        let coverage = scores.coverage.get(id).copied().unwrap_or(0.0);
+        if listing & query.best_category != 0 {
+            false
+        } else if listing == 0 || listing & query.categories != 0 {
+            coverage < COVERAGE_FLOOR
+        } else {
+            coverage < WHOLE_REQUEST
+        }
     }
 
     fn idf(&self, df: usize) -> f32 {
@@ -1277,22 +1743,36 @@ impl SearchIndex {
     /// Relevance of the listing stored under `key`, given `scores` from
     /// [`Self::scores`] and the query they came from. `None` means it does not
     /// match at all and leaves the result.
+    ///
+    /// A listing that answers another request, or says too little of one in
+    /// a category, leaves the result -- unless it carries the request word for
+    /// word: everything the substring test of 2.46.1 kept is still kept.
     pub fn relevance(
         &self,
-        scores: &[f32],
+        scores: &Scores,
         query: &SearchQuery,
         key: &str,
         r: &DiscoveryResource,
     ) -> Option<f32> {
-        let scored = self
-            .ids
-            .get(key)
-            .and_then(|id| scores.get(*id as usize))
+        let id = self.ids.get(key).map(|id| *id as usize);
+        let literal = || query.substring_rule && query.legacy_hit(r);
+        if id.is_some_and(|id| self.answers_another_request(query, id, scores)) {
+            // Kept for the substring test of 2.46.1 alone, and ranked as such:
+            // a word a seller put in a tag does not buy its way back up.
+            return literal().then_some(SUBSTRING_ONLY_SCORE);
+        }
+        let mut scored = id
+            .and_then(|id| scores.score.get(id))
             .copied()
             .unwrap_or(0.0);
+        // A request that names a category asks for a tool: an essay that
+        // shares its words stays in the result, behind the tools.
+        if query.categories != 0 && id.is_some_and(|id| self.content.get(id) == Some(&true)) {
+            scored *= CONTENT_FOR_A_TASK;
+        }
         if scored > 0.0 {
-            Some(scored)
-        } else if query.substring_rule && query.legacy_hit(r) {
+            Some(scored.max(MIN_SCORED))
+        } else if literal() {
             Some(SUBSTRING_ONLY_SCORE)
         } else {
             None
@@ -1307,26 +1787,79 @@ impl SearchIndex {
 /// Results of one host that keep their rank in a relevance-ordered result.
 pub const MAX_RESULTS_PER_HOST: usize = 2;
 
-/// Keep each host's first [`MAX_RESULTS_PER_HOST`] results where relevance put
-/// them, and move the rest of that host's results, still in rank order, after
-/// every other host's.
+/// Results paying one set of recipients that keep their rank in a
+/// relevance-ordered result, whatever hosts they are on.
+pub const MAX_RESULTS_PER_PAY_TO: usize = 2;
+
+/// Results of one templated family (`/stock-history/{ticker}`) that keep their
+/// rank in a relevance-ordered result.
+pub const MAX_RESULTS_PER_FAMILY: usize = 1;
+
+/// What a result is grouped by when the top of a relevance-ordered result is
+/// shared out ([`diversify`]).
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum Group {
+    /// The listing's host, lowercase.
+    Host(String),
+    /// The recipients its options pay, as one set ([`pay_to_key`] each,
+    /// sorted, space-separated).
+    PayTo(String),
+    /// Its templated family (host and path with the variable segments
+    /// written `*`), when it belongs to one.
+    Family(String),
+}
+
+impl Group {
+    fn limit(&self) -> usize {
+        match self {
+            Group::Host(_) => MAX_RESULTS_PER_HOST,
+            Group::PayTo(_) => MAX_RESULTS_PER_PAY_TO,
+            Group::Family(_) => MAX_RESULTS_PER_FAMILY,
+        }
+    }
+}
+
+/// A recipient as a grouping key: an EVM address in lowercase (the same
+/// account in any case), anything else exactly as written.
+pub fn pay_to_key(pay_to: &str) -> String {
+    let pay_to = pay_to.trim();
+    if pay_to.starts_with("0x") || pay_to.starts_with("0X") {
+        pay_to.to_ascii_lowercase()
+    } else {
+        pay_to.to_string()
+    }
+}
+
+/// Keep a result where relevance put it while each of its groups has kept
+/// fewer than its limit ([`Group::limit`]) above it; move every other one,
+/// still in rank order, after them.
 ///
-/// A templated family -- 86 `/stock-history/{ticker}` of one seller -- would
-/// otherwise fill a whole page for any request that names one of its words,
-/// and a router reading the top three would see one seller three times.
-/// Nothing is dropped: `total` and pagination are unchanged, only the order.
-/// Applied to relevance results only; see `DiscoveryRegistry::list`.
-pub fn diversify_by_host<T, F>(ranked: Vec<T>, host: F) -> Vec<T>
+/// Three kinds of crowding, one rule. A templated family -- 86
+/// `/stock-history/{ticker}` of one seller -- would fill a page for any request
+/// that names one of its words, and a router reading the top three would see
+/// one seller three times; so would one seller listed on many hosts, or a
+/// reseller whose every host pays the same address. A host keeps two places, a
+/// recipient two, a family one. Nothing is dropped: `total` and pagination are
+/// unchanged, only the order -- this is ranking, never admission. Applied to
+/// relevance results only; see `DiscoveryRegistry::list`.
+pub fn diversify<T, F>(ranked: Vec<T>, groups: F) -> Vec<T>
 where
-    F: Fn(&T) -> &str,
+    F: Fn(&T) -> Vec<Group>,
 {
-    let mut seen: HashMap<String, usize> = HashMap::new();
+    let mut kept: HashMap<Group, usize> = HashMap::new();
     let mut head = Vec::with_capacity(ranked.len());
     let mut tail = Vec::new();
     for item in ranked {
-        let count = seen.entry(host(&item).to_ascii_lowercase()).or_insert(0);
-        *count += 1;
-        if *count <= MAX_RESULTS_PER_HOST {
+        let mut of_item = groups(&item);
+        of_item.sort_unstable();
+        of_item.dedup();
+        if of_item
+            .iter()
+            .all(|g| kept.get(g).copied().unwrap_or(0) < g.limit())
+        {
+            for g in of_item {
+                *kept.entry(g).or_insert(0) += 1;
+            }
             head.push(item);
         } else {
             tail.push(item);
@@ -1637,7 +2170,7 @@ pub fn has_input_schema(r: &DiscoveryResource) -> bool {
 /// ([`crate::discovery_taxonomy::classify`]), the same value
 /// `GET /discovery/resources` serves beside it.
 pub fn listing_kind(r: &DiscoveryResource) -> &'static str {
-    crate::discovery_taxonomy::classify(r).kind.as_str()
+    crate::discovery_taxonomy::kind(r).as_str()
 }
 
 /// Whether `r`'s host is one of `hosts` or a subdomain of one.
@@ -1736,7 +2269,7 @@ mod tests {
     fn tokenizing_folds_case_accents_and_splits_words() {
         assert_eq!(terms("Búsqueda WEB"), ["busqueda", "web"]);
         assert_eq!(terms("Pronóstico del CLIMA"), ["pronostico", "clima"]);
-        assert_eq!(terms("personName"), ["person", "name"]);
+        assert_eq!(terms("personName"), ["person", "name", "personname"]);
         assert_eq!(terms("stock-quote/v2"), ["stock", "quote", "v2"]);
         // A decomposed accent (e + U+0301) folds the same as the composed one.
         assert_eq!(terms("cafe\u{0301}"), terms("café"));
@@ -1754,6 +2287,44 @@ mod tests {
         // Paarce's list, all 197 of them.
         assert_eq!(PALABRAS_VACIAS.len(), 197);
         assert!(terms(&PALABRAS_VACIAS.join(" ")).is_empty());
+    }
+
+    #[test]
+    fn the_stopword_set_answers_as_paarce_does() {
+        for word in PALABRAS_VACIAS
+            .iter()
+            .copied()
+            .chain(["a", "7", "", "weather", "keccak", "de", "la", "ab", "zz"])
+        {
+            assert_eq!(significant(word), es_significativo(word), "{word:?}");
+        }
+    }
+
+    #[test]
+    fn a_word_followed_by_digits_is_also_read_without_them() {
+        assert_eq!(terms("keccak256"), ["keccak256", "keccak"]);
+        assert_eq!(terms("gpt4o web3"), ["gpt4o", "gpt", "web3", "web"]);
+        assert_eq!(
+            terms("weather0.x402.example"),
+            ["weather0", "weather", "x402", "example"]
+        );
+        // One letter, a stopword or digits first: nothing more.
+        assert_eq!(terms("x402 v2 to2 2fa"), ["x402", "v2", "to2", "2fa"]);
+        // The lexicon reads a word as it is written: one term.
+        assert_eq!(normalize_word("txt2img"), Some("txt2img".to_string()));
+        // A camelCase name is also kept whole.
+        assert_eq!(terms("DeFi yields"), ["fi", "defi", "yield"]);
+        assert_eq!(terms("HyperEVM"), ["hyper", "evm", "hyperevm"]);
+        assert_eq!(terms("LinkedIn"), ["linked", "linkedin"]);
+        // A request for `keccak256` also finds `Keccak-256`, at half weight.
+        let q = SearchQuery::parse("keccak256").unwrap();
+        assert_eq!(
+            q.concepts,
+            [vec![
+                ("keccak256".to_string(), 1.0),
+                ("keccak".to_string(), ALTERNATIVE_WEIGHT)
+            ]]
+        );
     }
 
     #[test]
@@ -1844,6 +2415,117 @@ mod tests {
         assert_eq!(
             ranked(&listings, "el clima de hoy"),
             ["https://meteo.example/now"]
+        );
+    }
+
+    #[test]
+    fn a_listing_that_says_the_whole_request_outranks_one_that_repeats_a_part() {
+        // Words no rule of the vocabulary knows, so only coverage decides:
+        // `ipsum` is the rarer word, and one listing repeats it in its path
+        // and three times in its description; the other says both words once.
+        let mut listings = vec![
+            listing("https://a.example/ipsum", "Ipsum ipsum ipsum."),
+            listing("https://b.example/x", "Lorem ipsum."),
+        ];
+        for host in ["c", "d", "e", "f"] {
+            listings.push(listing(&format!("https://{host}.example/y"), "Lorem."));
+        }
+        let hits = ranked(&listings, "lorem ipsum");
+        assert_eq!(hits[0], "https://b.example/x", "{hits:?}");
+        let (index, _) = index_of(&listings);
+        let scores = index.scores(&SearchQuery::parse("lorem ipsum").unwrap());
+        let id = |key: &str| index.ids[key] as usize;
+        assert_eq!(scores.coverage[id("https://b.example/x")], 1.0);
+        assert!(scores.coverage[id("https://a.example/ipsum")] < 1.0);
+    }
+
+    #[test]
+    fn a_chain_is_a_word_written_whole() {
+        let listings = vec![
+            listing("https://enc.example/x", "Encode base64 strings."),
+            listing("https://evm.example/x", "HyperEVM block explorer."),
+            listing("https://sol.example/x", "Solana block explorer."),
+            listing(
+                "https://px.example/x",
+                "Token price for any symbol. Pay with USDC on Base.",
+            ),
+        ];
+        let (index, _) = index_of(&listings);
+        let mask = |key: &str| index.chains[index.ids[key] as usize];
+        // `base64` is not Base: not in a description, and not where every
+        // name is read either, a request or a path.
+        assert_eq!(mask("https://enc.example/x"), 0);
+        assert_eq!(chain_mask("base64 encode", false), 0);
+        // Nor is the network a description says it is paid on.
+        assert_eq!(mask("https://px.example/x"), 0);
+        // `HyperEVM` is read whole, not as `hyper` and `evm`.
+        assert_eq!(
+            mask("https://evm.example/x"),
+            CHAIN_BITS["hyperevm"],
+            "{:b}",
+            mask("https://evm.example/x")
+        );
+        // A request naming Solana gets the Solana explorer, not HyperEVM's.
+        assert_eq!(
+            ranked(&listings, "solana block explorer"),
+            ["https://sol.example/x"]
+        );
+    }
+
+    #[test]
+    fn the_start_of_a_word_is_held_at_half_its_weight() {
+        // `web3` is also `web`, as a lesser reading of it than a `web` the
+        // listing wrote: `base64` must not answer `base` as well as `base`.
+        let listings = vec![listing("https://a.example/x", "Web3 wallet.")];
+        let (index, _) = index_of(&listings);
+        let tf = |term: &str| index.postings[term][0].1;
+        assert_eq!(tf("web") / tf("web3"), ALTERNATIVE_WEIGHT);
+    }
+
+    #[test]
+    fn a_listing_kept_by_its_words_alone_ranks_after_every_scored_one() {
+        // `base rpc` names Base; a HyperEVM node (its host) is about another
+        // chain and is excluded -- but its description says the request word
+        // for word, and what the substring test of 2.46.1 kept stays.
+        let listings = vec![
+            listing(
+                "https://hyperevm.example/rpc",
+                "JSON-RPC node; also proxies base rpc calls.",
+            ),
+            listing("https://base-node.example/rpc", "Base RPC node."),
+        ];
+        assert_eq!(
+            ranked(&listings, "base rpc"),
+            [
+                "https://base-node.example/rpc",
+                "https://hyperevm.example/rpc"
+            ]
+        );
+    }
+
+    #[test]
+    fn a_chain_name_in_an_ordinary_phrase_names_no_chain() {
+        // A database, online, in Spanish; a knowledge base in a path.
+        assert_eq!(chain_mask("base de datos de criptomonedas", false), 0);
+        assert_eq!(chain_mask("precios de criptomonedas en línea", false), 0);
+        assert_eq!(chain_mask("kb.example knowledge base search", false), 0);
+        // The same names, said as chains.
+        assert_eq!(
+            chain_mask("usdc balance on base", false),
+            CHAIN_BITS["base"]
+        );
+        assert_eq!(chain_mask("linea rpc", false), CHAIN_BITS["linea"]);
+        // `línea` in a listing's description is a word, in a phrase or not.
+        assert_eq!(chain_mask("Datos de mercado en línea", true), 0);
+        assert_eq!(chain_mask("Línea de crédito para comercios", true), 0);
+        // A request in Spanish is answered by a listing that names chains.
+        let listings = vec![listing(
+            "https://prices.example/x",
+            "Live prices for Bitcoin and Ethereum.",
+        )];
+        assert_eq!(
+            ranked(&listings, "precios de criptomonedas en línea"),
+            ["https://prices.example/x"]
         );
     }
 
@@ -2174,10 +2856,42 @@ mod tests {
             ("a.example", 5),
             ("c.example", 6),
         ];
-        let out = diversify_by_host(ranked.clone(), |(host, _)| *host);
+        let out = diversify(ranked.clone(), |(host, _)| {
+            vec![Group::Host(host.to_ascii_lowercase())]
+        });
         let order: Vec<i32> = out.iter().map(|(_, n)| *n).collect();
         assert_eq!(order, [1, 2, 4, 6, 3, 5]);
         assert_eq!(out.len(), ranked.len());
+    }
+
+    #[test]
+    fn a_recipient_keeps_two_places_and_a_family_one_across_hosts() {
+        // (rank, host, payTo, family)
+        let ranked = vec![
+            (1, "a", "0xseller", Some("a/quote/*")),
+            (2, "b", "0xSELLER", None),
+            (3, "c", "0xseller", None),
+            (4, "a", "0xother", Some("a/quote/*")),
+            (5, "a", "0xother", None),
+            (6, "d", "0xthird", None),
+        ];
+        let out = diversify(ranked.clone(), |(_, host, pay_to, family)| {
+            let mut groups = vec![
+                Group::Host(host.to_string()),
+                Group::PayTo(pay_to_key(pay_to)),
+            ];
+            groups.extend(family.map(|f| Group::Family(f.to_string())));
+            groups
+        });
+        let order: Vec<i32> = out.iter().map(|(n, ..)| *n).collect();
+        // 3 is the recipient's third (one EVM address in two cases); 4 is the
+        // family's second. Neither takes a place from host `a`, so 5 keeps
+        // its rank: a result moved down holds no slot of any of its groups.
+        assert_eq!(order, [1, 2, 5, 6, 3, 4]);
+        assert_eq!(out.len(), ranked.len());
+        // A non-EVM recipient is compared exactly as written.
+        assert_ne!(pay_to_key("SoLaNaAddr"), pay_to_key("solanaaddr"));
+        assert_eq!(pay_to_key(" 0xAbC "), "0xabc");
     }
 
     #[test]
@@ -2195,6 +2909,7 @@ mod tests {
     fn metadata_fields_are_indexed() {
         let mut r = listing("https://t.example/x", "");
         r.metadata = Some(DiscoveryMetadata {
+            upstream: None,
             category: Some("social/reddit".to_string()),
             provider: Some("Acme".to_string()),
             tags: vec!["subreddits".to_string()],
@@ -2239,6 +2954,7 @@ mod tests {
         big.description = words(0, 12_000);
         assert!(big.description.len() > 50_000);
         big.metadata = Some(DiscoveryMetadata {
+            upstream: None,
             category: None,
             provider: Some(words(20_000, 2_000)),
             tags: (0..100).map(|i| words(30_000 + i * 500, 500)).collect(),
@@ -2276,6 +2992,9 @@ mod tests {
     #[test]
     fn a_listing_gives_the_index_at_most_its_term_budget() {
         let document = IndexDocument {
+            categories: 0,
+            content: false,
+            chains: 0,
             key: "https://wide.example/x".to_string(),
             fields: Some(
                 (0..10)
@@ -2289,6 +3008,9 @@ mod tests {
 
         // And at most MAX_FIELD_TERMS of them from one field.
         let one_field = IndexDocument {
+            categories: 0,
+            content: false,
+            chains: 0,
             key: "https://long.example/x".to_string(),
             fields: Some(vec![(words(0, 3 * MAX_FIELD_TERMS), 1.0)]),
         };
@@ -2313,6 +3035,9 @@ mod tests {
             .map(|key| IndexDocument {
                 key: key.clone(),
                 fields: Some(fields.clone()),
+                categories: 0,
+                content: false,
+                chains: 0,
             })
             .collect();
         (keys, documents)

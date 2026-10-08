@@ -1003,6 +1003,14 @@ resource "aws_ecs_task_definition" "facilitator" {
           value = tostring(var.fhe_request_timeout_secs)
         },
         {
+          # Zama fhe-transfer on or off (decision 171: off). Written out
+          # even though "false" is also the code default, so the decision is
+          # readable in the task definition. See var.enable_zama for what it
+          # gates and for the order against the zama-testnet stack.
+          name  = "ENABLE_ZAMA"
+          value = tostring(var.enable_zama)
+        },
+        {
           name  = "NONCE_STORE_TABLE_NAME"
           value = aws_dynamodb_table.nonce_store.name
         },

@@ -1144,6 +1144,7 @@ impl DiscoveryAggregator {
         // Convert metadata if present
         if let Some(meta) = cb.metadata {
             resource.metadata = Some(DiscoveryMetadata {
+                upstream: None,
                 category: meta.category,
                 provider: meta.provider,
                 tags: meta.tags,

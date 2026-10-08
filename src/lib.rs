@@ -35,6 +35,7 @@ pub mod discovery_security;
 pub mod discovery_store;
 pub mod discovery_taxonomy;
 pub mod discovery_terms;
+pub mod discovery_usage;
 pub mod dx402;
 pub mod erc8004;
 pub mod escrow;
@@ -68,6 +69,7 @@ pub mod types_v2;
 pub mod upto;
 pub mod version;
 pub mod writer_lease;
+pub mod zama;
 
 // Hidden re-exports just for macro expansion.
 #[doc(hidden)]

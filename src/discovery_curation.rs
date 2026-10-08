@@ -205,7 +205,7 @@ impl CurationManifest {
     /// their publisher asked for exactly this.
     pub fn resolve_listing(&self, r: &DiscoveryResource, alive: bool) -> Option<CurationInfo> {
         let resolved = self.resolve(&r.url, alive);
-        if crate::discovery_taxonomy::classify(r).kind != crate::discovery_taxonomy::Kind::Content {
+        if crate::discovery_taxonomy::kind(r) != crate::discovery_taxonomy::Kind::Content {
             return resolved;
         }
         resolved.map(|c| match c.tier {

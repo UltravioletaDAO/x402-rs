@@ -620,6 +620,10 @@ pub fn curation_check(r: &DiscoveryResource) -> FilterVerdict {
                 .category
                 .as_ref()
                 .is_some_and(|c| c.len() > MAX_META_FIELD_LEN)
+            || meta
+                .upstream
+                .as_ref()
+                .is_some_and(|u| u.len() > MAX_META_FIELD_LEN)
         {
             return FilterVerdict::Reject("meta-len");
         }

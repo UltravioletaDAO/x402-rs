@@ -219,6 +219,17 @@ pub trait TransactionStore: Send + Sync + std::fmt::Debug {
         Ok(Vec::new())
     }
 
+    /// The successful settles recorded at or after `since_ms`, for the Bazaar
+    /// usage counters ([`crate::discovery_usage`]). `None` when this store
+    /// keeps no history: the caller then knows nothing, which is not the same
+    /// as nothing having settled.
+    async fn settles_since(
+        &self,
+        _since_ms: u64,
+    ) -> Result<Option<Vec<TransactionRecord>>, TransactionStoreError> {
+        Ok(None)
+    }
+
     fn store_type(&self) -> &'static str;
 }
 

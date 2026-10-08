@@ -2276,10 +2276,35 @@ that SDK needs a release of it that lifts the check. How `q` matches depends on 
   `clima`, `price` / `quote` / `precio`, `scrape` / `read` / `extract`, ...). Nothing is sent
   anywhere to rank: no model, no embedding service. The curated tier **multiplies** relevance
   (`first_party` x1.3, `vip` x1.2, `verified` x1.1); it never outranks a listing that matches the
-  request better. A `q` of up to 128 characters also keeps every listing the substring match
-  below would have kept, ranked after every listing a word scored. No host keeps more than two
-  places at the top: its further results follow every other host's, still in relevance order,
-  so a seller with a hundred templated endpoints cannot fill a page. Nothing is dropped.
+  request better. Relevance is scaled by **how much of the request** the listing covers (each
+  word weighted by how rare it is in the catalog), so one shared word repeated everywhere does
+  not beat a listing that does the task: a CSS scraper that says "selector" does not outrank a
+  keccak selector tool for `keccak selector`. A word written with digits after it is also
+  read without them, at half weight (`keccak256` finds `keccak`, `gpt4o` finds `gpt`).
+- Under `relevance`, a listing **about something else** does not answer, however many words it
+  shares. A request that names a chain (`solana`, `base`, `ethereum`, ...) never gets a listing
+  that names only other chains: `solana rpc getLatestBlockhash` against a catalog with no
+  Solana RPC returns nothing rather than a HyperEVM one. A listing's chains are the ones its
+  host or path names, and the ones its description or schema names in a word that is nothing
+  else (`solana`, `ethereum`; never `base`, `polygon`, `optimism` or `linea`); the networks it is
+  paid on are never read. A chain name inside an ordinary phrase (`base de datos`,
+  `knowledge base`, `en línea`) names no chain, in a request or a listing. A request whose words
+  fall in categories (the inference rules of
+  `categories`, below, applied to `q`: `stock quote` is `finance`, `trending meme coins` is
+  `crypto`) is answered by a listing in the best of them; a listing in a runner-up, or in no
+  category (or only `data`), has to cover at least half of the request, and a listing only in
+  other categories has to cover all of it. Paid content (`kind: content`) stays in such a
+  result at a quarter of its relevance, behind the tools. A listing that contains `q` word for
+  word and was excluded is still kept when `q` is at most 128 characters -- every listing the
+  substring match below would have kept stays -- ranked after every listing a word scored.
+- At the top of a relevance result no host keeps more than two places, no set of recipients
+  (every `payTo` a listing's options pay, as one group, so naming a competitor's address in one
+  option does not spend the competitor's places) more than two, and no templated family
+  (`/stock-history/{ticker}`) more than one: their
+  further results follow every other one's, still in relevance order, so a seller with a
+  hundred templated endpoints, or one seller on many hosts, cannot fill a page. This is the
+  order only: nothing is dropped, `total` is unchanged, and no listing is ever refused or
+  evicted from the catalog for it.
 - `sort=tier` is the search this endpoint had through 2.46.1, unchanged: listings whose url,
   description, provider, category or a tag **contain** `q` (ASCII case ignored), in the catalog
   order above. It takes `q` of at most 128 characters.
@@ -2537,9 +2562,11 @@ own price is fresh and a stored record cannot keep claiming a freshness nobody r
   is never published as `"0"`. An `"0"` you do see was declared as zero by the source.
 - `settleable` (bool) and `unsupportedReason` say whether **this facilitator** can settle the
   option, which is a narrower question than whether the offer is real. `false` with
-  `unknown-scheme`, `network-not-served` or `upto-proxy-not-deployed` still describes a
-  genuine listing that some other facilitator may serve. `network-not-served` means the
-  network is not in this facilitator's `/supported`, even when its name is a known chain.
+  `unknown-scheme`, `network-not-served`, `upto-proxy-not-deployed` or `scheme-not-served`
+  still describes a genuine listing that some other facilitator may serve. `network-not-served`
+  means the network is not in this facilitator's `/supported`, even when its name is a known
+  chain; `scheme-not-served` means this build implements the scheme but this deployment has
+  it switched off, so it is not in `/supported` either.
 - `assetSymbol` and `assetDecimals` are resolved per **deployment**, and are absent when the
   asset is not one we have registered -- absent means unknown, which is not the same as six
   decimals and a dollar sign. USDC is 6 decimals on Base, 18 on BSC and 7 on Stellar.
@@ -2565,23 +2592,56 @@ every buyer, such as an essay). Content never holds the `first_party` or `vip` t
 `verified` when alive and `listed` otherwise, and keeps its `curation.label`.
 
 **`categories`** lists ids from one closed list: `people`, `company`, `web-search`, `page-read`,
-`social/x`, `social/reddit`, `finance`, `crypto`, `weather`, `image`, `human-work`, `ai`, `data`,
-`developer-tools`, `security`, `research`, `reputation`, `communication`, `compliance`,
+`social/x`, `social/reddit`, `finance`, `crypto`, `rpc`, `weather`, `image`, `human-work`, `ai`,
+`data`, `developer-tools`, `security`, `research`, `reputation`, `communication`, `compliance`,
 `advertising`, `infrastructure`. They come from what the seller declared (`metadata.category`,
 then `extensions.bazaar.category`, then a `bazaar.category` inside an option's `extra`), each one
 once, with known spellings of the same thing mapped to one id (`Data` and `data_processing` are
-`data`, `twitter` is `social/x`); a spelling the list does not know adds nothing rather than a
-guess, and `categories` is absent when nothing maps. A `people` listing returns personal data about
-a person. **`categorySource`** says how they were obtained: `declared` (the seller's own value,
-spelled as the id), `normalized` (the seller's value in another spelling) or `inferred` (assigned
-by the operator's curation to a listing whose own data names no category).
-**`metadata.category` is never rewritten**: it is what the seller declared, and the ids travel
-beside it.
+`data`, `twitter` is `social/x`, `json-rpc` is `rpc`); a declared spelling the list does not know
+adds nothing rather than a guess. A listing that declares **no** category at all, and is not
+content, is placed by deterministic rules over what it says about itself -- its host, its path,
+its description and the field names of its declared schema, never its tags -- at most two
+categories, best first (`config/bazaar_taxonomy.json`, `inference`). `categories` is absent when
+nothing places it. A `people` listing returns personal data about a person.
+**`categorySource`** says how they were obtained: `declared` (the seller's own value, spelled as
+the id), `normalized` (the seller's value in another spelling) or `inferred` (nobody declared it:
+the operator's curation or the inference rules placed it). **`metadata.category` is never
+rewritten**: it is what the seller declared, and the ids travel beside it.
+
+**`upstream`** names the service a listing resells or wraps, from a second closed list (`exa`,
+`tavily`, `firecrawl`, `serpapi`, `brave-search`, `jina`, `perplexity`, `hunter`, `apollo`,
+`fullenrich`, `coingecko`, `coinmarketcap`, `openai`, `anthropic`), so ten resellers of one search
+API can be told from ten search APIs. **`upstreamSource`** is `declared` when the seller names it
+at registration (`metadata.upstream` or `extensions.bazaar.upstream`: an id or a name of the list,
+any case; any other value is kept in `metadata` and not published) and `inferred` when the
+listing's host is the vendor's own domain, a path segment or host label names it
+(`/api/hunter/...`; never for `perplexity` or `apollo`, which are also a common word and another
+company's name), or its description names it in a form that is not a common word (`Hunter.io`,
+`Perplexity AI`). Absent when nothing names one; never inferred for content.
+
+**`usage`** says how much the listing was paid for **through this facilitator**:
+`lastSettledAt` (the latest settlement counted for it in the window -- never the listing's own
+top-level `lastSettledAt`), `calls30d` (successful settlements in the last 30 days) and
+`uniquePayers30d` (distinct payers among them), read from the settlements this facilitator
+records, as of `asOf`, refreshed every five minutes. A settlement counts for a listing only when
+it settled on a **mainnet** and matches one of the listing's own payment options -- the same
+network, recipient, asset and scheme, and for `exact` at least the option's price -- by a payer
+other than that recipient, for the listing's own URL (any query string, for a listing whose URL
+has none): the URL, recipient and amount of a settle are whatever its caller sent, and a testnet
+settle, or one atomic unit to the right address, would let anyone write counts onto any listing
+for faucet gas. The amount compared is the one the payment requirements named, which `exact`
+verification never settles for less than; under another scheme (`upto`) it is a declared
+maximum and is not compared. A seller paying its own listing at its price from fresh wallets on
+a mainnet is still counted: the numbers say how much was paid, not by whom. **A floor, never a ledger:** a record is written after
+a payment settles and is lost if the store is unreachable, and settlements through other
+facilitators are not seen. `usage` is absent
+on a deployment that records no settlements -- zero there would be a claim nobody measured -- and
+on a listing whose URL is a template (`{id}`), which no paid URL equals.
 
 **`hasInputSchema`** is `true` when `extensions.bazaar` declares the input (`info.input`, or an
 `input` property in `schema`); the declaration itself stays in `extensions.bazaar`, with the input
-and the output apart. `kind`, `categories`, `categorySource` and `hasInputSchema` are
-response-only, like `health` and `curation`.
+and the output apart. `kind`, `categories`, `categorySource`, `hasInputSchema`, `upstream`,
+`upstreamSource` and `usage` are response-only, like `health` and `curation`.
 
 **Unknown parameters are rejected with a 400**, listing the ones supported. A parameter the
 server accepted and ignored would be indistinguishable from a filter that matched everything,
@@ -2797,7 +2857,9 @@ is not counted here either.
   under both; `none` when it resolves to none; see `GET /discovery/resources`), and
   `noDescription` and `noInputSchema` count those with an empty description, and with no declared
   input (`extensions.bazaar.info.input`, or an `input` property in `extensions.bazaar.schema`):
-  what a router cannot use without guessing.
+  what a router cannot use without guessing. `byCategorySource` counts each listing once by how
+  its categories were obtained (`declared`, `normalized`, `inferred`, `none`), and `byUpstream`
+  the listings that name each `upstream`.
 - `topHosts` lists the ten hosts holding the most of what the listing shows, largest first: how
   the public listing spreads over hosts, on a running task. Like every count here, it counts
   only listings the default listing returns -- the per-host share of `/discovery/config`
@@ -2817,7 +2879,9 @@ is not counted here either.
   "byTier": { "first_party": 10, "vip": 127, "verified": 1814 },
   "byHealth": { "alive": 1951 },
   "byKind": { "api": 1830, "content": 121 },
-  "byCategory": { "none": 1625, "data": 246, "finance": 80 },
+  "byCategory": { "none": 640, "data": 246, "finance": 180 },
+  "byCategorySource": { "declared": 120, "normalized": 90, "inferred": 1101, "none": 640 },
+  "byUpstream": { "exa": 4, "tavily": 2 },
   "noDescription": 412,
   "noInputSchema": 1120,
   "generatedAt": 1784900000
@@ -2840,7 +2904,9 @@ is not counted here either.
                 "byTier": { "first_party": 10, "verified": 1941 },
                 "byHealth": { "alive": 1951 },
                 "byKind": { "api": 1830, "content": 121 },
-                "byCategory": { "none": 1625, "data": 246, "finance": 80 },
+                "byCategory": { "none": 640, "data": 246, "finance": 180 },
+                "byCategorySource": { "declared": 120, "normalized": 90, "inferred": 1101, "none": 640 },
+                "byUpstream": { "exa": 4, "tavily": 2 },
                 "noDescription": 412,
                 "noInputSchema": 1120,
                 "generatedAt": 1784900000
@@ -2961,7 +3027,10 @@ outbound fetches against caller-supplied URLs.
 - `accepts` (required, except for `facilitator` entries): payment options. `network` accepts
   CAIP-2 (`eip155:8453`) or the x402 v1 name (`base`); `amount` accepts `maxAmountRequired` as
   its v1 spelling.
-- `metadata` (optional): `provider`, `category`, `tags`.
+- `metadata` (optional): `provider`, `category`, `tags`, and `upstream` -- the service the
+  listing resells or wraps (`exa`, `tavily`, `firecrawl`...; an id or name of the closed list in
+  `GET /discovery/resources`, any case). Each is stored as declared; a listing that declares no
+  `category` has one inferred from what it says about itself.
 - `extensions` (optional): resource-level x402 extensions, stored verbatim. `extensions.bazaar` is
   where you declare what to send and what comes back -- `info.input` / `info.output`, and
   optionally a JSON Schema in `schema` -- exactly as the x402 bazaar extension publishes it in a
@@ -3720,6 +3789,7 @@ pub fn swagger_routes() -> Router {
     let mut api_doc = ApiDoc::openapi();
     api_doc.info.version = crate::version::facilitator_version().to_string();
     crate::receipts::document_api(&mut api_doc);
+    gate_zama_prose(&mut api_doc);
 
     // `/openapi.json` is an ALIAS for the document Swagger UI already serves at
     // `/api-docs/openapi.json`. Two reasons it exists, and neither is cosmetic:
@@ -3767,6 +3837,42 @@ pub fn swagger_routes() -> Router {
             }),
         )
         .merge(SwaggerUi::new("/docs").url("/api-docs/openapi.json", api_doc))
+}
+
+/// While `ENABLE_ZAMA` is off, take `fhe-transfer` out of the prose of every
+/// operation -- the `/supported` scheme list, the `/settle` failure notes, the
+/// `/discovery` scheme vocabulary -- through the same cuts as every other
+/// surface ([`crate::zama::text`]). On, the document is left exactly as built.
+fn gate_zama_prose(doc: &mut utoipa::openapi::OpenApi) {
+    if crate::zama::is_enabled() {
+        return;
+    }
+    for item in doc.paths.paths.values_mut() {
+        let operations = [
+            &mut item.get,
+            &mut item.put,
+            &mut item.post,
+            &mut item.delete,
+            &mut item.options,
+            &mut item.head,
+            &mut item.patch,
+            &mut item.trace,
+        ];
+        for operation in operations.into_iter().flatten() {
+            for prose in [&mut operation.summary, &mut operation.description]
+                .into_iter()
+                .flatten()
+            {
+                let gated = match crate::zama::text(prose) {
+                    std::borrow::Cow::Owned(gated) => Some(gated),
+                    std::borrow::Cow::Borrowed(_) => None,
+                };
+                if let Some(gated) = gated {
+                    *prose = gated;
+                }
+            }
+        }
+    }
 }
 
 /// Pull the first fenced ```json block that follows `heading` out of a Markdown
@@ -4272,5 +4378,62 @@ mod tests {
             .expect("the submit example is an EVM network")
             .chain_id;
         assert_eq!(example["authorization"]["chainId"], chain_id);
+    }
+
+    /// `/docs` names `fhe-transfer` only while ENABLE_ZAMA is on
+    /// ([`crate::zama`]): the `/supported` scheme list, the `/settle` failure
+    /// notes and the `/discovery` scheme vocabulary. Off is the default, and
+    /// off nothing in the served spec names the scheme or Zama.
+    #[test]
+    fn the_spec_names_fhe_transfer_only_while_zama_is_on() {
+        use axum::body::Body;
+        use axum::http::Request;
+        use tower::ServiceExt;
+
+        let served = |flag| {
+            crate::zama::with_flag(flag, || {
+                tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .unwrap()
+                    .block_on(async {
+                        let response = swagger_routes()
+                            .oneshot(
+                                Request::builder()
+                                    .uri("/openapi.json")
+                                    .body(Body::empty())
+                                    .unwrap(),
+                            )
+                            .await
+                            .unwrap();
+                        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+                            .await
+                            .unwrap();
+                        let doc: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+                        doc.to_string()
+                    })
+            })
+        };
+
+        let off = served(None).to_ascii_lowercase();
+        for name in ["fhe-transfer", "fhe_transfer", "zama"] {
+            assert!(
+                !off.contains(name),
+                "the spec names {name} with ENABLE_ZAMA off"
+            );
+        }
+        assert!(
+            off.contains("scheme-not-served"),
+            "the discovery reason is documented"
+        );
+
+        let on = served(Some("true"));
+        for passage in [
+            "- `fhe_transfer` - FHE encrypted transfer via Zama",
+            "`fhe-transfer` settles on the FHE facilitator's side",
+            "`exact | upto | escrow | commerce | fhe-transfer`",
+        ] {
+            assert!(on.contains(passage), "on, the spec lost {passage:?}");
+        }
     }
 }

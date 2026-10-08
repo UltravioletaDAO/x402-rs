@@ -72,6 +72,7 @@ mod discovery_security;
 mod discovery_store;
 mod discovery_taxonomy;
 mod discovery_terms;
+mod discovery_usage;
 mod dx402;
 mod erc8004;
 mod escrow;
@@ -108,6 +109,7 @@ mod types_v2;
 mod upto;
 mod version;
 mod writer_lease;
+mod zama;
 
 use discovery::DiscoveryRegistry;
 #[allow(unused_imports)]
@@ -215,6 +217,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         payment_operator::autoverify::spawn(Arc::clone(&provider_cache));
     }
 
+    // Which way the Zama fhe-transfer switch is (ENABLE_ZAMA, default off).
+    zama::log_startup_state();
+
     let facilitator =
         FacilitatorLocal::new(Arc::clone(&provider_cache), Arc::clone(&compliance_checker));
     let axum_state = Arc::new(facilitator);
@@ -297,6 +302,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     ),
                     vec![], // Facilitators don't require payments, they process them
                 ).with_metadata(DiscoveryMetadata {
+                    upstream: None,
                     category: Some("payment-facilitator".to_string()),
                     provider: Some("Ultravioleta DAO".to_string()),
                     tags: vec![
@@ -337,6 +343,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     if enable_health && std::env::var("DISCOVERY_S3_BUCKET").is_ok() {
         discovery_registry.health().expect_overlay();
     }
+
+    // Usage counters for the Bazaar listings, read from the settlements the
+    // transaction store records. Every replica reads the same store, so every
+    // replica serves the same counts; a store that records nothing publishes
+    // none.
+    discovery_usage::spawn_refresher(discovery_registry.usage(), Arc::clone(&transaction_store));
 
     // Start background aggregation task if enabled
     // Fetches resources from external facilitators (Coinbase, etc.) every hour

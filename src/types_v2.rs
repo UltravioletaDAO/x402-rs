@@ -1100,6 +1100,13 @@ pub struct DiscoveryMetadata {
     /// Tags for search and discovery
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tags: Vec<String>,
+
+    /// The service this listing resells or wraps (`exa`, `tavily`,
+    /// `firecrawl`...), as the seller declares it. Stored verbatim, like
+    /// `category`; the listing's response-only `upstream` names it only when it
+    /// is an id or name of the closed list in `config/bazaar_taxonomy.json`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub upstream: Option<String>,
 }
 
 impl Default for DiscoveryMetadata {
@@ -1108,6 +1115,7 @@ impl Default for DiscoveryMetadata {
             category: None,
             provider: None,
             tags: Vec::new(),
+            upstream: None,
         }
     }
 }
@@ -1468,6 +1476,31 @@ pub struct DiscoveryResource {
     /// declaration itself stays where it is.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub has_input_schema: Option<bool>,
+
+    /// The service this listing resells or wraps, an id of the closed list in
+    /// `config/bazaar_taxonomy.json` (`exa`, `tavily`, `firecrawl`...).
+    /// Response-only, resolved at read time; absent when nothing names one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub upstream: Option<String>,
+
+    /// How `upstream` was obtained: `declared` (the seller's own
+    /// `metadata.upstream` or `extensions.bazaar.upstream`) or `inferred`
+    /// (its host, a path segment or its description names it; never for
+    /// content). Response-only; absent exactly when `upstream` is.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub upstream_source: Option<crate::discovery_taxonomy::UpstreamSource>,
+
+    /// How much the listing was paid for through this facilitator in the last
+    /// 30 days. Response-only, from the settlements this facilitator records
+    /// (`crate::discovery_usage`); absent when this deployment records none,
+    /// and for a templated URL. Only mainnet settlements matching one of the
+    /// listing's own payment options (network, payTo, asset, scheme, and for
+    /// `exact` at least its price), for its URL, by a payer other than that
+    /// recipient, count. A FLOOR, never a ledger: the record is written after
+    /// a payment settles and is lost when the store is unreachable, and
+    /// settlements through other facilitators are invisible.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub usage: Option<crate::discovery_usage::ListingUsage>,
 }
 
 impl DiscoveryResource {
@@ -1522,6 +1555,9 @@ impl DiscoveryResource {
             categories: Vec::new(),
             category_source: None,
             has_input_schema: None,
+            upstream: None,
+            upstream_source: None,
+            usage: None,
         }
     }
 
@@ -1584,6 +1620,9 @@ impl DiscoveryResource {
             categories: Vec::new(),
             category_source: None,
             has_input_schema: None,
+            upstream: None,
+            upstream_source: None,
+            usage: None,
         }
     }
 
@@ -1639,6 +1678,9 @@ impl DiscoveryResource {
             categories: Vec::new(),
             category_source: None,
             has_input_schema: None,
+            upstream: None,
+            upstream_source: None,
+            usage: None,
         }
     }
 
@@ -1744,6 +1786,9 @@ impl DiscoveryResource {
         self.categories.clear();
         self.category_source = None;
         self.has_input_schema = None;
+        self.upstream = None;
+        self.upstream_source = None;
+        self.usage = None;
     }
 
     /// Whether the listing says what to send: the `bazaar` extension's
@@ -1821,8 +1866,8 @@ impl DiscoveryResource {
             }
         }
 
-        // Tags only. `metadata.category` and `provider` are this record's
-        // source's own declaration and stay exactly that: other systems admit
+        // Tags only. `metadata.category`, `provider` and `upstream` are this
+        // record's source's own declaration and stay exactly that: other systems admit
         // or refuse a listing on the declared category, so it must never be
         // one this copy's seller did not make. The closed-list `categories`
         // are resolved separately, at read time.
@@ -2237,6 +2282,7 @@ mod tests {
         donor.extensions =
             Some(serde_json::json!({ "bazaar": { "info": { "input": { "method": "GET" } } } }));
         donor.metadata = Some(DiscoveryMetadata {
+            upstream: None,
             category: Some("finance".to_string()),
             provider: Some("Donor".to_string()),
             tags: vec!["quotes".to_string()],
@@ -2279,6 +2325,7 @@ mod tests {
         let mut own = bare_listing("its own words");
         own.extensions = Some(serde_json::json!({ "bazaar": { "info": { "output": {} } } }));
         own.metadata = Some(DiscoveryMetadata {
+            upstream: None,
             category: Some("crypto".to_string()),
             provider: Some("Own".to_string()),
             tags: vec!["mine".to_string()],
@@ -2295,6 +2342,7 @@ mod tests {
         let mut held = bare_listing("");
         let mut empty_donor = bare_listing("   ");
         empty_donor.metadata = Some(DiscoveryMetadata {
+            upstream: None,
             category: Some(" ".to_string()),
             provider: None,
             tags: Vec::new(),

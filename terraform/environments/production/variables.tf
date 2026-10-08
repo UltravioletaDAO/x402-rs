@@ -496,6 +496,35 @@ variable "fhe_request_timeout_secs" {
   }
 }
 
+variable "enable_zama" {
+  description = <<-EOT
+    Whether this facilitator offers the Zama `fhe-transfer` scheme at all.
+
+    Reaches the container as ENABLE_ZAMA (src/zama.rs). Off, fhe-transfer is
+    absent from /supported (and so from /networks.json and /accepts),
+    /discovery marks such offers `settleable: false` with
+    `scheme-not-served`, POST /verify and /settle answer it with a 400
+    `unsupported_scheme` without calling the FHE Lambda, and the landing,
+    /networks, /x402, /bazaar, /docs, the MCP tool schemas and the agent
+    documents (llms.txt, skill.md, ...) stop naming it. On, every one of those
+    is exactly what it was before the switch existed. The proxy code in
+    src/fhe_proxy.rs stays compiled in either way.
+
+    Decision 171 (2026-10-06): off. The Lambda behind it lives in a separate
+    state (terraform/environments/zama-testnet) with a switch of the same name.
+    ORDER: deploy this one off FIRST so nothing advertises the scheme, THEN
+    destroy that stack; to turn it back on, build that stack first and flip
+    this one last. Full runbook: terraform/environments/zama-testnet/README.md,
+    "On/off".
+
+    Set in production.auto.tfvars, which CI applies, and keep the default here
+    the same value so a run without that file cannot land on the other one
+    (tests/scripts/test_ci_zama_switch.py fails when they differ). Flip BOTH.
+  EOT
+  type        = bool
+  default     = false
+}
+
 # ----------------------------------------------------------------------------
 # Rate policy exemptions (decision 144, src/rate_policy.rs)
 # ----------------------------------------------------------------------------

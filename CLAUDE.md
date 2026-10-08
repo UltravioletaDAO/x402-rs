@@ -235,6 +235,7 @@ python scripts/compare_usdc_contracts.py
 - `events.rs`, `transaction_store{,.rs}` - SSE stream + DynamoDB index behind `/events`, `/transactions`, `/api/stats`
 - `nonce_store.rs`, `writer_lease.rs`, `idempotency_store.rs` - concurrency and replay control
 - `blocklist.rs`, `redact.rs`, `sig_down.rs`, `json_depth.rs`, `fhe_proxy.rs` - compliance and hardening
+- `zama.rs` - the `ENABLE_ZAMA` switch, **OFF** (decision 171, 2026-10-06; Terraform `enable_zama`, default `false`). Off, `fhe-transfer` leaves `/supported`, `/verify`+`/settle` answer `400 unsupported_scheme` without calling the Lambda, `/discovery` says `scheme-not-served`, and every served document drops the passages listed in `zama::CUTS`. A NEW page, doc or prose string that names fhe-transfer/Zama needs a row there -- `zama::tests::every_cut_still_matches` and `handlers::zama_switch_tests` go red otherwise. The Lambda is `terraform/environments/zama-testnet` (same switch name): facilitator off first, stack destroyed second; on in reverse (its README, "On/off").
 - `dx402/` - **DX402 `durable-evidence`** (v1.75.0+, current through 2.11.0): seals a paid response to the payer's own public key and anchors it. OFF unless `ENABLE_DX402=true`. See below and `docs/DX402.md`.
 - `version.rs` (resolves the VERSION file at runtime), `telemetry.rs`, `openapi.rs`, `from_env.rs`
 

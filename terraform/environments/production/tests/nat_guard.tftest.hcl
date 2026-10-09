@@ -7,6 +7,11 @@
 # The guards' data sources are built from variables only (main.tf says why), so they are
 # read at plan even on an empty state, as in production: the runs that expect a guard to
 # fire are plans. The runs share one mocked state, in order.
+#
+# Every overridden object is written out WHOLE, with the empty strings AWS really returns.
+# A mock fills a missing attribute with random text, and that hides a regression: G2
+# reading `gateway_id` instead of `subnet_id` would still find "subnets" here and pass,
+# while in AWS a subnet association has gateway_id = "" and G2 would read nothing.
 
 mock_provider "aws" {
   # The HTTPS listener validates certificate_arn as an ARN, and a mock makes up a random
@@ -34,13 +39,15 @@ override_resource {
   }
 }
 
-# G2's view of AWS: the private table and the two subnets associated with it.
+# G2's view of AWS: the private table, its two subnet associations, and a `main` one (no
+# subnet: compact() drops it).
 override_data {
   target = data.aws_route_table.private_without_nat
   values = {
     associations = [
-      { subnet_id = "subnet-0a0a0a0a0a0a0a0a1" },
-      { subnet_id = "subnet-0b0b0b0b0b0b0b0b2" },
+      { gateway_id = "", main = false, route_table_association_id = "rtbassoc-0a1", route_table_id = "rtb-0c0c0c0c0c0c0c0c1", subnet_id = "subnet-0a0a0a0a0a0a0a0a1" },
+      { gateway_id = "", main = false, route_table_association_id = "rtbassoc-0b2", route_table_id = "rtb-0c0c0c0c0c0c0c0c1", subnet_id = "subnet-0b0b0b0b0b0b0b0b2" },
+      { gateway_id = "", main = true, route_table_association_id = "rtbassoc-0m0", route_table_id = "rtb-0c0c0c0c0c0c0c0c1", subnet_id = "" },
     ]
   }
 }
@@ -50,6 +57,30 @@ override_data {
   target = data.aws_network_interfaces.private_subnet_endpoints
   values = {
     ids = ["eni-0e0d0e0d0e0d0e0d1"]
+  }
+}
+
+# G3's view of AWS when it is right: both subnets associated with the private table, which
+# sends 0.0.0.0/0 to an available NAT (plus an IPv6 route that is not the NAT's, with the
+# empty strings the data source returns). Runs that break one piece override it.
+override_data {
+  target = data.aws_route_table.private_for_tasks
+  values = {
+    associations = [
+      { gateway_id = "", main = false, route_table_association_id = "rtbassoc-0a1", route_table_id = "rtb-0c0c0c0c0c0c0c0c1", subnet_id = "subnet-0a0a0a0a0a0a0a0a1" },
+      { gateway_id = "", main = false, route_table_association_id = "rtbassoc-0b2", route_table_id = "rtb-0c0c0c0c0c0c0c0c1", subnet_id = "subnet-0b0b0b0b0b0b0b0b2" },
+    ]
+    routes = [
+      { carrier_gateway_id = "", cidr_block = "0.0.0.0/0", core_network_arn = "", destination_prefix_list_id = "", egress_only_gateway_id = "", gateway_id = "", instance_id = "", ipv6_cidr_block = "", local_gateway_id = "", nat_gateway_id = "nat-0c4a0c4a0c4a0c4a4", network_interface_id = "", transit_gateway_id = "", vpc_endpoint_id = "", vpc_peering_connection_id = "" },
+      { carrier_gateway_id = "", cidr_block = "", core_network_arn = "", destination_prefix_list_id = "", egress_only_gateway_id = "eigw-0d0d0d0d0d0d0d0d1", gateway_id = "", instance_id = "", ipv6_cidr_block = "::/0", local_gateway_id = "", nat_gateway_id = "", network_interface_id = "", transit_gateway_id = "", vpc_endpoint_id = "", vpc_peering_connection_id = "" },
+    ]
+  }
+}
+
+override_data {
+  target = data.aws_nat_gateways.available
+  values = {
+    ids = ["nat-0c4a0c4a0c4a0c4a4"]
   }
 }
 
@@ -156,10 +187,10 @@ run "a_lambda_left_in_a_private_subnet_stops_the_plan" {
 }
 
 run "g2_stops_the_plan_even_with_a_pending_subnet_change" {
-  # VER of this PR, P2-1: a data source that references a managed resource with a pending
-  # change is read during apply, and in that apply the NAT is destroyed before the table is
-  # updated. A tag change on the private subnets is such a change; G2 must still stop the
-  # PLAN.
+  # Refutation of this PR, P2-1: a data source that references a managed resource with a
+  # pending change is read during apply, and in that apply the NAT is destroyed before the
+  # table is updated. A tag change on the private subnets is such a change; G2 must still
+  # stop the PLAN.
   command = plan
 
   plan_options {
@@ -204,8 +235,30 @@ run "a_plan_that_targets_only_the_nat_reads_g2_too" {
   expect_failures = [data.aws_network_interfaces.private_subnets]
 }
 
+run "a_plan_that_targets_only_the_eip_reads_g2_too" {
+  command = plan
+
+  plan_options {
+    target = [aws_eip.nat]
+  }
+
+  variables {
+    enable_nat_gateway = false
+  }
+
+  override_data {
+    target = data.aws_network_interfaces.private_subnets
+    values = {
+      ids = ["eni-0a5c0a5c0a5c0a5c2"]
+    }
+  }
+
+  expect_failures = [data.aws_network_interfaces.private_subnets]
+}
+
 run "a_private_table_with_no_subnets_reads_no_enis" {
-  # Nothing routes through the table, so nothing can lose its route out.
+  # Nothing routes through the table (only the `main` association, without a subnet), so
+  # nothing can lose its route out.
   command = plan
 
   plan_options {
@@ -219,7 +272,9 @@ run "a_private_table_with_no_subnets_reads_no_enis" {
   override_data {
     target = data.aws_route_table.private_without_nat
     values = {
-      associations = []
+      associations = [
+        { gateway_id = "", main = true, route_table_association_id = "rtbassoc-0m0", route_table_id = "rtb-0c0c0c0c0c0c0c0c1", subnet_id = "" },
+      ]
     }
   }
 
@@ -257,7 +312,7 @@ run "nat_on_keeps_one_default_route_to_the_nat" {
   }
 
   assert {
-    condition     = length(data.aws_network_interfaces.private_subnets) == 0
+    condition     = length(data.aws_network_interfaces.private_subnets) == 0 && length(data.aws_vpc.without_nat) == 0
     error_message = "With the NAT on, G2 reads nothing."
   }
 }
@@ -293,8 +348,8 @@ run "turning_the_nat_off_deletes_its_route" {
 }
 
 run "nat_off_with_the_tasks_private_is_refused_by_the_variables" {
-  # AWS still shows a NAT route here, so G3 passes and only the precondition on the
-  # variables can fail this run.
+  # AWS still shows the NAT routed here (the file-level overrides), so G3 passes and only
+  # the precondition on the variables can fail this run.
   command = plan
 
   plan_options {
@@ -313,30 +368,12 @@ run "nat_off_with_the_tasks_private_is_refused_by_the_variables" {
     }
   }
 
-  override_data {
-    target = data.aws_nat_gateways.available
-    values = {
-      ids = ["nat-0c4a0c4a0c4a0c4a4"]
-    }
-  }
-
-  override_data {
-    target = data.aws_route_table.private_for_tasks
-    values = {
-      associations = [
-        { subnet_id = "subnet-0a0a0a0a0a0a0a0a1" },
-        { subnet_id = "subnet-0b0b0b0b0b0b0b0b2" },
-      ]
-      routes = [{ cidr_block = "0.0.0.0/0", nat_gateway_id = "nat-0c4a0c4a0c4a0c4a4" }]
-    }
-  }
-
   expect_failures = [aws_ecs_service.facilitator]
 }
 
 run "tasks_back_to_private_without_an_available_nat_stop_the_plan" {
-  # VER-X402-115 point 2: the variables say the NAT is on, AWS has none (the deploy never
-  # creates it), so moving the tasks back stops before the move.
+  # VER-X402-115 point 2: the variables say the NAT is on, AWS has none available (the
+  # deploy never creates it), so moving the tasks back stops before the move.
   command = plan
 
   plan_options {
@@ -355,23 +392,12 @@ run "tasks_back_to_private_without_an_available_nat_stop_the_plan" {
     }
   }
 
-  override_data {
-    target = data.aws_route_table.private_for_tasks
-    values = {
-      associations = [
-        { subnet_id = "subnet-0a0a0a0a0a0a0a0a1" },
-        { subnet_id = "subnet-0b0b0b0b0b0b0b0b2" },
-      ]
-      routes = [{ cidr_block = "0.0.0.0/0", nat_gateway_id = "nat-0c4a0c4a0c4a0c4a4" }]
-    }
-  }
-
   expect_failures = [aws_ecs_service.facilitator]
 }
 
 run "an_available_nat_without_the_private_route_stops_the_plan" {
-  # VER of this PR, P2-2: a NAT applied without its route (-target=aws_nat_gateway.main, or
-  # made by hand) is available, and the private table still has no way out.
+  # Refutation of this PR, P2-2: a NAT applied without its route (-target=aws_nat_gateway.main,
+  # or made by hand) is available, and the private table still has no way out.
   command = plan
 
   plan_options {
@@ -384,20 +410,42 @@ run "an_available_nat_without_the_private_route_stops_the_plan" {
   }
 
   override_data {
-    target = data.aws_nat_gateways.available
+    target = data.aws_route_table.private_for_tasks
     values = {
-      ids = ["nat-0c4a0c4a0c4a0c4a4"]
+      associations = [
+        { gateway_id = "", main = false, route_table_association_id = "rtbassoc-0a1", route_table_id = "rtb-0c0c0c0c0c0c0c0c1", subnet_id = "subnet-0a0a0a0a0a0a0a0a1" },
+        { gateway_id = "", main = false, route_table_association_id = "rtbassoc-0b2", route_table_id = "rtb-0c0c0c0c0c0c0c0c1", subnet_id = "subnet-0b0b0b0b0b0b0b0b2" },
+      ]
+      routes = []
     }
+  }
+
+  expect_failures = [aws_ecs_service.facilitator]
+}
+
+run "a_route_to_the_nat_that_is_not_the_default_stops_the_plan" {
+  # Only part of the address space goes to the NAT: the RPCs are out there, not in 10.2/16.
+  command = plan
+
+  plan_options {
+    target = [aws_ecs_service.facilitator]
+  }
+
+  variables {
+    enable_nat_gateway          = true
+    ecs_tasks_in_public_subnets = false
   }
 
   override_data {
     target = data.aws_route_table.private_for_tasks
     values = {
       associations = [
-        { subnet_id = "subnet-0a0a0a0a0a0a0a0a1" },
-        { subnet_id = "subnet-0b0b0b0b0b0b0b0b2" },
+        { gateway_id = "", main = false, route_table_association_id = "rtbassoc-0a1", route_table_id = "rtb-0c0c0c0c0c0c0c0c1", subnet_id = "subnet-0a0a0a0a0a0a0a0a1" },
+        { gateway_id = "", main = false, route_table_association_id = "rtbassoc-0b2", route_table_id = "rtb-0c0c0c0c0c0c0c0c1", subnet_id = "subnet-0b0b0b0b0b0b0b0b2" },
       ]
-      routes = []
+      routes = [
+        { carrier_gateway_id = "", cidr_block = "10.2.0.0/16", core_network_arn = "", destination_prefix_list_id = "", egress_only_gateway_id = "", gateway_id = "", instance_id = "", ipv6_cidr_block = "", local_gateway_id = "", nat_gateway_id = "nat-0c4a0c4a0c4a0c4a4", network_interface_id = "", transit_gateway_id = "", vpc_endpoint_id = "", vpc_peering_connection_id = "" },
+      ]
     }
   }
 
@@ -419,17 +467,14 @@ run "a_private_subnet_outside_the_routed_table_stops_the_plan" {
   }
 
   override_data {
-    target = data.aws_nat_gateways.available
-    values = {
-      ids = ["nat-0c4a0c4a0c4a0c4a4"]
-    }
-  }
-
-  override_data {
     target = data.aws_route_table.private_for_tasks
     values = {
-      associations = [{ subnet_id = "subnet-0a0a0a0a0a0a0a0a1" }]
-      routes       = [{ cidr_block = "0.0.0.0/0", nat_gateway_id = "nat-0c4a0c4a0c4a0c4a4" }]
+      associations = [
+        { gateway_id = "", main = false, route_table_association_id = "rtbassoc-0a1", route_table_id = "rtb-0c0c0c0c0c0c0c0c1", subnet_id = "subnet-0a0a0a0a0a0a0a0a1" },
+      ]
+      routes = [
+        { carrier_gateway_id = "", cidr_block = "0.0.0.0/0", core_network_arn = "", destination_prefix_list_id = "", egress_only_gateway_id = "", gateway_id = "", instance_id = "", ipv6_cidr_block = "", local_gateway_id = "", nat_gateway_id = "nat-0c4a0c4a0c4a0c4a4", network_interface_id = "", transit_gateway_id = "", vpc_endpoint_id = "", vpc_peering_connection_id = "" },
+      ]
     }
   }
 
@@ -437,6 +482,8 @@ run "a_private_subnet_outside_the_routed_table_stops_the_plan" {
 }
 
 run "tasks_back_to_private_with_the_nat_routed" {
+  # The file-level overrides: both subnets on the private table, 0.0.0.0/0 to an available
+  # NAT, and an IPv6 route that is not the NAT's.
   command = plan
 
   plan_options {
@@ -446,24 +493,6 @@ run "tasks_back_to_private_with_the_nat_routed" {
   variables {
     enable_nat_gateway          = true
     ecs_tasks_in_public_subnets = false
-  }
-
-  override_data {
-    target = data.aws_nat_gateways.available
-    values = {
-      ids = ["nat-0c4a0c4a0c4a0c4a4"]
-    }
-  }
-
-  override_data {
-    target = data.aws_route_table.private_for_tasks
-    values = {
-      associations = [
-        { subnet_id = "subnet-0a0a0a0a0a0a0a0a1" },
-        { subnet_id = "subnet-0b0b0b0b0b0b0b0b2" },
-      ]
-      routes = [{ cidr_block = "0.0.0.0/0", nat_gateway_id = "nat-0c4a0c4a0c4a0c4a4" }]
-    }
   }
 
   assert {

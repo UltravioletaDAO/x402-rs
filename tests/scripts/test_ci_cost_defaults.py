@@ -136,6 +136,17 @@ class CostDefaultsTest(unittest.TestCase):
             rt = block(main, header)
             self.assertRegex(rt, rf"count\s*=\s*{re.escape(mode)} \? 0 : local\.nat_count\n", header)
             self.assertIn(name, rt, header)
+        vpc_name = re.search(r"^\s*(Name\s*=\s*\"[^\"]*\")\n", block(main, 'resource "aws_vpc" "main"'), re.M).group(1)
+        vpc = block(main, 'data "aws_vpc" "without_nat"')
+        self.assertRegex(vpc, r"count\s*=\s*var\.enable_nat_gateway \? 0 : 1\n")
+        self.assertIn(vpc_name, vpc)
+        self.assertRegex(block(main, 'data "aws_route_table" "private_without_nat"'),
+                         r"vpc_id\s*=\s*data\.aws_vpc\.without_nat\[0\]\.id\n")
+        # Subnet associations carry gateway_id = "" in AWS: reading that field instead would
+        # leave G2 with no subnets and nothing to check.
+        for local in ("subnets_without_nat", "private_subnets_with_nat_egress"):
+            body = re.search(rf"^  {local}\s*=(.*?)^  \S", main + "\n  x", re.S | re.M).group(1)
+            self.assertIn("rt.associations[*].subnet_id", body, local)
         for header in ('data "aws_network_interfaces" "private_subnets"',
                        'data "aws_network_interfaces" "private_subnet_endpoints"'):
             enis = block(main, header)
@@ -145,6 +156,7 @@ class CostDefaultsTest(unittest.TestCase):
         self.assertRegex(endpoints, r'name\s*=\s*"interface-type"\n\s*values\s*=\s*\["vpc_endpoint"\]\n')
         nats = block(main, 'data "aws_nat_gateways" "available"')
         self.assertRegex(nats, r"count\s*=\s*var\.ecs_tasks_in_public_subnets \? 0 : 1\n")
+        self.assertRegex(nats, r"vpc_id\s*=\s*data\.aws_route_table\.private_for_tasks\[0\]\.vpc_id\n")
         self.assertRegex(nats, r'name\s*=\s*"state"\n\s*values\s*=\s*\["available"\]\n')
 
     def test_the_live_nat_guards_reference_nothing_managed(self):
@@ -153,7 +165,8 @@ class CostDefaultsTest(unittest.TestCase):
         # destroys the NAT before it updates the route table. A guard read then fires after
         # the damage. From variables and other data sources only, they are read at plan.
         main = (TF / "main.tf").read_text(encoding="utf-8")
-        guards = [block(main, h) for h in ('data "aws_route_table" "private_without_nat"',
+        guards = [block(main, h) for h in ('data "aws_vpc" "without_nat"',
+                                           'data "aws_route_table" "private_without_nat"',
                                            'data "aws_network_interfaces" "private_subnet_endpoints"',
                                            'data "aws_network_interfaces" "private_subnets"',
                                            'data "aws_route_table" "private_for_tasks"',
@@ -163,7 +176,7 @@ class CostDefaultsTest(unittest.TestCase):
         for body in re.findall(r"^locals \{(.*?)^\}", main, re.S | re.M):
             if any(re.search(rf"^  {n}\s*=", body, re.M) for n in guard_locals):
                 guards.append(body)
-        self.assertGreaterEqual(len(guards), 7)
+        self.assertGreaterEqual(len(guards), 8)
         for body in guards:
             self.assertEqual(re.findall(r"(?<![.\w])aws_[a-z0-9_]+\.[a-z0-9_]+", body), [], body[:80])
         for header in ('resource "aws_eip" "nat"', 'resource "aws_nat_gateway" "main"'):

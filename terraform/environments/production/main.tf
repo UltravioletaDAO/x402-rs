@@ -98,9 +98,23 @@ locals {
 # associated with them, not only aws_subnet.private), every ENI in them, and the VPC
 # endpoint ENIs among those, which never need a route out. Anything else -- a task, a
 # Lambda, something made by hand -- stops the plan (postcondition below). aws_eip.nat and
-# aws_nat_gateway.main depend on it, so a plan that targets them reads it too.
+# aws_nat_gateway.main depend on it, so a plan that targets them reads it too. Terraform
+# skips every check in destroy mode: never drop the NAT with `terraform destroy` or
+# `-destroy`, only with a normal plan of enable_nat_gateway = false.
+#
+# Both lookups fail closed: no match, or more than one, is an error, not an empty answer.
+# The VPC scopes the route tables, so a table elsewhere carrying the same Name is not it.
+data "aws_vpc" "without_nat" {
+  count = var.enable_nat_gateway ? 0 : 1
+
+  tags = {
+    Name = "facilitator-${var.environment}"
+  }
+}
+
 data "aws_route_table" "private_without_nat" {
-  count = var.enable_nat_gateway ? 0 : local.nat_count
+  count  = var.enable_nat_gateway ? 0 : local.nat_count
+  vpc_id = data.aws_vpc.without_nat[0].id
 
   tags = {
     Name = "facilitator-${var.environment}-private-rt-${count.index}"

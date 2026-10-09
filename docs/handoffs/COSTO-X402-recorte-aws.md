@@ -129,7 +129,11 @@ e. Recién ahí, PR aparte con `enable_nat_gateway = false` (default de `variabl
    2. **Merge del PR del NAT primero.** El deploy no toca el NAT (fuera de todo
       `-target`), así que el merge solo deja `main` pidiendo el NAT apagado.
    3. Después, `terraform plan -out=t.tfplan` **desde `main` en el SHA mergeado** (no desde
-      la rama del PR), revisar y `apply t.tfplan`.
+      la rama del PR), revisar y `apply t.tfplan`. Un plan normal, **nunca `terraform
+      destroy` ni `-destroy`**: en modo destroy Terraform no evalúa ninguna check (G2 no
+      corre), y un destroy con `-target` del NAT se lleva además la tabla privada, sus
+      asociaciones y los endpoints gateway de S3 y DynamoDB (refutación de X402-NAT-OFF,
+      ronda 2, P2-B).
    4. Si el plan para en la postcondición de `data.aws_network_interfaces.private_subnets`
       («these ENIs live in a subnet that routes through the private table»), es G2: algo
       que no es un endpoint de VPC tiene una ENI en una subred asociada a la tabla privada.
@@ -312,8 +316,9 @@ al momento del plan: si c0der aplicó a mano el paso b o lote A, esas filas ya n
   durante el apply, y en el apply que saca el NAT Terraform destruye el NAT ANTES de
   actualizar la tabla que lo referenciaba. Una guarda leída ahí frena cuando el daño ya
   está hecho. Las tablas privadas se buscan por su tag `Name` desde variables
-  (`data.aws_route_table`, que falla si no encuentra exactamente una), y todo lo demás sale
-  de ahí: se leen siempre en el plan, aunque las subredes tengan un cambio pendiente.
+  (`data.aws_route_table`, que falla si no encuentra exactamente una; la de G2 acotada a la
+  VPC, `data.aws_vpc.without_nat`, también por tag), y todo lo demás sale de ahí: se leen
+  siempre en el plan, aunque las subredes tengan un cambio pendiente.
 - **Guarda G2** (lo que pide el encargo: que el plan no pueda sacar el NAT mientras algo
   dependa de una subred privada): `postcondition` de
   `data.aws_network_interfaces.private_subnets`. Con el NAT apagado toma las subredes
@@ -322,9 +327,11 @@ al momento del plan: si c0der aplicó a mano el paso b o lote A, esas filas ya n
   `vpc_endpoint` (`data.aws_network_interfaces.private_subnet_endpoints`), y para si queda
   alguna que no sea de un endpoint. No pregunta qué es: una tarea, una Lambda o algo hecho a
   mano frenan igual, y el error lista los ids. `aws_eip.nat` y `aws_nat_gateway.main`
-  dependen (`depends_on`) de esa data source, así que cualquier plan que los toque la lee:
-  el completo de e.3, el del drift gate, `-target=aws_nat_gateway.main`, o un `-target` que
-  arrastre la tabla privada (los endpoints gateway del paso b).
+  dependen (`depends_on`) de esa data source, así que cualquier plan normal que los toque
+  la lee: el completo de e.3, el del drift gate, `-target=aws_nat_gateway.main` o
+  `aws_eip.nat`, o un `-target` que arrastre la tabla privada (los endpoints gateway del
+  paso b). **El modo destroy no**: Terraform no evalúa checks en `terraform destroy` ni en
+  `plan -destroy`; el NAT nunca se saca así (e.3).
 - **Guarda G3** (VER-X402-115, punto 2, y P2-2 de la refutación de este PR): segunda
   precondición en `aws_ecs_service.facilitator`. Con `ecs_tasks_in_public_subnets = false`
   exige que cada `aws_subnet.private` esté asociada a una tabla privada
@@ -334,8 +341,8 @@ al momento del plan: si c0der aplicó a mano el paso b o lote A, esas filas ya n
   mover las tareas.
 - Las data sources tienen `count` por modo: con los valores de este PR el deploy no lee
   nada de G3 (`count = 0`) y solo el plan completo (drift gate, apply a mano) lee G2.
-  Permisos: `ec2:DescribeRouteTables`, `ec2:DescribeNetworkInterfaces` y
-  `ec2:DescribeNatGateways`, que la identidad del CI tiene por `ReadOnlyAccess` según el
+  Permisos: `ec2:DescribeVpcs`, `ec2:DescribeRouteTables`, `ec2:DescribeNetworkInterfaces`
+  y `ec2:DescribeNatGateways`, que la identidad del CI tiene por `ReadOnlyAccess` según el
   comentario de `cicd-iam-policy.tf` (no verificado contra IAM acá). El drift gate de este
   PR es la primera lectura real de G2.
 - Grafo (`terraform graph -type=plan`, 1.9.8): los 38 `-target` del deploy arrastran, de
@@ -344,15 +351,19 @@ al momento del plan: si c0der aplicó a mano el paso b o lote A, esas filas ya n
   pública, VPC) más las data sources de G2, que con el NAT prendido no se leen.
 
 **Tests:**
-- `tests/nat_guard.tftest.hcl` (15 corridas, `mock_provider "aws"`, sin credenciales,
-  1.9.8 y 1.14.3): valores comprometidos sin NAT ni EIP y sin ruta; una ENI de tarea y una
-  de Lambda frenan el plan; G2 frena aunque las subredes privadas tengan un cambio
-  pendiente; un plan con `-target=aws_nat_gateway.main` también lee G2; una tabla sin
-  subredes no lee ENIs; NAT prendido = una ruta al NAT; apagar desde un estado con NAT borra
-  la ruta; G1 por variables; G3 frena sin NAT disponible, con NAT pero sin ruta y con una
-  subred fuera de la tabla, y pasa con el NAT ruteado; con las tareas públicas G3 no lee
-  nada. Paso nuevo del CI `Terraform NAT guards` (job `Build & test`, Terraform 1.9.8), que
-  bloquea el deploy como el resto del job.
+- `tests/nat_guard.tftest.hcl` (17 corridas, `mock_provider "aws"`, sin credenciales,
+  1.9.8 y 1.14.3). Los objetos de los overrides van completos, con los `""` que devuelve
+  AWS: un mock rellena lo que falta con texto al azar y eso escondía que leer `gateway_id`
+  en vez de `subnet_id` dejaba a G2 sin subredes (refutación ronda 2, P2-A). Fija: valores
+  comprometidos sin NAT ni EIP y sin ruta; una ENI de tarea y una de Lambda frenan el plan;
+  G2 frena aunque las subredes privadas tengan un cambio pendiente; un plan con `-target`
+  del NAT o de la EIP también lee G2; una tabla con solo la asociación `main` no lee ENIs;
+  NAT prendido = una ruta al NAT; apagar desde un estado con NAT borra la ruta; G1 por
+  variables; G3 frena sin NAT disponible, con NAT pero sin ruta, con una ruta al NAT que no
+  es la `0.0.0.0/0` y con una subred fuera de la tabla, y pasa con el NAT ruteado (con una
+  ruta IPv6 ajena al lado); con las tareas públicas G3 no lee nada. Paso nuevo del CI
+  `Terraform NAT guards` (job `Build & test`, Terraform 1.9.8), que bloquea el deploy como
+  el resto del job.
 - `tests/scripts/test_ci_cost_defaults.py`: `test_the_nat_is_off_in_its_own_change`
   (antes `test_nat_stays_on_in_the_change_that_moves_the_tasks`),
   `test_whatever_runs_in_a_private_subnet_is_guarded_by_the_nat` (todo bloque que use
@@ -366,9 +377,13 @@ al momento del plan: si c0der aplicó a mano el paso b o lote A, esas filas ya n
 - Los mocks prueban la evaluación de la config, no lo que hace el provider: que `[]` sea
   un update y no un replace de la tabla sale del esquema (`route` no es ForceNew) y del
   fuente de `flattenRoutes`, no de un test.
-- G3, en un ambiente nuevo con las tareas privadas, para en el primer apply (ni la tabla
-  ni el NAT existen): primero `-target=aws_route_table.private`, después el resto. En
-  producción no aplica.
+- **Modo destroy:** Terraform no evalúa checks en `terraform destroy` ni en `plan
+  -destroy` (medido por el refutador en 1.9.8 y 1.14.3). No hay arreglo en la
+  configuración: el NAT se saca solo con un plan normal (e.3).
+- Un ambiente nuevo no se puede planear con los valores comprometidos: las búsquedas por
+  tag fallan cerradas porque la VPC y las tablas todavía no existen. Se crea primero con
+  `enable_nat_gateway = true` y `ecs_tasks_in_public_subnets = true`. En producción no
+  aplica.
 - G3 no distingue un NAT privado (`connectivity_type = private`) de uno público: uno así
   hecho a mano y ruteado desde la tabla privada pasaría la guarda.
 - Una ENI hecha a mano en una subred asociada a la tabla privada también frena G2: es a

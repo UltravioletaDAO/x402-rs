@@ -61,9 +61,11 @@ environment = "production"
 vpc_cidr           = "10.1.0.0/16"
 availability_zones = ["us-east-2a", "us-east-2b"]
 single_nat_gateway = true
-# COSTO-X402 B5: the tasks egress from the public subnets with their own IP. The NAT stays
-# on until every task is verified public; it goes off in its own one-variable change.
-# Rollback after it is off (the deploy never creates the NAT): from a branch with
+# COSTO-X402 B5: the tasks egress from the public subnets with their own IP. The NAT went
+# off in its own change (X402-NAT-OFF) after both tasks ran a day in the public subnets.
+# The merge destroys nothing (the NAT is outside every -target): a hand `plan -out` from
+# main does, and it stops while anything but a VPC endpoint has an ENI in a subnet that
+# routes through the private table. Rollback after it is off (the deploy never creates the NAT): from a branch with
 # enable_nat_gateway = true, a HAND apply `terraform plan -out=nat.tfplan
 # -target=aws_route_table.private` (drags aws_nat_gateway.main and aws_eip.nat), review,
 # `apply nat.tfplan`; verify the NAT `available` and the private default route `active`
@@ -71,7 +73,7 @@ single_nat_gateway = true
 # ecs_tasks_in_public_subnets = false. Do NOT git revert PR #115 after the NAT is off
 # without the first two steps: a PR that changes both values together leaves the tasks
 # with no egress. Full runbook: docs/handoffs/COSTO-X402-recorte-aws.md.
-enable_nat_gateway          = true
+enable_nat_gateway          = false
 ecs_tasks_in_public_subnets = true
 
 # ECS task sizing

@@ -6,6 +6,7 @@ operator's apply on the next release (ci.yaml, "Terraform apply"). Each check sk
 a variable that is not declared, so reverting one cut's commit does not turn this red.
 """
 import re
+import sys
 import unittest
 from pathlib import Path
 
@@ -84,16 +85,107 @@ class CostDefaultsTest(unittest.TestCase):
         for name in ("dynamodb", "s3"):
             self.assertIn("aws_route_table.public.id", block(main, f'resource "aws_vpc_endpoint" "{name}"'), name)
 
-    def test_nat_stays_on_in_the_change_that_moves_the_tasks(self):
-        # REF-X402-115 P2-1: the service precondition reads variables, not where the tasks
-        # run, and no graph edge orders the NAT destroy after the rolling deployment. The
-        # NAT goes off in its own change, after every task is verified in a public subnet;
-        # that change flips this assertion together with the two values.
+    def test_the_nat_is_off_in_its_own_change(self):
+        # REF-X402-115 P2-1 kept the NAT on in the change that moved the tasks: the service
+        # precondition reads variables, not where the tasks run, and no graph edge orders the
+        # NAT destroy after the rolling deployment. X402-NAT-OFF turned it off on its own,
+        # after both tasks ran a day in the public subnets. Turning it back on is the hand
+        # rollback in docs/handoffs/COSTO-X402-recorte-aws.md, whose branch flips this.
         d, t = defaults(), tfvars()
         if "enable_nat_gateway" not in d:
             self.skipTest("B5 not in this tree")
-        self.assertEqual(d["enable_nat_gateway"], "true", "variables.tf default")
-        self.assertEqual(t.get("enable_nat_gateway"), "true", "production.auto.tfvars")
+        self.assertEqual(d["enable_nat_gateway"], "false", "variables.tf default")
+        self.assertEqual(t.get("enable_nat_gateway"), "false", "production.auto.tfvars")
+
+    def test_whatever_runs_in_a_private_subnet_is_guarded_by_the_nat(self):
+        # X402-NAT-OFF: without the NAT nothing in a private subnet has a route out. G2 (the
+        # postcondition on data.aws_network_interfaces.private_subnets) stops the plan that
+        # would strand an ENI that already exists there; this stops a task or a Lambda from
+        # being DECLARED there without a precondition on var.enable_nat_gateway. Only what
+        # never opens a connection to the internet is exempt. A local that hands the
+        # subnets on under another name gets past this; G2 still sees what it creates.
+        no_egress = {
+            "aws_route_table_association.private",
+            "aws_vpc_endpoint.secretsmanager",
+            "aws_efs_mount_target.observability",
+        }
+        text = "\n".join(p.read_text(encoding="utf-8") for p in sorted(TF.glob("*.tf")))
+        users = set()
+        for m in re.finditer(r'^(resource|data) "([a-z0-9_]+)" "([a-z0-9_]+)" \{(.*?)^\}', text, re.S | re.M):
+            if "aws_subnet.private" not in m.group(4):
+                continue
+            address = ("data." if m.group(1) == "data" else "") + f"{m.group(2)}.{m.group(3)}"
+            users.add(address)
+            if address not in no_egress:
+                self.assertRegex(m.group(4), r"precondition \{\s*condition\s*=\s*var\.enable_nat_gateway\b",
+                                 f"{address} runs in a private subnet without a NAT guard")
+        self.assertTrue(no_egress <= users, f"stale exemptions: {sorted(no_egress - users)}")
+        self.assertIn("aws_ecs_service.facilitator", users)
+
+    def test_the_live_nat_guards_read_the_right_filters(self):
+        # The mocks in tests/nat_guard.tftest.hcl override what these data sources return,
+        # so they cannot see the lookups. The route tables are found by the Name tag the
+        # managed tables carry; the endpoint ENIs are the only exempt kind; without
+        # `state = available` a NAT that AWS still lists as `deleted` (it does for a while)
+        # would let the tasks move with no egress.
+        main = (TF / "main.tf").read_text(encoding="utf-8")
+        name = re.search(r"^\s*(Name\s*=\s*\"[^\"]*private-rt-[^\"]*\")\n",
+                         block(main, 'resource "aws_route_table" "private"'), re.M).group(1)
+        for header, mode in (('data "aws_route_table" "private_without_nat"', "var.enable_nat_gateway"),
+                             ('data "aws_route_table" "private_for_tasks"', "var.ecs_tasks_in_public_subnets")):
+            rt = block(main, header)
+            self.assertRegex(rt, rf"count\s*=\s*{re.escape(mode)} \? 0 : local\.nat_count\n", header)
+            self.assertIn(name, rt, header)
+        for header in ('data "aws_network_interfaces" "private_subnets"',
+                       'data "aws_network_interfaces" "private_subnet_endpoints"'):
+            enis = block(main, header)
+            self.assertRegex(enis, r"count\s*=\s*length\(local\.subnets_without_nat\) > 0 \? 1 : 0\n", header)
+            self.assertRegex(enis, r'name\s*=\s*"subnet-id"\n\s*values\s*=\s*local\.subnets_without_nat\n', header)
+        endpoints = block(main, 'data "aws_network_interfaces" "private_subnet_endpoints"')
+        self.assertRegex(endpoints, r'name\s*=\s*"interface-type"\n\s*values\s*=\s*\["vpc_endpoint"\]\n')
+        nats = block(main, 'data "aws_nat_gateways" "available"')
+        self.assertRegex(nats, r"count\s*=\s*var\.ecs_tasks_in_public_subnets \? 0 : 1\n")
+        self.assertRegex(nats, r'name\s*=\s*"state"\n\s*values\s*=\s*\["available"\]\n')
+
+    def test_the_live_nat_guards_reference_nothing_managed(self):
+        # VER of X402-NAT-OFF, P2-1: a data source that references a managed resource with a
+        # pending change is read during apply, and in the apply that drops the NAT Terraform
+        # destroys the NAT before it updates the route table. A guard read then fires after
+        # the damage. From variables and other data sources only, they are read at plan.
+        main = (TF / "main.tf").read_text(encoding="utf-8")
+        guards = [block(main, h) for h in ('data "aws_route_table" "private_without_nat"',
+                                           'data "aws_network_interfaces" "private_subnet_endpoints"',
+                                           'data "aws_network_interfaces" "private_subnets"',
+                                           'data "aws_route_table" "private_for_tasks"',
+                                           'data "aws_nat_gateways" "available"')]
+        guard_locals = ("subnets_without_nat", "private_subnet_endpoint_enis",
+                        "available_nat_gateways", "private_subnets_with_nat_egress")
+        for body in re.findall(r"^locals \{(.*?)^\}", main, re.S | re.M):
+            if any(re.search(rf"^  {n}\s*=", body, re.M) for n in guard_locals):
+                guards.append(body)
+        self.assertGreaterEqual(len(guards), 7)
+        for body in guards:
+            self.assertEqual(re.findall(r"(?<![.\w])aws_[a-z0-9_]+\.[a-z0-9_]+", body), [], body[:80])
+        for header in ('resource "aws_eip" "nat"', 'resource "aws_nat_gateway" "main"'):
+            self.assertRegex(block(main, header),
+                             r"depends_on\s*=\s*\[[^\]]*data\.aws_network_interfaces\.private_subnets\]", header)
+
+    def test_the_nat_guards_run_in_ci(self):
+        # The guards read AWS, so only terraform test exercises them before a hand apply.
+        sys.path.insert(0, str(TF.parents[2] / "scripts"))
+        import ci_paths_selftest
+        steps = ci_paths_selftest.load_workflows()["ci.yaml"]["jobs"]["test"]["steps"]
+        names = [s.get("name") for s in steps]
+        guard = steps[names.index("Terraform NAT guards")]
+        self.assertEqual(guard.get("working-directory"), "terraform/environments/production")
+        self.assertEqual(guard["run"].split(), "terraform init -backend=false -input=false terraform test".split())
+        setup = [s for s in steps[:names.index("Terraform NAT guards")]
+                 if str(s.get("uses", "")).startswith("hashicorp/setup-terraform@")]
+        self.assertEqual(len(setup), 1)
+        self.assertEqual(setup[0]["with"]["terraform_version"], "1.9.8")
+        tftest = (TF / "tests" / "nat_guard.tftest.hcl").read_text(encoding="utf-8")
+        for target in ("data.aws_network_interfaces.private_subnets", "aws_ecs_service.facilitator"):
+            self.assertIn(f"expect_failures = [{target}]", tftest)
 
     def test_writer_lease_egress_is_by_security_group(self):
         # The tasks now sit in the public subnets: a CIDR of the private subnets here would

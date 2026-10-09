@@ -173,6 +173,19 @@ jobs:
         run: |
           python3 -m pip install pyyaml
           python3 -m unittest discover -s tests/scripts -p 'test_ci_*.py'
+      # X402-NAT-OFF: the guards around the NAT gateway read AWS, so against AWS they only
+      # fire in the hand apply or in a deploy, too late to learn that one stopped guarding.
+      # terraform test plans them against a mocked AWS (tests/nat_guard.tftest.hcl): no
+      # credentials, no backend, nothing applied. 1.9.8, the version of the plan and deploy jobs.
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.9.8"
+          terraform_wrapper: false
+      - name: Terraform NAT guards
+        working-directory: terraform/environments/production
+        run: |
+          terraform init -backend=false -input=false
+          terraform test
       - name: Build (all production features)
         run: cargo build --locked --features ${{ env.CARGO_FEATURES }}
       # --test-threads=1: tests are fast (compile dominates), and running them

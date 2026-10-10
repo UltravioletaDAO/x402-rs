@@ -233,16 +233,38 @@ where
     S: DiscoveryStore + ?Sized,
     F: FnMut(&mut Vec<DiscoveryResource>),
 {
+    read_modify_write_if(store, what, |catalog| {
+        change(catalog);
+        true
+    })
+    .await
+    .map(|_| ())
+}
+
+/// [`read_modify_write`] for a change that may find nothing to do: `change`
+/// says whether it changed the catalog, and nothing is written when it did not.
+/// Returns whether a write landed.
+pub async fn read_modify_write_if<S, F>(
+    store: &S,
+    what: &str,
+    mut change: F,
+) -> Result<bool, StoreError>
+where
+    S: DiscoveryStore + ?Sized,
+    F: FnMut(&mut Vec<DiscoveryResource>) -> bool,
+{
     let mut last_conflict = String::new();
     for attempt in 0..MAX_RMW_ATTEMPTS {
         // `?`, not `unwrap_or_default()`. A read we could not complete tells us
         // nothing about the catalog, and a write built on nothing erases it.
         let base = store.load_snapshot().await?;
         let mut catalog = base.resources;
-        change(&mut catalog);
+        if !change(&mut catalog) {
+            return Ok(false);
+        }
 
         match store.save_snapshot(&catalog, &base.version).await {
-            Ok(_) => return Ok(()),
+            Ok(_) => return Ok(true),
             Err(StoreError::VersionConflict(code)) => {
                 last_conflict = code;
                 // Jittered, so contending tasks do not re-collide in step.

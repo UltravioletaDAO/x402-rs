@@ -2763,6 +2763,22 @@ async fn probe_and_record<T: ProbeTransport + ?Sized>(
             })
             .and_then(|l| l.resource_method)
             .filter(|m| *m == ProbeMethod::Post);
+        // ...or in the input its `extensions.bazaar` declares, when the 402 was
+        // the listing's own answer. That declaration is adopted only once a 402
+        // to its own method verifies it ([`DiscoveryRegistry::adopt_declaration`]),
+        // and this is how the prober comes to send that method.
+        let named = named.or_else(|| {
+            live.as_ref()
+                .filter(|_| class == ProbeClass::Alive && answered_as_sent)
+                .and_then(|l| l.bazaar.as_ref())
+                .and_then(
+                    |b| match declared_request(Some(&serde_json::json!({ "bazaar": b }))) {
+                        ProbeRequest::Declared { method, .. } => Some(method),
+                        ProbeRequest::Undeclared => None,
+                    },
+                )
+                .filter(|m| *m == ProbeMethod::Post)
+        });
         if fell_back {
             tracker.learn_method(u.as_str(), None).await;
         } else if named.is_some() {
@@ -2793,8 +2809,12 @@ async fn probe_and_record<T: ProbeTransport + ?Sized>(
     // Before the observation below, which dates itself against the listing as
     // it now stands.
     if verified_by == Some(VerifiedBy::X402Challenge) {
-        if let Some(offered) = live.as_ref().and_then(|l| l.bazaar.as_ref()) {
-            registry.adopt_declaration(u.as_str(), offered).await;
+        if let (Some(offered), Some(answered)) =
+            (live.as_ref().and_then(|l| l.bazaar.as_ref()), method)
+        {
+            registry
+                .adopt_declaration(u.as_str(), offered, answered)
+                .await;
         }
     }
 
@@ -6865,10 +6885,12 @@ mod declared_method_tests {
 
     /// A 402 carrying its challenge in the header, the body, or both, as the
     /// connector hands a response over after following `redirect` (when set).
+    /// With `only`, every other method gets a bare 405.
     struct Says {
         header: Option<String>,
         body: String,
         redirect: Option<crate::discovery_security::FollowedRedirect>,
+        only: Option<ProbeMethod>,
     }
 
     impl Says {
@@ -6877,6 +6899,7 @@ mod declared_method_tests {
                 header: Some(header_of(challenge)),
                 body: "{}".to_string(),
                 redirect: None,
+                only: None,
             }
         }
 
@@ -6885,6 +6908,7 @@ mod declared_method_tests {
                 header: None,
                 body: challenge.to_string(),
                 redirect: None,
+                only: None,
             }
         }
     }
@@ -6894,9 +6918,16 @@ mod declared_method_tests {
         async fn send(
             &self,
             _url: &url::Url,
-            _method: ProbeMethod,
+            method: ProbeMethod,
             _body: Option<&str>,
         ) -> Result<reqwest::Response, SecurityReject> {
+            if self.only.is_some_and(|only| only != method) {
+                let refused = axum::http::Response::builder()
+                    .status(405)
+                    .body(String::new())
+                    .unwrap();
+                return Ok(reqwest::Response::from(refused));
+            }
             let mut response = axum::http::Response::builder().status(402);
             if let Some(header) = &self.header {
                 response = response.header("payment-required", header.as_str());
@@ -6926,19 +6957,33 @@ mod declared_method_tests {
         listing
     }
 
-    /// Register `listing`, probe it once through `transport`, and hand back the
+    /// Register `listing`, probe it `times` through `transport` -- each probe
+    /// with the request the listing declares by then -- and hand back the
     /// registry and the listing as it now stands.
+    async fn probed_times<T: ProbeTransport>(
+        listing: crate::types_v2::DiscoveryResource,
+        transport: &T,
+        times: usize,
+    ) -> (DiscoveryRegistry, crate::types_v2::DiscoveryResource) {
+        let registry = DiscoveryRegistry::new();
+        let url = listing.url.to_string();
+        registry.register(listing).await.unwrap();
+        let health = registry.health();
+        for _ in 0..times {
+            let target = registry.probe_targets().await.remove(0);
+            probe_and_record(transport, &registry, &health, target).await;
+        }
+        let held = registry.get(&url).await.unwrap();
+        (registry, held)
+    }
+
+    /// Twice: an undeclared listing is probed with a GET first, and a POST
+    /// its 402 declares is learned there and verified by the next probe.
     async fn probed_through<T: ProbeTransport>(
         listing: crate::types_v2::DiscoveryResource,
         transport: &T,
     ) -> (DiscoveryRegistry, crate::types_v2::DiscoveryResource) {
-        let registry = DiscoveryRegistry::new();
-        registry.register(listing).await.unwrap();
-        let target = registry.probe_targets().await.remove(0);
-        let health = registry.health();
-        probe_and_record(transport, &registry, &health, target.clone()).await;
-        let held = registry.get(target.url.as_str()).await.unwrap();
-        (registry, held)
+        probed_times(listing, transport, 2).await
     }
 
     fn adopted_from_origin(held: &crate::types_v2::DiscoveryResource) -> bool {
@@ -7090,8 +7135,41 @@ mod declared_method_tests {
         let mut aggregated = registered(None);
         aggregated.source = crate::types_v2::DiscoverySource::Aggregated;
         let says = Says::header(&challenge_with(offered_bazaar()));
-        let (_registry, held) = probed_through(aggregated, &says).await;
+        let (registry, held) = probed_through(aggregated, &says).await;
         assert_eq!(held.extensions, None, "an aggregated copy");
+        assert_eq!(
+            registry.list(10, 0, None).await.pagination.total,
+            1,
+            "the aggregated copy was verified, so only its source kept it out"
+        );
+    }
+
+    /// A declared method is the one the prober then sends, with no fallback.
+    /// So a declaration is adopted only through a 402 to its own method: a GET
+    /// one by the GET that verified the listing, and a POST one never by an
+    /// endpoint that answers POST with a 405 -- which would hide a live listing
+    /// for good.
+    #[tokio::test]
+    async fn a_declaration_is_adopted_only_through_a_402_to_its_own_method() {
+        let get = json!({ "info": { "input": { "type": "http", "method": "GET" } } });
+        let says = Says::header(&challenge_with(get.clone()));
+        let (_registry, held) = probed_times(registered(None), &says, 1).await;
+        assert_eq!(held.extensions, Some(json!({ "bazaar": get })));
+
+        let get_only = Says {
+            only: Some(ProbeMethod::Get),
+            ..Says::header(&challenge_with(offered_bazaar()))
+        };
+        let (registry, held) = probed_times(registered(None), &get_only, 4).await;
+        assert_eq!(
+            held.extensions, None,
+            "a POST declaration adopted for a listing that only a GET verifies"
+        );
+        assert_eq!(
+            registry.list(10, 0, None).await.pagination.total,
+            1,
+            "the listing stays verified and listed"
+        );
     }
 
     /// Which transport's declaration counts: the winner's; the other's only
@@ -7132,6 +7210,7 @@ mod declared_method_tests {
     /// store with it.
     #[tokio::test]
     async fn the_provenance_is_never_taken_from_a_caller_and_is_persisted() {
+        use crate::discovery_store::DiscoveryStore as _;
         let store = crate::discovery_store::MemoryStore::new();
         let registry = DiscoveryRegistry::with_store(store.clone()).await.unwrap();
         let mut claiming = registered(Some(json!({ "bazaar": offered_bazaar() })));
@@ -7147,7 +7226,11 @@ mod declared_method_tests {
         registry.register(bare).await.unwrap();
         assert!(
             registry
-                .adopt_declaration("https://seller.example/bare", &offered_bazaar())
+                .adopt_declaration(
+                    "https://seller.example/bare",
+                    &offered_bazaar(),
+                    ProbeMethod::Post
+                )
                 .await
         );
         registry.writes_drained().await;

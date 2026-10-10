@@ -1531,8 +1531,31 @@ fn declares_input(extensions: Option<&serde_json::Value>) -> bool {
         )
 }
 
-/// Copy into `target` every key of `source` it does not have, descending where
-/// both hold an object. A key `target` already has is never replaced.
+/// Drop the input an earlier 402 put in `extensions` -- where
+/// [`declares_input`] reads it -- so a newer one can take its place.
+fn forget_input(extensions: &mut serde_json::Map<String, serde_json::Value>) {
+    let Some(serde_json::Value::Object(bazaar)) = extensions.get_mut("bazaar") else {
+        return;
+    };
+    if let Some(serde_json::Value::Object(info)) = bazaar.get_mut("info") {
+        info.remove("input");
+    }
+    if let Some(serde_json::Value::Object(properties)) = bazaar
+        .get_mut("schema")
+        .and_then(|s| s.get_mut("properties"))
+    {
+        properties.remove("input");
+    }
+}
+
+/// The objects of a `bazaar` declaration that only hold other declarations,
+/// and so are completed key by key ([`fill_gaps`]).
+const DECLARATION_CONTAINERS: [&str; 3] = ["info", "schema", "properties"];
+
+/// Copy into `target` every key of `source` it does not have. A key `target`
+/// already has is never replaced, and is descended into only when it is one of
+/// the [`DECLARATION_CONTAINERS`]: anything else the seller wrote -- its
+/// `output`, an example -- is kept whole, not completed with someone else's.
 fn fill_gaps(
     target: &mut serde_json::Map<String, serde_json::Value>,
     source: &serde_json::Map<String, serde_json::Value>,
@@ -1542,7 +1565,9 @@ fn fill_gaps(
             None => {
                 target.insert(key.clone(), offered.clone());
             }
-            Some(serde_json::Value::Object(held)) => {
+            Some(serde_json::Value::Object(held))
+                if DECLARATION_CONTAINERS.contains(&key.as_str()) =>
+            {
                 if let Some(offered) = offered.as_object() {
                     fill_gaps(held, offered);
                 }
@@ -1862,11 +1887,16 @@ impl DiscoveryResource {
     ///
     /// Only for a listing that declares no input, and only into gaps: a key the
     /// seller registered is never replaced, at any depth, so this can complete a
-    /// declaration but never rewrite one. `None` unless the result declares an
-    /// input and fits the bounds of a registered `extensions`
-    /// ([`crate::discovery_price::sanitize_extensions`]).
+    /// declaration but never rewrite one. An input adopted earlier
+    /// (`extensions_provenance: origin_response`) was never the seller's, and is
+    /// taken again from the newer 402. `None` unless the result declares an
+    /// input, fits the bounds of a registered `extensions`
+    /// ([`crate::discovery_price::sanitize_extensions`]) and differs from what
+    /// the listing already carries.
     pub fn with_offered_bazaar(&self, offered: &serde_json::Value) -> Option<serde_json::Value> {
-        if self.has_input_schema() {
+        let adopted_before = self.extensions_provenance
+            == Some(crate::discovery_terms::TermsProvenance::OriginResponse);
+        if self.has_input_schema() && !adopted_before {
             return None;
         }
         let offered = offered.as_object()?;
@@ -1875,6 +1905,9 @@ impl DiscoveryResource {
             Some(serde_json::Value::Object(map)) => map.clone(),
             Some(_) => return None,
         };
+        if adopted_before {
+            forget_input(&mut extensions);
+        }
         match extensions.get_mut("bazaar") {
             None => {
                 extensions.insert(
@@ -1888,7 +1921,9 @@ impl DiscoveryResource {
         if !declares_input(Some(&adopted)) {
             return None;
         }
-        crate::discovery_price::sanitize_extensions(Some(adopted))
+        let adopted = crate::discovery_price::sanitize_extensions(Some(adopted))?;
+        // The same declaration again: nothing to write, on every probe.
+        (self.extensions.as_ref() != Some(&adopted)).then_some(adopted)
     }
 
     /// Fill this record's missing descriptive fields from another copy of the

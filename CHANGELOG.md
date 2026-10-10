@@ -30,11 +30,18 @@
   the request as sent, offering a payment, recipients clean -- the challenge's
   `extensions.bazaar` (from the transport whose terms won, or from the other one
   when the two agree) is filled into what the registration left out: a key the
-  seller registered is never replaced, at any depth, and the result has to
-  declare an input and fit the bounds of a registered `extensions`. The listing
-  then reports `hasInputSchema: true` and `extensionsProvenance: origin_response`,
-  persisted with it and never taken from a caller. Aggregated copies are left to
-  their feeds.
+  seller registered is never replaced, and what the seller wrote (an `output`,
+  an example) is kept whole; the result has to declare an input and fit the
+  bounds of a registered `extensions`. Only through a 402 to the method the
+  declaration names -- the prober learns a declared POST and adopts on the next
+  probe -- since a declared method is probed with no fallback. The listing then
+  reports `hasInputSchema: true` and `extensionsProvenance: origin_response`,
+  persisted with it and never taken from a caller; an input adopted that way
+  follows a newer 402. It reaches the store as a patch of the declaration alone,
+  on a record still holding the content it was judged against, never as a save
+  of the owner's copy (which could resurrect a listing deleted on the other
+  replica or walk back its settlements), and queued adoptions share one write.
+  Aggregated copies are left to their feeds.
 - **`BAZAAR_ADMIN_TOKEN` reaches production.** Nothing put it in the container
   before, so the Bazaar admin routes (`DELETE /discovery/resources`,
   `/discovery/admin/*`, `POST /discovery/refresh`) answered 404 there. It now

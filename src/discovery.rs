@@ -128,9 +128,19 @@ struct ImportPass {
     reject_counts: HashMap<&'static str, usize>,
     /// Listings whose declared recipients this pass changed.
     recipients_changed: Vec<String>,
-    /// The catalog to publish and the store version it was computed from;
-    /// `None` when there is nothing to publish.
-    publish: Option<(Vec<DiscoveryResource>, Version)>,
+    /// The catalog to publish; `None` when there is nothing to publish.
+    publish: Option<CatalogSnapshot>,
+}
+
+/// A copy of the cache taken to be published, read under one catalog guard
+/// ([`DiscoveryRegistry::publish_snapshot`]).
+struct CatalogSnapshot {
+    resources: Vec<DiscoveryResource>,
+    /// The store version the cache was a copy of.
+    base: Version,
+    /// The catalog generation it was taken at: any later change to the cache --
+    /// a refresh replacing it, a local write -- moves it.
+    generation: u64,
 }
 
 /// Most resources the in-memory catalog will hold.
@@ -1029,6 +1039,48 @@ impl std::ops::DerefMut for CatalogWrite<'_> {
 enum StoreOp {
     Save(Box<DiscoveryResource>),
     Delete(String),
+    Adopt(Box<Adoption>),
+}
+
+/// A declaration adopted from a listing's own 402, as a patch to the stored
+/// record ([`DiscoveryRegistry::adopt_declaration`]).
+#[derive(Debug, Clone)]
+struct Adoption {
+    url: String,
+    /// The content fingerprint of the record the adoption was computed from.
+    from: String,
+    extensions: serde_json::Value,
+}
+
+/// Apply adoptions to the stored catalog as ONE conditional patch.
+///
+/// A patch, never a save: the record a save would carry is the owner's copy,
+/// up to an aggregation interval behind the store, and writing it back whole
+/// would put a listing an admin deleted on the other replica back in the
+/// catalog, or walk back the settlements recorded there since. This touches
+/// `extensions` and its provenance and nothing else, only on a record that is
+/// still there with the content the adoption was computed from, and never
+/// inserts one. Nothing is written when no adoption applies.
+async fn apply_adoptions(
+    store: &dyn DiscoveryStore,
+    batch: &[Adoption],
+) -> Result<bool, StoreError> {
+    crate::discovery_store::read_modify_write_if(store, "adopt", |catalog| {
+        let mut changed = false;
+        for adoption in batch {
+            let Some(record) = catalog.iter_mut().find(|r| r.url.as_str() == adoption.url) else {
+                continue;
+            };
+            if record.content_fingerprint() == adoption.from {
+                record.extensions = Some(adoption.extensions.clone());
+                record.extensions_provenance =
+                    Some(crate::discovery_terms::TermsProvenance::OriginResponse);
+                changed = true;
+            }
+        }
+        changed
+    })
+    .await
 }
 
 /// Fire-and-forget catalog writes, applied in the ORDER THEY WERE ISSUED.
@@ -1074,6 +1126,22 @@ impl WriteQueue {
         self.pending.lock().ok().and_then(|mut q| q.pop_front())
     }
 
+    /// The adoptions queued right behind one just popped, so a burst of them
+    /// -- the first sweep after a deploy -- costs one catalog write, not one
+    /// each. Stops at the first other write: the order still holds.
+    fn pop_adoptions(&self) -> Vec<Adoption> {
+        let Ok(mut queue) = self.pending.lock() else {
+            return Vec::new();
+        };
+        let mut batch = Vec::new();
+        while matches!(queue.front(), Some(StoreOp::Adopt(_))) {
+            if let Some(StoreOp::Adopt(adoption)) = queue.pop_front() {
+                batch.push(*adoption);
+            }
+        }
+        batch
+    }
+
     /// How many writes are still waiting to reach the store.
     ///
     /// A poisoned lock answers "one", not "none": the caller uses this to
@@ -1087,15 +1155,23 @@ impl WriteQueue {
     async fn drain(&self, store: &Arc<dyn DiscoveryStore>) {
         let _one_at_a_time = self.draining.write().await;
         while let Some(op) = self.pop() {
-            let result = match &op {
-                StoreOp::Save(resource) => store.save(resource).await,
-                StoreOp::Delete(url) => store.delete(url).await,
+            let (what, result) = match op {
+                StoreOp::Save(resource) => (resource.url.to_string(), store.save(&resource).await),
+                StoreOp::Delete(url) => {
+                    let result = store.delete(&url).await;
+                    (url, result)
+                }
+                StoreOp::Adopt(first) => {
+                    let mut batch = vec![*first];
+                    batch.extend(self.pop_adoptions());
+                    let what = format!("{} (+{} adopted)", batch[0].url, batch.len() - 1);
+                    (
+                        what,
+                        apply_adoptions(store.as_ref(), &batch).await.map(|_| ()),
+                    )
+                }
             };
             if let Err(e) = result {
-                let what = match &op {
-                    StoreOp::Save(resource) => resource.url.to_string(),
-                    StoreOp::Delete(url) => url.clone(),
-                };
                 match e {
                     // The catalog was not damaged: every attempt was refused,
                     // none half-applied. Worth a warning rather than an error,
@@ -1723,8 +1799,8 @@ impl DiscoveryRegistry {
         Ok(Some(count))
     }
 
-    /// Publish `snapshot` as the catalog, but only over `base`: the version of
-    /// the store the cache it was computed from is a copy of.
+    /// Publish `snapshot` as the catalog, but only over its `base`: the version
+    /// of the store the cache it was taken from is a copy of.
     ///
     /// # The finding (X402-BAZAAR-REPLICAS, 2026-10-07)
     ///
@@ -1740,22 +1816,23 @@ impl DiscoveryRegistry {
     /// Conditioned on `base` instead, that snapshot is refused: the caller
     /// adopts the published catalog ([`Self::adopt_store`]) and computes its
     /// change again on top of it.
-    async fn publish_snapshot(
-        &self,
-        snapshot: &[DiscoveryResource],
-        base: &Version,
-    ) -> Result<(), StoreError> {
-        let published = self.store.save_snapshot(snapshot, base).await?;
-        // The cache is now a copy of what was just published -- unless a refresh
-        // replaced it while the PUT was in flight. That refresh may have
-        // installed an OLDER catalog (a GET that started first and finished
-        // last), and marking it `published` would let the next snapshot publish
-        // it over everything since. So only while the version still names the
-        // copy this snapshot was taken from.
-        let mut cached = self.cached_version.write().await;
-        if *cached == *base {
-            *cached = published;
+    async fn publish_snapshot(&self, snapshot: &CatalogSnapshot) -> Result<(), StoreError> {
+        let published = self
+            .store
+            .save_snapshot(&snapshot.resources, &snapshot.base)
+            .await?;
+        // The cache is now a copy of what was just published -- unless it
+        // changed while the PUT was in flight. A refresh may have installed an
+        // OLDER catalog (a GET that started first and finished last), even one
+        // read at this very `base`; marking that `published` would let the next
+        // snapshot publish it over everything since. So only while the cache is
+        // still the one the snapshot was taken from, checked under its guard so
+        // no refresh lands between the check and the mark.
+        let cache = self.resources.read().await;
+        if self.catalog_generation.load(Ordering::Acquire) == snapshot.generation {
+            *self.cached_version.write().await = published;
         }
+        drop(cache);
         Ok(())
     }
 
@@ -1774,11 +1851,14 @@ impl DiscoveryRegistry {
         Ok(self.refresh_from_store().await?.is_some())
     }
 
-    /// The whole catalog and the version it is a copy of, read under one guard.
-    async fn snapshot_of_cache(&self) -> (Vec<DiscoveryResource>, Version) {
+    /// The whole catalog, as a snapshot to publish.
+    async fn snapshot_of_cache(&self) -> CatalogSnapshot {
         let cache = self.resources.read().await;
-        let base = self.cached_version.read().await.clone();
-        (cache.values().cloned().collect(), base)
+        CatalogSnapshot {
+            resources: cache.values().cloned().collect(),
+            base: self.cached_version.read().await.clone(),
+            generation: self.catalog_generation.load(Ordering::Acquire),
+        }
     }
 
     /// Get the store type for diagnostics.
@@ -2458,9 +2538,9 @@ impl DiscoveryRegistry {
         // Persist synchronously so that, within the single aggregation task,
         // this write completes BEFORE the retention GC's snapshot — otherwise
         // an out-of-order spawned write could re-persist junk the GC removed.
-        while let Some((snapshot, base)) = pending.take() {
-            let n = snapshot.len();
-            match self.publish_snapshot(&snapshot, &base).await {
+        while let Some(snapshot) = pending.take() {
+            let n = snapshot.resources.len();
+            match self.publish_snapshot(&snapshot).await {
                 Ok(()) => info!(count = n, "Persisted bulk import snapshot to store"),
                 // Refused, not failed. Another replica wrote since this cache
                 // was read -- a registration, a delete -- and publishing this
@@ -2744,10 +2824,13 @@ impl DiscoveryRegistry {
         // per-item save would re-add items the retention GC just removed.
         let changed = added + updated + evicted;
         let publish = if changed > 0 {
-            // Read under the catalog guard, so it names the copy this snapshot
+            // Read under the catalog guard, so they name the copy this snapshot
             // was taken from ([`Self::publish_snapshot`]).
-            let base = self.cached_version.read().await.clone();
-            Some((cache.values().cloned().collect(), base))
+            Some(CatalogSnapshot {
+                resources: cache.values().cloned().collect(),
+                base: self.cached_version.read().await.clone(),
+                generation: self.catalog_generation.load(Ordering::Acquire),
+            })
         } else {
             None
         };
@@ -2784,9 +2867,9 @@ impl DiscoveryRegistry {
         let mut attempt = 1;
         // Synchronous snapshot: this is the authoritative last write of the
         // aggregation cycle (see bulk_import note).
-        while let Some((keep, base)) = pending.take() {
-            let kept = keep.len();
-            match self.publish_snapshot(&keep, &base).await {
+        while let Some(keep) = pending.take() {
+            let kept = keep.resources.len();
+            match self.publish_snapshot(&keep).await {
                 Ok(()) => info!(kept = kept, "Retention GC snapshot persisted"),
                 // Another replica wrote since this cache was read. The GC is
                 // deterministic on stored data: adopt that catalog and collect
@@ -2828,7 +2911,7 @@ impl DiscoveryRegistry {
     /// One pass of [`Self::apply_retention`] over the cache: how many records
     /// it removed, and the snapshot to publish with the version it was computed
     /// from (`None` when nothing was removed).
-    async fn retention_pass(&self) -> (usize, Option<(Vec<DiscoveryResource>, Version)>) {
+    async fn retention_pass(&self) -> (usize, Option<CatalogSnapshot>) {
         use crate::discovery_security::{curation_check, FilterVerdict};
 
         let mut cache = self.write_catalog().await;
@@ -2842,10 +2925,13 @@ impl DiscoveryRegistry {
             }
         });
         let removed = before - cache.len();
-        let keep: Vec<DiscoveryResource> = cache.values().cloned().collect();
-        // Read under the catalog guard, so it names the copy `keep` was taken
+        // Read under the catalog guard, so they name the copy `keep` was taken
         // from ([`Self::publish_snapshot`]).
-        let base = self.cached_version.read().await.clone();
+        let keep = CatalogSnapshot {
+            resources: cache.values().cloned().collect(),
+            base: self.cached_version.read().await.clone(),
+            generation: self.catalog_generation.load(Ordering::Acquire),
+        };
         drop(cache);
 
         if removed == 0 {
@@ -2857,7 +2943,7 @@ impl DiscoveryRegistry {
             by_rule = ?removed_by_rule,
             "Retention GC removed non-conforming resources"
         );
-        (removed, Some((keep, base)))
+        (removed, Some(keep))
     }
 
     /// Check if a resource matches the given filters.
@@ -3039,32 +3125,78 @@ impl DiscoveryRegistry {
     /// listings only: an aggregated copy's declaration
     /// is its feed's, and the next import decides it. The caller vouches for
     /// `offered` ([`crate::discovery_health`] passes only a 402 that just
-    /// verified the listing); what is adopted, and how, is
-    /// [`DiscoveryResource::with_offered_bazaar`]. Returns whether the listing
-    /// changed.
-    pub async fn adopt_declaration(&self, url: &str, offered: &serde_json::Value) -> bool {
-        let mut cache = self.write_catalog().await;
-        let Some(adopted) = cache
-            .get(url)
-            .filter(|r| r.source == DiscoverySource::SelfRegistered)
-            .and_then(|r| r.with_offered_bazaar(offered))
-        else {
-            return false;
+    /// verified the listing, and `verified_with` is the method it answered);
+    /// what is adopted, and how, is [`DiscoveryResource::with_offered_bazaar`].
+    ///
+    /// Only a declaration whose method is the one that just verified the
+    /// listing: a declared method is the one the prober then uses, with no
+    /// fallback, and a method the endpoint does not answer with a 402 would
+    /// hide a live listing for good.
+    ///
+    /// Persisted as a patch ([`apply_adoptions`]), and `last_updated` does not
+    /// move: an adoption is not the seller revising the listing. Returns
+    /// whether the listing changed.
+    pub async fn adopt_declaration(
+        &self,
+        url: &str,
+        offered: &serde_json::Value,
+        verified_with: crate::discovery_health::ProbeMethod,
+    ) -> bool {
+        // Decided under the read guard: nearly every verified probe has
+        // nothing to adopt, and must not take the write guard for that.
+        let (from, adopted) = {
+            let cache = self.resources.read().await;
+            let Some(record) = cache
+                .get(url)
+                .filter(|r| r.source == DiscoverySource::SelfRegistered)
+            else {
+                return false;
+            };
+            let Some(adopted) = record.with_offered_bazaar(offered) else {
+                return false;
+            };
+            (record.content_fingerprint(), adopted)
         };
+        if let crate::discovery_health::ProbeRequest::Declared { method, .. } =
+            crate::discovery_health::declared_request(Some(&adopted))
+        {
+            if method != verified_with {
+                debug!(
+                    url = %url,
+                    declared = method.as_str(),
+                    verified_with = verified_with.as_str(),
+                    "not adopting a declaration whose method did not verify the listing"
+                );
+                return false;
+            }
+        }
+
+        let mut cache = self.write_catalog().await;
+        // The listing may have moved while no guard was held.
+        if !cache
+            .get(url)
+            .is_some_and(|r| r.content_fingerprint() == from)
+        {
+            return false;
+        }
         let Some(record) = cache.get_mut(url) else {
             return false;
         };
-        record.extensions = Some(adopted);
+        record.extensions = Some(adopted.clone());
         record.extensions_provenance =
             Some(crate::discovery_terms::TermsProvenance::OriginResponse);
-        let resource_for_store = record.clone();
         drop(cache);
 
         info!(
             url = %url,
             "adopted the input declaration this listing's own 402 carries"
         );
-        self.persist_async(resource_for_store);
+        self.writes.push(StoreOp::Adopt(Box::new(Adoption {
+            url: url.to_string(),
+            from,
+            extensions: adopted,
+        })));
+        self.drain_writes();
         true
     }
 
@@ -5968,6 +6100,168 @@ mod tests {
                 "{url} is missing: {held:?}"
             );
         }
+    }
+
+    // ------------------------------------------------------------------------
+    // X4-BAZAAR-ADOPTA: an adoption reaches the store as a patch
+    // ------------------------------------------------------------------------
+
+    /// A 402's declaration of a GET input taking the query parameter `query`.
+    fn declared_get(query: &str) -> serde_json::Value {
+        let mut params = serde_json::Map::new();
+        params.insert(query.to_string(), serde_json::json!("string"));
+        serde_json::json!({
+            "info": { "input": { "type": "http", "method": "GET", "queryParams": params } }
+        })
+    }
+
+    /// The record the store holds for `url`.
+    async fn stored_record(
+        store: &crate::discovery_store::MemoryStore,
+        url: &str,
+    ) -> Option<DiscoveryResource> {
+        store
+            .load_all()
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|r| r.url.as_str() == url)
+    }
+
+    /// The owner adopts from its own copy, up to an aggregation interval old.
+    /// A listing an admin deleted on the other replica meanwhile stays deleted:
+    /// writing the owner's copy back whole would have put it in the catalog
+    /// again (refutation round 2, P1).
+    #[tokio::test]
+    async fn an_adoption_never_brings_back_a_listing_deleted_on_the_other_replica() {
+        use crate::discovery_health::ProbeMethod;
+        let gone = "https://gone.example.com/x";
+        let (store, owner, other) = two_replicas(&["https://seed.example.com/x", gone]).await;
+        other.unregister(gone).await.unwrap();
+        other.writes.drain(&other.store).await;
+
+        assert!(
+            owner
+                .adopt_declaration(gone, &declared_get("q"), ProbeMethod::Get)
+                .await
+        );
+        owner.writes.drain(&owner.store).await;
+
+        assert!(
+            stored_record(&store, gone).await.is_none(),
+            "the adoption put a deleted listing back in the catalog"
+        );
+    }
+
+    /// ...and it touches nothing but the declaration: what the other replica
+    /// recorded on the listing since -- a settlement -- stays.
+    #[tokio::test]
+    async fn an_adoption_keeps_what_the_other_replica_recorded_since() {
+        use crate::discovery_health::ProbeMethod;
+        let url = "https://paid.example.com/x";
+        let (store, owner, other) = two_replicas(&[url]).await;
+        other
+            .track_settlement(create_test_resource(url, None))
+            .await
+            .unwrap();
+        other.writes.drain(&other.store).await;
+        let settled = other.get(url).await.unwrap().settlement_count;
+        assert!(settled.is_some());
+
+        assert!(
+            owner
+                .adopt_declaration(url, &declared_get("q"), ProbeMethod::Get)
+                .await
+        );
+        owner.writes.drain(&owner.store).await;
+
+        let held = stored_record(&store, url).await.unwrap();
+        assert_eq!(
+            held.extensions,
+            Some(serde_json::json!({ "bazaar": declared_get("q") }))
+        );
+        assert_eq!(
+            held.settlement_count, settled,
+            "the adoption walked back a settlement"
+        );
+    }
+
+    /// An adoption computed from a copy the seller has since revised is
+    /// dropped: the declaration was judged against content that no longer
+    /// exists.
+    #[tokio::test]
+    async fn an_adoption_from_a_copy_the_seller_has_since_revised_is_dropped() {
+        use crate::discovery_health::ProbeMethod;
+        let url = "https://revised.example.com/x";
+        let (store, owner, other) = two_replicas(&[url]).await;
+        let mut revised = create_test_resource(url, None);
+        revised.description = "Revised by its seller".to_string();
+        other.update(revised).await.unwrap();
+        other.writes.drain(&other.store).await;
+
+        assert!(
+            owner
+                .adopt_declaration(url, &declared_get("q"), ProbeMethod::Get)
+                .await
+        );
+        owner.writes.drain(&owner.store).await;
+
+        let held = stored_record(&store, url).await.unwrap();
+        assert_eq!(held.description, "Revised by its seller");
+        assert_eq!(held.extensions, None);
+    }
+
+    /// The first sweep after a deploy adopts hundreds of declarations; queued
+    /// together they cost one catalog write, not one each.
+    #[tokio::test]
+    async fn a_burst_of_queued_adoptions_costs_one_catalog_write() {
+        let (a, b) = ("https://a.example.com/x", "https://b.example.com/x");
+        let (store, owner, _other) = two_replicas(&[a, b]).await;
+        let written = |v: Version| match v {
+            Version::At(n) => n.parse::<u64>().unwrap(),
+            Version::Absent => 0,
+        };
+        let before = written(store.current_version().await.unwrap());
+        for url in [a, b] {
+            let from = owner.get(url).await.unwrap().content_fingerprint();
+            owner.writes.push(StoreOp::Adopt(Box::new(Adoption {
+                url: url.to_string(),
+                from,
+                extensions: serde_json::json!({ "bazaar": declared_get("q") }),
+            })));
+        }
+        owner.writes.drain(&owner.store).await;
+
+        assert_eq!(written(store.current_version().await.unwrap()), before + 1);
+        for url in [a, b] {
+            assert!(stored_record(&store, url).await.unwrap().has_input_schema());
+        }
+    }
+
+    /// An input adopted from an earlier 402 was never the seller's: a newer 402
+    /// replaces it. The same declaration again is not a change, so a probe
+    /// that finds nothing new writes nothing.
+    #[tokio::test]
+    async fn an_adopted_input_follows_the_newer_402_and_the_same_one_is_not_a_change() {
+        use crate::discovery_health::ProbeMethod;
+        let url = "https://moves.example.com/x";
+        let (store, owner, _other) = two_replicas(&[url]).await;
+        let (first, newer) = (declared_get("q"), declared_get("query"));
+
+        assert!(owner.adopt_declaration(url, &first, ProbeMethod::Get).await);
+        assert!(
+            !owner.adopt_declaration(url, &first, ProbeMethod::Get).await,
+            "the same declaration again counted as a change"
+        );
+        assert!(owner.adopt_declaration(url, &newer, ProbeMethod::Get).await);
+        owner.writes.drain(&owner.store).await;
+
+        let expected = Some(serde_json::json!({ "bazaar": newer }));
+        assert_eq!(owner.get(url).await.unwrap().extensions, expected);
+        assert_eq!(
+            stored_record(&store, url).await.unwrap().extensions,
+            expected
+        );
     }
 
     // ------------------------------------------------------------------------

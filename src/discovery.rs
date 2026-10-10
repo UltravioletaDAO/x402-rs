@@ -962,9 +962,8 @@ pub struct DiscoveryRegistry {
     /// ([`Self::publish_snapshot`]), so a cache that missed another replica's
     /// write cannot publish over it.
     ///
-    /// A refresh replaces the catalog first and this second, so a snapshot that
-    /// reads it under the catalog's guard can pair a newer catalog with an older
-    /// version -- a write that is refused and redone -- and never the reverse.
+    /// Replaced together with the catalog, under the catalog's write guard
+    /// ([`Self::refresh_from_store`]), and read under it by every snapshot.
     cached_version: Arc<RwLock<Version>>,
     /// Moved by every write that changes `resources` ([`Self::write_catalog`]).
     /// The search index records the generation it was built from, and a
@@ -1710,9 +1709,14 @@ impl DiscoveryRegistry {
         let count = fresh.len();
         let mut cache = self.write_catalog().await;
         *cache = fresh;
+        // Under the catalog's guard, so a snapshot that reads both under it
+        // always gets a catalog and the version it is a copy of. A refresh can
+        // install an OLDER catalog than the one it replaces (its GET started
+        // before another read that finished first), and that catalog paired with
+        // the newer version would publish over every write in between.
+        *self.cached_version.write().await = snapshot.version;
         drop(cache);
 
-        *self.cached_version.write().await = snapshot.version;
         // Everything derived from the catalog is now stale.
         *self.stats_cache.write().await = None;
 
@@ -1742,23 +1746,39 @@ impl DiscoveryRegistry {
         base: &Version,
     ) -> Result<(), StoreError> {
         let published = self.store.save_snapshot(snapshot, base).await?;
-        // The cache now holds at least what was just published: its own writes
-        // since the snapshot sit on top, and a refresh that replaced it can only
-        // have read this version or a later one -- an earlier read would have
-        // got this PUT refused. At worst the next snapshot is refused and redone.
-        *self.cached_version.write().await = published;
+        // The cache is now a copy of what was just published -- unless a refresh
+        // replaced it while the PUT was in flight. That refresh may have
+        // installed an OLDER catalog (a GET that started first and finished
+        // last), and marking it `published` would let the next snapshot publish
+        // it over everything since. So only while the version still names the
+        // copy this snapshot was taken from.
+        let mut cached = self.cached_version.write().await;
+        if *cached == *base {
+            *cached = published;
+        }
         Ok(())
     }
 
-    /// Replace the cache with the published catalog after a snapshot of it was
-    /// refused, so the change can be computed again on top of what the other
-    /// replicas wrote.
+    /// Bring the cache back to what the store holds after a snapshot of it was
+    /// refused. This process's own queued writes go first: a refresh stands
+    /// down while any is pending, and once they are in the store the read
+    /// brings them back.
     ///
-    /// This process's own queued writes go first: a refresh stands down while
-    /// any is pending, and once they are in the store the read brings them back.
-    async fn adopt_store(&self) -> Result<(), StoreError> {
+    /// `Ok(true)` when the cache was replaced, and the change has to be
+    /// computed again on top of it. `Ok(false)` when it was not -- the refusal
+    /// left the object where it was (S3's `ConditionalRequestConflict`), or a
+    /// write of this task's arrived while reading and the refresh stood down --
+    /// so the cache still holds the refused work, to be published again as is.
+    async fn adopt_store(&self) -> Result<bool, StoreError> {
         self.writes.drain(&self.store).await;
-        self.refresh_from_store().await.map(|_| ())
+        Ok(self.refresh_from_store().await?.is_some())
+    }
+
+    /// The whole catalog and the version it is a copy of, read under one guard.
+    async fn snapshot_of_cache(&self) -> (Vec<DiscoveryResource>, Version) {
+        let cache = self.resources.read().await;
+        let base = self.cached_version.read().await.clone();
+        (cache.values().cloned().collect(), base)
     }
 
     /// Get the store type for diagnostics.
@@ -2425,58 +2445,53 @@ impl DiscoveryRegistry {
         policy: ImportPolicy,
     ) -> Result<(usize, usize, usize), DiscoveryError> {
         let now = now_secs();
+        let mut pass = self.import_pass(&resources, policy, now).await;
+        let mut pending = pass.publish.take();
         let mut attempt = 1;
-        let pass = loop {
-            let mut pass = self.import_pass(&resources, policy, now).await;
-            let Some((snapshot, base)) = pass.publish.take() else {
-                break pass;
-            };
-            // Persist synchronously so that, within the single aggregation task,
-            // this write completes BEFORE the retention GC's snapshot — otherwise
-            // an out-of-order spawned write could re-persist junk the GC removed.
+        // Persist synchronously so that, within the single aggregation task,
+        // this write completes BEFORE the retention GC's snapshot — otherwise
+        // an out-of-order spawned write could re-persist junk the GC removed.
+        while let Some((snapshot, base)) = pending.take() {
             let n = snapshot.len();
             match self.publish_snapshot(&snapshot, &base).await {
-                Ok(()) => {
-                    info!(count = n, "Persisted bulk import snapshot to store");
-                    break pass;
-                }
+                Ok(()) => info!(count = n, "Persisted bulk import snapshot to store"),
                 // Refused, not failed. Another replica wrote since this cache
                 // was read -- a registration, a delete -- and publishing this
-                // snapshot would erase it. Import again on top of it.
+                // snapshot would erase it.
                 Err(StoreError::VersionConflict(detail)) if attempt < MAX_PUBLISH_ATTEMPTS => {
                     info!(
                         detail = %detail,
                         attempt,
                         count = n,
                         "Bulk import snapshot refused: the catalog moved since this cache was \
-                         read. Adopting the published catalog and importing again on top of it"
+                         read. Adopting the published catalog before publishing again"
                     );
-                    if let Err(e) = self.adopt_store().await {
-                        error!(
+                    match self.adopt_store().await {
+                        // Import again on top of what the others wrote.
+                        Ok(true) => {
+                            pass = self.import_pass(&resources, policy, now).await;
+                            pending = pass.publish.take();
+                        }
+                        // The cache still holds this import: publish it as is.
+                        Ok(false) => pending = Some(self.snapshot_of_cache().await),
+                        Err(e) => error!(
                             error = %e,
                             "Could not adopt the published catalog; bulk import snapshot not \
                              published"
-                        );
-                        break pass;
+                        ),
                     }
                 }
-                Err(StoreError::VersionConflict(detail)) => {
-                    warn!(
-                        detail = %detail,
-                        count = n,
-                        attempts = attempt,
-                        "Bulk import snapshot not published: the catalog kept moving underneath \
-                         it. Nothing was overwritten; the next cycle recomputes it from a fresh read"
-                    );
-                    break pass;
-                }
-                Err(e) => {
-                    error!(error = %e, "Failed to persist bulk import snapshot");
-                    break pass;
-                }
+                Err(StoreError::VersionConflict(detail)) => warn!(
+                    detail = %detail,
+                    count = n,
+                    attempts = attempt,
+                    "Bulk import snapshot not published: the catalog kept moving underneath it. \
+                     Nothing was overwritten; the next cycle recomputes it from a fresh read"
+                ),
+                Err(e) => error!(error = %e, "Failed to persist bulk import snapshot"),
             }
             attempt += 1;
-        };
+        }
 
         // Outside the catalog guard, like every other revalidation request.
         if crate::discovery_config::revalidation_enabled() && !pass.recipients_changed.is_empty() {
@@ -2750,8 +2765,6 @@ impl DiscoveryRegistry {
     /// ([`Self::publish_snapshot`]), not N deletes. Disable with
     /// `DISCOVERY_ENABLE_RETENTION_GC=false`.
     pub async fn apply_retention(&self) -> usize {
-        use crate::discovery_security::{curation_check, FilterVerdict};
-
         if std::env::var("DISCOVERY_ENABLE_RETENTION_GC")
             .map(|v| v.eq_ignore_ascii_case("false"))
             .unwrap_or(false)
@@ -2760,42 +2773,14 @@ impl DiscoveryRegistry {
             return 0;
         }
 
+        let (mut removed, mut pending) = self.retention_pass().await;
         let mut attempt = 1;
-        loop {
-            let mut cache = self.write_catalog().await;
-            let before = cache.len();
-            let mut removed_by_rule: HashMap<&'static str, usize> = HashMap::new();
-            cache.retain(|_url, r| match curation_check(r) {
-                FilterVerdict::Accept { .. } => true,
-                FilterVerdict::Reject(rule) => {
-                    *removed_by_rule.entry(rule).or_insert(0) += 1;
-                    false
-                }
-            });
-            let removed = before - cache.len();
-            let keep: Vec<DiscoveryResource> = cache.values().cloned().collect();
-            // Read under the catalog guard, so it names the copy `keep` was
-            // taken from ([`Self::publish_snapshot`]).
-            let base = self.cached_version.read().await.clone();
-            drop(cache);
-
-            if removed == 0 {
-                return 0;
-            }
-            info!(
-                removed = removed,
-                before = before,
-                by_rule = ?removed_by_rule,
-                "Retention GC removed non-conforming resources"
-            );
-            // Synchronous snapshot: this is the authoritative last write of the
-            // aggregation cycle (see bulk_import note).
+        // Synchronous snapshot: this is the authoritative last write of the
+        // aggregation cycle (see bulk_import note).
+        while let Some((keep, base)) = pending.take() {
             let kept = keep.len();
             match self.publish_snapshot(&keep, &base).await {
-                Ok(()) => {
-                    info!(kept = kept, "Retention GC snapshot persisted");
-                    return removed;
-                }
+                Ok(()) => info!(kept = kept, "Retention GC snapshot persisted"),
                 // Another replica wrote since this cache was read. The GC is
                 // deterministic on stored data: adopt that catalog and collect
                 // the same set from it.
@@ -2804,34 +2789,68 @@ impl DiscoveryRegistry {
                         detail = %detail,
                         attempt,
                         "Retention GC snapshot refused: the catalog moved since this cache was \
-                         read. Adopting the published catalog and collecting again"
+                         read. Adopting the published catalog before publishing again"
                     );
-                    if let Err(e) = self.adopt_store().await {
-                        error!(
+                    match self.adopt_store().await {
+                        Ok(true) => {
+                            (removed, pending) = self.retention_pass().await;
+                        }
+                        // The cache still lacks what this GC removed: publish it as is.
+                        Ok(false) => pending = Some(self.snapshot_of_cache().await),
+                        Err(e) => error!(
                             error = %e,
                             "Could not adopt the published catalog; retention GC snapshot not \
                              published"
-                        );
-                        return removed;
+                        ),
                     }
                 }
-                Err(StoreError::VersionConflict(detail)) => {
-                    warn!(
-                        detail = %detail,
-                        kept = kept,
-                        "Retention GC snapshot not published: the catalog moved underneath it. \
-                         The GC is deterministic on stored data, so the next cycle removes the \
-                         same set from the newer catalog"
-                    );
-                    return removed;
-                }
-                Err(e) => {
-                    error!(error = %e, "Failed to persist retention GC snapshot");
-                    return removed;
-                }
+                Err(StoreError::VersionConflict(detail)) => warn!(
+                    detail = %detail,
+                    kept = kept,
+                    "Retention GC snapshot not published: the catalog moved underneath it. \
+                     The GC is deterministic on stored data, so the next cycle removes the \
+                     same set from the newer catalog"
+                ),
+                Err(e) => error!(error = %e, "Failed to persist retention GC snapshot"),
             }
             attempt += 1;
         }
+        removed
+    }
+
+    /// One pass of [`Self::apply_retention`] over the cache: how many records
+    /// it removed, and the snapshot to publish with the version it was computed
+    /// from (`None` when nothing was removed).
+    async fn retention_pass(&self) -> (usize, Option<(Vec<DiscoveryResource>, Version)>) {
+        use crate::discovery_security::{curation_check, FilterVerdict};
+
+        let mut cache = self.write_catalog().await;
+        let before = cache.len();
+        let mut removed_by_rule: HashMap<&'static str, usize> = HashMap::new();
+        cache.retain(|_url, r| match curation_check(r) {
+            FilterVerdict::Accept { .. } => true,
+            FilterVerdict::Reject(rule) => {
+                *removed_by_rule.entry(rule).or_insert(0) += 1;
+                false
+            }
+        });
+        let removed = before - cache.len();
+        let keep: Vec<DiscoveryResource> = cache.values().cloned().collect();
+        // Read under the catalog guard, so it names the copy `keep` was taken
+        // from ([`Self::publish_snapshot`]).
+        let base = self.cached_version.read().await.clone();
+        drop(cache);
+
+        if removed == 0 {
+            return (0, None);
+        }
+        info!(
+            removed = removed,
+            before = before,
+            by_rule = ?removed_by_rule,
+            "Retention GC removed non-conforming resources"
+        );
+        (removed, Some((keep, base)))
     }
 
     /// Check if a resource matches the given filters.
@@ -5617,6 +5636,291 @@ mod tests {
         for n in 0..u64::from(MAX_PUBLISH_ATTEMPTS) {
             let alta = format!("https://alta-{n}.example.com/x");
             assert!(held.contains(&alta), "{alta} was overwritten: {held:?}");
+        }
+    }
+
+    /// A store that refuses the next `refusals` snapshots WITHOUT the object
+    /// moving -- S3's `ConditionalRequestConflict`, a concurrent conditional
+    /// write that lost too.
+    #[derive(Debug, Clone)]
+    struct RefusedInPlace {
+        inner: crate::discovery_store::MemoryStore,
+        refusals: Arc<AtomicU64>,
+    }
+
+    #[async_trait::async_trait]
+    impl DiscoveryStore for RefusedInPlace {
+        async fn load_all(&self) -> Result<Vec<DiscoveryResource>, StoreError> {
+            self.inner.load_all().await
+        }
+
+        async fn load_snapshot(&self) -> Result<Snapshot, StoreError> {
+            self.inner.load_snapshot().await
+        }
+
+        async fn current_version(&self) -> Result<Version, StoreError> {
+            self.inner.current_version().await
+        }
+
+        async fn save_snapshot(
+            &self,
+            resources: &[DiscoveryResource],
+            expected: &Version,
+        ) -> Result<Version, StoreError> {
+            if self.refusals.load(Ordering::SeqCst) > 0 {
+                self.refusals.fetch_sub(1, Ordering::SeqCst);
+                return Err(StoreError::VersionConflict(
+                    "ConditionalRequestConflict".into(),
+                ));
+            }
+            self.inner.save_snapshot(resources, expected).await
+        }
+
+        async fn save(&self, resource: &DiscoveryResource) -> Result<(), StoreError> {
+            self.inner.save(resource).await
+        }
+
+        async fn delete(&self, url: &str) -> Result<(), StoreError> {
+            self.inner.delete(url).await
+        }
+
+        async fn health_check(&self) -> Result<(), StoreError> {
+            Ok(())
+        }
+
+        fn store_type(&self) -> &'static str {
+            "refused-in-place"
+        }
+    }
+
+    /// A refusal that left the object where it was gives the adoption nothing
+    /// to read: the cache still holds the import, and importing again on top of
+    /// it would find nothing to change and publish nothing. It is published as
+    /// it is instead.
+    #[tokio::test]
+    async fn an_import_refused_without_the_catalog_moving_is_published_on_the_retry() {
+        let feed = "https://feed.example.com/x";
+        let inner = crate::discovery_store::MemoryStore::new();
+        inner
+            .save(&create_test_resource("https://seed.example.com/x", None))
+            .await
+            .unwrap();
+        let store = RefusedInPlace {
+            inner: inner.clone(),
+            refusals: Arc::new(AtomicU64::new(1)),
+        };
+        let owner = DiscoveryRegistry::with_store(store.clone()).await.unwrap();
+
+        let (added, _, _) = owner
+            .bulk_import(
+                vec![create_test_resource(feed, None)],
+                ImportPolicy::Filtered,
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(store.refusals.load(Ordering::SeqCst), 0, "never refused");
+        assert_eq!(
+            added, 1,
+            "the counts are the import's, not an empty re-run's"
+        );
+        let held = stored(&inner).await;
+        assert!(
+            held.contains(&feed.to_string()),
+            "the import was never published: {held:?}"
+        );
+    }
+
+    /// The same for the retention GC: the cache already lacks what it removed.
+    #[tokio::test]
+    async fn a_retention_refused_without_the_catalog_moving_is_published_on_the_retry() {
+        let junk = "http://127.0.0.1/x";
+        let inner = crate::discovery_store::MemoryStore::new();
+        for url in ["https://seed.example.com/x", junk] {
+            inner.save(&create_test_resource(url, None)).await.unwrap();
+        }
+        let store = RefusedInPlace {
+            inner: inner.clone(),
+            refusals: Arc::new(AtomicU64::new(1)),
+        };
+        let owner = DiscoveryRegistry::with_store(store.clone()).await.unwrap();
+
+        assert_eq!(owner.apply_retention().await, 1);
+        assert_eq!(store.refusals.load(Ordering::SeqCst), 0, "never refused");
+        let held = stored(&inner).await;
+        assert!(
+            !held.contains(&junk.to_string()),
+            "the removal was never published: {held:?}"
+        );
+    }
+
+    /// One pause point in a store call: the call signals `reached` and waits
+    /// for `release`.
+    #[derive(Debug)]
+    struct Pause {
+        reached: tokio::sync::oneshot::Sender<()>,
+        release: tokio::sync::oneshot::Receiver<()>,
+    }
+
+    /// A store whose next catalog read and next successful snapshot can each be
+    /// held mid-flight, to put a slow refresh exactly where it lands in the
+    /// wild.
+    #[derive(Debug, Clone, Default)]
+    struct Paused {
+        inner: crate::discovery_store::MemoryStore,
+        read: Arc<std::sync::Mutex<Option<Pause>>>,
+        write: Arc<std::sync::Mutex<Option<Pause>>>,
+    }
+
+    impl Paused {
+        /// Arm one pause; returns (reached, release).
+        fn arm(
+            slot: &std::sync::Mutex<Option<Pause>>,
+        ) -> (
+            tokio::sync::oneshot::Receiver<()>,
+            tokio::sync::oneshot::Sender<()>,
+        ) {
+            let (reached_tx, reached_rx) = tokio::sync::oneshot::channel();
+            let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+            *slot.lock().unwrap() = Some(Pause {
+                reached: reached_tx,
+                release: release_rx,
+            });
+            (reached_rx, release_tx)
+        }
+
+        async fn hold(slot: &std::sync::Mutex<Option<Pause>>) {
+            let pause = slot.lock().unwrap().take();
+            if let Some(pause) = pause {
+                let _ = pause.reached.send(());
+                let _ = pause.release.await;
+            }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl DiscoveryStore for Paused {
+        async fn load_all(&self) -> Result<Vec<DiscoveryResource>, StoreError> {
+            Ok(self.load_snapshot().await?.resources)
+        }
+
+        async fn load_snapshot(&self) -> Result<Snapshot, StoreError> {
+            let snapshot = self.inner.load_snapshot().await?;
+            Self::hold(&self.read).await;
+            Ok(snapshot)
+        }
+
+        async fn current_version(&self) -> Result<Version, StoreError> {
+            self.inner.current_version().await
+        }
+
+        async fn save_snapshot(
+            &self,
+            resources: &[DiscoveryResource],
+            expected: &Version,
+        ) -> Result<Version, StoreError> {
+            let version = self.inner.save_snapshot(resources, expected).await?;
+            Self::hold(&self.write).await;
+            Ok(version)
+        }
+
+        async fn save(&self, resource: &DiscoveryResource) -> Result<(), StoreError> {
+            self.inner.save(resource).await
+        }
+
+        async fn delete(&self, url: &str) -> Result<(), StoreError> {
+            self.inner.delete(url).await
+        }
+
+        async fn health_check(&self) -> Result<(), StoreError> {
+            Ok(())
+        }
+
+        fn store_type(&self) -> &'static str {
+            "paused"
+        }
+    }
+
+    /// A refresh whose GET started before an alta and finished after the
+    /// owner had already published on top of that alta installs an OLDER
+    /// catalog. Marking that catalog with the version just published would let
+    /// the owner's next snapshot erase the alta -- the 2026-10-07 loss again,
+    /// inside one process. It happens with the crawler on, or when the lease
+    /// moves mid-cycle and the refresher starts while the cycle finishes.
+    #[tokio::test]
+    async fn a_slow_refresh_landing_mid_publish_cannot_mark_an_old_catalog_current() {
+        let earlier = "https://earlier.example.com/x";
+        let alta = "https://alta.example.com/x";
+        let feed = "https://feed.example.com/x";
+        let later = "https://later.example.com/x";
+        let store = Paused::default();
+        store
+            .inner
+            .save(&create_test_resource("https://seed.example.com/x", None))
+            .await
+            .unwrap();
+        let owner = DiscoveryRegistry::with_store(store.clone()).await.unwrap();
+        let other = DiscoveryRegistry::with_store(store.inner.clone())
+            .await
+            .unwrap();
+
+        // Another replica writes; a refresh of the owner starts reading that
+        // catalog, slowly.
+        other
+            .register(create_test_resource(earlier, None))
+            .await
+            .unwrap();
+        other.writes.drain(&other.store).await;
+        let (read_reached, read_release) = Paused::arm(&store.read);
+        let slow = {
+            let owner = owner.clone();
+            tokio::spawn(async move { owner.refresh_from_store().await })
+        };
+        read_reached.await.unwrap();
+
+        // Meanwhile the alta lands, and the owner's cycle adopts it and
+        // publishes on top of it -- its PUT is slow too.
+        other
+            .register(create_test_resource(alta, None))
+            .await
+            .unwrap();
+        other.writes.drain(&other.store).await;
+        let (write_reached, write_release) = Paused::arm(&store.write);
+        let cycle = {
+            let owner = owner.clone();
+            tokio::spawn(async move {
+                owner
+                    .bulk_import(
+                        vec![create_test_resource(feed, None)],
+                        ImportPolicy::Filtered,
+                    )
+                    .await
+            })
+        };
+        write_reached.await.unwrap();
+        assert!(stored(&store.inner).await.contains(&alta.to_string()));
+
+        // The slow refresh lands now, with the catalog from before the alta;
+        // then the PUT returns.
+        read_release.send(()).unwrap();
+        assert!(slow.await.unwrap().unwrap().is_some());
+        write_release.send(()).unwrap();
+        cycle.await.unwrap().unwrap();
+
+        // The owner's next snapshot must not publish that old catalog.
+        owner
+            .bulk_import(
+                vec![create_test_resource(later, None)],
+                ImportPolicy::Filtered,
+            )
+            .await
+            .unwrap();
+        let held = stored(&store.inner).await;
+        for url in [alta, feed, later] {
+            assert!(
+                held.contains(&url.to_string()),
+                "{url} is missing: {held:?}"
+            );
         }
     }
 

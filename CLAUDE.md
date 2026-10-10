@@ -336,7 +336,7 @@ Golden source is `terraform/environments/production/secrets.tf`. The naming is N
 - `facilitator-algorand-mnemonic-mainnet` / `facilitator-algorand-mnemonic-testnet` - Algorand 25-word mnemonic
 - `facilitator-rpc-mainnet` - premium mainnet RPC URLs, one JSON key per network: `base`, `avalanche`, `polygon`, `optimism`, `celo`, `hyperevm`, `ethereum`, `arbitrum`, `unichain`, `arc` (mapped only while `arc_mainnet_enabled`, `arc.tf`; Arc testnet and the balances Lambda stay on the public endpoints), `solana`, `near` (there is NO `sui` key - Sui/BSC/Scroll/SKALE/Monad/Fogo/Robinhood use free public endpoints declared inline in main.tf)
 - `facilitator-rpc-testnet` - JSON keys: `solana-devnet`, `arbitrum-sepolia`, `near` (no `sui-testnet`)
-- `/facilitator/bazaar-admin-token` - **SSM SecureString, not Secrets Manager**: `BAZAAR_ADMIN_TOKEN`. Terraform generates the value (`random_password`), so it is in the state; read it into a variable with `aws ssm get-parameter --with-decryption`, never to the screen
+- `/facilitator/bazaar-admin-token` - **SSM SecureString, not Secrets Manager**: `BAZAAR_ADMIN_TOKEN`. Terraform generates the value (`random_password`), so it is in the state, and the `aws/ssm` key lets any principal with `ssm:GetParameter` read it (the CI user too, which Secrets Manager values deny it); read it into a variable with `aws ssm get-parameter --with-decryption`, never to the screen
 
 **Legacy secrets** (deprecated, kept for backward compatibility):
 - `facilitator-evm-private-key` - Generic EVM wallet (not recommended)

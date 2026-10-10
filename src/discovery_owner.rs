@@ -300,9 +300,12 @@ fn apply_outcome(
 
 /// Keep a non-owner's catalog current with what the owner publishes.
 ///
-/// Runs on every task, and does nothing on the one that owns the jobs: that
-/// task's in-memory cache IS the newest copy, and re-reading its own 15 MB
-/// object would be the waste this change exists to remove.
+/// Runs on every task, and does nothing on the one that owns the jobs. That
+/// task re-reads the catalog at the start of every cycle and whenever its
+/// snapshot is refused -- not here. What another replica writes in between, an
+/// alta or a delete, reaches the owner's cache only then, up to one aggregation
+/// interval later; its snapshot can no longer erase it
+/// (`DiscoveryRegistry::publish_snapshot`, X402-BAZAAR-REPLICAS).
 pub fn start_snapshot_refresh_task(
     registry: DiscoveryRegistry,
     interval_secs: u64,

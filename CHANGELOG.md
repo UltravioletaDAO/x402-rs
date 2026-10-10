@@ -14,8 +14,11 @@
   retention GC's are now conditional on the version the cache was read at
   (`DiscoveryRegistry::publish_snapshot`); when another replica wrote in
   between, the write is refused, the published catalog is adopted and the import
-  or the GC runs again on top of it, at most three times. Giving up overwrites
-  nothing. After publishing, the owner no longer re-reads its own object.
+  or the GC runs again on top of it -- three attempts in all. A refusal that left
+  the object where it was publishes the same snapshot again. Giving up
+  overwrites nothing. A refresh landing in the middle of a publish can no longer
+  mark an older catalog as the one just published. After publishing, the owner
+  no longer re-reads its own object.
 
 ### Added
 
@@ -25,8 +28,10 @@
   comes from the SSM SecureString `/facilitator/bazaar-admin-token`, whose value
   Terraform generates (`random_password`, new `hashicorp/random` provider), and
   the execution role may `ssm:GetParameters` on it. Apply the parameter and the
-  role policy by hand before the merge that ships this (`secrets.tf` has the
-  command): the CI user can write neither.
+  role policy by hand right before the merge that ships this (`secrets.tf` has
+  the command): the CI user can write neither. Unlike the Secrets Manager tokens,
+  the value is in the Terraform state and readable by any principal with
+  `ssm:GetParameter` (the `aws/ssm` key), the CI user included.
 
 ## [2.49.0] - 2026-10-06
 

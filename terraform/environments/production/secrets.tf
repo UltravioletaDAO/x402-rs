@@ -101,25 +101,34 @@ data "aws_secretsmanager_secret" "erc8004_admin_token" {
 # An SSM SecureString on the default aws/ssm key, like the /describenet/* ones:
 # one value, nothing to rotate on a schedule, and a Standard parameter costs
 # nothing. Terraform generates the value at apply time, so nobody types it and it
-# never reaches a screen, a tfvars or a log. What that does NOT hide: the value
-# is in the state (random_password.result and the parameter), as describe-net
-# says of its cdn-origin-verify.
+# never reaches a screen, a tfvars or a log.
 #
-# Deliberately not the ERC-8004 or DX402 token (above): leaking this one hides or
-# deletes a catalog listing, and nothing else.
+# What that does NOT hide, measured 2026-10-10:
+#   - the value is in the state (random_password.result and the parameter), as
+#     describe-net says of its cdn-origin-verify;
+#   - the aws/ssm key policy lets every principal in the account decrypt through
+#     SSM, so anyone with ssm:GetParameter reads it -- ReadOnlyAccess included,
+#     and the CI user has it. The Secrets Manager tokens above are NOT readable
+#     by the CI user (its DenySecretValueReads statement).
+# Acceptable for this token only because of its blast radius: leaking it hides or
+# deletes a catalog listing, and nothing else. Deliberately not the ERC-8004 or
+# DX402 token (above), whose blast radius is not.
 #
-# Created by hand, BEFORE the merge that ships it: the deploy's -target closure
-# reaches this through the task definition, and the CI user can neither create a
-# parameter nor write the execution role's policy (scripts/drift_gate_iam.py
-# prints the command). With a human's credentials, on Terraform 1.9.8:
+# Created by hand, BEFORE the merge that ships it, and the merge right after: the
+# deploy's -target closure reaches this through the task definition, and the CI
+# user can neither create a parameter nor write the execution role's policy
+# (scripts/drift_gate_iam.py prints the command). Any deploy from a main that
+# lacks this file in between tries to undo the policy and fails red. With a
+# human's credentials, on Terraform 1.9.8:
 #   terraform apply -target=aws_ssm_parameter.bazaar_admin_token \
 #     -target=aws_iam_role_policy.secrets_access
 #
 # Read it without printing it:
 #   BAZAAR_ADMIN_TOKEN=$(aws ssm get-parameter --name /facilitator/bazaar-admin-token \
 #     --with-decryption --query Parameter.Value --output text --region us-east-2)
-# Rotate: terraform apply -replace=random_password.bazaar_admin_token, then a
-# deploy -- a task reads it when it starts.
+# Rotate, then a deploy -- a task reads it when it starts:
+#   terraform apply -replace=random_password.bazaar_admin_token \
+#     -target=aws_ssm_parameter.bazaar_admin_token
 resource "random_password" "bazaar_admin_token" {
   # Alphanumeric: it travels in an Authorization header.
   length  = 64

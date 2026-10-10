@@ -6019,6 +6019,14 @@ mod tests {
         }
     }
 
+    /// `fut`, for at most 30 s: a pause a broken build never reaches fails the
+    /// test instead of hanging it.
+    async fn within<T>(what: &str, fut: impl std::future::Future<Output = T>) -> T {
+        tokio::time::timeout(std::time::Duration::from_secs(30), fut)
+            .await
+            .unwrap_or_else(|_| panic!("{what} never happened"))
+    }
+
     /// A refresh whose GET started before an alta and finished after the
     /// owner had already published on top of that alta installs an OLDER
     /// catalog. Marking that catalog with the version just published would let
@@ -6054,7 +6062,9 @@ mod tests {
             let owner = owner.clone();
             tokio::spawn(async move { owner.refresh_from_store().await })
         };
-        read_reached.await.unwrap();
+        within("the slow refresh reaching its GET", read_reached)
+            .await
+            .unwrap();
 
         // Meanwhile the alta lands, and the owner's cycle adopts it and
         // publishes on top of it -- its PUT is slow too.
@@ -6075,15 +6085,21 @@ mod tests {
                     .await
             })
         };
-        write_reached.await.unwrap();
+        within("the cycle's PUT landing", write_reached)
+            .await
+            .unwrap();
         assert!(stored(&store.inner).await.contains(&alta.to_string()));
 
         // The slow refresh lands now, with the catalog from before the alta;
         // then the PUT returns.
         read_release.send(()).unwrap();
-        assert!(slow.await.unwrap().unwrap().is_some());
+        assert!(within("the slow refresh", slow)
+            .await
+            .unwrap()
+            .unwrap()
+            .is_some());
         write_release.send(()).unwrap();
-        cycle.await.unwrap().unwrap();
+        within("the cycle", cycle).await.unwrap().unwrap();
 
         // The owner's next snapshot must not publish that old catalog.
         owner

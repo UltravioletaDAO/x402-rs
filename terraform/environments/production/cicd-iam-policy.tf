@@ -19,6 +19,9 @@
 #   2026-09-10  logs:PutMetricFilter                -> the deploy could create the
 #               ALARM but not the log metric filter it reads, so every log-based
 #               alarm this stack owns was un-deployable. See below.
+#   2026-10-07  ecs:UpdateCluster                   -> #115 turned Container
+#               Insights off and the image deploy failed on the cluster it drags
+#               in as a dependency. See below.
 #
 # There is no drift detection for a resource that is not declared anywhere.
 #
@@ -284,6 +287,33 @@ resource "aws_iam_policy" "cicd_infra" {
           "s3:GetLifecycleConfiguration"
         ],
         "Resource" : "arn:aws:s3:::facilitator-discovery-prod"
+      },
+      {
+        # Added 2026-10-10. aws_ecs_cluster.main is in no deploy step's target list, yet
+        # every image deploy applies it: aws_ecs_service.facilitator (`cluster`) and
+        # aws_appautoscaling_target.ecs_target (`resource_id`) reference it, and a targeted
+        # apply applies every pending change on a target's dependencies. #115 turned
+        # Container Insights off, and the deploy of its merge failed on 2026-10-07:
+        #
+        #   AccessDeniedException: User: .../github-actions-facilitator-deploy is not
+        #   authorized to perform: ecs:UpdateCluster on ...:cluster/facilitator-production
+        #
+        # (fixed forward by c0der with an admin apply of the cluster, R496). Taking the
+        # cluster out of the deploy instead is not possible: it is a dependency, not a
+        # target to drop, and Terraform 1.9.8 has no -exclude.
+        #
+        # hashicorp/aws 5.100.0 (.terraform.lock.hcl) sends a change to `setting`,
+        # `configuration` or `service_connect_defaults` through UpdateCluster alone and
+        # then waits on DescribeClusters, which ReadOnlyAccess already grants. The ECS
+        # writes the deploy always needed (RegisterTaskDefinition, UpdateService,
+        # TagResource) live in the inline facilitator-cicd policy, which is at its size
+        # limit and not in Terraform -- docs/CICD_SETUP.md. Scoped to the one cluster.
+        "Sid" : "EcsClusterUpdate",
+        "Effect" : "Allow",
+        "Action" : [
+          "ecs:UpdateCluster"
+        ],
+        "Resource" : "arn:aws:ecs:us-east-2:${data.aws_caller_identity.current.account_id}:cluster/facilitator-production"
       }
     ]
   })

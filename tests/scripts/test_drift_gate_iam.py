@@ -10,6 +10,7 @@ import contextlib
 import io
 import json
 import os
+import re
 import sys
 import tempfile
 import unittest
@@ -25,6 +26,7 @@ ACCOUNT = "1111" + "22223333"
 TASK_ROLE = "facilitator-production-ecs-task"
 EXECUTION_ROLE = "facilitator-production-ecs-execution"
 LAMBDA_ROLE = "facilitator-production-balances-lambda"
+CLUSTER_ARN = "arn:aws:ecs:us-east-2:" + ACCOUNT + ":cluster/facilitator-production"
 
 
 def declared_ci_policy() -> dict:
@@ -127,6 +129,33 @@ class TheDeclaredPolicy(unittest.TestCase):
 
     def test_what_nothing_mentions_is_not_allowed(self):
         self.assertEqual(gate.evaluate(self.doc, "iam:DeleteRole", self.arn(TASK_ROLE)), "no_allow")
+
+    def test_ci_may_update_the_cluster_every_image_deploy_drags_in(self):
+        # The deploy of #115 died on this call (2026-10-07): the cluster is a dependency of
+        # the service every image deploy targets, so its pending changes ride along.
+        self.assertEqual(gate.evaluate(self.doc, "ecs:UpdateCluster", CLUSTER_ARN), "allow")
+
+    def test_the_cluster_grant_reaches_nothing_else(self):
+        for arn in (CLUSTER_ARN.replace(":cluster/facilitator-production", ":cluster/facilitator-staging"),
+                    CLUSTER_ARN.replace(":us-east-2:", ":us-east-1:"),
+                    CLUSTER_ARN.replace(":cluster/", ":service/") + "/facilitator-production"):
+            self.assertEqual(gate.evaluate(self.doc, "ecs:UpdateCluster", arn), "no_allow", arn)
+        for action in ("ecs:DeleteCluster", "ecs:PutClusterCapacityProviders"):
+            self.assertEqual(gate.evaluate(self.doc, action, CLUSTER_ARN), "no_allow", action)
+
+    def test_the_granted_cluster_is_the_one_the_deploy_reaches(self):
+        prod = REPO / "terraform" / "environments" / "production"
+        main_tf = (prod / "main.tf").read_text(encoding="utf-8")
+        cluster = main_tf.split('resource "aws_ecs_cluster" "main" {', 1)[1].split("\n}\n", 1)[0]
+        self.assertIn('name = "facilitator-${var.environment}"', cluster)
+        service = main_tf.split('resource "aws_ecs_service" "facilitator" {', 1)[1].split("\n}\n", 1)[0]
+        self.assertRegex(service, r"\n\s*cluster\s*=\s*aws_ecs_cluster\.main\.")
+        targets = re.findall(r"[-]target=([A-Za-z0-9_.]+)", (REPO / ".github" / "workflows" / "ci.yaml").read_text(encoding="utf-8"))
+        self.assertIn("aws_ecs_service.facilitator", targets)
+        self.assertRegex((prod / "variables.tf").read_text(encoding="utf-8"),
+                         r'variable "environment" \{[^}]*default\s*=\s*"production"')
+        self.assertRegex((prod / "production.auto.tfvars").read_text(encoding="utf-8"),
+                         r'(?m)^environment\s*=\s*"production"\s*$')
 
 
 class TheGate(unittest.TestCase):

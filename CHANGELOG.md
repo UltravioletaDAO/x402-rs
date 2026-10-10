@@ -45,13 +45,12 @@
 - **`BAZAAR_ADMIN_TOKEN` reaches production.** Nothing put it in the container
   before, so the Bazaar admin routes (`DELETE /discovery/resources`,
   `/discovery/admin/*`, `POST /discovery/refresh`) answered 404 there. It now
-  comes from the SSM SecureString `/facilitator/bazaar-admin-token`, whose value
-  Terraform generates (`random_password`, new `hashicorp/random` provider), and
-  the execution role may `ssm:GetParameters` on it. Apply the parameter and the
-  role policy by hand right before the merge that ships this (`secrets.tf` has
-  the command): the CI user can write neither. Unlike the Secrets Manager tokens,
-  the value is in the Terraform state and readable by any principal with
-  `ssm:GetParameter` (the `aws/ssm` key), the CI user included.
+  comes from the Secrets Manager secret `facilitator-bazaar-admin-token` (JSON
+  key `token`), read by name like the ERC-8004 and DX402 tokens: the value never
+  reaches the Terraform state, and the CI user cannot read it. Create the secret
+  by hand and apply the execution role's policy right before the merge that
+  ships this (`secrets.tf` has both commands): the CI user can do neither, and
+  until the secret exists every plan fails on its data source.
 
 ## [2.49.0] - 2026-10-06
 

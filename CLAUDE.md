@@ -979,7 +979,7 @@ Key files for v2 support:
 1. Make code changes
 2. Format: `just format-all`
 3. Lint: `just clippy-all`
-4. Test: `cargo test --locked -p x402-rs --features solana,near,stellar,algorand,sui,xrpl -- --test-threads=1` — this is CI's green gate and a red one blocks the production deploy. `--test-threads=1` is not optional: parallel runs hang on CI runners.
+4. Test: `cargo test --locked -p x402-rs --features solana,near,stellar,algorand,sui,xrpl,hedera -- --test-threads=1` (the `CARGO_FEATURES` of `.github/workflows/ci.yaml`; without `hedera` six tests fail on a clean `main`) — this is CI's green gate and a red one blocks the production deploy. `--test-threads=1` is not optional: parallel runs hang on CI runners.
 5. Test locally: `cargo run --release` + integration tests
 6. Build Docker: `./scripts/fast-build.sh <version>` (never a bare `docker build` on WSL2 — see the Docker section)
 7. Test Docker locally: `docker-compose up`

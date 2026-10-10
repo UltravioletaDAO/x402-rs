@@ -22,6 +22,19 @@
 
 ### Added
 
+- **A self-registered listing that declares no input takes the one its own 402
+  declares.** On 2026-10-10, 905 of the 1 036 self-registered listings in the
+  published catalog declared no input, while most of their hosts' 402s carry one
+  in `extensions.bazaar` (header or body); the prober read those challenges and
+  kept only the prices. When a probe verifies the listing -- its own answer to
+  the request as sent, offering a payment, recipients clean -- the challenge's
+  `extensions.bazaar` (from the transport whose terms won, or from the other one
+  when the two agree) is filled into what the registration left out: a key the
+  seller registered is never replaced, at any depth, and the result has to
+  declare an input and fit the bounds of a registered `extensions`. The listing
+  then reports `hasInputSchema: true` and `extensionsProvenance: origin_response`,
+  persisted with it and never taken from a caller. Aggregated copies are left to
+  their feeds.
 - **`BAZAAR_ADMIN_TOKEN` reaches production.** Nothing put it in the container
   before, so the Bazaar admin routes (`DELETE /discovery/resources`,
   `/discovery/admin/*`, `POST /discovery/refresh`) answered 404 there. It now

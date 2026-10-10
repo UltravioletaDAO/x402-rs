@@ -1688,6 +1688,11 @@ pub struct LiveTerms {
     pub resource_method: Option<ProbeMethod>,
     /// The host of that `resource.url`, lowercased.
     pub resource_host: Option<String>,
+    /// The challenge's `extensions.bazaar`: what the listing says to send and
+    /// what it returns. From the transport whose terms won, or from the other
+    /// one when the two did not disagree on the terms. Unbounded here; whoever
+    /// keeps it bounds it ([`crate::discovery::DiscoveryRegistry::adopt_declaration`]).
+    pub bazaar: Option<serde_json::Value>,
 }
 
 impl LiveTerms {
@@ -1728,6 +1733,8 @@ struct ChallengeReading {
     rejected: BTreeMap<String, usize>,
     resource_method: Option<ProbeMethod>,
     resource_host: Option<String>,
+    /// The document's `extensions.bazaar`, as published.
+    bazaar: Option<serde_json::Value>,
     /// Whether the document looked like an x402 challenge at all. A body that
     /// parses as JSON but carries no payment terms -- a free preview, an error
     /// object -- has not been read.
@@ -1825,6 +1832,7 @@ fn pay_to_from_402(body: Option<&str>, header: Option<&str>) -> LiveTerms {
     terms.x402_version = winner.x402_version;
     terms.accepts = winner.accepts;
     terms.rejected = winner.rejected;
+    let losing_bazaar = loser.as_ref().and_then(|l| l.bazaar.clone());
     if let Some(other) = loser {
         // Only a real disagreement is worth keeping. Two transports carrying the
         // same offer is the common case and is not evidence of anything.
@@ -1836,6 +1844,12 @@ fn pay_to_from_402(body: Option<&str>, header: Option<&str>) -> LiveTerms {
             });
         }
     }
+    // The declaration of the transport that won; the other's only when the
+    // two agree on the terms -- a body that disagrees with its header does not
+    // get to say what the listing takes either.
+    terms.bazaar = winner
+        .bazaar
+        .or(losing_bazaar.filter(|_| terms.conflict.is_none()));
     terms
 }
 
@@ -2000,6 +2014,7 @@ fn read_challenge(v: &serde_json::Value) -> ChallengeReading {
         .and_then(|u| u.as_str())
         .and_then(|u| url::Url::parse(u).ok())
         .and_then(|u| u.host_str().map(str::to_ascii_lowercase));
+    reading.bazaar = v.get("extensions").and_then(|e| e.get("bazaar")).cloned();
 
     // `paymentRequirements` is the v1 spelling of `accepts`. Missing it made a
     // seller using it look like "no terms here" -- which is exactly the state
@@ -2770,6 +2785,18 @@ async fn probe_and_record<T: ProbeTransport + ?Sized>(
         .then_some(VerifiedBy::X402Challenge),
     };
     tracker.note_verified(u.as_str(), verified_by).await;
+
+    // A listing registered without saying what to send may say it in its own
+    // challenge (`extensions.bazaar`; MeshRelay puts it in the body). Taken only
+    // from a 402 that just verified the listing -- its own answer, offering a
+    // payment, recipients clean -- and only into what the seller left out.
+    // Before the observation below, which dates itself against the listing as
+    // it now stands.
+    if verified_by == Some(VerifiedBy::X402Challenge) {
+        if let Some(offered) = live.as_ref().and_then(|l| l.bazaar.as_ref()) {
+            registry.adopt_declaration(u.as_str(), offered).await;
+        }
+    }
 
     // Politeness feedback. A host that refuses us goes into
     // backoff -- its own `Retry-After` when it sent one, an
@@ -6809,6 +6836,332 @@ mod declared_method_tests {
             t.uptime_prefix_verified("https://other.example/", now_secs(), window)
                 .await,
             None
+        );
+    }
+
+    // ------------------------------------------------------------------------
+    // X4-BAZAAR-ADOPTA: the declaration a listing's own 402 carries
+    // ------------------------------------------------------------------------
+
+    /// What a seller's 402 says to send and what it returns, in
+    /// `extensions.bazaar`.
+    fn offered_bazaar() -> Value {
+        json!({
+            "info": {
+                "input": {
+                    "type": "http",
+                    "method": "POST",
+                    "bodyType": "json",
+                    "body": { "query": "string" }
+                },
+                "output": { "type": "json", "example": { "answer": "string" } }
+            }
+        })
+    }
+
+    fn challenge_with(bazaar: Value) -> Value {
+        json!({ "x402Version": 2, "accepts": accepts(), "extensions": { "bazaar": bazaar } })
+    }
+
+    /// A 402 carrying its challenge in the header, the body, or both, as the
+    /// connector hands a response over after following `redirect` (when set).
+    struct Says {
+        header: Option<String>,
+        body: String,
+        redirect: Option<crate::discovery_security::FollowedRedirect>,
+    }
+
+    impl Says {
+        fn header(challenge: &Value) -> Self {
+            Self {
+                header: Some(header_of(challenge)),
+                body: "{}".to_string(),
+                redirect: None,
+            }
+        }
+
+        fn body(challenge: &Value) -> Self {
+            Self {
+                header: None,
+                body: challenge.to_string(),
+                redirect: None,
+            }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl ProbeTransport for Says {
+        async fn send(
+            &self,
+            _url: &url::Url,
+            _method: ProbeMethod,
+            _body: Option<&str>,
+        ) -> Result<reqwest::Response, SecurityReject> {
+            let mut response = axum::http::Response::builder().status(402);
+            if let Some(header) = &self.header {
+                response = response.header("payment-required", header.as_str());
+            }
+            let mut response = response.body(self.body.clone()).unwrap();
+            if let Some(redirect) = &self.redirect {
+                response.extensions_mut().insert(redirect.clone());
+            }
+            Ok(reqwest::Response::from(response))
+        }
+
+        async fn send_mcp(
+            &self,
+            _url: &url::Url,
+            _body: &str,
+            _session: Option<&str>,
+        ) -> Result<reqwest::Response, SecurityReject> {
+            Err(SecurityReject::Http("no MCP here".to_string()))
+        }
+    }
+
+    /// A self-registered listing at `seller.example/r` with these `extensions`.
+    fn registered(extensions: Option<Value>) -> crate::types_v2::DiscoveryResource {
+        let mut listing = listing_of("/r", None);
+        listing.source = crate::types_v2::DiscoverySource::SelfRegistered;
+        listing.extensions = extensions;
+        listing
+    }
+
+    /// Register `listing`, probe it once through `transport`, and hand back the
+    /// registry and the listing as it now stands.
+    async fn probed_through<T: ProbeTransport>(
+        listing: crate::types_v2::DiscoveryResource,
+        transport: &T,
+    ) -> (DiscoveryRegistry, crate::types_v2::DiscoveryResource) {
+        let registry = DiscoveryRegistry::new();
+        registry.register(listing).await.unwrap();
+        let target = registry.probe_targets().await.remove(0);
+        let health = registry.health();
+        probe_and_record(transport, &registry, &health, target.clone()).await;
+        let held = registry.get(target.url.as_str()).await.unwrap();
+        (registry, held)
+    }
+
+    fn adopted_from_origin(held: &crate::types_v2::DiscoveryResource) -> bool {
+        held.extensions_provenance == Some(crate::discovery_terms::TermsProvenance::OriginResponse)
+    }
+
+    /// The 2026-10-10 gap: a listing registered without an input, whose 402
+    /// declares one in the header. It is adopted, says where it came from, and
+    /// is what a reader of the catalog sees.
+    #[tokio::test]
+    async fn a_listing_without_input_adopts_the_one_its_402_declares_in_the_header() {
+        let says = Says::header(&challenge_with(offered_bazaar()));
+        let (registry, held) = probed_through(registered(None), &says).await;
+        assert_eq!(held.extensions, Some(json!({ "bazaar": offered_bazaar() })));
+        assert!(adopted_from_origin(&held));
+        assert!(held.has_input_schema());
+
+        let listed = registry.list(10, 0, None).await.items.remove(0);
+        assert_eq!(listed.has_input_schema, Some(true));
+        assert_eq!(
+            serde_json::to_value(&listed).unwrap()["extensionsProvenance"],
+            json!("origin_response")
+        );
+    }
+
+    /// The same declaration in the body of the 402, where MeshRelay puts it.
+    #[tokio::test]
+    async fn a_listing_without_input_adopts_the_one_its_402_declares_in_the_body() {
+        let says = Says::body(&challenge_with(offered_bazaar()));
+        let (_registry, held) = probed_through(registered(None), &says).await;
+        assert_eq!(held.extensions, Some(json!({ "bazaar": offered_bazaar() })));
+        assert!(adopted_from_origin(&held));
+    }
+
+    /// What the seller registered is never replaced: an input of its own keeps
+    /// the listing out of the adoption altogether.
+    #[tokio::test]
+    async fn a_registered_input_is_never_overwritten_by_the_402() {
+        let own = json!({ "bazaar": { "info": { "input": { "type": "http", "method": "GET" } } } });
+        let says = Says::header(&challenge_with(offered_bazaar()));
+        let (_registry, held) = probed_through(registered(Some(own.clone())), &says).await;
+        assert_eq!(held.extensions, Some(own));
+        assert_eq!(held.extensions_provenance, None);
+    }
+
+    /// A registration that declares something, but not the input, gets the
+    /// input and nothing it already had replaced -- at any depth.
+    #[tokio::test]
+    async fn the_402_fills_only_what_the_registration_left_out() {
+        let own = json!({
+            "bazaar": {
+                "info": { "output": { "type": "json", "example": { "mine": 1 } } },
+                "category": "search"
+            },
+            "other": { "k": "v" }
+        });
+        let says = Says::header(&challenge_with(offered_bazaar()));
+        let (_registry, held) = probed_through(registered(Some(own)), &says).await;
+        let ext = held.extensions.clone().unwrap();
+        assert_eq!(
+            ext["bazaar"]["info"]["output"],
+            json!({ "type": "json", "example": { "mine": 1 } }),
+            "the seller's own output was replaced"
+        );
+        assert_eq!(
+            ext["bazaar"]["info"]["input"],
+            offered_bazaar()["info"]["input"]
+        );
+        assert_eq!(ext["bazaar"]["category"], json!("search"));
+        assert_eq!(ext["other"], json!({ "k": "v" }));
+        assert!(adopted_from_origin(&held));
+    }
+
+    /// Nothing is adopted from a declaration that is not one, that does not
+    /// say what to send, or that is past the bounds of a registered
+    /// `extensions`; nor into a registration whose shape it would have to
+    /// replace. The probe itself still verifies the listing.
+    #[tokio::test]
+    async fn a_malformed_or_oversized_declaration_is_not_adopted() {
+        let mut deep = json!({ "type": "http" });
+        for _ in 0..crate::discovery_price::MAX_EXTENSIONS_DEPTH {
+            deep = json!({ "nested": deep });
+        }
+        let cases = [
+            ("a string", None, json!("POST /r with a query")),
+            ("an array", None, json!([offered_bazaar()])),
+            (
+                "only the output",
+                None,
+                json!({ "info": { "output": { "type": "json" } } }),
+            ),
+            ("an empty input", None, json!({ "info": { "input": {} } })),
+            (
+                "too large",
+                None,
+                json!({ "info": { "input": {
+                    "type": "http",
+                    "body": { "q": "x".repeat(crate::discovery_price::MAX_EXTENSIONS_BYTES) }
+                } } }),
+            ),
+            ("too deep", None, json!({ "info": { "input": deep } })),
+            (
+                "registered extensions that are not an object",
+                Some(json!(["seller", "data"])),
+                offered_bazaar(),
+            ),
+            (
+                "a registered bazaar that is not an object",
+                Some(json!({ "bazaar": "see the docs" })),
+                offered_bazaar(),
+            ),
+        ];
+        for (name, own, offered) in cases {
+            let says = Says::header(&challenge_with(offered));
+            let (registry, held) = probed_through(registered(own.clone()), &says).await;
+            assert_eq!(held.extensions, own, "{name}");
+            assert_eq!(held.extensions_provenance, None, "{name}");
+            assert_eq!(
+                registry.list(10, 0, None).await.pagination.total,
+                1,
+                "{name}: the probe still verified the listing"
+            );
+        }
+    }
+
+    /// Only a 402 that verifies the listing speaks for it: not one another
+    /// host gave after a redirect, not one paying a recipient the listing never
+    /// declared; and only a self-registered listing takes it.
+    #[tokio::test]
+    async fn only_the_listings_own_verified_402_is_adopted_into_a_self_registered_listing() {
+        use crate::discovery_security::FollowedRedirect;
+        let elsewhere = Says {
+            redirect: Some(FollowedRedirect {
+                host: Some("elsewhere.example".to_string()),
+                method_kept: true,
+            }),
+            ..Says::header(&challenge_with(offered_bazaar()))
+        };
+        let (_registry, held) = probed_through(registered(None), &elsewhere).await;
+        assert_eq!(held.extensions, None, "a 402 another host gave");
+
+        let mut hijacked = challenge_with(offered_bazaar());
+        for option in hijacked["accepts"].as_array_mut().unwrap() {
+            option["payTo"] = json!("0x2222222222222222222222222222222222222222");
+        }
+        let (_registry, held) = probed_through(registered(None), &Says::header(&hijacked)).await;
+        assert_eq!(held.extensions, None, "a 402 paying someone else");
+
+        let mut aggregated = registered(None);
+        aggregated.source = crate::types_v2::DiscoverySource::Aggregated;
+        let says = Says::header(&challenge_with(offered_bazaar()));
+        let (_registry, held) = probed_through(aggregated, &says).await;
+        assert_eq!(held.extensions, None, "an aggregated copy");
+    }
+
+    /// Which transport's declaration counts: the winner's; the other's only
+    /// when the two agree on the terms.
+    #[test]
+    fn the_declaration_comes_from_the_transport_that_won_or_one_that_agrees() {
+        let a = accepts();
+        let plain = json!({ "x402Version": 2, "accepts": a });
+        let declared =
+            json!({ "x402Version": 2, "accepts": a, "extensions": { "bazaar": offered_bazaar() } });
+
+        // The header wins a tie and declares nothing; the body agrees and does.
+        let live = pay_to_from_402(Some(&declared.to_string()), Some(&header_of(&plain)));
+        assert_eq!(live.transport, Some(TermsTransport::Header));
+        assert_eq!(live.bazaar, Some(offered_bazaar()));
+
+        // The winner's own declaration beats the other's.
+        let other = json!({ "info": { "input": { "type": "http", "method": "GET" } } });
+        let header = json!({ "x402Version": 2, "accepts": a, "extensions": { "bazaar": other } });
+        let live = pay_to_from_402(Some(&declared.to_string()), Some(&header_of(&header)));
+        assert_eq!(live.bazaar, Some(other));
+
+        // A body that disagrees with its header on the terms says nothing.
+        let mut repriced = a.clone();
+        repriced[0]["amount"] = json!("999999999");
+        let disagreeing = json!({
+            "x402Version": 2,
+            "accepts": repriced,
+            "extensions": { "bazaar": offered_bazaar() }
+        });
+        let live = pay_to_from_402(Some(&disagreeing.to_string()), Some(&header_of(&plain)));
+        assert!(live.conflict.is_some());
+        assert_eq!(live.bazaar, None);
+    }
+
+    /// Where a declaration came from is ours to say: a registration that
+    /// claims `origin_response` loses the claim, and an adoption reaches the
+    /// store with it.
+    #[tokio::test]
+    async fn the_provenance_is_never_taken_from_a_caller_and_is_persisted() {
+        let store = crate::discovery_store::MemoryStore::new();
+        let registry = DiscoveryRegistry::with_store(store.clone()).await.unwrap();
+        let mut claiming = registered(Some(json!({ "bazaar": offered_bazaar() })));
+        claiming.extensions_provenance =
+            Some(crate::discovery_terms::TermsProvenance::OriginResponse);
+        registry.register(claiming).await.unwrap();
+        let held = registry.get("https://seller.example/r").await.unwrap();
+        assert_eq!(held.extensions_provenance, None, "a caller asserted it");
+
+        let registry = DiscoveryRegistry::with_store(store.clone()).await.unwrap();
+        let mut bare = registered(None);
+        bare.url = url::Url::parse("https://seller.example/bare").unwrap();
+        registry.register(bare).await.unwrap();
+        assert!(
+            registry
+                .adopt_declaration("https://seller.example/bare", &offered_bazaar())
+                .await
+        );
+        registry.writes_drained().await;
+        let stored = store
+            .load_all()
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|r| r.url.as_str() == "https://seller.example/bare")
+            .unwrap();
+        assert!(adopted_from_origin(&stored));
+        assert_eq!(
+            stored.extensions,
+            Some(json!({ "bazaar": offered_bazaar() }))
         );
     }
 }

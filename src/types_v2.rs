@@ -1354,6 +1354,15 @@ pub struct DiscoveryResource {
     )]
     pub extensions: Option<serde_json::Value>,
 
+    /// Where the `bazaar` declaration in `extensions` came from when it was not
+    /// the seller's registration: `origin_response`, the listing's own 402,
+    /// read by the prober and adopted into a listing registered without saying
+    /// what to send ([`DiscoveryResource::with_offered_bazaar`]). Absent for
+    /// what the seller registered. Persisted, and never taken from a caller
+    /// ([`DiscoveryResource::strip_response_only`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub extensions_provenance: Option<crate::discovery_terms::TermsProvenance>,
+
     // ========== Meta-Bazaar Source Tracking ==========
     /// How this resource was discovered/registered
     #[serde(default)]
@@ -1503,6 +1512,46 @@ pub struct DiscoveryResource {
     pub usage: Option<crate::discovery_usage::ListingUsage>,
 }
 
+/// Whether an `extensions` blob says what to send
+/// ([`DiscoveryResource::has_input_schema`]).
+fn declares_input(extensions: Option<&serde_json::Value>) -> bool {
+    let Some(bazaar) = extensions.and_then(|e| e.get("bazaar")) else {
+        return false;
+    };
+    let declared = |v: Option<&serde_json::Value>| {
+        v.and_then(serde_json::Value::as_object)
+            .is_some_and(|o| !o.is_empty())
+    };
+    declared(bazaar.get("info").and_then(|i| i.get("input")))
+        || declared(
+            bazaar
+                .get("schema")
+                .and_then(|s| s.get("properties"))
+                .and_then(|p| p.get("input")),
+        )
+}
+
+/// Copy into `target` every key of `source` it does not have, descending where
+/// both hold an object. A key `target` already has is never replaced.
+fn fill_gaps(
+    target: &mut serde_json::Map<String, serde_json::Value>,
+    source: &serde_json::Map<String, serde_json::Value>,
+) {
+    for (key, offered) in source {
+        match target.get_mut(key) {
+            None => {
+                target.insert(key.clone(), offered.clone());
+            }
+            Some(serde_json::Value::Object(held)) => {
+                if let Some(offered) = offered.as_object() {
+                    fill_gaps(held, offered);
+                }
+            }
+            Some(_) => {}
+        }
+    }
+}
+
 impl DiscoveryResource {
     /// Create a new discovery resource (defaults to SelfRegistered source)
     pub fn new(
@@ -1557,6 +1606,7 @@ impl DiscoveryResource {
             has_input_schema: None,
             upstream: None,
             upstream_source: None,
+            extensions_provenance: None,
             usage: None,
         }
     }
@@ -1622,6 +1672,7 @@ impl DiscoveryResource {
             has_input_schema: None,
             upstream: None,
             upstream_source: None,
+            extensions_provenance: None,
             usage: None,
         }
     }
@@ -1680,6 +1731,7 @@ impl DiscoveryResource {
             has_input_schema: None,
             upstream: None,
             upstream_source: None,
+            extensions_provenance: None,
             usage: None,
         }
     }
@@ -1789,6 +1841,9 @@ impl DiscoveryResource {
         self.upstream = None;
         self.upstream_source = None;
         self.usage = None;
+        // Not response-only, but just as much ours: only this registry's prober
+        // says a declaration came from the origin, never whoever registers it.
+        self.extensions_provenance = None;
     }
 
     /// Whether the listing says what to send: the `bazaar` extension's
@@ -1798,20 +1853,42 @@ impl DiscoveryResource {
     /// behalf. A listing without it can still be paid; it cannot be used
     /// without guessing the request.
     pub fn has_input_schema(&self) -> bool {
-        let Some(bazaar) = self.extensions.as_ref().and_then(|e| e.get("bazaar")) else {
-            return false;
+        declares_input(self.extensions.as_ref())
+    }
+
+    /// This listing's `extensions` with `offered` -- the `bazaar` extension its
+    /// own 402 declares -- filled into what the listing leaves out, or `None`
+    /// when there is nothing to adopt (X4-BAZAAR-ADOPTA).
+    ///
+    /// Only for a listing that declares no input, and only into gaps: a key the
+    /// seller registered is never replaced, at any depth, so this can complete a
+    /// declaration but never rewrite one. `None` unless the result declares an
+    /// input and fits the bounds of a registered `extensions`
+    /// ([`crate::discovery_price::sanitize_extensions`]).
+    pub fn with_offered_bazaar(&self, offered: &serde_json::Value) -> Option<serde_json::Value> {
+        if self.has_input_schema() {
+            return None;
+        }
+        let offered = offered.as_object()?;
+        let mut extensions = match &self.extensions {
+            None => serde_json::Map::new(),
+            Some(serde_json::Value::Object(map)) => map.clone(),
+            Some(_) => return None,
         };
-        let declared = |v: Option<&serde_json::Value>| {
-            v.and_then(serde_json::Value::as_object)
-                .is_some_and(|o| !o.is_empty())
-        };
-        declared(bazaar.get("info").and_then(|i| i.get("input")))
-            || declared(
-                bazaar
-                    .get("schema")
-                    .and_then(|s| s.get("properties"))
-                    .and_then(|p| p.get("input")),
-            )
+        match extensions.get_mut("bazaar") {
+            None => {
+                extensions.insert(
+                    "bazaar".to_string(),
+                    serde_json::Value::Object(offered.clone()),
+                );
+            }
+            Some(registered) => fill_gaps(registered.as_object_mut()?, offered),
+        }
+        let adopted = serde_json::Value::Object(extensions);
+        if !declares_input(Some(&adopted)) {
+            return None;
+        }
+        crate::discovery_price::sanitize_extensions(Some(adopted))
     }
 
     /// Fill this record's missing descriptive fields from another copy of the

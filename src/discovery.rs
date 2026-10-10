@@ -1990,6 +1990,13 @@ impl DiscoveryRegistry {
         self.drain_writes();
     }
 
+    /// Wait until every queued catalog write has reached the store. Tests only:
+    /// the queue drains off the caller's path.
+    #[cfg(test)]
+    pub(crate) async fn writes_drained(&self) {
+        self.writes.drain(&self.store).await;
+    }
+
     /// Kick the drainer. Cheap when one is already running: the second task
     /// blocks on the drain lock, finds the queue empty and returns.
     fn drain_writes(&self) {
@@ -3020,6 +3027,45 @@ impl DiscoveryRegistry {
 
             Ok(true)
         }
+    }
+
+    /// Adopt the `bazaar` declaration a listing's own 402 carries, when the
+    /// listing was registered without saying what to send (X4-BAZAAR-ADOPTA).
+    ///
+    /// Measured 2026-10-10: 905 of the 1 036 self-registered listings in the
+    /// published catalog declared no input, and of 294 such rows swept that day,
+    /// 253 sit on hosts whose 402 declares one in `extensions.bazaar` -- the
+    /// prober read those challenges and kept only the prices. Self-registered
+    /// listings only: an aggregated copy's declaration
+    /// is its feed's, and the next import decides it. The caller vouches for
+    /// `offered` ([`crate::discovery_health`] passes only a 402 that just
+    /// verified the listing); what is adopted, and how, is
+    /// [`DiscoveryResource::with_offered_bazaar`]. Returns whether the listing
+    /// changed.
+    pub async fn adopt_declaration(&self, url: &str, offered: &serde_json::Value) -> bool {
+        let mut cache = self.write_catalog().await;
+        let Some(adopted) = cache
+            .get(url)
+            .filter(|r| r.source == DiscoverySource::SelfRegistered)
+            .and_then(|r| r.with_offered_bazaar(offered))
+        else {
+            return false;
+        };
+        let Some(record) = cache.get_mut(url) else {
+            return false;
+        };
+        record.extensions = Some(adopted);
+        record.extensions_provenance =
+            Some(crate::discovery_terms::TermsProvenance::OriginResponse);
+        let resource_for_store = record.clone();
+        drop(cache);
+
+        info!(
+            url = %url,
+            "adopted the input declaration this listing's own 402 carries"
+        );
+        self.persist_async(resource_for_store);
+        true
     }
 
     /// Validate a resource before registration.

@@ -26,7 +26,7 @@ This repository maintains a strict file organization structure. The root directo
 - `examples/` - Workspace example crates (x402-axum-example, x402-reqwest-example)
 - `abi/`, `contracts/` - Solidity ABIs and contract sources
 - `docker/`, `grafana/`, `conductor/` - Container and observability assets
-- `.github/` - CI/CD (`workflows/ci.yaml` - push to main deploys to production)
+- `.github/` - CI/CD (`workflows/ci.yaml` - push/PR build and test; only a manual "Run workflow" on main deploys to production)
 - `.unused/` - **IGNORED** (contains secrets, never commit!)
 
 ## Project Overview
@@ -399,7 +399,7 @@ Golden source is `terraform/environments/production/secrets.tf`. The naming is N
 
 Infrastructure managed with Terraform in `terraform/environments/production/`.
 
-**The deploy is automated.** Pushing to `main` runs `.github/workflows/ci.yaml`, which tests, builds the image, pushes it to ECR and `terraform apply -auto-approve`s it onto ECS (targeted at the task definition + service), then waits for the rollout and checks `/health`. The commands below are the manual fallback - do not run them in parallel with a CI deploy of the same commit.
+**The deploy is a manual "Run workflow" on `main`** (`gh workflow run ci.yaml --ref main`): `.github/workflows/ci.yaml` then tests, builds the image, pushes it to ECR and `terraform apply -auto-approve`s it onto ECS (targeted at the task definition + service), then waits for the rollout and checks `/health`. **A merge never deploys by itself** (owner's rule 2026-09-27, one release a day; in the deploy job's `if:` since 2026-10-10, held by `tests/scripts/test_ci_deploy_job.py`): a push to `main` only builds, tests and runs the drift gate. The commands below are the manual fallback - do not run them in parallel with a CI deploy of the same commit.
 
 ```bash
 # Initialize Terraform backend (once)
@@ -590,7 +590,7 @@ every n seconds*, not n per second.
 ### Missing branding after deployment
 - Verify `static/index.html` is >200KB (~225KB today, not the small upstream version): compare `ls -la static/index.html` against `curl -s https://facilitator.ultravioletadao.xyz/ | wc -c`
 - Verify `src/handlers.rs::get_root()` still uses `include_str!()` (`get_index()` is only an alias)
-- Rebuild and redeploy: push to `main` (CI builds + deploys). For local iteration use `./scripts/fast-build.sh <version> --push`; for a hand-shipped release image use `./scripts/build-and-push.sh <version>`, which passes `--build-arg FACILITATOR_VERSION`.
+- Rebuild and redeploy: a manual "Run workflow" on `main` (CI builds + deploys; a push alone does not). For local iteration use `./scripts/fast-build.sh <version> --push`; for a hand-shipped release image use `./scripts/build-and-push.sh <version>`, which passes `--build-arg FACILITATOR_VERSION`.
 
 ### Payment verification failures
 - Check facilitator wallet gas: `python scripts/check_config.py` - **partial**: it covers only Base/Avalanche/Polygon/Optimism and reads the *deprecated* `facilitator-evm-private-key` secret, not `-mainnet`, so it can validate the wrong wallet. Check the other chains' balances directly.
@@ -1045,7 +1045,7 @@ This complete checklist covers:
 
 ### Important Notes
 
-- **NEVER compile or deploy the facilitator on your own initiative** - make the code change, tell the user, wait for them to build/deploy. But know what shipping means here: **pushing to `main` deploys to production.** `.github/workflows/ci.yaml` tests, builds the image, pushes it to ECR and `terraform apply -auto-approve`s it onto ECS, then waits for the rollout. The gate is armed today (the AWS repo secrets exist, so `preflight` emits `deploy=true`); only a red `test` job blocks it. A merge is a release; a `git push` is not a save. A failed deploy leaves `main` ahead of production - compare `curl -s https://facilitator.ultravioletadao.xyz/version` with `git log -1` before assuming your commit is live.
+- **NEVER compile or deploy the facilitator on your own initiative** - make the code change, tell the user, wait for them to build/deploy. But know what shipping means here: **a manual "Run workflow" on `main` deploys to production, and nothing else does.** `.github/workflows/ci.yaml` then tests, builds the image, pushes it to ECR and `terraform apply -auto-approve`s it onto ECS, then waits for the rollout. The gate is armed today (the AWS repo secrets exist, so `preflight` emits `deploy=true`); only a red `test` job blocks it. Since 2026-10-10 a merge is NOT a release (before, every push to `main` touching a build input shipped on its own): `main` sits ahead of production until somebody starts the deploy, and that run ships everything merged since the last one. A failed or not-yet-started deploy leaves `main` ahead of production - compare `curl -s https://facilitator.ultravioletadao.xyz/version` with `git log -1` before assuming your commit is live.
 - **Never add emojis to Rust code** - they do NOT break compilation (Rust source is UTF-8), but they corrupt CloudWatch log output and terminal rendering. Use `[OK]`/`[FAIL]`/`[WARN]`. Same rule as Common Pitfalls #6.
 - **Rust Edition**: edition 2021 (`Cargo.toml:5`). The real toolchain floor is **Rust >= 1.91** (highest `rust-version` among locked deps, e.g. aws-smithy-* 1.91.1), NOT 1.82. Edition 2024 needs only 1.85, so MSRV no longer blocks the migration - only syntax/lint churn does.
   - See v0.9.1 merge for details (commit 75b37e6)

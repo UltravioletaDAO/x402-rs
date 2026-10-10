@@ -1,15 +1,18 @@
 # CI/CD Setup — GitHub Actions → AWS ECR → ECS
 
 The `.github/workflows/ci.yaml` pipeline builds + tests on every PR and push to `main`
-**that touches a build input**, and on such a push to `main` it builds the Docker image, pushes
-it to **AWS ECR**, runs **`terraform apply`** to roll ECS production to the new image, and
-verifies `/health`.
+**that touches a build input**. It deploys **only on a manual "Run workflow" on `main`**
+(`workflow_dispatch`, or `gh workflow run ci.yaml --ref main`): it builds the Docker image,
+pushes it to **AWS ECR**, runs **`terraform apply`** to roll ECS production to the new image,
+and verifies `/health`. **A merge never deploys by itself** — the owner's rule of 2026-09-27
+(one release a day, started by hand), in the deploy job's `if:` since 2026-10-10 and held by
+`tests/scripts/test_ci_deploy_job.py`. Before that, every push to `main` that touched a build
+input shipped on its own.
 
 A push whose whole diff is documentation triggers nothing: the workflow carries a `paths` list
 holding the union of what its four jobs read. `docs/handoffs/2026-09-11-ci-paths.md` has the
 job-by-job table and `python3 scripts/ci_paths_selftest.py` asserts the list is neither too
-wide nor too narrow. `workflow_dispatch` has no `paths` and deploys whatever the last commit
-changed, which is the escape hatch if a filter ever turns out to be too narrow.
+wide nor too narrow. `workflow_dispatch` has no `paths` and deploys whatever `main` holds.
 
 It authenticates to AWS with **IAM access-key secrets**. Until those secrets exist the deploy job
 is **skipped** (the run still goes green on the `test` job), so merging the workflow itself is safe.
@@ -35,12 +38,13 @@ then give it the policies below.
 > decorative. Declaring it is safe only because the deploy user has no `iam:CreatePolicyVersion`.
 > Apply it by hand, with a human's credentials, on Terraform 1.9.8.
 >
-> Its nine statements at `v5`: `DynamoTableManage`, `IamRolePolicyForTaskRoleOnly`,
+> Its statements, as declared: `DynamoTableManage`, `IamRolePolicyForTaskRoleOnly`,
 > `DenyPrivilegeEscalation` (Deny), `BalancesLambdaDeploy`, `AlertTopicManage`,
-> `FacilitatorAlarmManage`, `FacilitatorScheduleManage`, `AlertsBackupQueueManage`,
-> `FacilitatorLogRetention`.
+> `FacilitatorAlarmManage`, `FacilitatorMetricFilterManage`, `FacilitatorScheduleManage`,
+> `AlertsBackupQueueManage`, `FacilitatorLogRetention`, `DiscoveryBucketVersioning`,
+> `EcsClusterUpdate`. The `.tf` file is the list; this one is a reading aid.
 >
-> **Three of those were added only after a deploy failed on their absence** — the pattern this
+> **These were added only after a deploy failed on their absence** — the pattern this
 > document exists to stop:
 >
 > | When | Missing permission | What it broke |
@@ -48,6 +52,7 @@ then give it the policies below.
 > | 2026-08-20 | `lambda:UpdateFunctionConfiguration` | The balances Lambda had been silently un-deployable for as long as it existed |
 > | 2026-08-28 | `sqs:CreateQueue` | The alerts backup queue |
 > | 2026-08-28 | `logs:PutRetentionPolicy` | A log-retention change broke the **routine** deploy for the whole project |
+> | 2026-10-07 | `ecs:UpdateCluster` | The image deploy of #115: `aws_ecs_cluster.main` is in no target list, but it rides into every image deploy as a dependency of the service, and #115 turned Container Insights off. Granted in `EcsClusterUpdate`, scoped to the one cluster |
 >
 > **AWS caps a managed policy at 5 versions.** `v1` was deleted on 2026-08-28 to make room for
 > `v5`. Terraform does not rotate them, so an apply that fails with `LimitExceeded` means you must
@@ -142,7 +147,7 @@ gh secret set AWS_ACCESS_KEY_ID     --repo UltravioletaDAO/x402-rs --body 'AKIA.
 gh secret set AWS_SECRET_ACCESS_KEY --repo UltravioletaDAO/x402-rs --body 'YOUR_SECRET_KEY'
 ```
 
-That's it. The next push to `main` will build → push to ECR → `terraform apply` → verify automatically.
+That's it. The next manual "Run workflow" on `main` will build → push to ECR → `terraform apply` → verify.
 
 ---
 
@@ -153,8 +158,8 @@ That's it. The next push to `main` will build → push to ECR → `terraform app
 | PR or push touching only `docs/**`, `*.md`, `scripts/bench/**` … | **no run at all** (`paths`) | — |
 | Pull request → `main` (build input changed) | ✅ build + full test suite | skipped |
 | Push → `main` (build input changed, no AWS secrets) | ✅ | **skipped** (run stays green) |
-| Push → `main` (build input changed, secrets set) | ✅ | ✅ build → ECR → terraform apply → verify |
-| `workflow_dispatch` on `main` | ✅ | ✅ — no `paths`, runs whatever changed |
+| Push → `main` (build input changed, secrets set) | ✅ | **skipped** — a merge never deploys (since 2026-10-10) |
+| `workflow_dispatch` on `main` (secrets set) | ✅ | ✅ build → ECR → terraform apply → verify — no `paths`, ships whatever `main` holds |
 
 A superseded pull-request run is cancelled (`cancel-in-progress` is on for `pull_request` and
 stays off for `main`, so two releases queued back to back both run to completion).
@@ -190,8 +195,9 @@ stays off for `main`, so two releases queued back to back both run to completion
   2026-08-20, scoped to that one function ARN) grants the four writes Terraform needs.
   If that commit cannot be determined, or the compare fails or reaches its 300-file cap, the step
   applies anyway — a redundant `UpdateFunctionCode` is cheap, a silently unapplied change is the
-  bug being fixed. A `workflow_dispatch` run always applies the Lambda: that is the manual escape
-  hatch. **Use it to resync the Lambda whenever it drifts from `main`.** The observability step
+  bug being fixed. A `workflow_dispatch` run always applies the Lambda: that was the manual escape
+  hatch to resync it whenever it drifted from `main`, and since every deploy is a
+  `workflow_dispatch` run (2026-10-10) the Lambda applies on every release. The observability step
   below applies it as well whenever it has a pending diff: two of its targets, the schedule's event
   target and its Lambda permission, reference the function (`alerts.tf:346-355`), and `-target`
   pulls in their dependencies.

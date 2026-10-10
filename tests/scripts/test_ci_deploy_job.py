@@ -51,6 +51,9 @@ EVENT_BEFORE = re.compile(r"\$\{\{[^}]*\bgithub\.event\.before\b[^}]*\}\}")
 # The compare API lists at most this many files; a list that long may be cut short.
 COMPARE_FILE_CAP = 300
 
+# `github.event_name == '<event>'` inside the deploy job's if:, however it is spaced.
+DEPLOY_IF_EVENT = re.compile(r"github\.event_name\s*==\s*'([A-Za-z_]+)'")
+
 
 def step(prefix: str) -> dict:
     found = [s for s in STEPS if str(s.get("name", "")).startswith(prefix)]
@@ -208,8 +211,57 @@ class TheScriptMatchesTheWorkflow(unittest.TestCase):
         self.assertIn(ci_last_green_deploy.WORKFLOW_FILE, ci_paths_selftest.load_workflows())
         on = CI.get("on", CI.get(True))
         self.assertIn(ci_last_green_deploy.BRANCH, on["push"]["branches"])
-        for event in ci_last_green_deploy.DEPLOY_EVENTS:
-            self.assertIn(f"github.event_name == '{event}'", " ".join(DEPLOY["if"].split()))
+        # Every event the job deploys on is one whose runs the script reads; a push stays
+        # in the script for the deploys before 2026-10-10.
+        events = DEPLOY_IF_EVENT.findall(str(DEPLOY["if"]))
+        self.assertTrue(events, "the deploy job's if: no longer names an event")
+        for event in events:
+            self.assertIn(event, ci_last_green_deploy.DEPLOY_EVENTS)
+
+
+class AMergeNeverDeploys(unittest.TestCase):
+    """Only a manual "Run workflow" on main deploys (owner's rule, 2026-09-27: one
+    release a day, started by hand). Until 2026-10-10 the deploy job also ran on every
+    push to main that touched a build input, so each merge shipped on its own."""
+
+    def test_the_deploy_runs_only_on_a_manual_run_on_main(self):
+        cond = str(DEPLOY.get("if", ""))
+        # One conjunct pinning the event, and no || that could reopen another one:
+        # `a && b || c` runs on c alone.
+        self.assertNotIn("||", cond, f"an || in the deploy job's if: can reopen a push: {cond}")
+        parts = conjuncts(cond)
+        self.assertIn("github.event_name == 'workflow_dispatch'", parts, cond)
+        self.assertIn("github.ref == 'refs/heads/main'", parts, cond)
+        self.assertEqual(DEPLOY_IF_EVENT.findall(cond), ["workflow_dispatch"], cond)
+        self.assertNotIn("push", cond, cond)
+        self.assertNotIn("always()", cond, cond)
+
+    def test_push_and_pull_request_still_build_test_and_plan(self):
+        on = CI.get("on", CI.get(True))
+        for event in ("push", "pull_request", "workflow_dispatch"):
+            self.assertIn(event, on, f"ci.yaml no longer runs on {event}")
+        self.assertEqual(on["push"]["branches"], ["main"])
+        for name in ("test", "plan"):
+            with self.subTest(job=name):
+                self.assertNotIn("github.event_name", str(CI["jobs"][name].get("if", "")),
+                                 f"the {name} job must keep running on push and pull_request")
+        self.assertNotIn("if", CI["jobs"]["test"])
+
+    def test_no_other_job_ships(self):
+        # Moving the apply or the image push into a job that runs on push would ship a
+        # merge again with the deploy job's if: untouched.
+        for name, job in CI["jobs"].items():
+            if name == "deploy":
+                continue
+            for s in job.get("steps", []):
+                with self.subTest(job=name, step=s.get("name", s.get("uses"))):
+                    run = str(s.get("run", ""))
+                    self.assertNotRegex(run, r"terraform\s+apply\b", "only the deploy job applies")
+                    self.assertNotRegex(run, r"\bdocker\s+push\b|aws\s+ecs\s+update-service",
+                                        "only the deploy job pushes an image or rolls the service")
+                    if str(s.get("uses", "")).startswith("docker/build-push-action"):
+                        self.assertNotIn(str((s.get("with") or {}).get("push", "false")).lower(),
+                                         ("true", "${{ true }}"), "only the deploy job pushes an image")
 
 
 if __name__ == "__main__":

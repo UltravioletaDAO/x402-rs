@@ -16,7 +16,7 @@ Prints exactly one line on stdout: that SHA, or the word `aplicar` whenever
 the answer cannot be trusted -- gh missing or failing, no green deploy among
 the recent runs, an answer that does not look like a SHA, or a run that is not
 a push (a manual "Run workflow" is the escape hatch that re-applies the Lambda
-unconditionally). Since 2026-10-10 a manual run is the only event that deploys,
+unconditionally). Since X402-CI-GATES a manual run is the only event that deploys,
 so the answer in the deploy job is always `aplicar`. Applying when unsure is the
 rule the step already followed: a redundant UpdateFunctionCode is cheap, a
 silently unapplied change is not.
@@ -45,7 +45,7 @@ BRANCH = "main"
 DEPLOY_JOB_NAME = "Push to ECR & deploy to ECS (production)"
 # The events whose runs may hold a deploy. The deploy job's `if:` in ci.yaml names a
 # subset of these (tests/scripts/test_ci_deploy_job.py): only a manual run since
-# 2026-10-10, when a merge stopped deploying; a push stays for the deploys before that.
+# X402-CI-GATES, when a merge stopped deploying; a push stays for the deploys before it.
 DEPLOY_EVENTS = ("push", "workflow_dispatch")
 # How far back to look, pull requests included. Past this many runs without a
 # green deploy the answer is `aplicar`, which is also the right answer after

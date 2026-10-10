@@ -119,7 +119,7 @@ env:
   CARGO_FEATURES: solana,near,stellar,algorand,sui,xrpl,hedera
 
 concurrency:
-  group: cicd-${{ github.ref }}
+  group: cicd-${{ github.ref }}-${{ github.event_name }}
   # A pull request gets a fresh run on every push to its branch, and until now
   # the superseded one kept compiling for another six minutes with nobody
   # waiting on its answer. Measured 2026-09-11: 8 of the 22 pull-request runs in
@@ -127,10 +127,17 @@ concurrency:
   # than the `paths` filter above saves.
   #
   # `false` on main is load-bearing and is what this expression still returns
-  # there. The group key is github.ref, so a push to main never shares a group
-  # with a pull request; two releases queued back to back must BOTH run, because
-  # cancelling the first would stop it between `terraform apply` and the rollout
-  # wait. The deploy job's own deploy-production group is the second guard.
+  # there: a RUNNING release is never cancelled, because cancelling it would stop
+  # it between `terraform apply` and the rollout wait. The deploy job's own
+  # deploy-production group is the second guard.
+  #
+  # The event is part of the key because only a manual "Run workflow" deploys.
+  # GitHub keeps one PENDING run per group and cancels it when a newer one
+  # arrives; with push and workflow_dispatch in one group, a merge landing while
+  # a release waited behind another run would cancel the release, and the push
+  # that replaced it does not deploy. Keyed apart, a newer release can only
+  # replace an older pending release, which ships a subset of what it does.
+  # tests/scripts/test_ci_deploy_job.py holds this.
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
@@ -212,7 +219,7 @@ jobs:
             echo "AWS credentials present — a manual Run workflow on main deploys."
           else
             echo "deploy=false" >> "$GITHUB_OUTPUT"
-            echo "::notice title=Deploy skipped::AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY are not set. Add them (see docs/CICD_SETUP.md) to enable auto-deploy."
+            echo "::notice title=Deploy skipped::AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY are not set. Add them (see docs/CICD_SETUP.md) to enable the manual deploy."
           fi
 
   # ---------------------------------------------------------------------------
@@ -251,9 +258,11 @@ jobs:
     permissions:
       contents: read
     # Separate from the deploy's concurrency group: a superseded plan is worthless,
-    # but it must never sit in the queue a release is waiting in.
+    # but it must never sit in the queue a release is waiting in. Keyed by event
+    # like the workflow, so a merge's plan and a release's plan do not cancel each
+    # other and turn one of the two runs "cancelled".
     concurrency:
-      group: tfplan-${{ github.ref }}
+      group: tfplan-${{ github.ref }}-${{ github.event_name }}
       cancel-in-progress: true
     steps:
       - uses: actions/checkout@v4
@@ -467,6 +476,12 @@ jobs:
       # never guessed) and goes red with the exact command to apply it by hand,
       # on 1.9.8, before the merge. `!cancelled()`: a red uncovered-drift row
       # above must not hide this answer.
+      #
+      # It does the same for aws_ecs_cluster.main, which no deploy step targets
+      # but every image deploy applies as a dependency of the service: the
+      # deploy of #115 died on ecs:UpdateCluster on 2026-10-07 (R496). Only the
+      # cluster calls the managed policy can grant are evaluated; the ECS writes
+      # every deploy makes live in the inline policy, outside the plan.
       - name: IAM changes the deploy cannot apply
         if: '!cancelled()'
         working-directory: terraform/environments/production
@@ -566,7 +581,7 @@ jobs:
     # Deploy ONLY on a manual "Run workflow" on main, once AWS secrets exist. A push to
     # main -- a merge -- builds, tests and plans, and stops there: the owner's rule
     # (2026-09-27) is one release a day, started by hand, and before this condition
-    # (2026-10-10) every merge that touched a build input shipped on its own. Start one with
+    # (X402-CI-GATES) every merge that touched a build input shipped on its own. Start one with
     # `gh workflow run ci.yaml --ref main`. tests/scripts/test_ci_deploy_job.py holds this.
     if: >-
       needs.preflight.outputs.deploy == 'true' &&
@@ -673,7 +688,7 @@ jobs:
             -target=aws_appautoscaling_policy.ecs_memory \
             -var="image_tag=${{ steps.tag.outputs.image_tag }}"
 
-      - name: Deploy balances Lambda (only when its sources changed)
+      - name: Deploy balances Lambda (always, on a manual run)
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         working-directory: terraform/environments/production

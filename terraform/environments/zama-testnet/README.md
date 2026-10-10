@@ -32,7 +32,8 @@ The advertisement goes first, the backend second: the other way round leaves
 `/supported` offering a scheme whose Lambda is gone.
 
 1. **Facilitator.** Merge the change that sets `enable_zama = false` in
-   production; CI deploys it. Check it is live before touching this stack:
+   production; the next manual deploy (`gh workflow run ci.yaml --ref main`; a merge
+   alone does not deploy) ships it. Check it is live before touching this stack:
    `/supported` must list no `fhe-transfer` kind.
 2. **One apply with the stack still on.** Terraform destroys with the
    arguments stored in the STATE, not the ones in the config, so the bucket's
@@ -104,7 +105,8 @@ Reverse order: the backend first, the advertisement last.
    `terraform/environments/production/production.auto.tfvars` AND the same
    value as the `default` of `enable_zama` in that directory's `variables.tf`
    (`tests/scripts/test_ci_zama_switch.py` holds the two equal, so a run
-   without the tfvars file cannot land on the other value). CI deploys it,
+   without the tfvars file cannot land on the other value). The next manual
+   deploy (`gh workflow run ci.yaml --ref main`) ships it,
    `/supported` lists `fhe-transfer` on `ethereum-sepolia` again and the
    landing card comes back.
 

@@ -10,7 +10,7 @@ Adding a new chain requires:
 3. Frontend integration (HTML/CSS/JavaScript)
 4. Logo assets and handlers
 5. Wallet funding for both mainnet and testnet
-6. `VERSION` bump, per-file staging, push to `main` (CI deploys)
+6. `VERSION` bump, per-file staging, push to `main`, then a manual "Run workflow" on `main` (that run deploys)
 7. Verification against `/supported`
 
 **17 files, always** — see [Quick Reference: File Changes Summary](#quick-reference-file-changes-summary).
@@ -487,9 +487,11 @@ aws secretsmanager get-secret-value \
 
 ### Phase 5: Ship it
 
-**There is no manual deploy. Pushing to `main` IS the deploy.**
+**Pushing to `main` does NOT deploy. A manual "Run workflow" on `main` IS the deploy**
+(`gh workflow run ci.yaml --ref main`) — since X402-CI-GATES, the owner's rule of one release a
+day, started by hand. A push only builds, tests and runs the drift gate.
 
-`.github/workflows/ci.yaml` runs the tests, builds the image, pushes it to ECR and
+On that manual run `.github/workflows/ci.yaml` runs the tests, builds the image, pushes it to ECR and
 `terraform apply -auto-approve`s it onto ECS, then waits for the rollout and polls
 `/health`. The `docker build` -> `docker push` -> `aws ecs
 register-task-definition` -> `aws ecs update-service` sequence this phase used to
@@ -546,13 +548,14 @@ refuses a staged diff that adds `0x` followed by 64 hex characters.
 - [ ] Logo file staged
 - [ ] Pre-commit hook active
 
-#### 5.3 Push and let CI ship it
+#### 5.3 Push, then start the release
 
 ```bash
-git push origin main
+git push origin main                  # tests and plans; ships nothing
+gh workflow run ci.yaml --ref main    # the release: only a manual run deploys
 ```
 
-What CI does, in order (`.github/workflows/ci.yaml`):
+What the manual run does, in order (`.github/workflows/ci.yaml`; a push runs 1-3 only):
 
 1. `test` — clippy plus
    `cargo test --locked -p x402-rs --features solana,near,stellar,algorand,sui,xrpl -- --test-threads=1`,
@@ -570,7 +573,7 @@ Two things to know:
 - The workflow has a `paths` filter. `docs/**`, `guides/**` and `.claude/**` are
   not in it, so a documentation-only commit never triggers CI and never deploys.
   Every other file in this guide's inventory is in it.
-- A failed deploy leaves `main` ahead of production. Compare
+- A failed or not-yet-started deploy leaves `main` ahead of production. Compare
   `curl -s https://facilitator.ultravioletadao.xyz/version` with `git log -1`
   before assuming your commit is live.
 

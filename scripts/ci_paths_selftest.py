@@ -4,7 +4,7 @@
 A path filter fails silently in both directions. Too wide and the Actions budget
 keeps burning on prose; too narrow and a commit that changes the facilitator
 merges into main untested -- with no run to notice, because the run is exactly
-what did not happen. A merge no longer deploys by itself (2026-10-10), but the
+what did not happen. A merge no longer deploys by itself (X402-CI-GATES), but the
 next manual deploy ships whatever main holds, so the second failure mode still
 has to be caught before the filter ships, not after.
 

@@ -1,5 +1,33 @@
 # Changelog
 
+## [2.49.1] - 2026-10-10
+
+### Fixed
+
+- **A Bazaar alta (or delete) made on one replica is no longer undone by the
+  snapshot the other publishes.** On 2026-10-07 a `POST /discovery/register`
+  that answered 201 was gone from both replicas minutes later. The replica that
+  owns the discovery jobs published its catalog with `save_all`, which conditions
+  the PUT on a HEAD taken just before it: a cache read before the other
+  replica's write passed that check and replaced it, and the other replica then
+  followed the snapshot and dropped it as well. The aggregation snapshot and the
+  retention GC's are now conditional on the version the cache was read at
+  (`DiscoveryRegistry::publish_snapshot`); when another replica wrote in
+  between, the write is refused, the published catalog is adopted and the import
+  or the GC runs again on top of it, at most three times. Giving up overwrites
+  nothing. After publishing, the owner no longer re-reads its own object.
+
+### Added
+
+- **`BAZAAR_ADMIN_TOKEN` reaches production.** Nothing put it in the container
+  before, so the Bazaar admin routes (`DELETE /discovery/resources`,
+  `/discovery/admin/*`, `POST /discovery/refresh`) answered 404 there. It now
+  comes from the SSM SecureString `/facilitator/bazaar-admin-token`, whose value
+  Terraform generates (`random_password`, new `hashicorp/random` provider), and
+  the execution role may `ssm:GetParameters` on it. Apply the parameter and the
+  role policy by hand before the merge that ships this (`secrets.tf` has the
+  command): the CI user can write neither.
+
 ## [2.49.0] - 2026-10-06
 
 ### Changed

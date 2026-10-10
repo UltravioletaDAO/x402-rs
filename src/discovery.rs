@@ -3142,20 +3142,26 @@ impl DiscoveryRegistry {
         offered: &serde_json::Value,
         verified_with: crate::discovery_health::ProbeMethod,
     ) -> bool {
-        // Decided under the read guard: nearly every verified probe has
-        // nothing to adopt, and must not take the write guard for that.
-        let (from, adopted) = {
-            let cache = self.resources.read().await;
-            let Some(record) = cache
-                .get(url)
-                .filter(|r| r.source == DiscoverySource::SelfRegistered)
-            else {
-                return false;
-            };
-            let Some(adopted) = record.with_offered_bazaar(offered) else {
-                return false;
-            };
-            (record.content_fingerprint(), adopted)
+        // Nearly every verified probe has nothing to adopt, and must not take
+        // the write guard to find that out. Only a filter: the decision is
+        // made again below, under the write guard, on the listing as it is then.
+        if !self
+            .resources
+            .read()
+            .await
+            .get(url)
+            .is_some_and(|r| r.with_offered_bazaar(offered).is_some())
+        {
+            return false;
+        }
+
+        let mut cache = self.write_catalog().await;
+        let Some((from, adopted)) = cache
+            .get(url)
+            .filter(|r| r.source == DiscoverySource::SelfRegistered)
+            .and_then(|r| Some((r.content_fingerprint(), r.with_offered_bazaar(offered)?)))
+        else {
+            return false;
         };
         if let crate::discovery_health::ProbeRequest::Declared { method, .. } =
             crate::discovery_health::declared_request(Some(&adopted))
@@ -3169,15 +3175,6 @@ impl DiscoveryRegistry {
                 );
                 return false;
             }
-        }
-
-        let mut cache = self.write_catalog().await;
-        // The listing may have moved while no guard was held.
-        if !cache
-            .get(url)
-            .is_some_and(|r| r.content_fingerprint() == from)
-        {
-            return false;
         }
         let Some(record) = cache.get_mut(url) else {
             return false;

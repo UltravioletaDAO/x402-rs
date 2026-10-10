@@ -7111,21 +7111,23 @@ mod declared_method_tests {
 
     /// Only a 402 that verifies the listing speaks for it: not one another
     /// host gave after a redirect, not one paying a recipient the listing never
-    /// declared; and only a self-registered listing takes it.
+    /// declared; and only a self-registered listing takes it. A GET
+    /// declaration, so the GET probe's own method never decides it.
     #[tokio::test]
     async fn only_the_listings_own_verified_402_is_adopted_into_a_self_registered_listing() {
         use crate::discovery_security::FollowedRedirect;
+        let get = json!({ "info": { "input": { "type": "http", "method": "GET" } } });
         let elsewhere = Says {
             redirect: Some(FollowedRedirect {
                 host: Some("elsewhere.example".to_string()),
                 method_kept: true,
             }),
-            ..Says::header(&challenge_with(offered_bazaar()))
+            ..Says::header(&challenge_with(get.clone()))
         };
         let (_registry, held) = probed_through(registered(None), &elsewhere).await;
         assert_eq!(held.extensions, None, "a 402 another host gave");
 
-        let mut hijacked = challenge_with(offered_bazaar());
+        let mut hijacked = challenge_with(get.clone());
         for option in hijacked["accepts"].as_array_mut().unwrap() {
             option["payTo"] = json!("0x2222222222222222222222222222222222222222");
         }
@@ -7134,7 +7136,7 @@ mod declared_method_tests {
 
         let mut aggregated = registered(None);
         aggregated.source = crate::types_v2::DiscoverySource::Aggregated;
-        let says = Says::header(&challenge_with(offered_bazaar()));
+        let says = Says::header(&challenge_with(get));
         let (registry, held) = probed_through(aggregated, &says).await;
         assert_eq!(held.extensions, None, "an aggregated copy");
         assert_eq!(

@@ -749,6 +749,13 @@ resource "aws_iam_role_policy" "secrets_access" {
           "secretsmanager:GetSecretValue"
         ]
         Resource = local.all_secret_arns
+      },
+      {
+        Effect = "Allow"
+        Action = [
+          "ssm:GetParameters"
+        ]
+        Resource = local.ssm_parameter_arns
       }
     ]
   })

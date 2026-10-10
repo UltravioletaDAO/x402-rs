@@ -196,12 +196,14 @@ pub trait DiscoveryStore: Send + Sync + std::fmt::Debug {
     /// its own cache — the bulk import and the retention GC both do this, and
     /// the GC's entire purpose is that the result is SMALLER.
     ///
-    /// Conditional on the version read immediately before, and a conflict is
-    /// returned rather than retried. That is deliberate and is what makes
-    /// "a delete does not come back on a late flush" true: a snapshot computed
-    /// from a stale cache is refused outright, where a retry would re-apply it
-    /// over the newer catalog and resurrect exactly what was removed. The
-    /// caller redoes its cycle from a fresh read.
+    /// Conditional on the version read immediately before the write, and a
+    /// conflict is returned rather than retried. That refuses a writer that
+    /// lands between that read and the PUT, and nothing else: a snapshot
+    /// computed from a cache that missed writes made BEFORE the read is a valid
+    /// write against it, and publishes over them. A caller publishing a copy of
+    /// its own cache must condition the write on the version that cache was read
+    /// at, with [`DiscoveryStore::save_snapshot`]
+    /// (`DiscoveryRegistry::publish_snapshot`).
     async fn save_all(&self, resources: &[DiscoveryResource]) -> Result<(), StoreError> {
         let base = self.current_version().await?;
         self.save_snapshot(resources, &base).await?;
@@ -304,8 +306,9 @@ pub fn merge_resource(catalog: &mut Vec<DiscoveryResource>, incoming: &Discovery
 
 /// In-memory store implementation for testing.
 ///
-/// Does not persist data across restarts.
-#[derive(Debug, Default)]
+/// Does not persist data across restarts. Clones share one catalog, the way
+/// the replicas share one S3 object.
+#[derive(Debug, Default, Clone)]
 pub struct MemoryStore {
     inner: Arc<RwLock<MemoryState>>,
 }
@@ -1219,8 +1222,7 @@ mod tests {
         assert_eq!(urls, vec!["https://keeper.example.com/x".to_string()]);
     }
 
-    /// ...and `save_all`, which is what the aggregation cycle actually calls,
-    /// behaves the same way rather than quietly retrying.
+    /// ...and `save_all` behaves the same way rather than quietly retrying.
     #[tokio::test]
     async fn save_all_reports_a_conflict_instead_of_clobbering() {
         let store =

@@ -55,14 +55,17 @@ variable "single_nat_gateway" {
 # defaults (terraform.tfvars is gitignored), and aws_ecs_service.facilitator is in its
 # -target list, so ecs_tasks_in_public_subnets reaches AWS on the merge's deploy. The NAT
 # itself is outside every -target list: only a hand apply destroys or recreates it.
-# The NAT stays on in the change that moves the tasks (REF-X402-115 P2-1): the guard below
-# reads variables, not where the tasks run, and no graph edge orders the NAT destroy after
-# the service's rolling deployment. It goes off in its own change once every task is
-# verified in a public subnet.
+# The NAT stayed on in the change that moved the tasks (REF-X402-115 P2-1): the service
+# precondition reads variables, not where the tasks run, and no graph edge orders the NAT
+# destroy after the service's rolling deployment. It went off in its own change
+# (X402-NAT-OFF) once both tasks had run a day in the public subnets. Merging that change
+# destroys nothing; the hand `plan -out` from main does, and it reads AWS first: G2 (the
+# postcondition on data.aws_network_interfaces.private_subnets, main.tf) stops while
+# anything but a VPC endpoint has an ENI in a subnet that routes through the private table.
 variable "enable_nat_gateway" {
-  description = "Create the NAT gateway(s) and their EIPs. false saves ~$31/mo (COSTO-X402 B5) once the facilitator tasks egress through the IGW from the public subnets. Turn it off only in its own apply, after verifying no task runs in a private subnet. Rollback after that: the deploy never creates the NAT, so first a HAND apply from a branch with this at true (plan -out=nat.tfplan -target=aws_route_table.private, which drags aws_nat_gateway.main and aws_eip.nat; review; apply nat.tfplan), then verify the NAT is available and the private default route is active (not blackhole) on the new NAT, and only then merge that branch and open another PR with ecs_tasks_in_public_subnets = false. Do NOT git revert PR #115 after the NAT is off without those two steps: a PR that changes both values together leaves the tasks with no egress. Runbook: docs/handoffs/COSTO-X402-recorte-aws.md."
+  description = "Create the NAT gateway(s) and their EIPs. false saves ~$31/mo (COSTO-X402 B5) once the facilitator tasks egress through the IGW from the public subnets. Turn it off only in its own apply, after verifying no task runs in a private subnet; the plan refuses while any ENI but a VPC endpoint's sits in a subnet that routes through the private table. Rollback after that: the deploy never creates the NAT, so first a HAND apply from a branch with this at true (plan -out=nat.tfplan -target=aws_route_table.private, which drags aws_nat_gateway.main and aws_eip.nat; review; apply nat.tfplan), then verify the NAT is available and the private default route is active (not blackhole) on the new NAT, and only then merge that branch and open another PR with ecs_tasks_in_public_subnets = false. Do NOT git revert PR #115 after the NAT is off without those two steps: a PR that changes both values together leaves the tasks with no egress. Runbook: docs/handoffs/COSTO-X402-recorte-aws.md."
   type        = bool
-  default     = true
+  default     = false
 }
 
 variable "ecs_tasks_in_public_subnets" {

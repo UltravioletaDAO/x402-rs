@@ -84,6 +84,111 @@ locals {
   nat_gateway_count = var.enable_nat_gateway ? local.nat_count : 0
 }
 
+# Live guards for the NAT (X402-NAT-OFF). The service precondition reads variables, not
+# AWS: on its own it cannot see a task or a Lambda still running in a private subnet, nor
+# a NAT the configuration asks for that nobody applied (the deploy never creates the NAT:
+# it is outside every -target). The data sources below read AWS, each only in the mode
+# that needs it, and none of them references a managed resource: the private route tables
+# are looked up by their Name tag, from variables. A data source that references a managed
+# resource with a pending change is read during apply, and in the apply that drops the NAT
+# Terraform destroys the NAT BEFORE it updates the route table that pointed at it: a guard
+# read that late fires after the damage. Built from variables they are read at plan.
+#
+# G2, while the NAT is off: the subnets that route through the private tables (whatever is
+# associated with them, not only aws_subnet.private), every ENI in them, and the VPC
+# endpoint ENIs among those, which never need a route out. Anything else -- a task, a
+# Lambda, something made by hand -- stops the plan (postcondition below). aws_eip.nat and
+# aws_nat_gateway.main depend on it, so a plan that targets them reads it too. Terraform
+# skips every check in destroy mode: never drop the NAT with `terraform destroy` or
+# `-destroy`, only with a normal plan of enable_nat_gateway = false.
+#
+# Both lookups fail closed: no match, or more than one, is an error, not an empty answer.
+# The VPC scopes the route tables, so a table elsewhere carrying the same Name is not it.
+data "aws_vpc" "without_nat" {
+  count = var.enable_nat_gateway ? 0 : 1
+
+  tags = {
+    Name = "facilitator-${var.environment}"
+  }
+}
+
+data "aws_route_table" "private_without_nat" {
+  count  = var.enable_nat_gateway ? 0 : local.nat_count
+  vpc_id = data.aws_vpc.without_nat[0].id
+
+  tags = {
+    Name = "facilitator-${var.environment}-private-rt-${count.index}"
+  }
+}
+
+locals {
+  subnets_without_nat = sort(compact(flatten([
+    for rt in data.aws_route_table.private_without_nat : rt.associations[*].subnet_id
+  ])))
+  private_subnet_endpoint_enis = compact(flatten(data.aws_network_interfaces.private_subnet_endpoints[*].ids))
+}
+
+data "aws_network_interfaces" "private_subnet_endpoints" {
+  count = length(local.subnets_without_nat) > 0 ? 1 : 0
+
+  filter {
+    name   = "subnet-id"
+    values = local.subnets_without_nat
+  }
+
+  filter {
+    name   = "interface-type"
+    values = ["vpc_endpoint"]
+  }
+}
+
+data "aws_network_interfaces" "private_subnets" {
+  count = length(local.subnets_without_nat) > 0 ? 1 : 0
+
+  filter {
+    name   = "subnet-id"
+    values = local.subnets_without_nat
+  }
+
+  lifecycle {
+    postcondition {
+      condition     = length(setsubtract(self.ids == null ? [] : self.ids, local.private_subnet_endpoint_enis)) == 0
+      error_message = "enable_nat_gateway = false, but these ENIs live in a subnet that routes through the private table and would lose their route out: ${join(", ", sort(setsubtract(self.ids == null ? [] : self.ids, local.private_subnet_endpoint_enis)))}. Only VPC endpoints may stay there. Move the task or Lambda that owns them (ecs_tasks_in_public_subnets = true, applied and verified), or read what they are before going on."
+    }
+  }
+}
+
+# G3, while the tasks run in the private subnets: the private tables' routes and the NATs
+# AWS reports available. The service precondition requires every private subnet to send
+# 0.0.0.0/0 to one of them.
+data "aws_route_table" "private_for_tasks" {
+  count = var.ecs_tasks_in_public_subnets ? 0 : local.nat_count
+
+  tags = {
+    Name = "facilitator-${var.environment}-private-rt-${count.index}"
+  }
+}
+
+data "aws_nat_gateways" "available" {
+  count  = var.ecs_tasks_in_public_subnets ? 0 : 1
+  vpc_id = data.aws_route_table.private_for_tasks[0].vpc_id
+
+  filter {
+    name   = "state"
+    values = ["available"]
+  }
+}
+
+locals {
+  # compact(flatten(...)): a data source with count = 0, or a read that found nothing, is []
+  # here instead of an index error or a null.
+  available_nat_gateways = compact(flatten(data.aws_nat_gateways.available[*].ids))
+  private_subnets_with_nat_egress = compact(flatten([
+    for rt in data.aws_route_table.private_for_tasks : rt.associations[*].subnet_id
+    if anytrue([for r in rt.routes : r.cidr_block == "0.0.0.0/0" && contains(local.available_nat_gateways, r.nat_gateway_id)])
+  ]))
+}
+
 # Elastic IPs for NAT (one per NAT gateway)
 resource "aws_eip" "nat" {
   count  = local.nat_gateway_count
@@ -92,6 +197,9 @@ resource "aws_eip" "nat" {
   tags = {
     Name = "facilitator-${var.environment}-nat-eip-${count.index}"
   }
+
+  # G2: a plan that drops the EIP reads the private subnets first.
+  depends_on = [data.aws_network_interfaces.private_subnets]
 }
 
 # NAT Gateway(s) for private subnets to reach internet.
@@ -105,7 +213,8 @@ resource "aws_nat_gateway" "main" {
     Name = "facilitator-${var.environment}-nat-${count.index}"
   }
 
-  depends_on = [aws_internet_gateway.main]
+  # G2: a plan that drops the NAT reads the private subnets first.
+  depends_on = [aws_internet_gateway.main, data.aws_network_interfaces.private_subnets]
 }
 
 # Route Table for Public Subnets
@@ -130,16 +239,32 @@ resource "aws_route_table" "private" {
   vpc_id = aws_vpc.main.id
 
   # Without a NAT there is no default route here. `route` is an attributes-as-blocks
-  # argument: zero blocks leaves the existing entry unmanaged, so after the NAT is
-  # destroyed its old 0.0.0.0/0 entry shows as a blackhole until someone deletes it
-  # (`aws ec2 delete-route`). Harmless: no task runs in these subnets in that mode.
-  dynamic "route" {
-    for_each = var.enable_nat_gateway ? [count.index] : []
-    content {
-      cidr_block     = "0.0.0.0/0"
-      nat_gateway_id = aws_nat_gateway.main[route.value].id
-    }
-  }
+  # argument, and that is why this is attribute syntax and not a `dynamic "route"` block:
+  # zero blocks means "leave the routes alone", so turning the NAT off used to leave its
+  # 0.0.0.0/0 entry behind as a blackhole. Only an explicit [] removes it. In the apply,
+  # Terraform destroys the NAT first and updates this table after, so the entry is a
+  # blackhole for that moment and then goes; G2 has already checked at plan that nothing
+  # routes through it. The gateway endpoint routes (vpce-) and the local route are not
+  # read into `route`, so [] leaves them alone. With the NAT on, this is the value the
+  # block produced: one route, every unset attribute null either way.
+  route = var.enable_nat_gateway ? [{
+    cidr_block                 = "0.0.0.0/0"
+    nat_gateway_id             = aws_nat_gateway.main[count.index].id
+    carrier_gateway_id         = null
+    core_network_arn           = null
+    destination_prefix_list_id = null
+    egress_only_gateway_id     = null
+    gateway_id                 = null
+    ipv6_cidr_block            = null
+    local_gateway_id           = null
+    network_interface_id       = null
+    transit_gateway_id         = null
+    vpc_endpoint_id            = null
+    vpc_peering_connection_id  = null
+  }] : []
+
+  # G2 lives on data.aws_network_interfaces.private_subnets, which aws_nat_gateway.main
+  # depends on: this table references the NAT, so a plan that targets it reads G2 too.
 
   tags = {
     Name = "facilitator-${var.environment}-private-rt-${count.index}"
@@ -1474,6 +1599,15 @@ resource "aws_ecs_service" "facilitator" {
     precondition {
       condition     = var.enable_nat_gateway || var.ecs_tasks_in_public_subnets
       error_message = "enable_nat_gateway = false leaves the private subnets with no route out: the tasks must run in the public subnets (ecs_tasks_in_public_subnets = true) first."
+    }
+
+    # X402-NAT-OFF (G3, VER-X402-115 point 2): the guard above reads variables. The deploy
+    # applies this service but never the NAT, so a change that moves the tasks back to the
+    # private subnets has to find, in AWS, every one of them routing 0.0.0.0/0 to a NAT
+    # that is available, or its plan stops here before the tasks move.
+    precondition {
+      condition     = var.ecs_tasks_in_public_subnets || length(setsubtract(aws_subnet.private[*].id, local.private_subnets_with_nat_egress)) == 0
+      error_message = "ecs_tasks_in_public_subnets = false, but these private subnets have no 0.0.0.0/0 route to an available NAT gateway: ${join(", ", sort(setsubtract(aws_subnet.private[*].id, local.private_subnets_with_nat_egress)))}. The deploy never creates the NAT: hand-apply it with its route first and verify both (docs/handoffs/COSTO-X402-recorte-aws.md, Rollback de B5)."
     }
   }
 

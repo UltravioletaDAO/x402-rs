@@ -1,19 +1,26 @@
 # ¿El facilitador puede correr en AWS Lambda? (X402-LAMBDA-ESTUDIO, X402-LAMBDA-PLAN)
 
+> **Al 2026-10-10:** `main` está en `6fe77143d`, con #115 (tareas de 0,5 vCPU y 1 GB en subredes públicas, Container Insights apagado) y #121 (NAT apagado en el código; el merge no lo destruye, lo saca un apply a mano) mergeados. La columna «Hoy» de §10 es anterior a los dos, y la medición de c0der del 6-oct está en §10.5.
+
 ## Para el dueño (5 líneas)
 
 1. **Ahorro:** contra la fase 1 del recorte (50,64 USD/mes en las filas que cambian), todo en Lambda cuesta 7,41 USD/mes (central) a 37,80 (pesimista): **ahorra 13-43 USD/mes**; el híbrido intermedio, ~20. La fase 1 ya baja hoy de 137,13 a 50,64 (§10).
 2. **Rendimiento:** no mejora la experiencia. En caliente queda igual (verify y settle los domina el RPC o la cadena; las lecturas suman unos ms) y el p99 empeora por los arranques en frío (+1-4 s al request que los dispara, **[HIPÓTESIS]**). El pico de 5.913 req/h ocupa 1-3 entornos y la capacidad sobra en los dos mundos (§11).
-3. **Trabajo:** L. Son unos 13 PRs en 4 fases, y el grueso es la fase 0 (nonces en DynamoDB, toca dinero). Lleva 6-10 semanas de calendario, la mayoría ventanas de canary de 7-14 días **[ESTIMADO]** (§12).
-4. **Riesgo que decide el número:** Lambda cobra la espera del recibo de cada settle. Con 10x tráfico, el caso pesimista cuesta más que Fargate (221 contra 72 USD/mes). La duración media del target group `writes` (§10.5) cierra el rango y se mide en 5 minutos.
-5. **Recomendación:** hacer **ya** solo la fase 0, que arregla fallos de hoy (carrera de nonce NEAR/Stellar, jobs y tope ERC-8004 que se pierden en cada deploy) y no depende de Lambda. Migrar (fases 1-3) solo si la medición del punto 4 confirma el caso central y después de 30 días de la fase 1 del recorte estable: no antes de diciembre de 2026.
+3. **Trabajo:** L. Son unos 14 PRs en 4 fases, que entran en tandas, y el grueso es la fase 0 (nonces en DynamoDB, toca dinero). Lleva **al menos unas 18 semanas** de calendario: 107 días son las ventanas de observación que el propio plan pone en serie y el resto es el trabajo de las tallas **[ESTIMADO]** (§12, Total).
+4. **Riesgo que decide el número:** Lambda cobra la espera del recibo de cada settle. Con 10x tráfico, el caso pesimista cuesta más que Fargate (221 contra 72 USD/mes). La medición de c0der del 6-oct (§10.5: 50.118 escrituras a 2,914 s) deja el cómputo HTTP en ~1,25 USD/mes, cerca del caso central; la duración de los loops (§10.3) sigue sin medir.
+5. **Recomendación:** hacer **ya** solo la fase 0, que arregla fallos de hoy (carrera de nonce NEAR/Stellar, jobs y tope ERC-8004 que se pierden en cada deploy) y no depende de Lambda. La medición del punto 4 ya ubicó el cómputo HTTP en el caso central; migrar (fases 1-3) solo si los loops también caen ahí y después de 30 días de la fase 1 del recorte estable: no antes de diciembre de 2026.
 
 Estudio de solo lectura, fase 2 del recorte de costes. Medido sobre `main` en `c3b694b0`
 (2026-10-06). Ningún cambio de código, de Terraform ni de AWS acompaña a este documento.
 
 Convenciones:
 
-- `archivo:línea` = medido en el código de este repo en ese commit.
+- `archivo:línea` = medido en el código de este repo en ese commit. Las citas que agregó la ronda 1
+  de REF-X402-116 se midieron en `6fe77143d`; cuando el archivo cambió entre los dos commits, la cita
+  lo dice. Los de las citas nuevas que no lo dicen (`src/lease.rs`, `src/writer_lease.rs`,
+  `src/nonce_store.rs`, `src/chain/evm.rs`, `src/chain/solana.rs`, `src/receipts/mod.rs`,
+  `src/dx402/handlers.rs`, `src/dx402/service.rs`, `latency-split.tf`, `secrets.tf`, `hedera.tf` y
+  `receipts.tf`) no cambiaron entre `c3b694b0` y `6fe77143d`.
 - **[DOC AWS]** = límite de la plataforma según la documentación pública de AWS; no se puede
   medir en este repo y conviene revalidarlo antes de implementar.
 - **[HIPÓTESIS]** = no medido; razonamiento o expectativa a confirmar con una medición.
@@ -116,8 +123,9 @@ memoria. En Lambda, "N requests concurrentes" = "N procesos con N copias del est
   (`src/chain/solana.rs:592`); no hay secuencia del facilitador que asignar. Envío y
   confirmación en `send_and_confirm` (`src/chain/solana.rs:2475`).
 - Concurrencia: segura respecto a nonces con N entornos. Replay: `NonceStore` en DynamoDB si
-  `NONCE_STORE_TABLE_NAME` existe; si falta, cae a memoria (`src/nonce_store.rs:522-541`), lo
-  que en Lambda sería una protección por entorno. La variable es obligatoria en Lambda.
+  `NONCE_STORE_TABLE_NAME` existe; si falta, o si falla el init de DynamoDB
+  (`src/nonce_store.rs:532-535`), cae a memoria (`src/nonce_store.rs:522-541`), lo que en Lambda
+  sería una protección por entorno. En Lambda las dos ramas fallan cerradas (§12, 0.5).
 
 ### 1.5 Algorand (co-firma de la tx de fee; validez por rondas)
 
@@ -257,6 +265,12 @@ debajo del timeout de la función para que el handler alcance a devolver
 `SettlementUnconfirmed` (`src/chain/evm.rs:1232`, `:1274`; Sui en `src/chain/sui.rs:789-799`)
 en vez de un corte de plataforma. El reenvío al holder (recibo + 30 s) no aplica en Lambda.
 
+Pero el tope que manda detrás del ALB no es el de la función: es `alb_idle_timeout = 600`
+(`terraform/environments/production/production.auto.tfvars:95` en `6fe77143d`; era la línea 93
+antes de #121). A los 600 s el cliente recibe un 504 aunque el settle siga y aterrice en la cadena.
+Fargate ya tiene hoy esa brecha con los 900 s de Ethereum; el plan no la hereda: la tarea 2.1 (§12)
+deja el recibo por debajo de 600 s menos un margen.
+
 ## 4. Arranque en frío
 
 ### 4.1 Qué hace `main()` (en orden)
@@ -306,7 +320,8 @@ API key probablemente no entran **[HIPÓTESIS]**. Es código nuevo en el arranqu
   discovery (o una función de discovery aparte); overlays de health/terms; atestación;
   auto-registro (a EventBridge).
 - No: compliance (antes de cualquier verify o settle), idempotencia, `NonceStore`, admisión y
-  rate policy, y el parseo de llaves.
+  rate policy, y, solo en la función de escrituras, el parseo de llaves. La función de lecturas
+  no carga llaves de firma (§12, 0.6).
 
 ## 5. Estado en memoria que se pierde
 
@@ -318,8 +333,9 @@ API key probablemente no entran **[HIPÓTESIS]**. Es código nuevo en el arranqu
 | Tope diario ERC-8004 | `src/erc8004/daily_cap.rs:83-93` | el tope se multiplica por N y se reinicia en cada cold start: **gasto de gas sin control** | contador atómico DynamoDB por `(red, día)` |
 | Jobs de registro ERC-8004 + lock en vuelo | `src/erc8004/register_jobs.rs:152-165` | el `GET` del jobId cae en otro entorno | tabla DynamoDB |
 | Idempotencia | `src/idempotency_store.rs:55` (backend DynamoDB) | ya durable; ver §2.3 | esperar la escritura |
-| Replay Solana/Stellar/Algorand | `src/nonce_store.rs:522-541` | memoria si falta la tabla | exigir `NONCE_STORE_TABLE_NAME` |
-| Catálogo del Bazaar + índice | `src/discovery.rs:1434-1460` | 15 MB por entorno | S3 (ya existe) con ETag |
+| Replay Solana/Stellar/Algorand | `src/nonce_store.rs:522-541` | memoria si falta la tabla o si falla su init (`:532-535`) | exigir la tabla y fallar cerrado en las dos ramas (§12, 0.5) |
+| Catálogo del Bazaar + índice | `src/discovery.rs:1434-1460` | 15 MB por entorno | S3 (ya existe) con ETag, para las lecturas |
+| Escrituras del Bazaar (`POST /discovery/register`, admin, `refresh`) | `src/discovery.rs:1907` en `6fe77143d` (`:1756` en `c3b694b0`, §2.3): drenaje tras la respuesta | cada alta queda en el registro en memoria de **un** entorno, con su propio drenaje, y los demás la ven tarde por el seguidor perezoso (§2.2, fila 3). Es el P1 abierto del backlog de c0der «x402-rs: un alta del bazar que responde 201 se pierde entre réplicas» (medido el 2026-10-07 con 2 réplicas, causa raíz **[HIPÓTESIS]**), multiplicado por N | se quedan en Fargate (§12, 1.2); ninguna corre en Lambda hasta que ese bug tenga causa raíz y un test de dos réplicas (§12, 1.3) |
 | Stats del discovery | `src/discovery.rs:855` | caché por entorno | aceptable |
 | Bus de eventos SSE | `src/events.rs:216` | cada entorno ve solo lo suyo | Fargate o Function URL con streaming |
 | Veredictos de autoverify | `src/payment_operator/autoverify.rs:39-44` | `/supported` distinto por entorno | DynamoDB/S3 escrito por EventBridge |
@@ -371,9 +387,10 @@ snapshots grandes (catálogo, overlays). S3 no sirve como contador.
 
 ### 7.2 Recomendación
 
-Primero el híbrido A (§1.1): lecturas y discovery en Lambda; `/settle`, `/register`,
-`/feedback` y `/dx402/anchor` (la regla `writes`, `latency-split.tf:128-137`) siguen en una
-tarea Fargate. Mover escrituras solo después de B o C, con su propio estudio.
+Primero el híbrido A (§1.1): lecturas (también las del discovery) en Lambda; `/settle`,
+`/register`, `/feedback` y `/dx402/anchor` (la regla `writes`, `latency-split.tf:128-137`) y las
+rutas que fija §12 1.2 siguen en una tarea Fargate. Mover escrituras solo después de B o C, con
+su propio estudio.
 
 ### 7.3 Coste
 
@@ -389,13 +406,15 @@ EventBridge cuestan (health prober cada minuto). El ahorro de 45-50 USD/mes de c
 
 Todo detrás del mismo dominio y del mismo ALB.
 
-0. **Preparación (código, PRs aparte):** binario `bootstrap`; modo Lambda que apague loops,
-   writer lease y discovery owner; `await` de la idempotencia y `track_settlement`;
+0. **Preparación (código, PRs aparte):** binario `bootstrap`; modo Lambda que apague loops y
+   discovery owner y deje el grant EVM en no tenido, nunca en standalone (§12, 0.6); `await` de
+   la idempotencia y `track_settlement`;
    ERC-8004 asíncrono a SQS; tope diario y jobs en DynamoDB; secretos leídos en el init;
    EventBridge para las tareas de §2.2. Ningún settle EVM en Lambda.
 1. **Target group `lambda`** junto a `main` en la acción por defecto del listener
    (`terraform/environments/production/main.tf:495-498`), con `forward` por peso como en
-   `latency-split.tf:107-125`. La regla `writes` queda 100 % Fargate.
+   `latency-split.tf:107-125`. La regla `writes` y las rutas que fija §12 1.2 quedan 100 %
+   Fargate.
 2. **5 %** de lecturas a Lambda. Medir: tasa de 5xx, p50/p95/p99 por ruta, `Init Duration`,
    throttles, coherencia de `/supported` entre Lambda y Fargate. Ventana: 7 días
    **[HIPÓTESIS]**.
@@ -513,7 +532,7 @@ EventBridge Scheduler queda dentro de las 14 M invocaciones gratis: 0 USD.
 |---|---|---:|---:|---:|
 | Fargate | tareas × 730 × (vCPU × 0,04048 + GB × 0,004445) | **72,08** (2 × 1 vCPU/2 GB) | **36,04** (2 × 0,5/1) | 0 |
 | Container Insights | handoff 2026-08-07, `docs/COST_RIGHTSIZING_HANDOFF_2026-08-07.md:17` | 12,50 [ESTIMADO, rango 10-15] | 0 (B8 de #115) | 0 |
-| NAT: horas | 0,045 × 730 | 32,85 | 0 (paso e de #115) | 0 |
+| NAT: horas | 0,045 × 730 | 32,85 | 0 (paso e: `enable_nat_gateway = false` desde #121; el merge no destruye el NAT, lo saca un apply a mano) | 0 |
 | NAT: datos | agosto facturado | 8,75 | 0 | 0 |
 | IPv4 pública | direcciones × 0,005 × 730 | 3,65 (EIP del NAT) | **7,30** (una por tarea, B5 de #115) | 0 |
 | Endpoint Secrets Manager | 0,01 × 730 | 7,30 | 7,30 | 0 (Lambda fuera de la VPC, ver §12 fase 3) |
@@ -563,9 +582,20 @@ Si en vez de DynamoDB el rate limiting va a WAF, la fila es 5 (web ACL) + 2 × 1
   - GB-s de escrituras = Σ(Average × RequestCount) × 0,5;
   - GB-s de lecturas = lo mismo × 1.
 
-  Es una consulta de solo lectura; este estudio no la corre (no toca AWS).
-- **Híbrido (fin de la fase 1 del plan):** lecturas en Lambda; escrituras, `/mcp`, `/events` y
-  los loops en Fargate.
+  Es una consulta de solo lectura. Este estudio no la corre (no toca AWS); c0der la corrió el
+  2026-10-06 **[MEDIDO c0der]** (cifras de REF-X402-116, que las cita de la decisión 170):
+  703.960 lecturas a 29 ms y 50.118 escrituras a 2,914 s. Suman 754.078 requests, a 605 de R
+  (§10.1).
+  - GB-s de escrituras = 50.118 × 2,914 × 0,5 = 73.022;
+  - GB-s de lecturas = 703.960 × 0,029 × 1 = 20.415;
+  - total: 93.437 GB-s × 0,0000133334 = **1,25 USD/mes** de cómputo HTTP, contra 0,88 del central
+    y 15,25 del pesimista: cae en el caso central. Con esa fila, Lambda central pasa de 7,41 a
+    7,78 USD/mes y el ahorro contra la fase 1, de 43,23 a 42,86.
+
+  Lo que esta consulta no ve sigue abierto: la duración de los loops (§10.3, 4,89-17,25) y la del
+  init (§10.2).
+- **Híbrido (fin de la fase 1 del plan):** lecturas en Lambda; escrituras, `/mcp`, `/events`, las
+  rutas que fija §12 1.2 (`/verify` entre ellas) y los loops en Fargate.
   - Con **1 tarea** de 0,5 vCPU: 18,02 + 3,65 (IPv4) + 7,30 (endpoint) + 1,39-5,12 (Lambda de
     lecturas) = **30,36-34,09 USD**, que ahorra **~17-20** contra la fase 1. Choca con
     `min_capacity = 2 # a single task is not a service` (`production.auto.tfvars:73`): un solo
@@ -661,8 +691,14 @@ riesgo crece. En Lambda cada loop corre en su propio entorno.
 
 Reglas para todas las fases:
 
-- cada tarea es un PR propio contra `main`;
-- en las fases 1-3, un cambio de pesos del ALB por apply;
+- cada tarea es un PR propio, pero los PR de código o Terraform **entran en tandas de x402**: un
+  CI y un deploy por tanda, no por PR. En este repo un push a `main` que toca `src/**` o
+  `terraform/**` despliega (`.github/workflows/ci.yaml:46`, `:61`, `:561-568` en `6fe77143d`), así
+  que unos 21 PRs sueltos serían unos 21 CI y 21 deploys. El worker no pushea hasta que c0der lo
+  dice;
+- en las fases 1-3, cada paso de pesos del ALB es un **apply programado** propio: uno por cambio de
+  pesos, con fecha, motivo y el criterio de salida del paso anterior escritos, nunca como efecto de
+  una tanda de código;
 - nada se apaga antes de que su reemplazo pase el criterio de salida.
 
 Tallas: S ≤ 1 día, M 2-4 días, L ≥ 1 semana de trabajo efectivo **[ESTIMADO]**, sin contar la
@@ -676,8 +712,8 @@ ventana de observación.
 | 0.2 | NEAR y Stellar con el mismo asignador o con lock por cuenta: `src/chain/near.rs:755`, `src/chain/stellar.rs:1621-1632`. | Cierra la carrera que **ya existe** dentro de un proceso (§1.2, §1.3). | 7 días sin `InvalidNonce` (NEAR) ni `tx_bad_seq` (Stellar). | Test de 2 settles concurrentes por familia con mocks del RPC: el segundo usa nonce+1. | Interruptor por familia. | M |
 | 0.3 | Sacar de los handlers los `tokio::spawn` que sobreviven a la respuesta (§2.3): `await` de idempotencia (`src/handlers.rs:5946`) y `track_settlement` (`:5844`); mint ERC-8004 asíncrono (`:11117-11129`) a una cola SQS con DLQ (nuevo `terraform/environments/production/erc8004-queue.tf`). Drenaje del discovery (`src/discovery.rs:1756`) y revalidación (`src/discovery_revalidation.rs:288`) con `await` o a la misma cola. | Un deploy o un scale-in ya no pierde el mint que respondió 202. | `grep` en CI: ningún `tokio::spawn` en `src/handlers.rs` fuera de una lista permitida; DLQ vacía 7 días. | Test que manda SIGTERM a mitad de un `/register` y verifica que el job sigue en la cola. | Revert del PR; la cola queda sin consumidores. | M |
 | 0.4 | Estado por proceso a DynamoDB: tope diario (`src/erc8004/daily_cap.rs:83-93`) como contador atómico `(red, día)`; jobs de registro (`src/erc8004/register_jobs.rs:52-55`) como tabla; veredictos de autoverify (`src/payment_operator/autoverify.rs:39-44`) escritos por el loop y leídos por `/supported`. | Hoy un cambio de lease (cada deploy) o un reinicio **borra** los jobs y reinicia el tope (`src/erc8004/register_jobs.rs:53-55`). | Un deploy en medio de un registro: el `GET` del jobId responde el estado real; el tope del día sobrevive a un reinicio. | Unitarios del contador con escritura condicional y prueba manual del deploy en staging o testnet. | Interruptor `ERC8004_STATE=memory\|dynamo`. | M |
-| 0.5 | `NONCE_STORE_TABLE_NAME` obligatorio en modo Lambda: fail-closed en `src/nonce_store.rs:522-541`. | — (Fargate ya la tiene) | El binario Lambda no arranca sin la variable. | Unitario. | Revert. | S |
-| 0.6 | Modo `FACILITATOR_RUNTIME=lambda` en `src/main.rs`: apaga writer lease (`:162`), discovery owner (`:171`) y loops (`:343-545`); registry y overlays perezosos (§4.4). | Arranque más rápido también en ECS si se reutiliza lo perezoso. | `cargo run` con el modo: `/health` en < 1 s locales, sin loops en los logs. | Test de integración del router con el modo y un medidor de tiempo del init por paso (cierra §4.2). | Variable ausente = comportamiento de hoy. | M |
+| 0.5 | En modo Lambda, `create_nonce_store` (`src/nonce_store.rs:522-541`) falla cerrado en sus **dos** ramas de memoria: `NONCE_STORE_TABLE_NAME` ausente o vacía (`:523-524`, `:538-542`) y cuando falla el init de DynamoDB (`:532-535`, hoy un `error!` y vuelta a memoria). Hoy `DynamoNonceStore::from_env` (`:353-370`) no hace ninguna llamada y nunca devuelve `Err`, así que en modo Lambda el init además prueba la tabla con el `health_check` que ya existe (`describe_table`, `:498-507`) y falla si no responde. | — (Fargate ya la tiene) | El binario Lambda no arranca sin la variable ni con una tabla que no responde. | Unitario por rama: variable ausente, variable vacía, y un cliente de DynamoDB contra un endpoint inalcanzable. | Revert. | S |
+| 0.6 | Dos modos en `src/main.rs`: `FACILITATOR_RUNTIME=lambda-reads` (función de lecturas, fase 1) y `lambda-writes` (función de escrituras, 2.1). **En los dos, el grant EVM queda en no tenido (fail-closed), nunca en standalone**, y la única vía de firma EVM en Lambda es el asignador de 0.1 (`NONCE_ALLOCATOR=dynamo`), solo en `lambda-writes`. Apagar el writer lease (`src/main.rs:162`) no alcanza: un proceso que no entra en la elección queda en standalone, y standalone = escritor. `Grant::standalone()` arranca con `standalone = true` (`src/lease.rs:140-146`), `held()` responde `true` (`src/lease.rs:175-180`) y el test `standalone_mode_signs_without_a_grant` (`src/writer_lease.rs:1238`) lo fija. El modo llama `enter_coordination()` (`src/lease.rs:150-153`) sin presentarse nunca, así que `is_writer()` es `false` y `signing_permit()` devuelve `None`. **`lambda-reads` no carga ninguna llave de firma**, ni de cadena ni de atestación (DX402, recibos), y su rol IAM no puede leerlas (1.1). Eso pide tres cosas. (a) Providers armados con las direcciones públicas como configuración (hoy `EvmProvider::from_env` exige la llave, `src/chain/evm.rs:1596`; las direcciones ya están en el `facilitatorWallet` de `config/supported_tokens.json`). (b) Un `/supported` que arme `extensions` y `facilitatorReceipts` desde la configuración del modo y no desde la presencia de secretos: hoy `durable-evidence` sale solo si está el JWT de Pinata (`src/handlers.rs:3787` en `6fe77143d`; `src/dx402/service.rs:98-100`, `:199`, con el backend `ipfs`, que es el default de `dx402_storage_backend`, `variables.tf:342` en `6fe77143d`), y el `proof` de los recibos depende de la llave de recibos (`src/receipts/mod.rs:447-451`, leído en `src/handlers.rs:3804` en `6fe77143d`). (c) `/verify` se queda en Fargate (1.2), porque **firma recibos**: en las redes con recibo (Base, Arc y Hedera), un pago `exact` pasa por `receipts::verify` (`src/handlers.rs:4187` en `6fe77143d`; `src/receipts/mod.rs:230-247`), que firma con la llave de recibos (`:751`, `:849`), y el ALB no puede separar `/verify` por red. Si c0der decide que `lambda-reads` lleve la llave de recibos (`PREGUNTA-c0der.md`), `/verify` pasa a Lambda en la fase 1, y hace falta además un `/verify` de Solana que no firme: hoy firma con el keypair antes de simular (`src/chain/solana.rs:1343`), y como la simulación corre con `sig_verify: false`, alcanza una firma de relleno en el lugar del fee payer **[HIPÓTESIS]**. Las rutas que necesitan esas llaves quedan en Fargate (1.2). Apaga también discovery owner (`src/main.rs:171`) y loops (`src/main.rs:343-545`); registry y overlays perezosos (§4.4). Las líneas de `src/main.rs` son de `c3b694b0`; en `6fe77143d`, el lease y el owner están en `:164` y `:173`. | Arranque más rápido también en ECS si se reutiliza lo perezoso. | `cargo run` en `lambda-reads` sin ninguna llave ni el JWT de Pinata en el entorno: `/health` en < 1 s locales, sin loops en los logs, `/supported` igual al de Fargate y un settle EVM rechazado sin firmar. Con la opción de la PREGUNTA, además `/verify` igual al de Fargate por familia (mismos payloads de prueba). | Test de integración del router con el modo y un medidor de tiempo del init por paso (cierra §4.2). El espejo de `src/writer_lease.rs:1238`: en `lambda-reads`, `is_writer()` es `false` y `signing_permit()` es `None` siempre; en `lambda-writes`, también, y la firma EVM pasa solo por el asignador con `NONCE_ALLOCATOR=dynamo` (2.1). | Variable ausente = comportamiento de hoy. | L (era M: providers sin llave y `/supported` por configuración son trabajo nuevo) |
 | 0.7 | Binario `src/bin/lambda.rs` (`bootstrap`): saca de `main()` la construcción del `Router` a una función compartida y llama `lambda_http::run` (feature `alb`; la dependencia entra en **ese** PR, no en este). `ConnectInfo` por defecto para `src/client_ip.rs:74-80`. Secretos con `BatchGetSecretValue` en el init (§4.3). Build `aarch64` con rustls u OpenSSL `vendored`. | — | El ZIP compila en CI; un evento ALB de prueba devuelve `/supported` idéntico al de Fargate (comparación byte a byte del JSON normalizado). | `cargo lambda` o `lambda_http` con eventos de prueba en tests. | No se despliega hasta la fase 1. | M |
 | 0.8 | Medición: consulta de Athena por ruta sobre los access logs y `RequestCount` y `TargetResponseTime` por TG (§10.5). | Da p50/p90/p99 por paso también para Fargate. | La tabla de §11.2 con cifras medidas, no globales. | — | — | S |
 
@@ -685,9 +721,9 @@ ventana de observación.
 
 | # | Tarea | Criterio de salida | Cómo se prueba | Rollback | Talla |
 |---|---|---|---|---|---|
-| 1.1 | Nuevo `terraform/environments/production/lambda-facilitator.tf`: `aws_lambda_function` de lecturas (arm64, `provided.al2023`, 1024 MB, timeout 60 s, concurrencia reservada 50, **fuera de la VPC**, porque dentro necesitaría NAT para los RPC). Log group con `var.log_retention_days`. Rol IAM de lectura (S3 del discovery, tablas DynamoDB, Secrets). `aws_lb_target_group` `target_type = "lambda"`, `aws_lb_target_group_attachment` y `aws_lambda_permission`, como en `lambda-balances.tf:217-252`. | `terraform plan` solo agrega recursos; peso 0. | El plan revisado y un invoke directo con evento ALB. | `destroy` de lo agregado. | M |
-| 1.2 | Antes de mover pesos: `/mcp` y `/events` a reglas que los fijen en Fargate. `/mcp` al riel `writes` (`latency-split.tf:128-137`), porque lleva `x402_settle`. `/events` a `main` con prioridad propia. | `curl` a `/mcp` y `/events` respondido por Fargate (header de versión o log). | Smoke test de MCP `tools/list` y `x402_supported`. | Quitar las reglas. | S |
-| 1.3 | `default_action` del listener (`main.tf:495-498`) a `forward` por peso (patrón de `latency-split.tf:111-125`): `main` 95, `reads-lambda` 5. | **5 %, 7 días:** 5xx de Lambda ≤ 5xx de `main` + 0,1 pp; p99 del TG Lambda < 2 s (umbral de `latency_reads_p99`); Throttles = 0; `Init Duration` p99 < 3 s; `/supported` igual en las dos rutas (hash del JSON normalizado). | Alarmas nuevas copiadas de `latency_reads_p99` para el TG Lambda, más Errors, Throttles y un filtro de métrica sobre `Init Duration`. | Pesos `main` 100 en un apply (segundos). | S |
+| 1.1 | Nuevo `terraform/environments/production/lambda-facilitator.tf`: `aws_lambda_function` de lecturas (arm64, `provided.al2023`, 1024 MB, timeout 60 s, concurrencia reservada 50, **fuera de la VPC**). Con el NAT apagado (#121) eso es obligatorio, no solo más barato: las subredes privadas quedan sin salida a internet, y la guarda G2 frena el plan completo (el del drift gate y el apply a mano que saca el NAT) si en ellas vive una ENI que no sea de un endpoint, una Lambda incluida (`run "a_lambda_left_in_a_private_subnet_stops_the_plan"`, `terraform/environments/production/tests/nat_guard.tftest.hcl:166` en `6fe77143d`). Log group con `var.log_retention_days`. Rol IAM propio de lectura: S3 del discovery, tablas DynamoDB (con `dynamodb:DescribeTable` sobre la de nonces, 0.5) y, de Secrets Manager, solo lo que el camino de lectura consume: `facilitator-rpc-mainnet` y `facilitator-rpc-testnet` (`secrets.tf:224-230`), los digests de las llaves del stack (`facilitator-stack-key-digest-*`, `secrets.tf:167-181`, y el de Emporium, condicional, `:191-203`) y el allowlist de IPs (`UVD_IP_ALLOWLIST_SECRET`, que hoy lee `aws_iam_role_policy.ip_allowlist_read`, `main.tf:980` en `6fe77143d`). **Ningún secreto de llaves de firma**, con un `Deny` explícito sobre ellos (0.6): los de cadena (`secrets.tf:12-72`, Hedera en `hedera.tf:72-77`) y los de atestación (`facilitator-dx402-signing-key`, `secrets.tf:107-109`; `facilitator-receipt-signing-key`, `receipts.tf:3-5`). Tampoco los tokens de admin ni el JWT de Pinata: los primeros sirven a rutas que 1.2 deja en Fargate, y `/supported` deja de necesitar el JWT con la 0.6 (b). `aws_lb_target_group` `target_type = "lambda"`, `aws_lb_target_group_attachment` y `aws_lambda_permission`, como en `lambda-balances.tf:217-252`. | `terraform plan` solo agrega recursos; peso 0. El rol no puede leer ningún secreto de llaves. | El plan revisado y un invoke directo con evento ALB. Un `GetSecretValue` de un secreto de llaves con el rol de la función responde `AccessDenied`. | `destroy` de lo agregado. | M |
+| 1.2 | Antes de mover pesos, reglas que fijen en Fargate todo lo que la regla `writes` (`latency-split.tf:128-137`) no cubre y no puede ir a Lambda. `/mcp` va al riel `writes`, porque lleva `x402_settle`. `/events` va a `main` con prioridad propia. También quedan en Fargate: (i) las escrituras del Bazaar, que van al registro en memoria de cada proceso (§5): `POST /discovery/register` (`src/handlers.rs:2725`), `/discovery/admin/*` con todos sus métodos (`POST` suppress y release, y `GET` pending, que lee la cola en memoria; `:2366-2368`), `POST /discovery/refresh` (`:2369`) y, del mismo router de admin, `DELETE /discovery/resources` (`:2362-2365`), esta con condición de método porque el `GET` de esa ruta es el listado público; (ii) `GET /register/status/*` (`:1025`), porque los jobs viven en la memoria de Fargate mientras 0.4 no corra en `dynamo`; (iii) `POST /erc8004/admin/retire-identity` (`:2231`, firma EVM), que la regla `writes` tampoco cubre; (iv) las rutas que necesitan las llaves de atestación que `lambda-reads` no carga (0.6). Una es `/dx402/*` (`src/dx402/handlers.rs:32-38`, incluidas `repair` y `recover`): sin `DX402_SIGNING_KEY` el servicio no se arma (`src/dx402/service.rs:287-296`) y toda ruta `/dx402` responde 404. Su regla va con un número de prioridad mayor que el de `writes` (20, `latency-split.tf:95`), para que `/dx402/anchor` siga la regla `writes`. La otra son los recibos: `/receipts`, `/receipts/*` y `/.well-known/receipt-keys.json` (`src/handlers.rs:119-121`). `GET /receipts/{id}` además escribe: reconcilia y guarda el recibo (`src/receipts/mod.rs:1466`), y sin llave lo guarda con `proof` vacío (`:384-398`); (v) `POST /verify` (`src/handlers.rs:117`), que firma recibos (0.6 c), mientras `lambda-reads` no lleve la llave de recibos. Las líneas de `src/handlers.rs` son de `6fe77143d`. Hacen falta las reglas que pida el tope de condiciones por regla del ALB **[DOC AWS]**. | `curl` a cada ruta fijada respondido por Fargate (header de versión o log). | Smoke test de MCP `tools/list` y `x402_supported`. Un test en `tests/scripts/` que recorra el router y falle si una ruta no-GET, o un `GET` con estado en memoria o que escribe (`/register/status/*`, `/discovery/admin/pending`, `/receipts/{id}`), no cae en una regla fijada a Fargate. Quedan afuera de esa regla solo las lecturas por POST de una lista permitida (`/accepts`, `/escrow/state`). | Quitar las reglas. | S |
+| 1.3 | **Gates antes del primer apply de pesos:** (a) 0.6 en la imagen y el ZIP que se despliegan: grant EVM en no tenido, función de lecturas sin llaves de firma y rol de 1.1 sin los secretos de llaves; (b) 1.2 aplicada; (c) ninguna escritura del discovery corre en Lambda hasta que el bug del backlog de c0der «alta del bazar 201 se pierde entre réplicas» (§5) tenga causa raíz y un test de dos réplicas en verde. Las rutas de discovery de 1.2 siguen fijadas a Fargate en todos los pasos de la fase 1 y salen solo en 2.5, con ese gate cumplido. Después, `default_action` del listener (`main.tf:495-498` en `c3b694b0`, `:638-641` en `6fe77143d`) a `forward` por peso (patrón de `latency-split.tf:111-125`): `main` 95, `reads-lambda` 5. | **5 %, 7 días:** 5xx de Lambda ≤ 5xx de `main` + 0,1 pp; p99 del TG Lambda < 2 s (umbral de `latency_reads_p99`); Throttles = 0; `Init Duration` p99 < 3 s; `/supported` igual en las dos rutas (hash del JSON normalizado). | Alarmas nuevas copiadas de `latency_reads_p99` para el TG Lambda, más Errors, Throttles y un filtro de métrica sobre `Init Duration`. | Pesos `main` 100 en un apply (segundos). | S |
 | 1.4 | Pesos 50/50 y luego 0/100. | **50 %, 7 días** y **100 %, 7 días** con los mismos umbrales; coste diario de Lambda en Cost Explorer ≤ 0,20 USD (1,39-5,12 al mes, §10.5). | Las mismas alarmas. | Pesos atrás. | S |
 | 1.5 | Build y deploy del ZIP en `.github/workflows/ci.yaml`: otro PR, que sí toca workflows. | Cada release publica imagen y ZIP con el mismo `VERSION`. | El CI. | Revert. | M |
 
@@ -698,19 +734,37 @@ Al cerrar la fase 1, Fargate sigue con 2 tareas. Bajar a 1 ahorra unos 20 USD (�
 
 | # | Tarea | Criterio de salida | Cómo se prueba | Rollback | Talla |
 |---|---|---|---|---|---|
-| 2.1 | Función de escrituras (512 MB, timeout 900 s, concurrencia reservada 20) con `TX_RECEIPT_TIMEOUT_SECS` por debajo del timeout (p. ej. 840 s), para devolver `SettlementUnconfirmed` y no un corte (§3). Requiere 0.1-0.5 en `dynamo` desde hace ≥ 7 días. | — | Invoke directo en testnet por familia. | No recibe tráfico. | M |
+| 2.1 | Función de escrituras (`lambda-writes`; 512 MB, timeout 900 s, concurrencia reservada 20), con su propio rol IAM: el único que lee secretos de llaves. Lee las de cadena y, desde antes de 2.2, también las de atestación (recibos y DX402), porque `/settle` firma y guarda recibos (`src/receipts/mod.rs:748-749`, `:1126`) y `/dx402/anchor` está en la regla `writes`. El rol de lecturas sigue sin ellas (1.1). Firma EVM solo con `NONCE_ALLOCATOR=dynamo` (0.1); con `lease`, el modo lambda la deja sin firmar, igual que a la de lecturas (0.6). Con `dynamo`, las puertas HTTP que hoy preguntan por `is_writer()` dejan pasar según el asignador: `settle_writer_gate` (`src/handlers.rs:1933-1960` en `6fe77143d`, que pasa el settle EVM a la siguiente) y `require_writer_lease` (`:1827`, montada en `:2222`, `:2234` y `:2281`). Si no, con el grant en no tenido, todo settle EVM y toda escritura ERC-8004 en Lambda respondería 503 `holder_unknown` (`:1857`). **El recibo espera menos que el ALB, no que la función:** `alb_idle_timeout = 600` (`production.auto.tfvars:95` en `6fe77143d`) corta al cliente con un 504 a los 600 s aunque el settle siga (§3). Se elige **bajar el recibo y no subir el idle timeout**: `TX_RECEIPT_TIMEOUT_SECS = 540` (600 menos 60 s de margen para estimación, envío y respuesta **[ESTIMADO]**), y el handler devuelve `SettlementUnconfirmed` antes del corte. Subir el idle timeout cambiaría todo el ALB de Fargate en un PR de Lambda y solo daría 300 s más, porque la función corta a 900 s **[DOC AWS]**. Ojo: la variable **reemplaza** los defaults por red (`src/chain/evm.rs:1178-1188`), no los acota. Con 540 global, Base (90 s) y el resto (30 s) subirían a 540, así que este PR la vuelve techo, `min(default de la red, variable)`, y solo Ethereum (900) baja. La lee también `evm_receipt_timeout` (`src/handlers.rs:13078-13090` en `6fe77143d`, la espera de `/register`), con la misma semántica, y el techo va en los dos. Además, `post_feedback`, `post_revoke_feedback` y `post_append_response` esperan el recibo sin ningún límite (`get_receipt().await`, `src/handlers.rs:7145`, `:8372` y `:9014` en `6fe77143d`): este PR les pone el mismo techo, porque 2.2 manda toda la regla `writes` a Lambda. Requiere 0.1-0.5 en `dynamo` desde hace ≥ 7 días. | Ninguna espera de recibo en la función sin techo ni por encima de `alb_idle_timeout` − 60 s. | Invoke directo en testnet por familia. Unitario del techo para settle y `/register`: Ethereum 540, Base 90, el resto 30. Un `/feedback` contra un RPC que nunca da el recibo responde antes de 540 s. Un settle EVM en `lambda-writes` con `dynamo` llega al handler, y con `lease` recibe 503 sin firmar. | No recibe tráfico. | M |
 | 2.2 | Regla `writes` (`latency-split.tf:111-125`) a tres target groups: `main` 0, `writes` (Fargate) 95, `writes-lambda` 5. Como Fargate y Lambda usan **el mismo** asignador de 0.1, firmar desde los dos a la vez es seguro, y no hace falta rutear por familia (el ALB tampoco puede: la red viaja en el cuerpo). | **5 % → 50 % → 100 %, 14 días cada uno:** éxito de settles por familia ≥ Fargate; p99 < 15 s (umbral de `latency_writes_p99`); 0 errores de nonce; DLQ de ERC-8004 vacía. | Las alarmas de `latency_writes_p99` y del stuck monitor, ahora como worker. | Pesos `writes` Fargate 100; no hay nonces que reconciliar porque el asignador es compartido. | M |
 | 2.3 | Worker `src/bin/worker.rs` con un evento por loop (§10.3). Schedules en `terraform/environments/production/lambda-facilitator-jobs.tf`. Cada job toma un lease DynamoDB, para que el owner de Fargate y el worker no corran el mismo loop a la vez. El stuck monitor guarda su "cabeza vista" en DynamoDB, porque necesita 10 min de historia (`src/stuck_tx_monitor.rs:47-50`). | 7 días con los loops en Lambda y el owner de Fargate apagado por variable: catálogo actualizado cada hora, overlays de health al día, alarmas de stuck tx vivas (inyectar un caso en testnet). | Un test por job con su evento y un apply en canary. | Encender de nuevo el owner de Fargate (variable) y apagar los schedules. | L |
-| 2.4 | `/mcp` del riel Fargate al de escrituras Lambda por peso, como en 2.2. | Igual que 2.2. | Smoke test de MCP. | Pesos atrás. | S |
+| 2.4 | `/mcp` del riel Fargate al de escrituras Lambda por peso, como en 2.2. Va **en paralelo con 2.2**: el mismo apply programado mueve las dos reglas al mismo peso, porque `x402_settle` pasa por el mismo router REST y el mismo asignador de 0.1. | Igual que 2.2, en las mismas ventanas. | Smoke test de MCP. | Pesos atrás. | S |
+| 2.5 | Las rutas que 1.2 dejó en Fargate pasan a la función de escrituras (`lambda-writes`, la única con llaves; 2.1) por peso, cada grupo solo con su gate cumplido: discovery, el gate (c) de 1.3; `/register/status/*`, 0.4 en `dynamo`; `retire-identity`, la firma EVM por el asignador de 0.1. `/verify`, `/dx402/*` y los recibos no tienen gate propio, porque el rol de 2.1 ya lleva las llaves de atestación. Un grupo cuyo gate ya está cumplido entra en los applies de 2.2, y uno que llega después hace sus propios pasos de 5 %, 50 % y 100 %. | Ninguna regla del listener manda tráfico con peso > 0 a un target group de Fargate, salvo la de `/events`, que resuelve la 3.1. | El test de rutas de 1.2, ahora contra las reglas que apuntan a `writes-lambda`. | Pesos atrás, por grupo. | M |
 
 ### Fase 3: apagar Fargate, listo para volver (S)
 
 | # | Tarea | Criterio de salida | Cómo se prueba | Rollback | Talla |
 |---|---|---|---|---|---|
 | 3.1 | Decidir `/events` (pregunta abierta): Function URL con response streaming en un subdominio, o quitar `/events/live` de `static/bazaar.html:117` y `static/dx402.html:160`. | Ninguna página enlaza a algo que no responde. | Smoke test. | — | S |
-| 3.2 | `min_capacity = 0` y `desired_count` 0 por CLI (`production.auto.tfvars:72-74`; `desired_count` tiene `ignore_changes`). Los target groups `main` y `writes` quedan registrados con peso 0. La task definition sigue al día en cada release (CI) y la imagen se conserva en ECR (anclas de `scripts/ecr_rollback_anchors.py`, B15 de #115). | 30 días con Fargate en 0 sin rollback; Cost Explorer: Fargate 0. | Simulacro de vuelta (abajo) en una ventana. | **Runbook de vuelta:** `min_capacity = 2`, apply, esperar `HealthyHostCount = 2`, pesos a Fargate 100. Tiempo ~5-10 min **[HIPÓTESIS]**; medirlo en el simulacro. | S |
+| 3.2 | Requiere 2.5 cerrada. Si el bug del Bazaar sigue abierto, las escrituras del discovery siguen en Fargate, Fargate no baja de 1 tarea y la columna «todo en Lambda» de §10 no aplica: queda el híbrido de §10.5. Con 2.5 cerrada, `min_capacity = 0` y `desired_count` 0 por CLI (`production.auto.tfvars:72-74`; `desired_count` tiene `ignore_changes`). Los target groups `main` y `writes` quedan registrados con peso 0. La task definition sigue al día en cada release (CI) y la imagen se conserva en ECR (anclas de `scripts/ecr_rollback_anchors.py`, B15 de #115). | 30 días con Fargate en 0 sin rollback; Cost Explorer: Fargate 0. | Simulacro de vuelta (abajo) en una ventana. | **Runbook de vuelta:** `min_capacity = 2`, apply, esperar `HealthyHostCount = 2`, pesos a Fargate 100. Tiempo ~5-10 min **[HIPÓTESIS]**; medirlo en el simulacro. | S |
 | 3.3 | Endpoint de Secrets Manager (7,30 USD): quitarlo solo si Fargate sigue en 0 a los 30 días. Para volver, las tareas en subred pública (B5) llegan al endpoint público de Secrets Manager. Verificar antes que `private_dns_enabled` (`main.tf:376`) no deje un nombre colgado. | Fargate arranca sin el endpoint en el simulacro. | Simulacro. | Re-crear el endpoint (apply). | S |
 
-**Total:** fase 0 L (8 PRs), fase 1 M (5), fase 2 L (4), fase 3 S (3): unos 20 PRs chicos, o 13
-si se agrupan los S. Calendario de 6-10 semanas **[ESTIMADO]**, la mayoría ventanas de
-observación (7 + 7 + 7 días en la fase 1 y 14 × 3 en la fase 2).
+**Total:** fase 0 L (8 PRs), fase 1 M (5), fase 2 L (5), fase 3 S (3): unos 21 PRs chicos, o 14
+si se agrupan los S, que entran en tandas (reglas de arriba).
+
+**Calendario.** Las ventanas de observación que este plan define, en serie, suman **107 días
+(15,3 semanas)**:
+
+| Fase | Ventanas que define el plan | Días |
+|---|---|---:|
+| 0 | 0.1, 0.2 y 0.3: 7 días cada una, en paralelo | ≥ 7 |
+| 1 | 1.3 y 1.4: 5 %, 50 % y 100 %, 7 días cada uno | 21 |
+| 2 | 2.2 y 2.4 (los mismos applies): 5 %, 50 % y 100 %, 14 días cada uno; 2.3: 7 días | 49 |
+| 3 | 3.2: 30 días con Fargate en 0 (3.3 cae al final de esos 30) | 30 |
+| **Total** | | **107** |
+
+A eso se suma el trabajo de las tallas que no se solapa con una ventana: como mínimo L + M + L + S
+≈ 12 días hábiles (2,4 semanas). Piso del calendario: **unas 18 semanas** (unos 4 meses)
+**[ESTIMADO]**, sin techo porque L no lo tiene. Si la 2.4 fuera en serie con la 2.2, se suman 42 días:
+149 días y un piso de unas 24 semanas. La 2.5 suma ventanas solo si alguno de sus gates llega
+después de la 2.2. La cifra anterior, 6-10 semanas, contaba solo 63 días
+de ventanas (7 + 7 + 7 en la fase 1 y 14 × 3 en la fase 2) y dejaba fuera las fases 0 y 3 y la 2.3.

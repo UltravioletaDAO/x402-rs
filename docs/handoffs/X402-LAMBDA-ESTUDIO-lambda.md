@@ -1,5 +1,24 @@
 # X402-LAMBDA-ESTUDIO / X402-LAMBDA-PLAN — estudio Lambda (solo docs)
 
+## Estado (ronda 1 de REF-X402-116, 2026-10-10): qué está hecho, qué falta, próximo paso
+
+- Hecho, en `docs/estudios/lambda.md`, los 7 puntos de la ronda:
+  - 0.6 deja el grant EVM en no tenido (fail-closed, nunca standalone), sin llaves de firma en la
+    función de lecturas (`lambda-reads`) y sin esos secretos en su rol IAM. La 1.3 depende de eso.
+  - 1.2 fija en Fargate las escrituras del Bazaar, `/register/status/*` y las rutas que usan llaves
+    de atestación, `/verify` incluida, porque firma recibos (pregunta abierta a c0der). El gate del bug «alta del bazar 201 se pierde entre réplicas» queda en la 1.3 y
+    en §5, y la 2.5 nueva saca esas rutas de Fargate antes de la 3.2.
+  - 2.1 baja el recibo a 540 s, por debajo de `alb_idle_timeout = 600`.
+  - 0.5 falla cerrado también cuando el init de DynamoDB falla.
+  - El calendario suma las ventanas del plan: 107 días, con un piso de ~18 semanas.
+  - §12 manda el código en tandas y los pesos en applies programados.
+  - Quedaron también la línea de estado bajo el título, #121 en §10.4 y en la 1.1, y la medición de
+    c0der del 6-oct en §10.5.
+- Falta: la consulta de Athena de la tarea 0.8 y la duración de los loops (§10.3). Este PR no toca
+  AWS.
+- Próximo paso: el mismo de antes, que el dueño decida si arranca la fase 0; y c0der corrige la
+  cifra de calendario de la decisión 170.
+
 ## Estado (X402-LAMBDA-PLAN, 2026-10-06): qué está hecho, qué falta, próximo paso
 
 - Hecho: `docs/estudios/lambda.md` suma el resumen de 5 líneas para el dueño (arriba), §10 coste

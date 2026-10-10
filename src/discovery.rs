@@ -5420,13 +5420,15 @@ mod tests {
 
     /// After a publish the owner's cache IS what it published: the next
     /// snapshot (the retention GC's, seconds later) goes out in one attempt, and
-    /// a refresh does not download the task's own object again.
+    /// a refresh does not download the task's own object again. And a pass that
+    /// changed nothing publishes nothing.
     #[tokio::test]
     async fn the_owner_does_not_read_back_the_snapshot_it_just_published() {
-        let (_store, owner, _other) = two_replicas(&["https://seed.example.com/x"]).await;
+        let feed = "https://feed.example.com/x";
+        let (store, owner, _other) = two_replicas(&["https://seed.example.com/x"]).await;
         owner
             .bulk_import(
-                vec![create_test_resource("https://feed.example.com/x", None)],
+                vec![create_test_resource(feed, None)],
                 ImportPolicy::Filtered,
             )
             .await
@@ -5436,6 +5438,61 @@ mod tests {
             None,
             "the owner re-read the catalog it had just published"
         );
+
+        let published = store.current_version().await.unwrap();
+        let (added, updated, _) = owner
+            .bulk_import(
+                vec![create_test_resource(feed, None)],
+                ImportPolicy::Filtered,
+            )
+            .await
+            .unwrap();
+        assert_eq!((added, updated), (0, 0));
+        assert_eq!(owner.apply_retention().await, 0);
+        assert_eq!(
+            store.current_version().await.unwrap(),
+            published,
+            "an import and a GC that changed nothing published anyway"
+        );
+    }
+
+    /// The owner's own registration can still be queued when its snapshot is
+    /// refused. A refresh stands down while a write is queued, so adopting has
+    /// to flush the queue first -- or the import is never published.
+    #[tokio::test]
+    async fn an_owner_with_its_own_write_queued_still_adopts_and_publishes() {
+        let alta = "https://alta.example.com/x";
+        let mine = "https://mine.example.com/x";
+        let feed = "https://feed.example.com/x";
+        let (store, owner, other) = two_replicas(&["https://seed.example.com/x"]).await;
+
+        // A registration on the owner, between `register` mutating the cache
+        // and its write reaching the store...
+        owner
+            .writes
+            .push(StoreOp::Save(Box::new(create_test_resource(mine, None))));
+        // ...and one on the other replica, which has reached it.
+        other
+            .register(create_test_resource(alta, None))
+            .await
+            .unwrap();
+        other.writes.drain(&other.store).await;
+
+        owner
+            .bulk_import(
+                vec![create_test_resource(feed, None)],
+                ImportPolicy::Filtered,
+            )
+            .await
+            .unwrap();
+
+        let held = stored(&store).await;
+        for url in [alta, mine, feed] {
+            assert!(
+                held.contains(&url.to_string()),
+                "{url} is missing: {held:?}"
+            );
+        }
     }
 
     /// A store where another replica's alta always lands just before the
@@ -5528,6 +5585,35 @@ mod tests {
             !held.contains(&feed.to_string()),
             "a refused snapshot was published: {held:?}"
         );
+        for n in 0..u64::from(MAX_PUBLISH_ATTEMPTS) {
+            let alta = format!("https://alta-{n}.example.com/x");
+            assert!(held.contains(&alta), "{alta} was overwritten: {held:?}");
+        }
+    }
+
+    /// The same bound on the retention GC's snapshot.
+    #[tokio::test]
+    async fn a_retention_snapshot_that_keeps_being_overtaken_gives_up() {
+        let junk = "http://127.0.0.1/x";
+        let inner = crate::discovery_store::MemoryStore::new();
+        for url in ["https://seed.example.com/x", junk] {
+            inner.save(&create_test_resource(url, None)).await.unwrap();
+        }
+        let store = AlwaysOvertaken {
+            inner: inner.clone(),
+            refused: Arc::new(AtomicU64::new(0)),
+        };
+        let owner = DiscoveryRegistry::with_store(store.clone()).await.unwrap();
+
+        tokio::time::timeout(std::time::Duration::from_secs(30), owner.apply_retention())
+            .await
+            .expect("a catalog that keeps moving held the GC for good");
+
+        assert_eq!(
+            store.refused.load(Ordering::SeqCst),
+            u64::from(MAX_PUBLISH_ATTEMPTS)
+        );
+        let held = stored(&inner).await;
         for n in 0..u64::from(MAX_PUBLISH_ATTEMPTS) {
             let alta = format!("https://alta-{n}.example.com/x");
             assert!(held.contains(&alta), "{alta} was overwritten: {held:?}");

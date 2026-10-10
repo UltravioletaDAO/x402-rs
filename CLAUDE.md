@@ -399,7 +399,7 @@ Golden source is `terraform/environments/production/secrets.tf`. The naming is N
 
 Infrastructure managed with Terraform in `terraform/environments/production/`.
 
-**The deploy is a manual "Run workflow" on `main`** (`gh workflow run ci.yaml --ref main`): `.github/workflows/ci.yaml` then tests, builds the image, pushes it to ECR and `terraform apply -auto-approve`s it onto ECS (targeted at the task definition + service), then waits for the rollout and checks `/health`. **A merge never deploys by itself** (owner's rule 2026-09-27, one release a day; in the deploy job's `if:` since X402-CI-GATES, held by `tests/scripts/test_ci_deploy_job.py`): a push to `main` only builds, tests and runs the drift gate. The commands below are the manual fallback - do not run them in parallel with a CI deploy of the same commit.
+**The deploy is a manual "Run workflow" on `main`** (`gh workflow run ci.yaml --ref main`): `.github/workflows/ci.yaml` then tests, builds the image, pushes it to ECR and `terraform apply -auto-approve`s it onto ECS (targeted at the task definition + service), then waits for the rollout and checks `/health`. **A merge never deploys by itself** (owner's rule 2026-09-27, one release a day; in the deploy job's `if:` since X402-CI-GATES, held by `tests/scripts/test_ci_deploy_job.py`): a push to `main` only builds, tests and runs the drift gate. Never re-run an OLD release run: it would cancel a newer queued release and deploy its own old commit; start a new one. The commands below are the manual fallback - do not run them in parallel with a CI deploy of the same commit.
 
 ```bash
 # Initialize Terraform backend (once)

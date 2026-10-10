@@ -55,10 +55,24 @@ COMPARE_FILE_CAP = 300
 # `github.event_name == '<event>'` inside the deploy job's if:, however it is spaced.
 DEPLOY_IF_EVENT = re.compile(r"github\.event_name\s*==\s*'([A-Za-z_]+)'")
 
-# What releasing looks like in a `run:` -- terraform apply with or without flags in
-# between, an image push, or a direct write to the ECS service.
-SHIPS = re.compile(r"\bterraform\b[^\n]*\bapply\b|\bdocker\b[^\n]*\bpush\b|--push\b"
-                   r"|\baws\s+ecs\s+(update-service|register-task-definition|create-service)\b")
+# What releasing looks like in a `run:` (continuation lines joined first) -- terraform
+# apply with or without flags in between, an image push, a direct write to the ECS
+# service or the Lambda, or one of the repo's own deploy scripts, which do all of it.
+SHIPS = re.compile(
+    r"\bterraform\b[^\n]*\bapply\b"
+    r"|\bdocker\b[^\n]*\bpush\b|--push\b"
+    r"|\baws\b[^\n]*\becs\b[^\n]*\b(update-service|register-task-definition|create-service|run-task)\b"
+    r"|\baws\b[^\n]*\blambda\b[^\n]*\b(update-function-code|update-function-configuration|publish-version)\b"
+    r"|\bscripts/(deploy[\w.-]*|build-and-push|fast-build)\.sh\b")
+# Third-party actions that apply or deploy.
+SHIPPING_ACTIONS = ("terraform-apply", "ecs-deploy")
+# `secrets.AWS_X` and `secrets['AWS_X']`.
+AWS_SECRET = re.compile(r"secrets\s*(\.\s*|\[\s*['\"])\s*AWS_")
+
+
+def joined(run: str) -> str:
+    """A `run:` with its backslash-continued lines joined, as bash reads them."""
+    return re.sub(r"\\\n\s*", " ", run)
 
 
 def render(expr: str, ref: str, event: str) -> str:
@@ -272,25 +286,42 @@ class AMergeNeverDeploys(unittest.TestCase):
                                      "the deploy job may release")
                 for s in job.get("steps", []):
                     with self.subTest(workflow=wf_name, job=name, step=s.get("name", s.get("uses"))):
-                        run, uses = str(s.get("run", "")), str(s.get("uses", ""))
+                        run, uses = joined(str(s.get("run", ""))), str(s.get("uses", ""))
                         self.assertIsNone(SHIPS.search(run), "only the deploy job applies, pushes an "
-                                          "image or touches the ECS service")
-                        self.assertFalse(uses.startswith("aws-actions/amazon-ecs-deploy"),
-                                         "only the deploy job rolls the service")
+                                          "image or touches the ECS service or the Lambda")
+                        self.assertFalse(any(a in uses for a in SHIPPING_ACTIONS),
+                                         "only the deploy job applies or rolls the service")
                         if uses.startswith("docker/build-push-action"):
                             self.assertNotIn(str((s.get("with") or {}).get("push", "false")).lower(),
                                              ("true", "${{ true }}"), "only the deploy job pushes an image")
 
     def test_only_the_drift_gate_and_the_deploy_hold_aws_credentials(self):
         # The second wall behind the one above: a job without the keys cannot ship.
-        # preflight only asks whether the secrets exist.
+        # preflight only asks whether the secrets exist. A workflow-level env: or
+        # defaults: would hand the keys to every job, so it counts too.
         allowed = {("ci.yaml", "preflight"), ("ci.yaml", "plan"), ("ci.yaml", "deploy")}
         for wf_name, wf in ci_paths_selftest.load_workflows().items():
+            with self.subTest(workflow=wf_name, where="outside the jobs"):
+                outside = {str(k): v for k, v in wf.items() if k != "jobs"}
+                self.assertIsNone(AWS_SECRET.search(json.dumps(outside, default=str)))
             for name, job in (wf.get("jobs") or {}).items():
                 if (wf_name, name) in allowed:
                     continue
                 with self.subTest(workflow=wf_name, job=name):
-                    self.assertNotIn("secrets.AWS_", json.dumps(job))
+                    self.assertIsNone(AWS_SECRET.search(json.dumps(job, default=str)))
+
+    def test_the_drift_gate_only_reads_aws(self):
+        # plan holds the AWS keys and runs on every push and pull request: whatever it
+        # runs must only read. Its one AWS call and its one script, nothing else.
+        for s in CI["jobs"]["plan"]["steps"]:
+            for line in joined(str(s.get("run", ""))).splitlines():
+                if line.strip().startswith("#"):
+                    continue
+                with self.subTest(step=s.get("name"), line=line.strip()[:80]):
+                    if re.search(r"\baws\s", line):
+                        self.assertRegex(line, r"\baws s3api get-bucket-versioning\b")
+                    for path in re.findall(r"\bscripts/[\w./-]+", line):
+                        self.assertEqual(path, "scripts/drift_gate_iam.py")
 
     def test_a_merge_cannot_cancel_a_queued_release(self):
         # GitHub keeps one PENDING run per concurrency group and cancels it when a newer

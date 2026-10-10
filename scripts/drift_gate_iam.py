@@ -20,10 +20,12 @@ to apply it by hand, before the merge, on Terraform 1.9.8.
 
 The ECS cluster gets the same treatment. `aws_ecs_cluster.main` is in no -target list, but it rides into every
 image deploy as a dependency of the service, and on 2026-10-07 the deploy of #115 died on `ecs:UpdateCluster`.
-Only the cluster calls whose grant can live in the managed policy are evaluated: UpdateCluster (`EcsClusterUpdate`),
-and CreateCluster / DeleteCluster for a create or a replacement, which no policy grants -- the inline one holds
-only RegisterTaskDefinition, DeregisterTaskDefinition, UpdateService and TagResource. A tags-only change goes
-through TagResource/UntagResource and is not evaluated: TagResource lives in that inline policy, outside the plan.
+Only the ECS calls whose grant can live in the managed policy are evaluated: UpdateCluster (`EcsClusterUpdate`),
+CreateCluster / DeleteCluster for a create or a replacement of the cluster, which no policy grants (a STOP, not a
+command to run), and UntagResource (`EcsDeployUntag`) when an update drops a tag key from the cluster, the service
+or the task definition. The inline policy holds the rest -- RegisterTaskDefinition, DeregisterTaskDefinition,
+UpdateService, TagResource -- outside the plan, so a service or task-definition change, or a tag ADDED, is not
+evaluated here.
 
 Prints GitHub annotations and appends a section to --summary. Never prints an account ID or an ARN.
 
@@ -62,7 +64,10 @@ CALLS = {
 CLUSTER_TYPE = "aws_ecs_cluster"
 # hashicorp/aws 5.100.0 (.terraform.lock.hcl) sends a change to any of these through ecs:UpdateCluster alone.
 UPDATE_CLUSTER_ATTRS = ("setting", "configuration", "service_connect_defaults")
+# A create or a delete of the production cluster is never something to apply by hand from a gate's summary.
 CLUSTER_CALLS = {"create": ["ecs:CreateCluster"], "delete": ["ecs:DeleteCluster"]}
+# The ECS resources an image deploy reaches; an in-place update that drops a tag key calls ecs:UntagResource.
+UNTAG_TYPES = ("aws_ecs_cluster", "aws_ecs_service", "aws_ecs_task_definition")
 
 
 def _walk(module: dict | None):
@@ -160,6 +165,11 @@ def target_arn(rtype: str, change: dict, account: str | None) -> tuple[str | Non
         # The plan carries the cluster's ARN once it exists; a cluster being created has none, and an unknown
         # ARN never matches an Allow.
         return _value(change, "arn"), f"cluster {_value(change, 'name')}"
+    if rtype == "aws_ecs_service":
+        # The service's id IS its ARN (long format, the only one ECS lets you tag).
+        return _value(change, "arn") or _value(change, "id"), f"service {_value(change, 'name')}"
+    if rtype == "aws_ecs_task_definition":
+        return _value(change, "arn"), f"task definition {_value(change, 'family')}"
     return None, rtype
 
 
@@ -175,18 +185,38 @@ def _any_unknown(value) -> bool:
 
 
 def cluster_calls(actions: list[str], change: dict) -> list[str]:
-    """The ECS calls a cluster change needs that the managed policy can grant. Tags alone need none of them."""
+    """The cluster calls a change needs that the managed policy could grant. Tags are untag_calls' business."""
     calls = [c for a in actions for c in CLUSTER_CALLS.get(a, [])]
     if "update" in actions:
         before, after = change.get("before") or {}, change.get("after") or {}
         unknown = change.get("after_unknown") or {}
-        if any(before.get(k) != after.get(k) or _any_unknown(unknown.get(k)) for k in UPDATE_CLUSTER_ATTRS):
+        # `or []`: the SDK reads null and an empty block list as the same value and sends no call between them.
+        if any((before.get(k) or []) != (after.get(k) or []) or _any_unknown(unknown.get(k))
+               for k in UPDATE_CLUSTER_ATTRS):
             calls.append("ecs:UpdateCluster")
     return calls
 
 
+def _tag_keys(values: dict) -> set:
+    tags = values.get("tags_all")
+    if tags is None:
+        tags = values.get("tags")
+    return set(tags) if isinstance(tags, dict) else set()
+
+
+def untag_calls(actions: list[str], change: dict) -> list[str]:
+    """ecs:UntagResource when an in-place update drops a tag key, or the whole tag map is unknown until apply.
+    A key whose value alone is unknown is still a known key: it is retagged, not untagged."""
+    if "update" not in actions:
+        return []
+    before, after = change.get("before") or {}, change.get("after") or {}
+    if (change.get("after_unknown") or {}).get("tags_all") is True or _tag_keys(before) - _tag_keys(after):
+        return ["ecs:UntagResource"]
+    return []
+
+
 def verdicts(targeted: dict, document: dict | None, account: str | None) -> list[dict]:
-    """One row per aws_iam_* the targeted plan changes, and per cluster change that needs a call the managed
+    """One row per aws_iam_* the targeted plan changes, and per ECS change that needs a call the managed
     policy can grant: the calls it needs and whether CI may make them."""
     rows = []
     for rc in targeted.get("resource_changes") or []:
@@ -194,8 +224,13 @@ def verdicts(targeted: dict, document: dict | None, account: str | None) -> list
         actions = [a for a in rc.get("change", {}).get("actions", []) if a not in ("no-op", "read")]
         if not actions:
             continue
-        if rtype == CLUSTER_TYPE:
-            needed = cluster_calls(actions, rc.get("change", {}))
+        stop = False
+        if rtype in UNTAG_TYPES:
+            needed = untag_calls(actions, rc.get("change", {}))
+            if rtype == CLUSTER_TYPE:
+                cluster = cluster_calls(actions, rc.get("change", {}))
+                stop = any(c in cluster for calls in CLUSTER_CALLS.values() for c in calls)
+                needed = cluster + needed
             if not needed:
                 continue
         elif rtype.startswith("aws_iam_"):
@@ -203,7 +238,7 @@ def verdicts(targeted: dict, document: dict | None, account: str | None) -> list
         else:
             continue
         arn, label = target_arn(rtype, rc.get("change", {}), account)
-        if rtype != CLUSTER_TYPE and rtype not in CALLS:
+        if rtype.startswith("aws_iam_") and rtype not in CALLS:
             outcome, why = "unmapped", "an IAM resource type this gate does not classify"
         elif document is None:
             outcome, why = "unknown", f"{CI_POLICY_ADDRESS} is not in the plan, so nothing says CI may"
@@ -217,7 +252,7 @@ def verdicts(targeted: dict, document: dict | None, account: str | None) -> list
             else:
                 outcome, why = "no_allow", "no statement grants CI " + ", ".join(refused)
         rows.append({"address": rc["address"], "actions": "+".join(actions), "on": label,
-                     "outcome": outcome, "why": why})
+                     "outcome": outcome, "why": why, "stop": stop})
     return rows
 
 
@@ -244,15 +279,23 @@ def report(rows: list[dict], source: str) -> tuple[str, list[str]]:
         lines.append(f"| `{r['actions']}` | `{r['address']}` | {r['on']} | {verdict} |")
     lines.append("")
     if not blocked:
-        lines.append("**Clean.** Every IAM and cluster change in the deploy's reach is one CI is allowed to make.")
+        lines.append("**Clean.** Every IAM and ECS change in the deploy's reach is one CI is allowed to make.")
         return "\n".join(lines) + "\n", []
-    lines += [
-        "**As it stands, the next deploy breaks half-way**: whatever Terraform applies before this change goes",
-        "live, and the change is refused. Apply it by hand BEFORE merging, with a human's credentials, from a",
-        f"checkout of this PR's head, on Terraform {TERRAFORM_VERSION}. Read the plan it prints before typing `yes`:",
-        "", "```sh", command([r["address"] for r in blocked]), "```", "",
-        "Then re-run this job: it goes green once the plan no longer carries the change.",
-    ]
+    lines.append("**As it stands, the next deploy breaks half-way**: whatever Terraform applies before this change "
+                 "goes live, and the change is refused.")
+    stops = [r for r in blocked if r.get("stop")]
+    runnable = [r for r in blocked if not r.get("stop")]
+    if stops:
+        lines += ["", "**STOP** - the plan creates, deletes or replaces the production cluster ("
+                  + ", ".join(f"`{r['address']}`" for r in stops) + "). That is never applied from here: find out "
+                  "why the configuration asks for it, with the service running on top of it, before anything else."]
+    if runnable:
+        lines += [
+            "", "Apply it by hand BEFORE merging, with a human's credentials, from a checkout of this PR's head, "
+            f"on Terraform {TERRAFORM_VERSION}. Read the plan it prints before typing `yes`:",
+            "", "```sh", command([r["address"] for r in runnable]), "```", "",
+            "Then re-run this job: it goes green once the plan no longer carries the change.",
+        ]
     return "\n".join(lines) + "\n", [r["address"] for r in blocked]
 
 

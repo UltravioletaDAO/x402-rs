@@ -716,7 +716,7 @@ a day, started by hand. A push only builds, tests and runs the drift gate.
 
 On that manual run `.github/workflows/ci.yaml` tests, builds the image, pushes it to ECR and
 `terraform apply -auto-approve`s it onto ECS, then waits for the rollout and
-checks `/health`. A merge is a release. The `docker build` / `aws ecs
+checks `/health`. A merge is NOT a release. The `docker build` / `aws ecs
 update-service` sequence this section used to describe is not how anything has
 shipped for a long time, and `aws ecs update-service --force-new-deployment` on
 its own re-runs the CURRENT task definition -- it does not move the image.
@@ -781,7 +781,7 @@ Two consequences worth knowing:
 - The workflow has a `paths` filter. `.claude/**`, `docs/**` and `guides/**` are
   NOT in it, so a documentation-only commit never triggers CI and never deploys.
   Every file in the alta inventory except those three trees IS in it.
-- A failed deploy leaves `main` ahead of production. Compare
+- A failed or not-yet-started deploy leaves `main` ahead of production. Compare
   `curl -s https://facilitator.ultravioletadao.xyz/version` with `git log -1`
   before assuming your commit is live.
 

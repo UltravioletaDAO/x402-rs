@@ -135,9 +135,11 @@ concurrency:
   # GitHub keeps one PENDING run per group and cancels it when a newer one
   # arrives; with push and workflow_dispatch in one group, a merge landing while
   # a release waited behind another run would cancel the release, and the push
-  # that replaced it does not deploy. Keyed apart, a newer release can only
-  # replace an older pending release, which ships a subset of what it does.
-  # tests/scripts/test_ci_deploy_job.py holds this.
+  # that replaced it does not deploy. Keyed apart, a newer release replaces an
+  # older pending one, which shipped a subset of what it does -- unless the
+  # "newer" one is a RE-RUN of an old release: it joins the group last, cancels a
+  # newer release waiting there and deploys its own old SHA. Never re-run an old
+  # release; start a new one. tests/scripts/test_ci_deploy_job.py holds the key.
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:

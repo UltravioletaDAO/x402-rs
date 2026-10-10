@@ -45,7 +45,11 @@ then give it the policies below.
 > `EcsClusterUpdate`, `EcsDeployUntag`. The `.tf` file is the list; this one is a reading aid.
 > `EcsDeployUntag` (`ecs:UntagResource` on the cluster, the service and the task-definition family)
 > is the inverse of the inline policy's `ecs:TagResource`, which it never had: dropping a tag would
-> have failed a deploy the same way `ecs:UpdateCluster` did.
+> have failed a deploy the same way `ecs:UpdateCluster` did. It covers the ECS half only: dropping a
+> key of the provider's `default_tags` also untags the target groups, the security group, the
+> subnets, the task roles and the ALB in the deploy's reach, and CI holds none of those untag calls
+> — apply such a change by hand. The drift gate's IAM step evaluates both ECS statements against the
+> live policy (`scripts/drift_gate_iam.py`).
 >
 > **Five of those were added only after a deploy failed on their absence** — the pattern this
 > document exists to stop:
@@ -170,7 +174,9 @@ A superseded pull-request run is cancelled (`cancel-in-progress` is on for `pull
 stays off for `main`, so a running release is never cut between `terraform apply` and the rollout
 wait). The concurrency group carries the event: GitHub keeps one pending run per group and cancels
 it when a newer one arrives, and with pushes and manual runs in one group a merge could cancel a
-release that was waiting in the queue.
+release that was waiting in the queue. **Never re-run an old release run**: a re-run joins the group
+as the newest, cancels a newer release waiting there and deploys its own old commit — a silent
+rollback. Start a new one with `gh workflow run ci.yaml --ref main` instead.
 
 A release now costs two runs: the merge's push run (test + drift gate) and the manual run (test +
 drift gate + deploy). The second test is on purpose — `deploy` needs `test`, and the manual run

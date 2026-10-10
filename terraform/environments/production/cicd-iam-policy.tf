@@ -320,10 +320,12 @@ resource "aws_iam_policy" "cicd_infra" {
       },
       {
         # Added 2026-10-10. Terraform drops a tag with ecs:UntagResource. The inline facilitator-cicd policy
-        # grants ecs:TagResource (on "*", docs/CICD_SETUP.md) but not its inverse, so removing a tag -- or a key
-        # of the provider's default_tags, which every resource carries -- from the cluster, the service or the
-        # task definition would fail an image deploy the way ecs:UpdateCluster did on 2026-10-07. Scoped to the
-        # three ECS resources an image deploy reaches, narrower than TagResource's "*".
+        # grants ecs:TagResource (on "*", docs/CICD_SETUP.md) but not its inverse, so removing a tag from the
+        # cluster, the service or the task definition would fail an image deploy the way ecs:UpdateCluster did
+        # on 2026-10-07. Scoped to the three ECS resources an image deploy reaches, narrower than TagResource's
+        # "*". This is the ECS half only: dropping a key of the provider's default_tags also untags the target
+        # groups, the security group, the subnets, the task roles and the ALB in the deploy's reach, and nobody
+        # grants CI those untag calls -- apply such a change by hand.
         "Sid" : "EcsDeployUntag",
         "Effect" : "Allow",
         "Action" : [

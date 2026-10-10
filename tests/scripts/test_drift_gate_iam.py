@@ -410,6 +410,26 @@ class TheClusterTheDeployDragsIn(unittest.TestCase):
                 self.assertEqual(code, 1, summary)
                 for call in calls:
                     self.assertIn(call, summary)
+                # Replacing the production cluster under the running service is never a command to paste.
+                self.assertIn("**STOP**", summary)
+                self.assertNotIn(f"-target={CLUSTER}", summary)
+
+    def test_a_stop_does_not_swallow_the_command_for_the_other_rows(self):
+        code, _, summary = run(live_plan([cluster_change(actions=("delete", "create")),
+                                          role_policy_change(SECRETS, EXECUTION_ROLE)], declared_ci_policy()))
+        self.assertEqual(code, 1, summary)
+        self.assertIn("**STOP**", summary)
+        command = summary.split("```sh", 1)[1].split("```", 1)[0]
+        self.assertIn(f"-target={SECRETS}", command)
+        self.assertNotIn(CLUSTER, command)
+
+    def test_null_and_an_empty_block_list_are_the_same_value(self):
+        # The SDK reads null and [] alike and sends no UpdateCluster between them; an added tag is not evaluated.
+        change = cluster_change(insights=("disabled", "disabled"),
+                                tags_after={"Name": "facilitator-production", "Team": "x"})
+        change["change"]["before"]["service_connect_defaults"] = None
+        code, _, summary = run(live_plan([change], NO_CLUSTER_GRANT))
+        self.assertEqual(code, 0, summary)
 
     def test_service_and_task_definition_changes_are_not_evaluated(self):
         # Their calls (UpdateService, RegisterTaskDefinition) live in the inline policy, outside the plan:
@@ -427,6 +447,83 @@ class TheClusterTheDeployDragsIn(unittest.TestCase):
         for text in (out, summary):
             self.assertNotIn(ACCOUNT, text)
             self.assertNotIn("arn:aws", text)
+
+
+NO_UNTAG_GRANT = ci_policy_without("EcsDeployUntag")
+DEFAULT_TAGS = {"Project": "facilitator", "Environment": "production", "ManagedBy": "terraform",
+                "Owner": "ultravioleta-dao"}
+
+
+def ecs_tag_change(rtype: str, address: str, identity: dict, drop: tuple = ("Owner",), add: dict | None = None,
+                   unknown_tags=None) -> dict:
+    """An in-place update of an ECS resource whose tags_all loses `drop` and gains `add`."""
+    before = dict(identity, tags_all=dict(DEFAULT_TAGS, Name="facilitator-production"))
+    after_tags = {k: v for k, v in before["tags_all"].items() if k not in drop}
+    after_tags.update(add or {})
+    after = dict(identity, tags_all=after_tags)
+    return {"address": address, "type": rtype,
+            "change": {"actions": ["update"], "before": before, "after": after,
+                       "after_unknown": {"tags_all": unknown_tags if unknown_tags is not None else {}}}}
+
+
+SERVICE_IDENTITY = {"name": "facilitator-production", "id": SERVICE_ARN}
+TASK_DEFINITION_IDENTITY = {"family": "facilitator-production", "arn": TASK_DEFINITION_ARN + ":475"}
+CLUSTER_IDENTITY = {"name": "facilitator-production", "arn": CLUSTER_ARN}
+DEPLOY_ECS = (("aws_ecs_service", "aws_ecs_service.facilitator", SERVICE_IDENTITY, "service facilitator-production"),
+              ("aws_ecs_task_definition", "aws_ecs_task_definition.facilitator", TASK_DEFINITION_IDENTITY,
+               "task definition facilitator-production"),
+              ("aws_ecs_cluster", CLUSTER, CLUSTER_IDENTITY, "cluster facilitator-production"))
+
+
+class TheUntagHalf(unittest.TestCase):
+    """EcsDeployUntag lives in the managed policy, so the gate can read it: an update that drops a tag key from
+    the cluster, the service or the task definition calls ecs:UntagResource, and without the grant the deploy
+    stops half-way, the service already updated."""
+
+    def test_a_dropped_tag_is_red_without_the_grant(self):
+        for rtype, address, identity, label in DEPLOY_ECS:
+            with self.subTest(resource=address):
+                code, out, summary = run(live_plan([ecs_tag_change(rtype, address, identity)], NO_UNTAG_GRANT))
+                self.assertEqual(code, 1, summary)
+                self.assertIn(f"::error title=IAM change CI cannot apply::{address}", out)
+                self.assertIn("no statement grants CI ecs:UntagResource", summary)
+                self.assertIn(label, summary)
+                command = summary.split("```sh", 1)[1].split("```", 1)[0]
+                self.assertIn(f"-target={address}", command)
+
+    def test_with_the_grant_live_a_dropped_tag_is_green(self):
+        for rtype, address, identity, label in DEPLOY_ECS:
+            with self.subTest(resource=address):
+                code, _, summary = run(live_plan([ecs_tag_change(rtype, address, identity)], declared_ci_policy()))
+                self.assertEqual(code, 0, summary)
+                self.assertIn(f"| `update` | `{address}` | {label} | yes |", summary)
+
+    def test_an_added_tag_is_not_evaluated(self):
+        # TagResource lives in the inline policy, outside the plan.
+        for rtype, address, identity, _ in DEPLOY_ECS:
+            with self.subTest(resource=address):
+                change = ecs_tag_change(rtype, address, identity, drop=(), add={"Team": "x"})
+                code, _, summary = run(live_plan([change], NO_UNTAG_GRANT))
+                self.assertEqual(code, 0, summary)
+
+    def test_a_tag_map_unknown_until_apply_needs_the_grant(self):
+        change = ecs_tag_change("aws_ecs_service", "aws_ecs_service.facilitator", SERVICE_IDENTITY, drop=(),
+                                unknown_tags=True)
+        self.assertEqual(run(live_plan([change], NO_UNTAG_GRANT))[0], 1)
+
+    def test_a_value_unknown_until_apply_is_a_retag_not_an_untag(self):
+        change = ecs_tag_change("aws_ecs_service", "aws_ecs_service.facilitator", SERVICE_IDENTITY, drop=(),
+                                unknown_tags={"Owner": True})
+        code, _, summary = run(live_plan([change], NO_UNTAG_GRANT))
+        self.assertEqual(code, 0, summary)
+
+    def test_a_replaced_task_definition_untags_nothing(self):
+        # A new revision is a create; the old one is deregistered, not untagged.
+        change = ecs_tag_change("aws_ecs_task_definition", "aws_ecs_task_definition.facilitator",
+                                TASK_DEFINITION_IDENTITY)
+        change["change"]["actions"] = ["delete", "create"]
+        code, _, summary = run(live_plan([change], NO_UNTAG_GRANT))
+        self.assertEqual(code, 0, summary)
 
 
 class TheWorkflow(unittest.TestCase):

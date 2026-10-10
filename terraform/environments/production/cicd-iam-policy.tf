@@ -52,9 +52,12 @@
 # the import is empty. If it is not empty, someone changed the policy by hand
 # after this was written -- read the diff before applying, do not clobber it.
 #
-# NOTE: AWS caps a managed policy at 5 versions. v1 was deleted on 2026-08-28 to
-# make room for v5; Terraform does not manage that rotation, so if an apply ever
-# fails with LimitExceeded, delete the oldest non-default version by hand.
+# NOTE: AWS caps a managed policy at 5 versions. v1 was deleted by hand on
+# 2026-08-28 to make room for v5. An apply does NOT fail with LimitExceeded:
+# hashicorp/aws 5.100.0 (resourcePolicyUpdate -> policyPruneVersions) deletes the
+# oldest non-default version itself before CreatePolicyVersion, and the plan does
+# not show it. If that version matters as a rollback copy, save it first
+# (aws iam get-policy-version) before applying.
 
 resource "aws_iam_policy" "cicd_infra" {
   name        = "facilitator-cicd-infra"
@@ -314,6 +317,23 @@ resource "aws_iam_policy" "cicd_infra" {
           "ecs:UpdateCluster"
         ],
         "Resource" : "arn:aws:ecs:us-east-2:${data.aws_caller_identity.current.account_id}:cluster/facilitator-production"
+      },
+      {
+        # Added 2026-10-10. Terraform drops a tag with ecs:UntagResource. The inline facilitator-cicd policy
+        # grants ecs:TagResource (on "*", docs/CICD_SETUP.md) but not its inverse, so removing a tag -- or a key
+        # of the provider's default_tags, which every resource carries -- from the cluster, the service or the
+        # task definition would fail an image deploy the way ecs:UpdateCluster did on 2026-10-07. Scoped to the
+        # three ECS resources an image deploy reaches, narrower than TagResource's "*".
+        "Sid" : "EcsDeployUntag",
+        "Effect" : "Allow",
+        "Action" : [
+          "ecs:UntagResource"
+        ],
+        "Resource" : [
+          "arn:aws:ecs:us-east-2:${data.aws_caller_identity.current.account_id}:cluster/facilitator-production",
+          "arn:aws:ecs:us-east-2:${data.aws_caller_identity.current.account_id}:service/facilitator-production/facilitator-production",
+          "arn:aws:ecs:us-east-2:${data.aws_caller_identity.current.account_id}:task-definition/facilitator-production:*"
+        ]
       }
     ]
   })

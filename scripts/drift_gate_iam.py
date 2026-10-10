@@ -18,6 +18,13 @@ explicit Deny, or no Allow at all, is red -- the inline `facilitator-cicd` polic
 `iam:PassRole` (docs/CICD_SETUP.md), so "no Allow here" is "no Allow anywhere". Red comes with the exact command
 to apply it by hand, before the merge, on Terraform 1.9.8.
 
+The ECS cluster gets the same treatment. `aws_ecs_cluster.main` is in no -target list, but it rides into every
+image deploy as a dependency of the service, and on 2026-10-07 the deploy of #115 died on `ecs:UpdateCluster`.
+Only the cluster calls whose grant can live in the managed policy are evaluated: UpdateCluster (`EcsClusterUpdate`),
+and CreateCluster / DeleteCluster for a create or a replacement, which no policy grants -- the inline one holds
+only RegisterTaskDefinition, DeregisterTaskDefinition, UpdateService and TagResource. A tags-only change goes
+through TagResource/UntagResource and is not evaluated: TagResource lives in that inline policy, outside the plan.
+
 Prints GitHub annotations and appends a section to --summary. Never prints an account ID or an ARN.
 
     python3 scripts/drift_gate_iam.py --targeted targeted.json [--full full.json] [--summary "$GITHUB_STEP_SUMMARY"]
@@ -51,6 +58,11 @@ CALLS = {
     "aws_iam_policy": {
         "create": ["iam:CreatePolicy"], "update": ["iam:CreatePolicyVersion"], "delete": ["iam:DeletePolicy"]},
 }
+
+CLUSTER_TYPE = "aws_ecs_cluster"
+# hashicorp/aws 5.100.0 (.terraform.lock.hcl) sends a change to any of these through ecs:UpdateCluster alone.
+UPDATE_CLUSTER_ATTRS = ("setting", "configuration", "service_connect_defaults")
+CLUSTER_CALLS = {"create": ["ecs:CreateCluster"], "delete": ["ecs:DeleteCluster"]}
 
 
 def _walk(module: dict | None):
@@ -144,20 +156,54 @@ def target_arn(rtype: str, change: dict, account: str | None) -> tuple[str | Non
         name = _value(change, "name")
         arn = _value(change, "arn") or (f"arn:aws:iam::{account}:policy/{name}" if account and name else None)
         return arn, f"policy {name}"
+    if rtype == CLUSTER_TYPE:
+        # The plan carries the cluster's ARN once it exists; a cluster being created has none, and an unknown
+        # ARN never matches an Allow.
+        return _value(change, "arn"), f"cluster {_value(change, 'name')}"
     return None, rtype
 
 
+def _any_unknown(value) -> bool:
+    """after_unknown mirrors the value: a known block list reads `[{}]`, only a `true` leaf is unknown."""
+    if value is True:
+        return True
+    if isinstance(value, dict):
+        return any(_any_unknown(v) for v in value.values())
+    if isinstance(value, list):
+        return any(_any_unknown(v) for v in value)
+    return False
+
+
+def cluster_calls(actions: list[str], change: dict) -> list[str]:
+    """The ECS calls a cluster change needs that the managed policy can grant. Tags alone need none of them."""
+    calls = [c for a in actions for c in CLUSTER_CALLS.get(a, [])]
+    if "update" in actions:
+        before, after = change.get("before") or {}, change.get("after") or {}
+        unknown = change.get("after_unknown") or {}
+        if any(before.get(k) != after.get(k) or _any_unknown(unknown.get(k)) for k in UPDATE_CLUSTER_ATTRS):
+            calls.append("ecs:UpdateCluster")
+    return calls
+
+
 def verdicts(targeted: dict, document: dict | None, account: str | None) -> list[dict]:
-    """One row per aws_iam_* the targeted plan changes: the calls it needs and whether CI may make them."""
+    """One row per aws_iam_* the targeted plan changes, and per cluster change that needs a call the managed
+    policy can grant: the calls it needs and whether CI may make them."""
     rows = []
     for rc in targeted.get("resource_changes") or []:
         rtype = rc.get("type", "")
         actions = [a for a in rc.get("change", {}).get("actions", []) if a not in ("no-op", "read")]
-        if not rtype.startswith("aws_iam_") or not actions:
+        if not actions:
+            continue
+        if rtype == CLUSTER_TYPE:
+            needed = cluster_calls(actions, rc.get("change", {}))
+            if not needed:
+                continue
+        elif rtype.startswith("aws_iam_"):
+            needed = [c for a in actions for c in CALLS.get(rtype, {}).get(a, [])]
+        else:
             continue
         arn, label = target_arn(rtype, rc.get("change", {}), account)
-        needed = [c for a in actions for c in CALLS.get(rtype, {}).get(a, [])]
-        if rtype not in CALLS:
+        if rtype != CLUSTER_TYPE and rtype not in CALLS:
             outcome, why = "unmapped", "an IAM resource type this gate does not classify"
         elif document is None:
             outcome, why = "unknown", f"{CI_POLICY_ADDRESS} is not in the plan, so nothing says CI may"
@@ -189,7 +235,7 @@ def report(rows: list[dict], source: str) -> tuple[str, list[str]]:
     blocked = [r for r in rows if r["outcome"] != "allow"]
     lines = ["## IAM changes the deploy cannot apply", ""]
     if not rows:
-        lines.append("**Clean.** The deploy's targeted plan changes no IAM resource.")
+        lines.append("**Clean.** The deploy's targeted plan changes no IAM resource and no ECS cluster setting.")
         return "\n".join(lines) + "\n", []
     lines += [f"CI policy evaluated: `{CI_POLICY_ADDRESS}` ({source}).", "",
               "| Action | Resource | On | CI can apply it? |", "|---|---|---|---|"]
@@ -198,11 +244,11 @@ def report(rows: list[dict], source: str) -> tuple[str, list[str]]:
         lines.append(f"| `{r['actions']}` | `{r['address']}` | {r['on']} | {verdict} |")
     lines.append("")
     if not blocked:
-        lines.append("**Clean.** Every IAM change in the deploy's reach is one CI is allowed to make.")
+        lines.append("**Clean.** Every IAM and cluster change in the deploy's reach is one CI is allowed to make.")
         return "\n".join(lines) + "\n", []
     lines += [
-        "**Merging this as it stands breaks the deploy half-way**: the task definition and the service move,",
-        "the IAM change is refused. Apply it by hand BEFORE merging, with a human's credentials, from a",
+        "**As it stands, the next deploy breaks half-way**: whatever Terraform applies before this change goes",
+        "live, and the change is refused. Apply it by hand BEFORE merging, with a human's credentials, from a",
         f"checkout of this PR's head, on Terraform {TERRAFORM_VERSION}. Read the plan it prints before typing `yes`:",
         "", "```sh", command([r["address"] for r in blocked]), "```", "",
         "Then re-run this job: it goes green once the plan no longer carries the change.",

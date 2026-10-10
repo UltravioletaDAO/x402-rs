@@ -1400,10 +1400,10 @@ impl DiscoveryRegistry {
             return false;
         };
         // Phase 2 of the origin proof, off unless DISCOVERY_REQUIRE_ORIGIN_PROOF
-        // is set: a self-registered listing its own origin has not attested in
-        // `/.well-known/x402` stays here, whatever its 402 says
-        // (`discovery_health::origin_ownership`).
-        if r.source == crate::types_v2::DiscoverySource::SelfRegistered
+        // is set: a listing from a route that takes a URL from anyone, whose
+        // own origin has not vouched for it in `/.well-known/x402`, stays here
+        // whatever its 402 says (`discovery_health::origin_ownership`).
+        if crate::discovery_health::needs_origin_proof(r.source)
             && crate::discovery_config::require_origin_proof()
             && state.ownership != Some(crate::types_v2::Ownership::OriginAttested)
         {
@@ -2035,6 +2035,20 @@ impl DiscoveryRegistry {
     pub async fn get(&self, url: &str) -> Option<DiscoveryResource> {
         let resources = self.resources.read().await;
         resources.get(url).cloned()
+    }
+
+    /// The canonical keys of every catalog URL on `origin` (`scheme://host[:port]`),
+    /// the only entries of that origin's `/.well-known/x402` worth keeping: a file
+    /// can list tens of thousands of URLs, and the catalog is what bounds what the
+    /// prober holds of it (`discovery_health::origin_ownership`).
+    pub async fn urls_on_origin(&self, origin: &str) -> std::collections::HashSet<String> {
+        let resources = self.resources.read().await;
+        resources
+            .keys()
+            .filter_map(|k| crate::discovery_security::canonical_url(k).ok())
+            .filter(|c| c.url.origin().ascii_serialization() == origin)
+            .map(|c| c.key)
+            .collect()
     }
 
     /// List resources with pagination and optional filtering.

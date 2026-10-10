@@ -2340,10 +2340,11 @@ the observed-terms freshness window, and the resource is not quarantined. The 40
 handshake answer, has to be the listing's own answer to that request (not one another host gave
 after a redirect, nor one a 301/302/303 reached by turning the request into a GET); the 402 has
 to offer at least one payment option we can read. `health.verifiedAt` says when and `health.verifiedBy` how (`x402_challenge` |
-`mcp_handshake`). A self-registered listing also carries `health.ownership` (`origin-attested` |
-`unattested` | `unknown`): whether its own origin's `/.well-known/x402` lists its URL (see
-`POST /discovery/register`). It narrows nothing unless the operator turns on
-`DISCOVERY_REQUIRE_ORIGIN_PROOF` (`GET /discovery/config` `ownership`). A handshake shows the MCP server is up and reads no payment terms, so an MCP
+`mcp_handshake`). A listing that came in on a route taking a URL from anyone (`POST
+/discovery/register`, or a settlement asking to be discoverable) also carries `health.ownership`
+(`origin-attested` | `unattested` | `unknown`): whether its own origin's `/.well-known/x402`
+declares the same terms for its URL (see `POST /discovery/register`). It narrows nothing unless
+the operator turns on `DISCOVERY_REQUIRE_ORIGIN_PROOF` (`GET /discovery/config` `ownership`). A handshake shows the MCP server is up and reads no payment terms, so an MCP
 listing on a curated product's host -- whatever the scheme or path of its URL -- is listed only
 when every option it declares pays one of that product's own recipients. Auth-gated,
 degraded, quarantined, unprobeable and never-probed resources are not listed, and no parameter
@@ -2774,7 +2775,9 @@ for it, and a first-hand listing never; and `scanPastCap` -- the `sources` read 
 stopped, keeping only copies of listings already held, so nothing new enters that way),
 `healthProber` (the probe budget -- `budgetPerTick` is
 `maxRps * tickSeconds` and is the number the revalidation queue spends from, never adds to),
-`revalidation`, `observedTerms`, `search` (`maxQueryChars`, the longest `q` that
+`revalidation`, `observedTerms`, `ownership` (the origin proof of listings from open routes:
+`requireOriginProof`, off unless phase 2 is on, `cacheSeconds` and `retrySeconds` between reads
+of one origin's `/.well-known/x402`, and `maxFileBytes` read of it), `search` (`maxQueryChars`, the longest `q` that
 `GET /discovery/resources` accepts, which the `/bazaar` page reads instead of typing it), and
 `runtime` (whether this replica owns the periodic jobs, the queue depth, and the catalog size
 right now).
@@ -2990,8 +2993,8 @@ async fn path_bazaar_attestation() {}
 Registers a paid resource in the Bazaar catalog so clients can discover it via
 `GET /discovery/resources`.
 
-**Rate limited** to roughly 5 requests per minute per IP: registration triggers DNS lookups and
-outbound fetches against caller-supplied URLs.
+**Rate limited** to roughly 5 requests per minute per IP. Registration itself fetches nothing:
+the health prober reads the URL afterwards, in the background.
 
 **Request body:**
 ```json
@@ -3054,17 +3057,26 @@ metadata IP; or an empty `accepts` array on a non-`facilitator` type.
 An unreadable amount is a `400`. It is never accepted and stored as zero, which would publish
 your endpoint as free.
 
-**Ownership.** Registration takes the URL from anyone, so the listing reports whether its own
-origin vouches for it: `health.ownership` is `origin-attested` when `/.well-known/x402` on the
-URL's origin (same scheme, host and port) lists the URL -- as `{"x402Version": 2, "resources":
-[{"url": "https://api.example.com/paid"}]}` or as bare URL strings -- `unattested` when it does
-not or there is no such file, and `unknown` when it could not be read. The health prober reads
-that file, never this request, once your listing verifies alive, and at most once per origin per
-`ownership.cacheSeconds` of `GET /discovery/config`. With `DISCOVERY_REQUIRE_ORIGIN_PROOF` on, a
-self-registered listing that is not `origin-attested` is not listed.
+**Ownership.** Registration takes the URL and the description from anyone, so the listing reports
+whether its own origin vouches for what it says. `health.ownership` is `origin-attested` when
+`/.well-known/x402` on the URL's host has an entry for the URL, in the same format as the request
+body above, that declares every `payTo` your `accepts` declare (with its network), the same
+`description`, and the same `category`, `provider` and `tags` wherever your `metadata` names
+them; `unattested` when there is no such file or entry, or it says something else -- an entry
+that only lists the URL vouches for nothing -- and `unknown` when the file could not be read,
+including a 401/403 or a page that is not such a file (what a WAF or a CDN answers a bot); an
+`unknown` read never erases an earlier verdict. The entry's `url` is matched exactly as written,
+apart from the host's case, a trailing dot and the default port, and your listing's URL has to be
+in its plain spelling (`https://host./path` is never attested). The health prober reads that file
+at the root of your URL's origin, never during this request, once your listing verifies alive:
+normally once per origin per `ownership.cacheSeconds` of `GET /discovery/config`, sooner after a
+read that failed (`ownership.retrySeconds`), and at most `ownership.maxFileBytes` of it. A file
+served from another host after a redirect counts as none. With `DISCOVERY_REQUIRE_ORIGIN_PROOF`
+on, a self-registered listing that is not `origin-attested` is not listed.
 
-**409:** the URL is already listed, from any source. There is no public route to update or remove
-a listing; the operator does that.
+**409:** the URL is already in the catalog, from any source, listed or still waiting for its
+first verification. There is no public route to update or remove a listing; the operator does
+that.
 "#,
     request_body(content = Object, description = "Resource registration request"),
     responses(

@@ -54,12 +54,18 @@ fn flag(name: &str, default: bool) -> bool {
 /// default plus a warning, never the opposite of what was meant: [`flag`]
 /// reads `"flase"` as ON, which is fine for a kill-switch that defaults ON and
 /// wrong for one that hides listings when it flips.
-fn strict_flag(name: &str, default: bool) -> bool {
+///
+/// The warning goes out once per process (`warned`): the value is read on
+/// every listing of every request, and one log line per read would bury
+/// CloudWatch under a typo.
+fn strict_flag(name: &str, default: bool, warned: &std::sync::atomic::AtomicBool) -> bool {
     match std::env::var(name) {
         Ok(v) if v.eq_ignore_ascii_case("true") || v == "1" => true,
         Ok(v) if v.eq_ignore_ascii_case("false") || v == "0" => false,
         Ok(v) => {
-            tracing::warn!(var = name, value = %v, default, "not true/false/1/0; using the default");
+            if !warned.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                tracing::warn!(var = name, value = %v, default, "not true/false/1/0; using the default");
+            }
             default
         }
         Err(_) => default,
@@ -270,19 +276,30 @@ pub fn terms_max_records() -> usize {
 // Origin proof of ownership (self-registered listings)
 // ============================================================================
 
-/// Whether a self-registered listing is exposed only when its own origin
-/// attests it (`health.ownership` = `origin-attested`). Default OFF: phase 1
-/// publishes the verdict and hides nothing, so the registrants that have no
-/// `/.well-known/x402` yet are seen before anybody is hidden for it.
+/// Whether a listing from a route that takes a URL from anyone (a
+/// self-registration, a discoverable settlement) is exposed only when its own
+/// origin vouches for it (`health.ownership` = `origin-attested`). Default OFF:
+/// phase 1 publishes the verdict and hides nothing, so the listings whose
+/// origins publish no matching `/.well-known/x402` yet are seen before anybody
+/// is hidden for it.
 pub fn require_origin_proof() -> bool {
-    strict_flag("DISCOVERY_REQUIRE_ORIGIN_PROOF", false)
+    static WARNED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    strict_flag("DISCOVERY_REQUIRE_ORIGIN_PROOF", false, &WARNED)
 }
 
 /// Seconds one origin's `/.well-known/x402` answer is reused before the prober
-/// reads it again. One read per host per window, outside the probe budget: six
-/// hours is ~4 extra requests a day per self-registering host.
+/// reads it again. One read per origin per window, outside the probe budget:
+/// six hours is ~4 extra requests a day per origin. Never under five minutes,
+/// which would read the file on every probe.
 pub fn origin_proof_cache_secs() -> u64 {
-    positive("DISCOVERY_ORIGIN_PROOF_CACHE_SECS", 6 * 3600)
+    positive("DISCOVERY_ORIGIN_PROOF_CACHE_SECS", 6 * 3600).max(300)
+}
+
+/// Seconds a read that did not complete (network error, 429, 5xx) is kept
+/// before the origin is asked again: shorter than the window, because it says
+/// nothing about ownership. At least a minute.
+pub fn origin_proof_retry_secs() -> u64 {
+    positive("DISCOVERY_ORIGIN_PROOF_RETRY_SECS", 15 * 60).max(60)
 }
 
 // ============================================================================
@@ -334,6 +351,8 @@ pub fn effective() -> serde_json::Value {
         "ownership": {
             "requireOriginProof": require_origin_proof(),
             "cacheSeconds": origin_proof_cache_secs(),
+            "retrySeconds": origin_proof_retry_secs(),
+            "maxFileBytes": crate::discovery_health::WELL_KNOWN_MAX_BYTES,
         },
         // The `/bazaar` page reads its `q` cap here instead of typing one.
         "search": {
@@ -421,12 +440,50 @@ mod tests {
         assert_eq!(published["catalog"]["maxHostSharePercent"], 5);
     }
 
+    /// Puts a variable back as it was when dropped, so a failing assert inside
+    /// cannot leave it set for every test after it on the same thread.
+    struct EnvRestore(&'static str, Option<String>);
+
+    impl EnvRestore {
+        fn new(name: &'static str) -> Self {
+            Self(name, std::env::var(name).ok())
+        }
+    }
+
+    impl Drop for EnvRestore {
+        fn drop(&mut self) {
+            match &self.1 {
+                Some(v) => std::env::set_var(self.0, v),
+                None => std::env::remove_var(self.0),
+            }
+        }
+    }
+
+    #[test]
+    fn the_origin_proof_windows_have_floors() {
+        let _cache = EnvRestore::new("DISCOVERY_ORIGIN_PROOF_CACHE_SECS");
+        let _retry = EnvRestore::new("DISCOVERY_ORIGIN_PROOF_RETRY_SECS");
+        std::env::remove_var("DISCOVERY_ORIGIN_PROOF_CACHE_SECS");
+        std::env::remove_var("DISCOVERY_ORIGIN_PROOF_RETRY_SECS");
+        assert_eq!(origin_proof_cache_secs(), 6 * 3600);
+        assert_eq!(origin_proof_retry_secs(), 15 * 60);
+        assert_eq!(effective()["ownership"]["retrySeconds"], 15 * 60);
+        std::env::set_var("DISCOVERY_ORIGIN_PROOF_CACHE_SECS", "1");
+        std::env::set_var("DISCOVERY_ORIGIN_PROOF_RETRY_SECS", "1");
+        assert_eq!(
+            origin_proof_cache_secs(),
+            300,
+            "a window of 1 s reads the file on every probe"
+        );
+        assert_eq!(origin_proof_retry_secs(), 60);
+    }
+
     /// Phase 1 of the origin proof hides nothing, and a typo can never turn
     /// phase 2 on: only `true`/`1` do, anything else is the default.
     #[test]
     fn the_origin_proof_is_off_by_default_and_a_typo_cannot_turn_it_on() {
         let var = "DISCOVERY_REQUIRE_ORIGIN_PROOF";
-        let before = std::env::var(var).ok();
+        let _restore = EnvRestore::new(var);
         std::env::remove_var(var);
         assert!(!require_origin_proof());
         for (value, want) in [
@@ -444,11 +501,6 @@ mod tests {
         }
         std::env::set_var(var, "true");
         assert_eq!(effective()["ownership"]["requireOriginProof"], true);
-        match before {
-            Some(v) => std::env::set_var(var, v),
-            None => std::env::remove_var(var),
-        }
-        assert_eq!(effective()["ownership"]["cacheSeconds"], 6 * 3600);
     }
 
     /// The `q` cap is defined once (`MAX_QUERY_CHARS`, which the handler

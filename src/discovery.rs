@@ -1399,6 +1399,16 @@ impl DiscoveryRegistry {
         let Some(state) = health.get(r.url.as_str()) else {
             return false;
         };
+        // Phase 2 of the origin proof, off unless DISCOVERY_REQUIRE_ORIGIN_PROOF
+        // is set: a self-registered listing its own origin has not attested in
+        // `/.well-known/x402` stays here, whatever its 402 says
+        // (`discovery_health::origin_ownership`).
+        if r.source == crate::types_v2::DiscoverySource::SelfRegistered
+            && crate::discovery_config::require_origin_proof()
+            && state.ownership != Some(crate::types_v2::Ownership::OriginAttested)
+        {
+            return false;
+        }
         // An MCP handshake verifies the server, not the listing's terms: on a
         // curated product's host, whatever the URL's scheme or path, the
         // listing has to declare that product's own recipients to be shown.

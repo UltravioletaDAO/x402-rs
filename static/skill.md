@@ -875,7 +875,8 @@ out that host and its subdomains).
   read (an MCP endpoint: its handshake listed a tool), recently, and it is not
   quarantined. No parameter lists anything else -- `health=any` included: every
   item's `health.status` is `alive`, and `health.verifiedBy` says how it was
-  verified (`x402_challenge` or `mcp_handshake`).
+  verified (`x402_challenge` or `mcp_handshake`). A self-registered item also
+  carries `health.ownership` (see "Registering a resource").
 - **Order.** Without `q`: tier (`first_party`, `vip`, `verified`, `listed`), then
   most recently updated. A one-word `q` keeps that order over the listings that
   contain it; a `q` of two or more words (function words aside) is ranked by
@@ -922,12 +923,20 @@ branch on the status and on `error`:
 | `400` `Invalid URL` | not http(s), credentials in the URL, or a private, loopback or link-local IP literal |
 | `400` `Invalid resource type` | `type` must be `http`, `mcp` or `a2a` (`facilitator` also exists, and is the only type allowed an empty `accepts`) |
 | `400` `No payment methods specified` | `accepts` is empty |
-| `409` `Resource already registered` | that URL is already listed |
+| `409` `Resource already registered` | that URL is already listed; there is no public update or delete route |
 | `429` | registration has its own, much slower bucket (see `/auth.md`) |
 
 A registered URL is health-probed like any other entry. `first_party` and `vip` are
 curated by hand, `verified` answered a payment challenge correctly, and `listed` is
 everything else.
+
+Registration takes the URL from anyone, so a self-registered item reports whether
+its own origin vouches for it in `health.ownership`: `origin-attested` when
+`/.well-known/x402` on the URL's origin lists the URL
+(`{"x402Version": 2, "resources": [{"url": "https://api.example.com/premium-data"}]}`,
+or bare URL strings), `unattested` when it does not, `unknown` when the file could not
+be read. Publish that file to be attested; the prober reads it once your listing
+verifies alive.
 
 ---
 

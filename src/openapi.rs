@@ -2340,7 +2340,10 @@ the observed-terms freshness window, and the resource is not quarantined. The 40
 handshake answer, has to be the listing's own answer to that request (not one another host gave
 after a redirect, nor one a 301/302/303 reached by turning the request into a GET); the 402 has
 to offer at least one payment option we can read. `health.verifiedAt` says when and `health.verifiedBy` how (`x402_challenge` |
-`mcp_handshake`). A handshake shows the MCP server is up and reads no payment terms, so an MCP
+`mcp_handshake`). A self-registered listing also carries `health.ownership` (`origin-attested` |
+`unattested` | `unknown`): whether its own origin's `/.well-known/x402` lists its URL (see
+`POST /discovery/register`). It narrows nothing unless the operator turns on
+`DISCOVERY_REQUIRE_ORIGIN_PROOF` (`GET /discovery/config` `ownership`). A handshake shows the MCP server is up and reads no payment terms, so an MCP
 listing on a curated product's host -- whatever the scheme or path of its URL -- is listed only
 when every option it declares pays one of that product's own recipients. Auth-gated,
 degraded, quarantined, unprobeable and never-probed resources are not listed, and no parameter
@@ -3050,6 +3053,18 @@ metadata IP; or an empty `accepts` array on a non-`facilitator` type.
 
 An unreadable amount is a `400`. It is never accepted and stored as zero, which would publish
 your endpoint as free.
+
+**Ownership.** Registration takes the URL from anyone, so the listing reports whether its own
+origin vouches for it: `health.ownership` is `origin-attested` when `/.well-known/x402` on the
+URL's origin (same scheme, host and port) lists the URL -- as `{"x402Version": 2, "resources":
+[{"url": "https://api.example.com/paid"}]}` or as bare URL strings -- `unattested` when it does
+not or there is no such file, and `unknown` when it could not be read. The health prober reads
+that file, never this request, once your listing verifies alive, and at most once per origin per
+`ownership.cacheSeconds` of `GET /discovery/config`. With `DISCOVERY_REQUIRE_ORIGIN_PROOF` on, a
+self-registered listing that is not `origin-attested` is not listed.
+
+**409:** the URL is already listed, from any source. There is no public route to update or remove
+a listing; the operator does that.
 "#,
     request_body(content = Object, description = "Resource registration request"),
     responses(

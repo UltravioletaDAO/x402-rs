@@ -705,7 +705,7 @@ The following networks exist as enum entries in `src/network.rs` but are **NOT s
 - `GET /.well-known/mcp/server-card.json` - MCP server card. `serverInfo.version` is NOT in the static file; it is stamped from `FACILITATOR_VERSION` when served.
 - `GET /docs` - Interactive Swagger UI (OpenAPI documentation)
 - `GET /api-docs/openapi.json` - Raw OpenAPI 3.0 JSON spec (version resolved at runtime from `VERSION`, see below)
-- Discovery (Bazaar) API: `POST /discovery/register`, `GET /discovery/resources`, `GET /discovery/stats`, `GET /discovery/attestation/{hash}`; admin: `DELETE /discovery/resources`, `POST /discovery/admin/suppress`, `POST /discovery/admin/release`
+- Discovery (Bazaar) API: `POST /discovery/register`, `GET /discovery/resources`, `GET /discovery/stats`, `GET /discovery/attestation/{hash}`; admin: `DELETE /discovery/resources`, `POST /discovery/admin/suppress`, `POST /discovery/admin/release`. `POST /discovery/register` takes a URL from anyone and makes no outbound fetch; the prober then reads `/.well-known/x402` on the listing's own origin (once per origin per `DISCOVERY_ORIGIN_PROOF_CACHE_SECS`) and publishes `health.ownership` (`origin-attested` | `unattested` | `unknown`) on self-registered listings. `DISCOVERY_REQUIRE_ORIGIN_PROOF` (default off, phase 2) stops listing the unattested ones; both are in `src/discovery_config.rs` and `GET /discovery/config`. The verdict lives in the health overlay, never on the resource: `strip_response_only` removes any `health` a registrant sends.
 - Asset endpoints: `/logo.png`, `/favicon.ico`, `/avalanche.png`, etc.
 
 ### DX402 durable-evidence

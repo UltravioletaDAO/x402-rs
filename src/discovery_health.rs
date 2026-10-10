@@ -25,7 +25,7 @@
 //! declares nothing is probed with GET, and gets ONE POST `{}` retry in the same
 //! cycle when that GET answers 405 or 400.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
@@ -44,7 +44,7 @@ use crate::discovery_terms::{
     ObservationContext, ObservationPhase, ObservedTerms, TermsProvenance, TermsTransport,
     TransportReading,
 };
-use crate::types_v2::{HealthState, HealthStatus, QuarantineReason, VerifiedBy};
+use crate::types_v2::{DiscoverySource, HealthState, HealthStatus, Ownership, QuarantineReason, VerifiedBy};
 
 /// Consecutive fail-class probes before a resource is quarantined.
 const QUARANTINE_AFTER_FAILS: u32 = 3;
@@ -767,6 +767,11 @@ pub struct HealthRecord {
     /// ([`probed_with_another_request`]).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub drift_rule: Option<u8>,
+    /// Whether the listing's origin vouches for it ([`Ownership`]): written for
+    /// a self-registered listing once a probe verified it alive
+    /// ([`origin_ownership`]). Absent on every other listing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ownership: Option<Ownership>,
 }
 
 /// The drift check's revision, recorded on the holds it judges. 2 compares
@@ -815,6 +820,7 @@ impl HealthRecord {
             verified_by: self
                 .verified_at
                 .map(|_| self.verified_by.unwrap_or(VerifiedBy::X402Challenge)),
+            ownership: self.ownership,
         }
     }
 
@@ -877,6 +883,11 @@ pub struct HealthTracker {
     /// does not evict verified copies as if they were pending, and no upload
     /// overwrites the good overlay ([`Self::is_loaded`], [`Self::persist`]).
     loaded: AtomicBool,
+    /// Each origin's `/.well-known/x402`, as last read, keyed by origin
+    /// (`scheme://host[:port]`): one read per origin per cache window, whatever
+    /// number of self-registered listings it has ([`origin_ownership`]). Kept in
+    /// memory only; the verdict it produced is persisted on each listing.
+    origin_files: RwLock<HashMap<String, CachedOriginFile>>,
 }
 
 impl Default for HealthTracker {
@@ -894,6 +905,7 @@ impl HealthTracker {
             last_persist: AtomicU64::new(0),
             etag: RwLock::new(None),
             loaded: AtomicBool::new(true),
+            origin_files: RwLock::new(HashMap::new()),
         }
     }
 
@@ -1271,6 +1283,7 @@ impl HealthTracker {
             verified_by: None,
             mcp_tools: None,
             drift_rule: None,
+            ownership: None,
         });
         // A record from before the reason was kept gets it now, read off its
         // signature while the last status code is still the one that set it.
@@ -1474,6 +1487,173 @@ impl HealthTracker {
             }
         }
     }
+
+    /// Record what `url`'s origin said about it. A read that did not complete
+    /// (`Unknown`) never erases a verdict an earlier read reached: an origin
+    /// that answers 503 for a minute has not disowned its listing.
+    async fn note_ownership(&self, url: &str, verdict: Ownership) {
+        if let Some(rec) = self.records.write().await.get_mut(url) {
+            let keep = verdict == Ownership::Unknown
+                && rec.ownership.is_some_and(|o| o != Ownership::Unknown);
+            if !keep && rec.ownership != Some(verdict) {
+                rec.ownership = Some(verdict);
+                self.dirty.store(true, Ordering::SeqCst);
+            }
+        }
+    }
+
+    /// The origin's file as last read, while it is still fresh at `now`.
+    async fn cached_origin_file(&self, origin: &str, now: u64) -> Option<OriginFile> {
+        let files = self.origin_files.read().await;
+        let cached = files.get(origin)?;
+        let ttl = match cached.file {
+            OriginFile::Failed => ORIGIN_PROOF_RETRY_SECS.min(crate::discovery_config::origin_proof_cache_secs()),
+            _ => crate::discovery_config::origin_proof_cache_secs(),
+        };
+        (now.saturating_sub(cached.read_at) < ttl).then(|| cached.file.clone())
+    }
+
+    async fn cache_origin_file(&self, origin: &str, file: OriginFile, now: u64) {
+        self.origin_files.write().await.insert(
+            origin.to_string(),
+            CachedOriginFile {
+                read_at: now,
+                file,
+            },
+        );
+    }
+}
+
+// ============================================================================
+// Origin proof of ownership (self-registered listings)
+// ============================================================================
+//
+// `POST /discovery/register` takes a URL from anyone. The probe ties the
+// listing's payTo to the live 402, but nothing tied the listing to its origin:
+// a stranger could list somebody else's endpoint, with the real payTo copied
+// from its 402 and a description, category and tags of their own, and it went
+// public as soon as the 402 answered. The proof is the origin's own word:
+// `/.well-known/x402` on the SAME origin lists the URL. The prober reads it --
+// never the register request, which makes no outbound fetch -- once per origin
+// per cache window, for a self-registered listing that a probe just verified
+// alive, and records the verdict on the listing (`health.ownership`).
+//
+// Phase 1 only publishes it. `DISCOVERY_REQUIRE_ORIGIN_PROOF=true` (phase 2)
+// stops exposing a self-registered listing its origin has not attested
+// (`DiscoveryRegistry::is_exposed`).
+
+/// Largest `/.well-known/x402` body read. A file listing a whole API's URLs is
+/// a few KB; past this it is not one.
+const WELL_KNOWN_MAX_BYTES: usize = 512 * 1024;
+
+/// How long a read that did not complete is remembered before the origin is
+/// asked again: short, because it says nothing about ownership.
+const ORIGIN_PROOF_RETRY_SECS: u64 = 15 * 60;
+
+/// An origin's `/.well-known/x402`, as one read found it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum OriginFile {
+    /// The file answered and lists these URLs (canonical keys).
+    Lists(HashSet<String>),
+    /// No usable file: 404, any other refusal that is not "try later", a 2xx
+    /// that is not such a file, or one served from another host.
+    Absent,
+    /// The read did not complete: network error, SSRF refusal, 429 or 5xx.
+    Failed,
+}
+
+#[derive(Debug, Clone)]
+struct CachedOriginFile {
+    read_at: u64,
+    file: OriginFile,
+}
+
+/// The URLs a `/.well-known/x402` body lists, canonicalized; `None` when the
+/// body is not such a file. Entries are the crawler's objects (`{"url": ...}`)
+/// or bare URL strings; one that does not parse is skipped, not fatal.
+fn listed_urls(body: &str) -> Option<HashSet<String>> {
+    let value: serde_json::Value = serde_json::from_str(body).ok()?;
+    let resources = value.get("resources")?.as_array()?;
+    Some(
+        resources
+            .iter()
+            .filter_map(|entry| match entry {
+                serde_json::Value::String(s) => Some(s.as_str()),
+                other => other.get("url")?.as_str(),
+            })
+            .filter_map(|u| crate::discovery_security::canonical_url(u).ok())
+            .map(|c| c.key)
+            .collect(),
+    )
+}
+
+/// The verdict a file gives the listing whose canonical key is `key`.
+fn ownership_from(file: &OriginFile, key: &str) -> Ownership {
+    match file {
+        OriginFile::Lists(urls) if urls.contains(key) => Ownership::OriginAttested,
+        OriginFile::Lists(_) | OriginFile::Absent => Ownership::Unattested,
+        OriginFile::Failed => Ownership::Unknown,
+    }
+}
+
+/// Read `origin`'s `/.well-known/x402` through the probe transport (the same
+/// SSRF-hardened connector, never a payment header).
+async fn read_origin_file<T: ProbeTransport + ?Sized>(transport: &T, origin: &url::Url) -> OriginFile {
+    let Ok(well_known) = origin.join("/.well-known/x402") else {
+        return OriginFile::Absent;
+    };
+    let mut response = match transport.send(&well_known, ProbeMethod::Get, None).await {
+        Ok(r) => r,
+        Err(_) => return OriginFile::Failed,
+    };
+    let status = response.status().as_u16();
+    if status == 429 || status >= 500 {
+        return OriginFile::Failed;
+    }
+    // Another host's answer vouches for nothing on this one.
+    if !response.status().is_success() || !own_response(&well_known, &response) {
+        return OriginFile::Absent;
+    }
+    let mut body = Vec::new();
+    loop {
+        match response.chunk().await {
+            Ok(Some(chunk)) => {
+                if body.len() + chunk.len() > WELL_KNOWN_MAX_BYTES {
+                    return OriginFile::Absent;
+                }
+                body.extend_from_slice(&chunk);
+            }
+            Ok(None) => break,
+            Err(_) => return OriginFile::Failed,
+        }
+    }
+    match std::str::from_utf8(&body).ok().and_then(listed_urls) {
+        Some(urls) => OriginFile::Lists(urls),
+        None => OriginFile::Absent,
+    }
+}
+
+/// Whether `url`'s own origin lists it in its `/.well-known/x402`, reading the
+/// file at most once per origin per cache window.
+async fn origin_ownership<T: ProbeTransport + ?Sized>(
+    transport: &T,
+    tracker: &HealthTracker,
+    url: &url::Url,
+) -> Ownership {
+    let Ok(canonical) = crate::discovery_security::canonical_url(url.as_str()) else {
+        return Ownership::Unattested;
+    };
+    let origin = canonical.url.origin().ascii_serialization();
+    let now = now_secs();
+    let file = match tracker.cached_origin_file(&origin, now).await {
+        Some(file) => file,
+        None => {
+            let file = read_origin_file(transport, &canonical.url).await;
+            tracker.cache_origin_file(&origin, file.clone(), now).await;
+            file
+        }
+    };
+    ownership_from(&file, &canonical.key)
 }
 
 /// JSON-RPC `initialize` handshake used to probe MCP endpoints, which answer
@@ -2770,6 +2950,20 @@ async fn probe_and_record<T: ProbeTransport + ?Sized>(
         .then_some(VerifiedBy::X402Challenge),
     };
     tracker.note_verified(u.as_str(), verified_by).await;
+
+    // Origin proof ([`origin_ownership`]): asked only of a self-registered
+    // listing -- the one route that takes a URL from anyone -- and only once
+    // this probe verified it, since a listing that is not alive is not exposed
+    // either way.
+    if verified_by.is_some()
+        && registry
+            .get(u.as_str())
+            .await
+            .is_some_and(|r| r.source == DiscoverySource::SelfRegistered)
+    {
+        let verdict = origin_ownership(transport, tracker, &u).await;
+        tracker.note_ownership(u.as_str(), verdict).await;
+    }
 
     // Politeness feedback. A host that refuses us goes into
     // backoff -- its own `Retry-After` when it sent one, an
@@ -6324,6 +6518,7 @@ mod declared_method_tests {
             quarantine_reason: None,
             verified_at,
             verified_by: verified_at.map(|_| VerifiedBy::X402Challenge),
+            ownership: None,
         };
         let alive = HealthStatus::Alive;
         let ok =
@@ -6729,6 +6924,7 @@ mod declared_method_tests {
             quarantine_reason: None,
             verified_at: Some(now),
             verified_by: Some(by),
+            ownership: None,
         };
         let undeclared = ProbeRequest::Undeclared;
         let ok =
@@ -6810,6 +7006,308 @@ mod declared_method_tests {
                 .await,
             None
         );
+    }
+
+    // ------------------------------------------------------------------------
+    // Origin proof of ownership: `/.well-known/x402` on the listing's origin
+    // ------------------------------------------------------------------------
+
+    const LISTING: &str = "https://seller.example/r";
+
+    /// A seller whose listing answers a 402 offering Tavily's options (or a 200
+    /// when `alive` is false) and whose origin answers `/.well-known/x402` with
+    /// `well_known`, as the connector hands it over after `redirect`. Counts
+    /// how often the file is read.
+    struct Origin {
+        alive: bool,
+        well_known: (u16, String),
+        redirect: Option<crate::discovery_security::FollowedRedirect>,
+        reads: std::sync::atomic::AtomicUsize,
+    }
+
+    impl Origin {
+        fn new(status: u16, body: &str) -> Self {
+            Self {
+                alive: true,
+                well_known: (status, body.to_string()),
+                redirect: None,
+                reads: std::sync::atomic::AtomicUsize::new(0),
+            }
+        }
+
+        fn reads(&self) -> usize {
+            self.reads.load(Ordering::SeqCst)
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl ProbeTransport for Origin {
+        async fn send(
+            &self,
+            url: &url::Url,
+            _method: ProbeMethod,
+            _body: Option<&str>,
+        ) -> Result<reqwest::Response, SecurityReject> {
+            if url.path() == "/.well-known/x402" {
+                self.reads.fetch_add(1, Ordering::SeqCst);
+                let mut response = axum::http::Response::builder()
+                    .status(self.well_known.0)
+                    .body(self.well_known.1.clone())
+                    .unwrap();
+                if let Some(redirect) = &self.redirect {
+                    response.extensions_mut().insert(redirect.clone());
+                }
+                return Ok(reqwest::Response::from(response));
+            }
+            let response = if self.alive {
+                axum::http::Response::builder()
+                    .status(402)
+                    .header("payment-required", challenge_for(&accepts()))
+                    .body(String::from("{}"))
+                    .unwrap()
+            } else {
+                axum::http::Response::builder()
+                    .status(200)
+                    .body(String::from("{}"))
+                    .unwrap()
+            };
+            Ok(reqwest::Response::from(response))
+        }
+
+        async fn send_mcp(
+            &self,
+            _url: &url::Url,
+            _body: &str,
+            _session: Option<&str>,
+        ) -> Result<reqwest::Response, SecurityReject> {
+            Err(SecurityReject::Http("no MCP here".to_string()))
+        }
+    }
+
+    fn well_known(urls: &[&str]) -> String {
+        json!({ "x402Version": 2, "resources": urls.iter().map(|u| json!({ "url": u })).collect::<Vec<_>>() })
+            .to_string()
+    }
+
+    /// A registry holding `LISTING` from `source`, probed once through `origin`.
+    async fn probed(origin: &Origin, source: DiscoverySource) -> (DiscoveryRegistry, Option<Ownership>) {
+        let registry = DiscoveryRegistry::new();
+        let mut listing = listing_of("/r", None);
+        listing.source = source;
+        registry.register(listing).await.unwrap();
+        let ownership = probe_again(origin, &registry).await;
+        (registry, ownership)
+    }
+
+    async fn probe_again(origin: &Origin, registry: &DiscoveryRegistry) -> Option<Ownership> {
+        let target = registry.probe_targets().await.remove(0);
+        let health = registry.health();
+        probe_and_record(origin, registry, &health, target).await;
+        health.snapshot().await.remove(LISTING).unwrap().ownership
+    }
+
+    /// Set (or clear) the phase-2 switch for the length of `f`, putting back
+    /// what was there. CI runs these tests on one thread.
+    async fn with_origin_proof<F: std::future::Future<Output = ()>>(on: bool, f: F) {
+        let var = "DISCOVERY_REQUIRE_ORIGIN_PROOF";
+        let before = std::env::var(var).ok();
+        std::env::set_var(var, if on { "true" } else { "false" });
+        f.await;
+        match before {
+            Some(v) => std::env::set_var(var, v),
+            None => std::env::remove_var(var),
+        }
+    }
+
+    #[test]
+    fn a_well_known_file_lists_urls_as_objects_or_strings_canonicalized() {
+        let urls = listed_urls(
+            r#"{"x402Version":2,"resources":[
+                {"url":"https://SELLER.example./r","type":"http"},
+                "https://seller.example",
+                {"url":"not a url"},
+                {"type":"http"},
+                42
+            ]}"#,
+        )
+        .unwrap();
+        assert!(urls.contains(LISTING), "{urls:?}");
+        assert!(urls.contains("https://seller.example/"), "{urls:?}");
+        assert_eq!(urls.len(), 2, "{urls:?}");
+        for not_a_file in ["<html>hi</html>", "{}", r#"{"resources":{}}"#, "[]", ""] {
+            assert_eq!(listed_urls(not_a_file), None, "{not_a_file:?}");
+        }
+    }
+
+    #[test]
+    fn what_each_reading_of_the_file_says_about_ownership() {
+        let listed = OriginFile::Lists([LISTING.to_string()].into_iter().collect());
+        assert_eq!(ownership_from(&listed, LISTING), Ownership::OriginAttested);
+        assert_eq!(ownership_from(&listed, "https://seller.example/other"), Ownership::Unattested);
+        assert_eq!(ownership_from(&OriginFile::Absent, LISTING), Ownership::Unattested);
+        assert_eq!(ownership_from(&OriginFile::Failed, LISTING), Ownership::Unknown);
+    }
+
+    /// The fila 1409 shape: a self-registered listing is published as attested
+    /// only when its own origin lists it.
+    #[tokio::test]
+    async fn the_origin_decides_whether_a_self_registered_listing_is_its_own() {
+        let elsewhere = Some(crate::discovery_security::FollowedRedirect {
+            host: Some("elsewhere.example".to_string()),
+            method_kept: true,
+        });
+        let big = format!("{}{}", " ".repeat(WELL_KNOWN_MAX_BYTES), well_known(&[LISTING]));
+        let cases: Vec<(&str, Origin, Ownership)> = vec![
+            ("listed", Origin::new(200, &well_known(&[LISTING])), Ownership::OriginAttested),
+            ("listed as another spelling of the same URL",
+             Origin::new(200, &well_known(&["https://SELLER.example./r"])), Ownership::OriginAttested),
+            ("lists other URLs", Origin::new(200, &well_known(&["https://seller.example/x"])), Ownership::Unattested),
+            ("lists the same path on another host",
+             Origin::new(200, &well_known(&["https://other.example/r"])), Ownership::Unattested),
+            ("no file", Origin::new(404, "not found"), Ownership::Unattested),
+            ("a page, not a file", Origin::new(200, "<html>app</html>"), Ownership::Unattested),
+            ("forbidden", Origin::new(403, ""), Ownership::Unattested),
+            ("too large to be a list of URLs", Origin::new(200, &big), Ownership::Unattested),
+            ("served from another host",
+             Origin { redirect: elsewhere, ..Origin::new(200, &well_known(&[LISTING])) }, Ownership::Unattested),
+            ("try later", Origin::new(503, ""), Ownership::Unknown),
+            ("rate limited", Origin::new(429, ""), Ownership::Unknown),
+        ];
+        for (name, origin, want) in cases {
+            let (_, got) = probed(&origin, DiscoverySource::SelfRegistered).await;
+            assert_eq!(got, Some(want), "{name}");
+            assert_eq!(origin.reads(), 1, "{name}");
+        }
+    }
+
+    #[tokio::test]
+    async fn only_a_self_registered_listing_that_verified_alive_is_asked() {
+        for source in [DiscoverySource::Aggregated, DiscoverySource::Crawled, DiscoverySource::Settlement] {
+            let origin = Origin::new(200, &well_known(&[LISTING]));
+            let (_, got) = probed(&origin, source).await;
+            assert_eq!(got, None, "{source:?}");
+            assert_eq!(origin.reads(), 0, "{source:?}");
+        }
+        let dead = Origin { alive: false, ..Origin::new(200, &well_known(&[LISTING])) };
+        let (_, got) = probed(&dead, DiscoverySource::SelfRegistered).await;
+        assert_eq!(got, None);
+        assert_eq!(dead.reads(), 0, "a listing that did not verify is not exposed either way");
+    }
+
+    #[tokio::test]
+    async fn an_origin_is_read_once_per_cache_window() {
+        let origin = Origin::new(200, &well_known(&[LISTING]));
+        let (registry, _) = probed(&origin, DiscoverySource::SelfRegistered).await;
+        assert_eq!(probe_again(&origin, &registry).await, Some(Ownership::OriginAttested));
+        assert_eq!(origin.reads(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_failed_read_is_retried_sooner_than_an_answer() {
+        let t = HealthTracker::new();
+        let origin = "https://seller.example";
+        let listed = OriginFile::Lists(HashSet::new());
+        t.cache_origin_file(origin, OriginFile::Failed, 1_000).await;
+        assert_eq!(t.cached_origin_file(origin, 1_000 + ORIGIN_PROOF_RETRY_SECS - 1).await, Some(OriginFile::Failed));
+        assert_eq!(t.cached_origin_file(origin, 1_000 + ORIGIN_PROOF_RETRY_SECS).await, None);
+        t.cache_origin_file(origin, listed.clone(), 1_000).await;
+        let window = crate::discovery_config::origin_proof_cache_secs();
+        assert!(window > ORIGIN_PROOF_RETRY_SECS);
+        assert_eq!(t.cached_origin_file(origin, 1_000 + window - 1).await, Some(listed));
+        assert_eq!(t.cached_origin_file(origin, 1_000 + window).await, None);
+    }
+
+    #[tokio::test]
+    async fn a_read_that_did_not_complete_never_erases_a_verdict() {
+        async fn ownership(t: &HealthTracker) -> Option<Ownership> {
+            t.snapshot().await.remove(LISTING).unwrap().ownership
+        }
+        let t = HealthTracker::new();
+        t.mark_verified(LISTING, ProbeMethod::Get).await;
+        t.note_ownership(LISTING, Ownership::Unknown).await;
+        assert_eq!(ownership(&t).await, Some(Ownership::Unknown), "nothing decided it yet");
+        t.note_ownership(LISTING, Ownership::OriginAttested).await;
+        t.note_ownership(LISTING, Ownership::Unknown).await;
+        assert_eq!(ownership(&t).await, Some(Ownership::OriginAttested));
+        t.note_ownership(LISTING, Ownership::Unattested).await;
+        assert_eq!(ownership(&t).await, Some(Ownership::Unattested), "a read that completed does");
+    }
+
+    /// Phase 1 hides nothing; phase 2 exposes a self-registered listing only
+    /// with its origin's word, and leaves every other source as it was.
+    #[tokio::test]
+    async fn the_switch_hides_only_unattested_self_registrations() {
+        let attested = Origin::new(200, &well_known(&[LISTING]));
+        let unattested = Origin::new(404, "");
+        let failed = Origin::new(503, "");
+        let aggregated = Origin::new(404, "");
+        let (r_attested, _) = probed(&attested, DiscoverySource::SelfRegistered).await;
+        let (r_unattested, _) = probed(&unattested, DiscoverySource::SelfRegistered).await;
+        let (r_failed, _) = probed(&failed, DiscoverySource::SelfRegistered).await;
+        let (r_aggregated, _) = probed(&aggregated, DiscoverySource::Aggregated).await;
+        async fn total(r: &DiscoveryRegistry) -> u32 {
+            r.list(10, 0, None).await.pagination.total
+        }
+        with_origin_proof(false, async {
+            for (name, r) in [("attested", &r_attested), ("unattested", &r_unattested),
+                              ("failed", &r_failed), ("aggregated", &r_aggregated)] {
+                assert_eq!(total(r).await, 1, "phase 1, {name}");
+            }
+        })
+        .await;
+        with_origin_proof(true, async {
+            assert_eq!(total(&r_attested).await, 1);
+            assert_eq!(total(&r_unattested).await, 0);
+            assert_eq!(total(&r_failed).await, 0, "unknown is not attested");
+            assert_eq!(total(&r_aggregated).await, 1, "another source is not asked");
+        })
+        .await;
+    }
+
+    /// The verdict is the prober's alone: a registrant that sends one in its
+    /// body has it stripped, and the switch still hides the listing.
+    #[tokio::test]
+    async fn a_registrant_cannot_vouch_for_itself() {
+        let registry = DiscoveryRegistry::new();
+        let mut listing = listing_of("/r", None);
+        listing.source = DiscoverySource::SelfRegistered;
+        listing.health = Some(HealthState {
+            status: HealthStatus::Alive,
+            last_checked: Some(now_secs()),
+            http_status: Some(402),
+            latency_ms: None,
+            uptime_bps: None,
+            probe_count: None,
+            probe_method: None,
+            quarantine_reason: None,
+            verified_at: Some(now_secs()),
+            verified_by: Some(VerifiedBy::X402Challenge),
+            ownership: Some(Ownership::OriginAttested),
+        });
+        registry.register(listing).await.unwrap();
+        assert_eq!(registry.get(LISTING).await.unwrap().health, None);
+        registry.health().mark_verified(LISTING, ProbeMethod::Get).await;
+        with_origin_proof(true, async {
+            assert_eq!(registry.list(10, 0, None).await.pagination.total, 0);
+        })
+        .await;
+    }
+
+    #[test]
+    fn the_verdict_survives_the_overlay_and_older_records_read_without_it() {
+        let old: HealthRecord = serde_json::from_value(json!({ "status": "alive" })).unwrap();
+        assert_eq!(old.ownership, None);
+        let mut rec = old.clone();
+        rec.ownership = Some(Ownership::OriginAttested);
+        let written = serde_json::to_value(&rec).unwrap();
+        assert_eq!(written["ownership"], "origin-attested");
+        let read: HealthRecord = serde_json::from_value(written).unwrap();
+        assert_eq!(read.ownership, Some(Ownership::OriginAttested));
+        assert_eq!(serde_json::to_value(read.to_state()).unwrap()["ownership"], "origin-attested");
+        for (v, s) in [(Ownership::Unattested, "unattested"), (Ownership::Unknown, "unknown")] {
+            assert_eq!(serde_json::to_value(v).unwrap(), s);
+        }
+        assert!(serde_json::to_value(old.to_state()).unwrap().get("ownership").is_none());
     }
 }
 

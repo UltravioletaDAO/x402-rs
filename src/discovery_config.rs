@@ -50,6 +50,22 @@ fn flag(name: &str, default: bool) -> bool {
     }
 }
 
+/// A switch that only `true`/`1` or `false`/`0` move. Anything else is the
+/// default plus a warning, never the opposite of what was meant: [`flag`]
+/// reads `"flase"` as ON, which is fine for a kill-switch that defaults ON and
+/// wrong for one that hides listings when it flips.
+fn strict_flag(name: &str, default: bool) -> bool {
+    match std::env::var(name) {
+        Ok(v) if v.eq_ignore_ascii_case("true") || v == "1" => true,
+        Ok(v) if v.eq_ignore_ascii_case("false") || v == "0" => false,
+        Ok(v) => {
+            tracing::warn!(var = name, value = %v, default, "not true/false/1/0; using the default");
+            default
+        }
+        Err(_) => default,
+    }
+}
+
 // ============================================================================
 // Catalog size. Set by the 2026-09-10 incident; see `discovery::enforce_capacity`.
 // ============================================================================
@@ -251,6 +267,25 @@ pub fn terms_max_records() -> usize {
 }
 
 // ============================================================================
+// Origin proof of ownership (self-registered listings)
+// ============================================================================
+
+/// Whether a self-registered listing is exposed only when its own origin
+/// attests it (`health.ownership` = `origin-attested`). Default OFF: phase 1
+/// publishes the verdict and hides nothing, so the registrants that have no
+/// `/.well-known/x402` yet are seen before anybody is hidden for it.
+pub fn require_origin_proof() -> bool {
+    strict_flag("DISCOVERY_REQUIRE_ORIGIN_PROOF", false)
+}
+
+/// Seconds one origin's `/.well-known/x402` answer is reused before the prober
+/// reads it again. One read per host per window, outside the probe budget: six
+/// hours is ~4 extra requests a day per self-registering host.
+pub fn origin_proof_cache_secs() -> u64 {
+    positive("DISCOVERY_ORIGIN_PROOF_CACHE_SECS", 6 * 3600)
+}
+
+// ============================================================================
 // The published view
 // ============================================================================
 
@@ -296,6 +331,10 @@ pub fn effective() -> serde_json::Value {
             "overlayPersistSeconds": terms_persist_secs(),
             "maxRecords": terms_max_records(),
         },
+        "ownership": {
+            "requireOriginProof": require_origin_proof(),
+            "cacheSeconds": origin_proof_cache_secs(),
+        },
         // The `/bazaar` page reads its `q` cap here instead of typing one.
         "search": {
             "maxQueryChars": crate::discovery_search::MAX_QUERY_CHARS,
@@ -315,6 +354,7 @@ mod tests {
             "healthProber",
             "revalidation",
             "observedTerms",
+            "ownership",
             "search",
         ] {
             assert!(
@@ -379,6 +419,36 @@ mod tests {
         let published = effective();
         assert_eq!(published["catalog"]["maxPerHost"], 100);
         assert_eq!(published["catalog"]["maxHostSharePercent"], 5);
+    }
+
+    /// Phase 1 of the origin proof hides nothing, and a typo can never turn
+    /// phase 2 on: only `true`/`1` do, anything else is the default.
+    #[test]
+    fn the_origin_proof_is_off_by_default_and_a_typo_cannot_turn_it_on() {
+        let var = "DISCOVERY_REQUIRE_ORIGIN_PROOF";
+        let before = std::env::var(var).ok();
+        std::env::remove_var(var);
+        assert!(!require_origin_proof());
+        for (value, want) in [
+            ("true", true),
+            ("TRUE", true),
+            ("1", true),
+            ("false", false),
+            ("0", false),
+            ("flase", false),
+            ("yes", false),
+            ("", false),
+        ] {
+            std::env::set_var(var, value);
+            assert_eq!(require_origin_proof(), want, "{value:?}");
+        }
+        std::env::set_var(var, "true");
+        assert_eq!(effective()["ownership"]["requireOriginProof"], true);
+        match before {
+            Some(v) => std::env::set_var(var, v),
+            None => std::env::remove_var(var),
+        }
+        assert_eq!(effective()["ownership"]["cacheSeconds"], 6 * 3600);
     }
 
     /// The `q` cap is defined once (`MAX_QUERY_CHARS`, which the handler

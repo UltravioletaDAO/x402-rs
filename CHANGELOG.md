@@ -1,5 +1,57 @@
 # Changelog
 
+## [2.49.1] - 2026-10-10
+
+### Fixed
+
+- **A Bazaar alta (or delete) made on one replica is no longer undone by the
+  snapshot the other publishes.** On 2026-10-07 a `POST /discovery/register`
+  that answered 201 was gone from both replicas minutes later. The replica that
+  owns the discovery jobs published its catalog with `save_all`, which conditions
+  the PUT on a HEAD taken just before it: a cache read before the other
+  replica's write passed that check and replaced it, and the other replica then
+  followed the snapshot and dropped it as well. The aggregation snapshot and the
+  retention GC's are now conditional on the version the cache was read at
+  (`DiscoveryRegistry::publish_snapshot`); when another replica wrote in
+  between, the write is refused, the published catalog is adopted and the import
+  or the GC runs again on top of it -- three attempts in all. A refusal that left
+  the object where it was publishes the same snapshot again. Giving up
+  overwrites nothing. A refresh landing in the middle of a publish can no longer
+  mark an older catalog as the one just published. After publishing, the owner
+  no longer re-reads its own object.
+
+### Added
+
+- **A self-registered listing that declares no input takes the one its own 402
+  declares.** On 2026-10-10, 905 of the 1 036 self-registered listings in the
+  published catalog declared no input, while most of their hosts' 402s carry one
+  in `extensions.bazaar` (header or body); the prober read those challenges and
+  kept only the prices. When a probe verifies the listing -- its own answer to
+  the request as sent, offering a payment, recipients clean -- the challenge's
+  `extensions.bazaar` (from the transport whose terms won, or from the other one
+  when the two agree) is filled into what the registration left out: a key the
+  seller registered is never replaced, and what the seller wrote (an `output`,
+  an example) is kept whole; the result has to declare an input and fit the
+  bounds of a registered `extensions`. Only through a 402 to the method the
+  declaration names -- the prober learns a declared POST and adopts on the next
+  probe -- since a declared method is probed with no fallback. The listing then
+  reports `hasInputSchema: true` and `extensionsProvenance: origin_response`,
+  persisted with it and never taken from a caller; an input adopted that way
+  follows a newer 402. It reaches the store as a patch of the declaration alone,
+  on a record still holding the content it was judged against, never as a save
+  of the owner's copy (which could resurrect a listing deleted on the other
+  replica or walk back its settlements), and queued adoptions share one write.
+  Aggregated copies are left to their feeds.
+- **`BAZAAR_ADMIN_TOKEN` reaches production.** Nothing put it in the container
+  before, so the Bazaar admin routes (`DELETE /discovery/resources`,
+  `/discovery/admin/*`, `POST /discovery/refresh`) answered 404 there. It now
+  comes from the Secrets Manager secret `facilitator-bazaar-admin-token` (JSON
+  key `token`), read by name like the ERC-8004 and DX402 tokens: the value never
+  reaches the Terraform state, and the CI user cannot read it. Create the secret
+  by hand and apply the execution role's policy right before the merge that
+  ships this (`secrets.tf` has both commands): the CI user can do neither, and
+  until the secret exists every plan fails on its data source.
+
 ## [2.49.0] - 2026-10-06
 
 ### Changed

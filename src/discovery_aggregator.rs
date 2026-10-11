@@ -635,21 +635,20 @@ fn cycle_is_due(
 
 /// Adopt the published catalog before computing a new one from ours.
 ///
-/// This is load-bearing, and the conditional write does NOT make it optional.
-/// `save_all` reads the current version immediately before writing, so a
-/// snapshot computed from a cache that is an hour behind is published happily —
-/// it is a perfectly valid write against a base nobody else touched in that
-/// instant — and everything anybody else added in that hour is gone. The
-/// version check catches a concurrent writer; it cannot catch a stale author.
-///
 /// Two authors matter here. A task that has just TAKEN the role over has a
 /// cache from before the previous owner's last cycles. And every replica, owner
 /// or not, still registers resources on its own from `POST /discovery/register`
 /// and from settlements — those land in the catalog through a per-resource
-/// read-modify-write, and a cycle that publishes without reading first would
-/// erase them. That hazard predates single ownership (three snapshot publishers
-/// meant three chances an hour); this shrinks it to one publisher that reads
-/// first.
+/// read-modify-write that this task's cache never sees.
+///
+/// Until X402-BAZAAR-REPLICAS this read was the only thing between those writes
+/// and the cycle's snapshot: `save_all` conditioned the PUT on a HEAD taken just
+/// before it, which a stale author passes, so whatever another replica wrote
+/// after this read -- during the minutes the fetch takes -- was published over.
+/// The snapshot is now conditional on the version this read returned
+/// ([`crate::discovery::DiscoveryRegistry::bulk_import`]), and such a write gets
+/// it refused and the import redone on top of the newer catalog. This read is
+/// what keeps that the exception instead of the first attempt of every cycle.
 ///
 /// It costs one read of the catalog per cycle — 24 a day against the 92 that
 /// three uncoordinated replicas were making.
@@ -1816,11 +1815,10 @@ mod tests {
 
     /// Why [`adopt_published_catalog`] exists, stated as the loss it prevents.
     ///
-    /// The conditional write does NOT make this optional: `save_all` reads the
-    /// current version immediately before writing, so a snapshot computed from
-    /// an hour-old cache is a perfectly valid write against a base nobody else
-    /// touched in that instant. The version check catches a concurrent writer;
-    /// it cannot catch a stale author.
+    /// This store accepts every write whatever version it names, so what is left
+    /// is the adoption's own effect. Against a store that honours the condition
+    /// the stale snapshot is refused and the import redone instead (the
+    /// two-replica tests in `discovery.rs`).
     #[tokio::test]
     async fn a_successor_adopts_the_catalog_before_publishing_over_it() {
         use crate::discovery::{DiscoveryRegistry, ImportPolicy};

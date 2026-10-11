@@ -91,6 +91,44 @@ data "aws_secretsmanager_secret" "erc8004_admin_token" {
   name = "facilitator-erc8004-admin-token"
 }
 
+# Bearer token for the Bazaar curation routes (src/handlers.rs,
+# discovery_admin_routes): DELETE /discovery/resources, POST
+# /discovery/admin/suppress and /release, GET /discovery/admin/pending, POST
+# /discovery/refresh. Until 2.49.1 nothing put it in the container -- no secret,
+# no environment entry -- so in production every one of those routes answered
+# 404 (fail closed, admin_auth in src/handlers.rs).
+#
+# Secrets Manager, like the ERC-8004 and DX402 tokens, and for the same two
+# reasons, measured 2026-10-10: the CI user's DenySecretValueReads keeps it from
+# reading the value (an SSM SecureString on the aws/ssm key is readable by any
+# principal with ssm:GetParameter, ReadOnlyAccess and the CI user included), and
+# a data source reads only the secret's metadata, so the value never reaches the
+# Terraform state. Its own secret, deliberately not the ERC-8004 or DX402 token
+# (above): leaking this one hides or deletes a catalog listing, and nothing else.
+#
+# Created by hand, with any high-entropy value, never printed:
+#   aws secretsmanager create-secret --name facilitator-bazaar-admin-token \
+#     --secret-string "{\"token\":\"$(openssl rand -hex 32)\"}" \
+#     --region us-east-2 --query Name --output text
+# and only then, BEFORE the merge that ships this and with the merge right after,
+# the execution role's policy -- the CI user cannot write it
+# (scripts/drift_gate_iam.py prints the command). With a human's credentials, on
+# Terraform 1.9.8:
+#   terraform apply -target=aws_iam_role_policy.secrets_access
+# Any deploy from a main that lacks this file in between tries to undo that
+# policy and fails red. Until the secret exists every plan of this configuration
+# fails on this data source.
+#
+# Read it without printing it:
+#   BAZAAR_ADMIN_TOKEN=$(aws secretsmanager get-secret-value \
+#     --secret-id facilitator-bazaar-admin-token --region us-east-2 \
+#     --query SecretString --output text | jq -r .token)
+# Rotate with put-secret-value and the same --secret-string, then a deploy -- a
+# task reads it when it starts.
+data "aws_secretsmanager_secret" "bazaar_admin_token" {
+  name = "facilitator-bazaar-admin-token"
+}
+
 # DX402 receipt signing key.
 #
 # The facilitator signs an EIP-712 EvidenceReceipt with this so a third party can
@@ -259,6 +297,7 @@ locals {
   admin_secret_arns = concat(
     [data.aws_secretsmanager_secret.facilitator_receipt_key.arn],
     [data.aws_secretsmanager_secret.erc8004_admin_token.arn],
+    [data.aws_secretsmanager_secret.bazaar_admin_token.arn],
     var.enable_dx402 ? [data.aws_secretsmanager_secret.dx402_signing_key[0].arn] : [],
     var.enable_dx402 ? [data.aws_secretsmanager_secret.dx402_admin_token[0].arn] : [],
     var.enable_dx402 && var.dx402_storage_backend == "ipfs" ? [data.aws_secretsmanager_secret.dx402_pinata[0].arn] : []
@@ -464,6 +503,10 @@ locals {
     {
       name      = "ERC8004_ADMIN_TOKEN"
       valueFrom = "${data.aws_secretsmanager_secret.erc8004_admin_token.arn}:token::"
+    },
+    {
+      name      = "BAZAAR_ADMIN_TOKEN"
+      valueFrom = "${data.aws_secretsmanager_secret.bazaar_admin_token.arn}:token::"
     },
     ], var.enable_dx402 ? [
     {

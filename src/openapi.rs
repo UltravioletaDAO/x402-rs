@@ -2640,8 +2640,11 @@ on a listing whose URL is a template (`{id}`), which no paid URL equals.
 
 **`hasInputSchema`** is `true` when `extensions.bazaar` declares the input (`info.input`, or an
 `input` property in `schema`); the declaration itself stays in `extensions.bazaar`, with the input
-and the output apart. `kind`, `categories`, `categorySource`, `hasInputSchema`, `upstream`,
-`upstreamSource` and `usage` are response-only, like `health` and `curation`.
+and the output apart. A self-registered listing that declares no input, whose own 402 declares one
+in its `extensions.bazaar`, takes it from there -- only into what its registration left out -- and
+reports **`extensionsProvenance: origin_response`**. `kind`, `categories`, `categorySource`,
+`hasInputSchema`, `upstream`, `upstreamSource` and `usage` are response-only, like `health` and
+`curation`.
 
 **Unknown parameters are rejected with a 400**, listing the ones supported. A parameter the
 server accepted and ignored would be indistinguishable from a filter that matched everything,
@@ -3036,7 +3039,9 @@ outbound fetches against caller-supplied URLs.
   optionally a JSON Schema in `schema` -- exactly as the x402 bazaar extension publishes it in a
   402. A listing that declares its input reports `hasInputSchema: true`, and the health prober
   calls it with the method it declares (with `{}`, and with your example body only when `{}` is
-  refused with a 400 or 422) instead of a bare GET.
+  refused with a 400 or 422) instead of a bare GET. Register no input and the prober takes the
+  one your own 402 declares in `extensions.bazaar` (`extensionsProvenance: origin_response`);
+  what you register is never replaced.
 
 **Schemes you cannot settle here are still registrable.** `scheme` is stored as published, so a
 listing for a scheme this facilitator does not implement is catalogued under its own name rather

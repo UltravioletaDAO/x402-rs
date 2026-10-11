@@ -310,6 +310,7 @@ impl DiscoveryCrawler {
             has_input_schema: None,
             upstream: None,
             upstream_source: None,
+            extensions_provenance: None,
             usage: None,
         }
     }

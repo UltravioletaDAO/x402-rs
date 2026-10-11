@@ -421,14 +421,52 @@ async fn arc_v2_receipt_keeps_the_wire_version_after_internal_normalization() {
         .await;
 }
 
+/// A durable store shared by replicas whose reservations wait for every
+/// contender: all of them pass the authorization lookup before any reserves,
+/// so only the store's atomic reservation can choose the one that sends.
+struct ContendedStore {
+    inner: store::MemoryStore,
+    contenders: tokio::sync::Barrier,
+}
+#[async_trait::async_trait]
+impl store::Store for ContendedStore {
+    async fn get(&self, key: &str) -> Result<Option<Record>> {
+        self.inner.get(key).await
+    }
+    async fn reserve(&self, record: &Record, aliases: &[String], token: &str) -> Result<bool> {
+        self.contenders.wait().await;
+        self.inner.reserve(record, aliases, token).await
+    }
+    async fn save(&self, record: &Record, previous_revision: u64) -> Result<bool> {
+        self.inner.save(record, previous_revision).await
+    }
+    async fn readmit(
+        &self,
+        record: &Record,
+        previous: u64,
+        aliases: &[String],
+        token: &str,
+    ) -> Result<bool> {
+        self.inner.readmit(record, previous, aliases, token).await
+    }
+    async fn records(&self) -> Result<Vec<Record>> {
+        self.inner.records().await
+    }
+}
+
 /// Two replicas of the facilitator share one durable store and race twenty
-/// copies of the same purchase between them, on every network and token of
-/// the matrix: one send, one receipt, and a replay of it.
+/// copies of the same purchase between them, every copy reaching the
+/// reservation, on every network and token of the matrix: one send, one
+/// receipt, and a replay of it from either replica.
 #[tokio::test]
 async fn concurrent_replicas_reserve_one_payment_and_replay_the_same_receipt() {
+    const CONTENDERS: usize = 20;
     for case in evm_matrix() {
         let (network, asset, body) = (case.caip2(), case.asset(), case.v1(1));
-        let shared: Arc<dyn store::Store> = Arc::new(store::MemoryStore::default());
+        let shared: Arc<dyn store::Store> = Arc::new(ContendedStore {
+            inner: store::MemoryStore::default(),
+            contenders: tokio::sync::Barrier::new(CONTENDERS),
+        });
         let replicas: Vec<Arc<Service>> = (0..2)
             .map(|_| {
                 Arc::new(Service {
@@ -439,7 +477,7 @@ async fn concurrent_replicas_reserve_one_payment_and_replay_the_same_receipt() {
             .collect();
         let sends = Arc::new(AtomicUsize::new(0));
         let mut tasks = Vec::new();
-        for attempt in 0..20 {
+        for attempt in 0..CONTENDERS {
             let service = replicas[attempt % 2].clone();
             let (sends, body, network) = (sends.clone(), body.clone(), network.clone());
             tasks.push(tokio::spawn(TEST_SERVICE.scope(service, async move {
@@ -458,7 +496,12 @@ async fn concurrent_replicas_reserve_one_payment_and_replay_the_same_receipt() {
         }
         let mut receipt_id = None;
         for task in tasks {
-            let output = value(task.await.unwrap()).await;
+            // A contender that never reaches the reservation would hold the
+            // barrier: fail instead of hanging.
+            let answered = tokio::time::timeout(std::time::Duration::from_secs(30), task)
+                .await
+                .unwrap_or_else(|_| panic!("{network}: a contender never reserved"));
+            let output = value(answered.unwrap()).await;
             let id = output["receipt"]["receiptId"].clone();
             if let Some(expected) = &receipt_id {
                 assert_eq!(&id, expected, "{network}");

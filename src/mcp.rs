@@ -680,8 +680,9 @@ pub fn tools() -> Vec<Tool> {
              broadcasts the payer's authorization as a blockchain transaction, and \
              nothing in this facilitator or any chain can undo a confirmed transfer. \
              Call x402_verify first, and only call this when the payment is meant to \
-             execute now. Equivalent to POST /settle. Arc exact and native Hedera USDC \
-             return a portable receipt with payment state and settlement ID; unknown \
+             execute now. Equivalent to POST /settle. Exact payments on the networks \
+             GET /receipts lists (EVM ERC-3009 tokens, native Hedera USDC) return a \
+             portable receipt with payment state and settlement ID; unknown \
              never authorizes a fresh signature. Preserve the original authorization. \
              Receipt confirmation is separate from merchant delivery.",
             schema(settle_input_schema()),

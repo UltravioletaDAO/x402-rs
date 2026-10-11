@@ -1,11 +1,12 @@
 # Portable facilitator receipts v1
 
-Arc exact USDC/EURC (mainnet and testnet, x402 v1/v2), Base exact USDC/EURC
-(mainnet, x402 v1/v2, since 2.40.0) and native Hedera USDC (mainnet and testnet,
-v2) return an additive `receipt` beside `/verify` and `/settle` results. Other
-networks keep their existing behavior. Networks are added one at a time;
-discover runtime availability in `/supported.facilitatorReceipts` or
-`GET /receipts`.
+Exact payments on every EVM network where production serves `exact`, in each of
+its ERC-3009 tokens (x402 v1/v2; Base since 2.40.0, every such network since
+2.51.0), and native Hedera USDC (mainnet and testnet, v2) return an additive
+`receipt` beside `/verify` and `/settle` results. Other networks keep their
+existing behavior. `GET /receipts` and `/supported.facilitatorReceipts` list the
+networks; the tokens are the ones `/supported` lists for each network's `exact`
+kind. See "EVM coverage" below.
 
 The receipt contains `network` (CAIP-2), `asset`, atomic-string `amount`,
 `decimals`, `payTo`, `payer`, `requestHash`, `authorizationId`,
@@ -169,7 +170,7 @@ payment. Existing legacy cache hits are replayed before checking a consumed
 nonce, preserving their original success/conflict semantics. They are not
 fabricated into portable receipts, and their previous retention policy remains.
 
-EVM networks (Arc, Base) save the exact signed transaction and hash before
+EVM networks save the exact signed transaction and hash before
 broadcast. A POST retry can rebroadcast only those bytes under the writer lease,
 while the authorization is valid; it never signs a replacement or changes the
 nonce. An admission prepares one transaction: if the node refuses it on nonce
@@ -270,12 +271,73 @@ requires retaining the previous public keys externally. An exact request
 conflicting with an existing purchase is refused with 409, without exposing
 that purchase's private receipt.
 
+## EVM coverage
+
+Since 2.51.0 the EVM side of the rail is one matrix, read in one place
+(`receipts::evm_exact_tokens`) for what `GET /receipts` announces, what is
+admitted and how a receipt is normalized:
+
+- **Networks**: every EVM network for which production publishes an `exact`
+  entry in `/supported`, as `config/supported_tokens.json` declares it
+  (`exactServed`). Ethereum Sepolia has a USDC deployment but no RPC in
+  production, so no `exact` entry, and stays out; so do the EVM networks the
+  facilitator does not serve at all. Read the live list with
+  `curl -s https://facilitator.ultravioletadao.xyz/receipts | jq .networks`.
+- **Tokens**: the ones `/supported` lists for that network's `exact` kind
+  (ERC-3009 deployments only). BSC's USDC has no ERC-3009, so on BSC only AUSD
+  is admitted.
+- **Admission**: a plain `exact` request whose payment payload and terms name
+  the same network, one of the matrix's, in one of that network's tokens.
+  Anything else runs as before, without a receipt; carrying `X-UVD-Purchase`, a
+  `/settle` of it answers `400 receipt_request_not_supported`. The
+  requests that belong to other settlement paths stay out on every network.
+- **Normalization**: `network` in CAIP-2, `asset` and `payTo` lowercase,
+  `decimals` from the token (every EVM receipt carries them).
+
+Every network that joined in 2.51.0 changes for its callers exactly as Base did
+in 2.40.0: the table in "Base" below reads the same with the release before
+2.51.0 in place of 2.39 and 2.51.0 in place of 2.40.0.
+On Arc and Base nothing changes for a payment the facilitator can settle. A
+request in a token that is not one of the network's `exact` tokens, or whose
+payload and terms name different networks, was refused by verification before
+and still is, now without a `rejected` receipt. `networks` lists every entry it
+listed before; their order follows the network list instead of the release
+that added them.
+
+What the rail costs on each network it covers, as on Arc and Base: a `/settle`
+verifies once before admission and the provider verifies again, and admission
+and each revision are writes to the receipt store; a `/verify` reads the
+authorization's row. Receipt rows do not expire. With the store unreachable an
+`exact` settle on any of these networks answers `503 receipt_store_unavailable`
+and sends nothing, where before 2.51.0 only Arc, Base and Hedera did.
+
+Joining the matrix takes no receipts code: an EVM network with an ERC-3009
+token and `exactServed` in the catalog is announced and admitted. **Leaving it
+is not a configuration change.** A resend of an authorization whose network or
+token is no longer admitted skips its stored receipt and runs as an ordinary
+settle; if the first one mined, that answer names no receipt and a buyer can
+end up signing again. So the pairs the rail admits are written down in a test
+(`every_network_and_token_on_the_rail_stays_on_it`) that must equal the matrix
+both ways: a pair that joins is added there, and removing one means editing that
+test on purpose and deciding what happens to the receipts already stored.
+
+The same holds for what the test cannot see:
+
+- **Rolling back to a release before 2.51.0** takes 23 networks off the rail at
+  once. Their admissions still in flight, until each authorization's
+  `validBefore`, would be resent down the ordinary path. Prefer a forward fix.
+- Changing a token's address or a network's chain id in `src/network.rs`
+  changes what the rail admits and the `authorizationId` it looks receipts up
+  by.
+- Without `IDEMPOTENCY_TABLE_NAME` there is no receipt service at all, on every
+  network.
+
 ## Base
 
 Since 2.40.0 plain `exact` payments on Base (`base` / `eip155:8453`, USDC and
 EURC, x402 v1 and v2) are admitted through receipts. Base Sepolia and the other
-EVM networks are unchanged; so are the Base requests that belong to other
-settlement paths (see above), which carry no `receipt`.
+EVM networks stayed unchanged until 2.51.0 (see "EVM coverage"); the Base
+requests that belong to other settlement paths (see above) carry no `receipt`.
 
 What a Base `exact` caller observes compared with 2.39:
 
@@ -331,9 +393,16 @@ bytes, the send latch or a named transaction; an EVM test drives the real send
 path under an admission (lease lost: nothing sent or latched; sent: bytes stored
 first, then latched). Explicit local DynamoDB tests exercise transaction/CAS
 behavior, including readmission and a write resent with its token, using two
-store clients. Base runs through the same admission as Arc (concurrency, EVM
-address normalization, requests that belong to other settlement paths,
-DynamoDB), and a test fails if Base leaves `GET /receipts` or admission. EVM
+store clients. Every network and token of the EVM matrix runs through two
+replicas racing one purchase over a shared store, a lost response, a restart
+with an unknown outcome and the storage outages: one send, the same receipt on
+every resend, nothing broadcast without stored bytes. The replays run on every
+network of it, and so does the exclusion of the requests that belong to other
+settlement paths. A test checks the matrix against the tokens
+`config/supported_tokens.json` presents and admits every one of them in v1 and
+v2 with its decimals; another fails if anything outside it (Ethereum Sepolia,
+Sei, XDC, BSC's USDC, a body that names two networks, Solana) is announced or
+admitted. A test still fails if Base leaves `GET /receipts` or admission. EVM
 tests drive a nonce refusal under an admission: one broadcast, no second nonce,
 and the signer's next settlement takes the node's nonce for a taken slot and for
 a node behind the signer; a node that already holds the bytes comes out

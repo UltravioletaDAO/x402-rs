@@ -1,5 +1,40 @@
 # Changelog
 
+## [2.51.0] - 2026-10-11
+
+### Changed
+
+- **Facilitator receipts cover every EVM network that serves `exact`**, in
+  each of its ERC-3009 tokens, x402 v1 and v2. Until now they covered Arc, Arc
+  testnet and Base. One matrix (`receipts::evm_exact_tokens`) decides what
+  `GET /receipts` and `/supported.facilitatorReceipts` announce, what is
+  admitted and how a receipt is normalized: the tokens `/supported` lists for
+  a network's `exact` kind, on the networks where production publishes that
+  kind (`exactServed` in `config/supported_tokens.json`; Ethereum Sepolia and
+  the EVM networks nothing serves stay out). Each newly covered network
+  changes for its callers as Base did in 2.40.0, including its dependency on
+  the receipt store: with the store unreachable its `exact` settles answer
+  `503 receipt_store_unavailable` and send nothing. Hedera is unchanged.
+- **Leaving the rail is pinned.** A network or token that drops out of the
+  matrix would send resends of its stored receipts down the ordinary path, so
+  the pairs the rail admits are listed in a test that must equal the matrix:
+  a new pair is added to it, and removing one means editing it on purpose. A
+  rollback to an earlier release takes the new networks off the rail at once;
+  `docs/facilitator-receipts.md` ("EVM coverage") says what that leaves open.
+- **Admission takes one network and one of its tokens.** A request is admitted
+  only when its payload and its terms name the same network and, on EVM, its
+  asset is one of that network's `exact` tokens; anything else runs as before
+  without a receipt (`400 receipt_request_not_supported` on `/settle` when it
+  carries `X-UVD-Purchase`). On Arc and Base this only touches requests that
+  verification already refused, which no longer carry a `rejected` receipt.
+  Every EVM receipt now carries the token's `decimals`.
+- `networks` in the receipt capability is derived from the network list; it
+  keeps every entry it had, in a different order.
+- `/verify` and `/settle` in OpenAPI, the MCP `x402_settle` tool, `index.md`,
+  `skill.md`, `mcp.md` (and `llms-full.txt`), the README,
+  `docs/facilitator-receipts.md` ("EVM coverage") and `docs/settle-errors.md`
+  name the rule instead of a list of networks.
+
 ## [2.49.0] - 2026-10-06
 
 ### Changed

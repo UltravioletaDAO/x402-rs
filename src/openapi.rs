@@ -741,7 +741,7 @@ hash. `fhe-transfer` settles on the FHE facilitator's side: its `502` carries
 `retryable: false` unless the request provably never reached it or it answered
 with a `4xx`.
 
-On the receipt rail (Arc and native Hedera), a failure answered after the send
+On the receipt rail (the networks `GET /receipts` lists), a failure answered after the send
 latched or its bytes were prepared carries `retryable: false`, no
 `Retry-After`, and the prepared `transaction` with its `paymentId`; so does
 `502 receipt_response_unreadable`, with the receipt. The `503` answers with

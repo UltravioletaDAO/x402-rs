@@ -1,4 +1,5 @@
-//! Portable facilitator receipts for exact Arc, Base and native Hedera payments.
+//! Portable facilitator receipts for exact EVM payments in ERC-3009 tokens
+//! (`evm_exact_tokens`) and native Hedera payments.
 //! A receipt attests payment state, never merchant delivery. Admission is
 //! atomically reserved before the provider can broadcast. Uncertainty is sticky:
 //! only chain evidence can turn it into confirmation, never a new authorization.
@@ -207,9 +208,46 @@ pub fn commitment(domain: &str, value: &Value) -> Result<String> {
     Ok(hash(format!("{domain}\n{}", canonical(value)?).as_bytes()))
 }
 
-/// Networks are announced one at a time: `capability()` lists exactly these.
+/// The EVM side of the rail, one matrix for its announcement (`capability`),
+/// its admission (`admits`) and its normalization (`initial`): the tokens
+/// `/supported` lists for the `exact` kind of an EVM network
+/// (`network::exact_payment_tokens`, ERC-3009 deployments only), on the
+/// networks where production publishes that kind (`exactServed` in
+/// `config/supported_tokens.json`, which leaves out Ethereum Sepolia and the
+/// EVM variants nothing serves). Empty for any other network.
+pub fn evm_exact_tokens(network: Network) -> Vec<crate::types::SupportedTokenInfo> {
+    let served = crate::networks_json::CATALOG
+        .as_ref()
+        .ok()
+        .and_then(|catalog| catalog.network(network))
+        .is_some_and(|meta| meta.exact_served);
+    if !served || !matches!(NetworkFamily::from(network), NetworkFamily::Evm) {
+        return Vec::new();
+    }
+    crate::network::exact_payment_tokens(network)
+}
+
+/// `capability()` lists exactly these networks.
 pub fn supported(network: Network) -> bool {
-    matches!(network, Network::Arc | Network::ArcTestnet | Network::Base) || network.is_hedera()
+    !evm_exact_tokens(network).is_empty() || network.is_hedera()
+}
+
+/// Whether the rail admits an `exact` request: one network on both sides of
+/// it, a supported one, and on EVM one of that network's matrix tokens. What
+/// it admits is what `initial` can normalize: an EVM receipt always carries
+/// its token's decimals.
+fn admits(request: &VerifyRequest) -> bool {
+    let network = request.network();
+    let terms = &request.payment_requirements;
+    if terms.scheme != Scheme::Exact || terms.network != network || !supported(network) {
+        return false;
+    }
+    match NetworkFamily::from(network) {
+        NetworkFamily::Evm => evm_exact_tokens(network)
+            .iter()
+            .any(|token| token.address == terms.asset),
+        _ => true,
+    }
 }
 
 /// `post_settle` hands these to their own settlement paths before the exact
@@ -243,8 +281,7 @@ pub fn parse_request(headers: &HeaderMap, raw: &Bytes) -> Option<VerifyRequest> 
     // to_v1 normalizes the processing envelope, including its version field.
     // A receipt must attest the protocol version actually received.
     request.x402_version = envelope.version();
-    (supported(request.network()) && request.payment_requirements.scheme == Scheme::Exact)
-        .then_some(request)
+    admits(&request).then_some(request)
 }
 
 pub fn purchase_context(headers: &HeaderMap) -> Result<Option<PurchaseContext>> {
@@ -445,7 +482,12 @@ pub async fn keys() -> Json<Value> {
 }
 
 pub fn capability() -> Value {
-    json!({"schemaVersion":1,"available":SERVICE.get().is_some(),"networks":["eip155:5042","eip155:5042002","hedera:mainnet","hedera:testnet","eip155:8453"],
+    let networks: Vec<String> = Network::variants()
+        .iter()
+        .filter(|network| supported(**network))
+        .map(Network::to_caip2)
+        .collect();
+    json!({"schemaVersion":1,"available":SERVICE.get().is_some(),"networks":networks,
         "schemes":["exact"],"contextHeader":"X-UVD-Purchase", "lookup":"/receipts/{receiptId}",
         "proof":if SERVICE.get().is_some_and(|s| s.signing_key.is_some()) {"jws-ed25519"} else {"https"},
         "keys":"/.well-known/receipt-keys.json"})
@@ -464,7 +506,7 @@ pub fn document_api(api: &mut utoipa::openapi::OpenApi) {
     for path in ["/verify", "/settle"] {
         let operation = &mut doc["paths"][path]["post"];
         let description = operation["description"].as_str().unwrap_or("").to_owned();
-        operation["description"] = json!(format!("{description}\n\nArc exact (USDC/EURC), Base exact (USDC/EURC) and native Hedera USDC include an additive `receipt`: network, asset, atomic amount, payTo, requestHash, settlement ID, status and refusalReason. See /schemas/facilitator-receipt-v1.json. Send X-UVD-Purchase (base64 JSON with purchaseId, secret accessToken, method, url, bodySha256) for private lookup and restart-safe purchase retries. The merchant must validate the actual HTTP request. Preserve the same context and authorization after uncertainty; never sign a replacement. Payment confirmation does not prove merchant delivery. Other networks retain their existing responses."));
+        operation["description"] = json!(format!("{description}\n\nExact payments on the networks GET /receipts lists include an additive `receipt`: on an EVM network, in the ERC-3009 tokens /supported lists for its `exact` kind; on Hedera, native USDC. It carries network, asset, atomic amount, payTo, requestHash, settlement ID, status and refusalReason. See /schemas/facilitator-receipt-v1.json. Send X-UVD-Purchase (base64 JSON with purchaseId, secret accessToken, method, url, bodySha256) for private lookup and restart-safe purchase retries. The merchant must validate the actual HTTP request. Preserve the same context and authorization after uncertainty; never sign a replacement. Payment confirmation does not prove merchant delivery. Other networks retain their existing responses."));
         let params = operation
             .as_object_mut()
             .unwrap()

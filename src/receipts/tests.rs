@@ -160,92 +160,181 @@ impl store::Store for UpdateOutage {
     }
 }
 
+/// The store takes the admission, then fails the save of the prepared bytes:
+/// on every network and token of the matrix, nothing is broadcast, the answer
+/// carries the stored revision, and a resend gets that same receipt back
+/// without sending.
 #[tokio::test]
 async fn preparation_outage_blocks_broadcast_and_never_returns_an_unstored_revision() {
-    let service = Arc::new(Service {
-        store: Arc::new(UpdateOutage(store::MemoryStore::default())),
-        signing_key: Some(SigningKey::from_bytes(&[7; 32])),
-    });
-    TEST_SERVICE
-        .scope(service.clone(), async {
-            let result = settle(
-                &MockFacilitator { invalid: false },
-                &headers(),
-                &body(1),
-                async {
-                    assert!(
-                        prepared_evm(format!("0x{}", "22".repeat(32)), vec![1, 2, 3])
+    for case in evm_matrix() {
+        let (network, body) = (case.caip2(), case.v1(1));
+        let service = Arc::new(Service {
+            store: Arc::new(UpdateOutage(store::MemoryStore::default())),
+            signing_key: Some(SigningKey::from_bytes(&[7; 32])),
+        });
+        let sends = AtomicUsize::new(0);
+        TEST_SERVICE
+            .scope(service.clone(), async {
+                let result = settle(
+                    &MockFacilitator { invalid: false },
+                    &headers(),
+                    &body,
+                    async {
+                        // As the EVM provider does: broadcast only bytes it stored.
+                        if prepared_evm(format!("0x{}", "22".repeat(32)), vec![1, 2, 3])
                             .await
-                            .is_err()
-                    );
-                    let current = ACTIVE.with(Arc::clone);
-                    assert!(current.record.lock().await.prepared.is_none());
-                    failure("preparation_unavailable", StatusCode::SERVICE_UNAVAILABLE)
-                },
-            )
+                            .is_ok()
+                        {
+                            sending();
+                            sends.fetch_add(1, Ordering::SeqCst);
+                        }
+                        let current = ACTIVE.with(Arc::clone);
+                        assert!(current.record.lock().await.prepared.is_none());
+                        failure("preparation_unavailable", StatusCode::SERVICE_UNAVAILABLE)
+                    },
+                )
+                .await;
+                let output = value(result).await;
+                let id = output["receipt"]["receiptId"].as_str().unwrap();
+                let stored = service
+                    .store
+                    .get(&format!("receipt:v1:{id}"))
+                    .await
+                    .unwrap()
+                    .unwrap();
+                assert_eq!(
+                    output["receipt"],
+                    serde_json::to_value(stored.receipt).unwrap(),
+                    "{network}"
+                );
+                assert_eq!(output["receipt"]["revision"], 1, "{network}");
+                assert_eq!(output["receipt"]["status"], "unknown", "{network}");
+                assert_eq!(output["receipt"]["network"], network.as_str());
+                let again = value(settle_again(&headers(), &body).await).await;
+                assert_eq!(again["receipt"], output["receipt"], "{network}");
+            })
             .await;
-            let output = value(result).await;
-            let id = output["receipt"]["receiptId"].as_str().unwrap();
-            let stored = service
-                .store
-                .get(&format!("receipt:v1:{id}"))
-                .await
-                .unwrap()
-                .unwrap();
-            assert_eq!(
-                output["receipt"],
-                serde_json::to_value(stored.receipt).unwrap()
-            );
-            assert_eq!(output["receipt"]["revision"], 1);
-            assert_eq!(output["receipt"]["status"], "unknown");
-        })
-        .await;
+        assert_eq!(sends.load(Ordering::SeqCst), 0, "{network}");
+    }
 }
 
+/// The provider stored its bytes and the answer was lost: on every network
+/// and token of the matrix the bytes are recoverable, they never reach the
+/// public receipt, and the purchase's resend gets the same receipt back
+/// without a second send.
 #[tokio::test]
 async fn persisted_transaction_is_recoverable_after_lost_response() {
-    let service = service_fixture();
-    TEST_SERVICE
-        .scope(service.clone(), async {
-            let result = settle(
-                &MockFacilitator { invalid: false },
-                &headers(),
-                &body(1),
-                async {
-                    prepared_evm(format!("0x{}", "22".repeat(32)), vec![1, 2, 3])
-                        .await
-                        .unwrap();
-                    failure("response_lost", StatusCode::BAD_GATEWAY)
-                },
-            )
+    for case in evm_matrix() {
+        let (network, body) = (case.caip2(), case.v1(1));
+        let service = service_fixture();
+        let sends = AtomicUsize::new(0);
+        TEST_SERVICE
+            .scope(service.clone(), async {
+                let result = settle(
+                    &MockFacilitator { invalid: false },
+                    &headers(),
+                    &body,
+                    async {
+                        prepared_evm(format!("0x{}", "22".repeat(32)), vec![1, 2, 3])
+                            .await
+                            .unwrap();
+                        sending();
+                        sends.fetch_add(1, Ordering::SeqCst);
+                        failure("response_lost", StatusCode::BAD_GATEWAY)
+                    },
+                )
+                .await;
+                let output = value(result).await;
+                assert_eq!(output["receipt"]["status"], "unknown", "{network}");
+                assert_eq!(output["receipt"]["network"], network.as_str());
+                let id = output["receipt"]["receiptId"].as_str().unwrap();
+                let stored = service
+                    .store
+                    .get(&format!("receipt:v1:{id}"))
+                    .await
+                    .unwrap()
+                    .unwrap();
+                assert_eq!(
+                    stored.prepared.unwrap()["signedTransaction"],
+                    STANDARD.encode([1, 2, 3]),
+                    "{network}"
+                );
+                assert!(output["receipt"].get("signedTransaction").is_none());
+                let again = settle_again(&headers(), &body).await;
+                assert_eq!(again.headers()["idempotent-replayed"], "true", "{network}");
+                assert_eq!(
+                    value(again).await["receipt"],
+                    output["receipt"],
+                    "{network}"
+                );
+            })
             .await;
-            let output = value(result).await;
-            assert_eq!(output["receipt"]["status"], "unknown");
-            let id = output["receipt"]["receiptId"].as_str().unwrap();
-            let stored = service
-                .store
-                .get(&format!("receipt:v1:{id}"))
-                .await
-                .unwrap()
-                .unwrap();
-            assert_eq!(
-                stored.prepared.unwrap()["signedTransaction"],
-                STANDARD.encode([1, 2, 3])
-            );
-            assert!(output["receipt"].get("signedTransaction").is_none());
-        })
-        .await;
+        assert_eq!(sends.load(Ordering::SeqCst), 1, "{network}");
+    }
 }
 const ARC_USDC: &str = "0x3600000000000000000000000000000000000000";
 const BASE_USDC: &str = "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913";
 const BASE_EURC: &str = "0x60a3E35Cc302bFA44Cb288Bc5a4F316Fdb1adb42";
-/// Every EVM network admitted through receipts: the v1 name a body carries,
-/// the CAIP-2 id its receipt must carry, and an exact asset on it.
-const EVM_RECEIPT_NETWORKS: [(&str, &str, &str); 3] = [
-    ("arc", "eip155:5042", ARC_USDC),
-    ("arc-testnet", "eip155:5042002", ARC_USDC),
-    ("base", "eip155:8453", BASE_USDC),
-];
+
+/// One EVM payment the rail admits: a network of the matrix and one of its
+/// tokens.
+struct EvmCase {
+    network: Network,
+    token: crate::types::SupportedTokenInfo,
+}
+
+impl EvmCase {
+    /// The token's address as a client writes it (EIP-55 checksum casing).
+    fn asset(&self) -> String {
+        self.token.address.to_string()
+    }
+    fn caip2(&self) -> String {
+        self.network.to_caip2()
+    }
+    /// An x402 v1 body, under the network's v1 name.
+    fn v1(&self, nonce: u8) -> Bytes {
+        body_on(&self.network.to_string(), &self.asset(), nonce)
+    }
+    /// The same payment as an x402 v2 body, under the network's CAIP-2 id.
+    fn v2(&self, nonce: u8) -> Bytes {
+        let v1: Value = serde_json::from_slice(&self.v1(nonce)).unwrap();
+        let r = &v1["paymentRequirements"];
+        Bytes::from(serde_json::to_vec(&json!({
+            "x402Version":2,
+            "paymentPayload":{"x402Version":2,"payload":v1["paymentPayload"]["payload"]},
+            "resource":{"url":r["resource"],"description":r["description"],"mimeType":r["mimeType"]},
+            "accepted":{"network":self.caip2(),"scheme":"exact","asset":r["asset"],
+                "amount":r["maxAmountRequired"],"payTo":r["payTo"],"maxTimeoutSeconds":180,"extra":r["extra"]}
+        })).unwrap())
+    }
+}
+
+/// The EVM matrix exactly as production reads it (`evm_exact_tokens`), one
+/// case per network and token. Never empty: a harness that iterates it must
+/// not pass by running nothing.
+fn evm_matrix() -> Vec<EvmCase> {
+    let cases: Vec<EvmCase> = Network::variants()
+        .iter()
+        .flat_map(|network| {
+            evm_exact_tokens(*network).into_iter().map(|token| EvmCase {
+                network: *network,
+                token,
+            })
+        })
+        .collect();
+    assert!(!cases.is_empty(), "the EVM matrix is empty");
+    cases
+}
+
+/// CAIP-2 ids of the matrix's networks, kept for the life of the test binary
+/// so the replay harness can hand them to spawned tasks.
+static EVM_RECEIPT_NETWORKS: once_cell::sync::Lazy<Vec<String>> =
+    once_cell::sync::Lazy::new(|| {
+        let mut networks: Vec<String> = evm_matrix().iter().map(EvmCase::caip2).collect();
+        networks.dedup();
+        networks
+    });
+
 fn body(nonce: u8) -> Bytes {
     body_on("arc-testnet", ARC_USDC, nonce)
 }
@@ -332,24 +421,36 @@ async fn arc_v2_receipt_keeps_the_wire_version_after_internal_normalization() {
         .await;
 }
 
+/// Two replicas of the facilitator share one durable store and race twenty
+/// copies of the same purchase between them, on every network and token of
+/// the matrix: one send, one receipt, and a replay of it.
 #[tokio::test]
 async fn concurrent_replicas_reserve_one_payment_and_replay_the_same_receipt() {
-    for (network, caip2, asset) in EVM_RECEIPT_NETWORKS {
-        let service = service_fixture();
+    for case in evm_matrix() {
+        let (network, asset, body) = (case.caip2(), case.asset(), case.v1(1));
+        let shared: Arc<dyn store::Store> = Arc::new(store::MemoryStore::default());
+        let replicas: Vec<Arc<Service>> = (0..2)
+            .map(|_| {
+                Arc::new(Service {
+                    store: shared.clone(),
+                    signing_key: Some(SigningKey::from_bytes(&[7; 32])),
+                })
+            })
+            .collect();
         let sends = Arc::new(AtomicUsize::new(0));
         let mut tasks = Vec::new();
-        for _ in 0..20 {
-            let service = service.clone();
-            let sends = sends.clone();
+        for attempt in 0..20 {
+            let service = replicas[attempt % 2].clone();
+            let (sends, body, network) = (sends.clone(), body.clone(), network.clone());
             tasks.push(tokio::spawn(TEST_SERVICE.scope(service, async move {
                 settle(
                     &MockFacilitator { invalid: false },
                     &headers(),
-                    &body_on(network, asset, 1),
+                    &body,
                     async {
                         sends.fetch_add(1, Ordering::SeqCst);
                         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-                        success_on(network)
+                        success_on(&network)
                     },
                 )
                 .await
@@ -365,41 +466,31 @@ async fn concurrent_replicas_reserve_one_payment_and_replay_the_same_receipt() {
                 receipt_id = Some(id);
             }
         }
-        assert_eq!(sends.load(Ordering::SeqCst), 1, "{network}");
-        let replay = TEST_SERVICE
-            .scope(service, async {
-                settle(
-                    &MockFacilitator { invalid: false },
-                    &headers(),
-                    &body_on(network, asset, 1),
-                    async { panic!("second broadcast on {network}") },
-                )
-                .await
-            })
-            .await;
-        assert_eq!(replay.headers()["idempotent-replayed"], "true", "{network}");
-        let output = value(replay).await;
-        assert_eq!(output["receipt"]["status"], "confirmed", "{network}");
-        assert_eq!(
-            output["receipt"]["receiptId"],
-            receipt_id.unwrap(),
-            "{network}"
-        );
-        assert_eq!(output["receipt"]["amount"], "1000", "{network}");
-        assert_eq!(output["receipt"]["decimals"], 6, "{network}");
-        assert_eq!(output["receipt"]["network"], caip2);
-        // EVM addresses are lowercase in the receipt and its request hash,
-        // whatever checksum casing the payment requirements used.
-        assert_eq!(
-            output["receipt"]["asset"],
-            asset.to_lowercase(),
-            "{network}"
-        );
-        assert_eq!(
-            output["receipt"]["request"]["asset"],
-            asset.to_lowercase(),
-            "{network}"
-        );
+        assert_eq!(sends.load(Ordering::SeqCst), 1, "{network} {asset}");
+        for replica in &replicas {
+            let replay = TEST_SERVICE
+                .scope(replica.clone(), settle_again(&headers(), &body))
+                .await;
+            assert_eq!(replay.headers()["idempotent-replayed"], "true", "{network}");
+            let output = value(replay).await;
+            assert_eq!(output["receipt"]["status"], "confirmed", "{network}");
+            assert_eq!(output["receipt"]["receiptId"], receipt_id.clone().unwrap());
+            assert_eq!(output["receipt"]["amount"], "1000", "{network}");
+            assert_eq!(output["receipt"]["decimals"], case.token.decimals);
+            assert_eq!(output["receipt"]["network"], network.as_str());
+            // EVM addresses are lowercase in the receipt and its request hash,
+            // whatever checksum casing the payment requirements used.
+            assert_eq!(
+                output["receipt"]["asset"],
+                asset.to_lowercase(),
+                "{network}"
+            );
+            assert_eq!(
+                output["receipt"]["request"]["asset"],
+                asset.to_lowercase(),
+                "{network}"
+            );
+        }
     }
 }
 
@@ -439,46 +530,58 @@ async fn new_signature_same_purchase_and_changed_terms_never_charge_again() {
         .await;
 }
 
+/// An uncertain outcome survives a restart on every network and token of the
+/// matrix: the new process reads the same receipt from the store and sends
+/// nothing.
 #[tokio::test]
 async fn unknown_survives_restart_and_has_no_refusal_or_second_send() {
-    let first = service_fixture();
-    TEST_SERVICE
-        .scope(first.clone(), async {
-            let response = settle(
-                &MockFacilitator { invalid: false },
-                &headers(),
-                &body(1),
-                async {
-                    (
-                        StatusCode::BAD_GATEWAY,
-                        Json(json!({"error":"rpc_timeout"})),
-                    )
-                        .into_response()
-                },
-            )
+    for case in evm_matrix() {
+        let (network, body) = (case.caip2(), case.v1(1));
+        let first = service_fixture();
+        let sends = AtomicUsize::new(0);
+        let original = TEST_SERVICE
+            .scope(first.clone(), async {
+                let response = settle(
+                    &MockFacilitator { invalid: false },
+                    &headers(),
+                    &body,
+                    async {
+                        sends.fetch_add(1, Ordering::SeqCst);
+                        (
+                            StatusCode::BAD_GATEWAY,
+                            Json(json!({"error":"rpc_timeout"})),
+                        )
+                            .into_response()
+                    },
+                )
+                .await;
+                let output = value(response).await;
+                assert_eq!(output["receipt"]["status"], "unknown", "{network}");
+                assert!(output["receipt"]["refusalReason"].is_null());
+                output
+            })
             .await;
-            let output = value(response).await;
-            assert_eq!(output["receipt"]["status"], "unknown");
-            assert!(output["receipt"]["refusalReason"].is_null());
-        })
-        .await;
-    // A new service instance uses only the durable store, no in-memory lock.
-    let restarted = Arc::new(Service {
-        store: first.store.clone(),
-        signing_key: None,
-    });
-    TEST_SERVICE
-        .scope(restarted, async {
-            let replay = settle(
-                &MockFacilitator { invalid: false },
-                &headers(),
-                &body(1),
-                async { panic!("uncertainty must not authorize another transfer") },
-            )
+        // A new service instance uses only the durable store, no in-memory lock.
+        let restarted = Arc::new(Service {
+            store: first.store.clone(),
+            signing_key: None,
+        });
+        TEST_SERVICE
+            .scope(restarted, async {
+                let replay = settle(
+                    &MockFacilitator { invalid: false },
+                    &headers(),
+                    &body,
+                    async { panic!("uncertainty must not authorize another transfer") },
+                )
+                .await;
+                let replay = value(replay).await;
+                assert_eq!(replay["receipt"]["status"], "unknown", "{network}");
+                assert_eq!(replay["receipt"], original["receipt"], "{network}");
+            })
             .await;
-            assert_eq!(value(replay).await["receipt"]["status"], "unknown");
-        })
-        .await;
+        assert_eq!(sends.load(Ordering::SeqCst), 1, "{network}");
+    }
 }
 
 #[tokio::test]
@@ -734,89 +837,116 @@ impl store::Store for BrokenStore {
         Err("offline".into())
     }
 }
+/// Receipt storage down, on every network and token of the matrix, with and
+/// without a purchase context: nothing is admitted and nothing is sent.
 #[tokio::test]
 async fn no_storage_no_broadcast() {
     let service = Arc::new(Service {
         store: Arc::new(BrokenStore),
         signing_key: None,
     });
-    TEST_SERVICE
-        .scope(service, async {
-            let refused = settle(
-                &MockFacilitator { invalid: false },
-                &headers(),
-                &body(1),
-                async { panic!("storage outage allowed a send") },
-            )
-            .await;
-            assert_eq!(refused.status(), StatusCode::SERVICE_UNAVAILABLE);
-        })
-        .await;
+    for case in evm_matrix() {
+        let network = case.caip2();
+        for (h, body) in [
+            (headers(), case.v1(1)),
+            (HeaderMap::new(), case.v1(1)),
+            (keyed("storage-down"), case.v2(1)),
+        ] {
+            TEST_SERVICE
+                .scope(service.clone(), async {
+                    let refused = settle(&MockFacilitator { invalid: false }, &h, &body, async {
+                        panic!("storage outage allowed a send on {network}")
+                    })
+                    .await;
+                    assert_eq!(
+                        refused.status(),
+                        StatusCode::SERVICE_UNAVAILABLE,
+                        "{network}"
+                    );
+                    assert_eq!(value(refused).await["error"], "receipt_store_unavailable");
+                })
+                .await;
+        }
+    }
 }
 
+/// Requests that `/settle` hands to their own settlement paths never enter
+/// admission, on any network of the matrix, even when their inner
+/// requirements read `exact`.
 #[tokio::test]
-async fn base_escrow_and_refund_requests_keep_their_own_settlement_path() {
-    let exact: Value = serde_json::from_slice(&body_on("base", BASE_USDC, 1)).unwrap();
-    assert!(parse_request(&HeaderMap::new(), &body_on("base", BASE_USDC, 1)).is_some());
-    let mut refund = exact.clone();
-    refund["paymentPayload"]["extensions"] = json!({"refund":{"info":{}}});
-    let mut escrow = exact.clone();
-    escrow["scheme"] = json!("escrow");
-    let mut commerce = exact.clone();
-    commerce["paymentPayload"]["scheme"] = json!("commerce");
-    let mut upto = exact.clone();
-    upto["paymentPayload"]["scheme"] = json!("upto");
-    let mut fhe = exact.clone();
-    fhe["paymentPayload"]["scheme"] = json!("fhe-transfer");
-    // x402 v2 names the scheme inside paymentPayload.accepted.
-    let r = &exact["paymentRequirements"];
-    let accepted = json!({"network":"eip155:8453","scheme":"exact","asset":r["asset"],
-        "amount":r["maxAmountRequired"],"payTo":r["payTo"],"maxTimeoutSeconds":60,"extra":r["extra"]});
-    let v2 = |scheme: &str| {
-        let mut inner = accepted.clone();
-        inner["scheme"] = json!(scheme);
-        json!({"x402Version":2,
-            "paymentPayload":{"x402Version":2,"accepted":inner,"payload":exact["paymentPayload"]["payload"]},
-            "resource":{"url":r["resource"],"description":r["description"],"mimeType":r["mimeType"]},
-            "accepted":accepted})
-    };
-    let v2_exact = Bytes::from(serde_json::to_vec(&v2("exact")).unwrap());
-    assert!(parse_request(&HeaderMap::new(), &v2_exact).is_some());
-    for (route, request) in [
-        ("refund", refund),
-        ("escrow", escrow),
-        ("commerce", commerce),
-        ("upto", upto),
-        ("fhe-transfer", fhe),
-        ("v2 escrow", v2("escrow")),
-    ] {
-        let raw = Bytes::from(serde_json::to_vec(&request).unwrap());
-        assert!(parse_request(&HeaderMap::new(), &raw).is_none(), "{route}");
-        let store = Arc::new(store::MemoryStore::default());
-        let service = Arc::new(Service {
-            store: store.clone(),
-            signing_key: Some(SigningKey::from_bytes(&[7; 32])),
-        });
-        TEST_SERVICE
-            .scope(service, async {
-                let own_path =
-                    || async { (StatusCode::OK, Json(json!({"route": route}))).into_response() };
-                let settled = settle(
-                    &MockFacilitator { invalid: false },
-                    &HeaderMap::new(),
-                    &raw,
-                    own_path(),
-                )
-                .await;
-                assert_eq!(value(settled).await, json!({"route": route}));
-                let verified = verify(&HeaderMap::new(), &raw, own_path()).await;
-                assert_eq!(value(verified).await, json!({"route": route}));
-            })
-            .await;
+async fn alternative_routes_keep_their_own_settlement_path_on_every_evm_network() {
+    let mut cases = evm_matrix();
+    cases.dedup_by_key(|case| case.network);
+    for case in cases {
+        let network = case.caip2();
+        let exact: Value = serde_json::from_slice(&case.v1(1)).unwrap();
         assert!(
-            store.0.lock().await.is_empty(),
-            "{route} reserved a receipt"
+            parse_request(&HeaderMap::new(), &case.v1(1)).is_some(),
+            "{network}"
         );
+        let mut refund = exact.clone();
+        refund["paymentPayload"]["extensions"] = json!({"refund":{"info":{}}});
+        let mut escrow = exact.clone();
+        escrow["scheme"] = json!("escrow");
+        let mut commerce = exact.clone();
+        commerce["paymentPayload"]["scheme"] = json!("commerce");
+        let mut upto = exact.clone();
+        upto["paymentPayload"]["scheme"] = json!("upto");
+        let mut fhe = exact.clone();
+        fhe["paymentPayload"]["scheme"] = json!("fhe-transfer");
+        // x402 v2 names the scheme inside paymentPayload.accepted.
+        let v2_exact: Value = serde_json::from_slice(&case.v2(1)).unwrap();
+        assert!(
+            parse_request(&HeaderMap::new(), &case.v2(1)).is_some(),
+            "{network}"
+        );
+        let v2 = |scheme: &str| {
+            let mut request = v2_exact.clone();
+            let mut inner = request["accepted"].clone();
+            inner["scheme"] = json!(scheme);
+            request["paymentPayload"]["accepted"] = inner;
+            request
+        };
+        for (route, request) in [
+            ("refund", refund),
+            ("escrow", escrow),
+            ("commerce", commerce),
+            ("upto", upto),
+            ("fhe-transfer", fhe),
+            ("v2 escrow", v2("escrow")),
+        ] {
+            let raw = Bytes::from(serde_json::to_vec(&request).unwrap());
+            assert!(
+                parse_request(&HeaderMap::new(), &raw).is_none(),
+                "{network} {route}"
+            );
+            let store = Arc::new(store::MemoryStore::default());
+            let service = Arc::new(Service {
+                store: store.clone(),
+                signing_key: Some(SigningKey::from_bytes(&[7; 32])),
+            });
+            TEST_SERVICE
+                .scope(service, async {
+                    let own_path = || async {
+                        (StatusCode::OK, Json(json!({"route": route}))).into_response()
+                    };
+                    let settled = settle(
+                        &MockFacilitator { invalid: false },
+                        &HeaderMap::new(),
+                        &raw,
+                        own_path(),
+                    )
+                    .await;
+                    assert_eq!(value(settled).await, json!({"route": route}));
+                    let verified = verify(&HeaderMap::new(), &raw, own_path()).await;
+                    assert_eq!(value(verified).await, json!({"route": route}));
+                })
+                .await;
+            assert!(
+                store.0.lock().await.is_empty(),
+                "{network} {route} reserved a receipt"
+            );
+        }
     }
 }
 
@@ -836,6 +966,286 @@ fn capability_lists_exactly_the_supported_networks() {
     listed.sort();
     expected.sort();
     assert_eq!(listed, expected);
+    // The same list from a source `capability` does not read: the chain ids of
+    // the EVM networks the catalog presents with `exact` tokens, and Hedera.
+    let presented: Value =
+        serde_json::from_str(include_str!("../../config/supported_tokens.json")).unwrap();
+    #[allow(unused_mut)]
+    let mut independent: Vec<String> = ["evm_mainnets", "evm_testnets"]
+        .iter()
+        .flat_map(|group| presented[*group].as_object().unwrap().iter())
+        .filter(|(name, entry)| !name.starts_with('_') && entry.is_object())
+        .filter(|(_, entry)| !entry["tokens"].as_array().unwrap().is_empty())
+        .map(|(_, entry)| format!("eip155:{}", entry["chainId"].as_u64().unwrap()))
+        .collect();
+    #[cfg(feature = "hedera")]
+    independent.extend(["hedera:mainnet".to_owned(), "hedera:testnet".to_owned()]);
+    independent.sort();
+    assert_eq!(listed, independent);
+}
+
+/// The EVM matrix is the one production already serves, announced, admitted
+/// and normalized as one. Its tokens are checked against the ones
+/// `config/supported_tokens.json` presents for every EVM network (tied to
+/// `/supported` by `networks_json`), not against the function under test.
+/// Every token of every network is admitted in x402 v1 and v2, and its receipt
+/// names the CAIP-2 network and carries the lowercase asset and payTo and the
+/// token's own decimals.
+#[test]
+fn every_evm_exact_token_is_announced_admitted_and_normalized() {
+    use crate::types::TokenType;
+    let presented: Value =
+        serde_json::from_str(include_str!("../../config/supported_tokens.json")).unwrap();
+    let mut expected: Vec<(String, String)> = ["evm_mainnets", "evm_testnets"]
+        .iter()
+        .flat_map(|group| presented[*group].as_object().unwrap().iter())
+        .filter(|(name, entry)| !name.starts_with('_') && entry.is_object())
+        .flat_map(|(name, entry)| {
+            entry["tokens"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(move |symbol| (name.clone(), symbol.as_str().unwrap().to_owned()))
+        })
+        .collect();
+    let matrix = evm_matrix();
+    let symbol = |token: TokenType| {
+        serde_json::to_value(token)
+            .unwrap()
+            .as_str()
+            .unwrap()
+            .to_owned()
+    };
+    let mut admitted: Vec<(String, String)> = matrix
+        .iter()
+        .map(|case| (case.network.to_string(), symbol(case.token.token)))
+        .collect();
+    expected.sort();
+    admitted.sort();
+    assert_eq!(admitted, expected);
+    let tokens_on = |network: Network| {
+        let mut on: Vec<TokenType> = matrix
+            .iter()
+            .filter(|case| case.network == network)
+            .map(|case| case.token.token)
+            .collect();
+        on.sort_by_key(|token| symbol(*token));
+        on
+    };
+    assert_eq!(
+        tokens_on(Network::Ethereum),
+        [
+            TokenType::Ausd,
+            TokenType::Eurc,
+            TokenType::Pyusd,
+            TokenType::Usdc
+        ]
+    );
+    assert_eq!(tokens_on(Network::Bsc), [TokenType::Ausd]);
+    assert_eq!(tokens_on(Network::Robinhood), [TokenType::Usdg]);
+
+    // A payee in capitals, so its lowercase in the receipt is a real change.
+    const PAY_TO: &str = "0xABCDEF0123456789ABCDEF0123456789ABCDEF01";
+    let paying = |body: Bytes| {
+        let mut request: Value = serde_json::from_slice(&body).unwrap();
+        for terms in ["paymentRequirements", "accepted"] {
+            if request[terms].is_object() {
+                request[terms]["payTo"] = json!(PAY_TO);
+            }
+        }
+        Bytes::from(serde_json::to_vec(&request).unwrap())
+    };
+    let announced = capability()["networks"].clone();
+    for case in &matrix {
+        let network = case.caip2();
+        assert!(supported(case.network), "{network}");
+        assert!(
+            announced.as_array().unwrap().contains(&json!(network)),
+            "{network} is admitted and not announced"
+        );
+        for (version, body) in [(1, paying(case.v1(1))), (2, paying(case.v2(1)))] {
+            let request = parse_request(&HeaderMap::new(), &body).unwrap_or_else(|| {
+                panic!("{network} {} x402 v{version} is not admitted", case.asset())
+            });
+            let receipt = initial(&request, None, "settle").unwrap().receipt;
+            let asset = case.asset().to_lowercase();
+            assert_eq!(receipt.network, network);
+            assert_eq!(receipt.x402_version, version, "{network}");
+            assert_eq!(receipt.asset, asset, "{network}");
+            assert_eq!(receipt.request["asset"], asset.as_str(), "{network}");
+            assert_eq!(receipt.request["network"], network.as_str());
+            assert_eq!(receipt.pay_to, PAY_TO.to_lowercase(), "{network}");
+            assert_eq!(receipt.request["payTo"], PAY_TO.to_lowercase().as_str());
+            assert_eq!(
+                receipt.decimals,
+                Some(case.token.decimals),
+                "{network} {asset}"
+            );
+        }
+    }
+}
+
+/// What the matrix leaves out stays out of announcement and admission: the
+/// EVM network production serves no `exact` on (Ethereum Sepolia) and the EVM
+/// variants nothing serves, though each has an ERC-3009 deployment on paper;
+/// a token of an admitted network that is not one of its `exact` tokens; a
+/// body whose payload and terms name two networks, or whose terms are not
+/// `exact`; and Solana and the other families.
+#[test]
+fn nothing_outside_the_evm_matrix_is_announced_or_admitted() {
+    use crate::types::TokenType;
+    let announced = capability()["networks"].clone();
+    let announced = announced.as_array().unwrap();
+    for network in [
+        Network::EthereumSepolia,
+        Network::Sei,
+        Network::SeiTestnet,
+        Network::XdcMainnet,
+    ] {
+        let on_paper = crate::network::exact_payment_tokens(network);
+        assert!(!on_paper.is_empty(), "{network}");
+        assert!(evm_exact_tokens(network).is_empty(), "{network}");
+        assert!(!supported(network), "{network}");
+        assert!(!announced.contains(&json!(network.to_caip2())), "{network}");
+        let body = body_on(&network.to_string(), &on_paper[0].address.to_string(), 1);
+        assert!(
+            parse_request(&HeaderMap::new(), &body).is_none(),
+            "{network}"
+        );
+    }
+
+    // BSC's USDC has no ERC-3009 and is no `exact` token there; AUSD is.
+    let bsc_usdc = crate::network::get_token_deployment(Network::Bsc, TokenType::Usdc)
+        .unwrap()
+        .address()
+        .to_string();
+    let bsc_ausd = crate::network::get_token_deployment(Network::Bsc, TokenType::Ausd)
+        .unwrap()
+        .address()
+        .to_string();
+    assert!(parse_request(&HeaderMap::new(), &body_on("bsc", &bsc_ausd, 1)).is_some());
+    assert!(parse_request(&HeaderMap::new(), &body_on("bsc", &bsc_usdc, 1)).is_none());
+    // A token of another network, and one that is nobody's.
+    for asset in [BASE_USDC, "0x000000000000000000000000000000000000dEaD"] {
+        assert!(
+            parse_request(&HeaderMap::new(), &body_on("ethereum", asset, 1)).is_none(),
+            "{asset}"
+        );
+    }
+
+    // Both halves of a v1 body name admitted networks, but not the same one.
+    let mut split: Value = serde_json::from_slice(&body_on("base", BASE_USDC, 1)).unwrap();
+    split["paymentRequirements"]["network"] = json!("ethereum");
+    let split = Bytes::from(serde_json::to_vec(&split).unwrap());
+    assert!(parse_request(&HeaderMap::new(), &split).is_none());
+    // Terms in another scheme under an `exact` payload stay out too.
+    let mut terms: Value = serde_json::from_slice(&body_on("base", BASE_USDC, 1)).unwrap();
+    terms["paymentRequirements"]["scheme"] = json!("upto");
+    let terms = Bytes::from(serde_json::to_vec(&terms).unwrap());
+    assert!(parse_request(&HeaderMap::new(), &terms).is_none());
+
+    assert!(!supported(Network::Solana));
+    assert!(!announced.contains(&json!(Network::Solana.to_caip2())));
+    // A well-formed EVM payment that names a network of another family.
+    for network in ["solana", "near", "stellar"] {
+        let body = body_on(network, ARC_USDC, 1);
+        assert!(
+            parse_request(&HeaderMap::new(), &body).is_none(),
+            "{network}"
+        );
+    }
+}
+
+/// What the rail admits, network by network and token by token, written down.
+/// The list and the matrix are the same set both ways: a pair that joins the
+/// matrix has to be added here, so that it cannot later leave it silently. A
+/// resend of a receipt stored for a pair that left skips the receipt and runs
+/// as an ordinary settle (`docs/facilitator-receipts.md`, "EVM coverage"). To
+/// take one off the rail, edit this list on purpose and decide what happens to
+/// the receipts already stored for it.
+#[test]
+fn every_network_and_token_on_the_rail_stays_on_it() {
+    const ON_THE_RAIL: &[(&str, &[&str])] = &[
+        ("arc", &["usdc", "eurc"]),
+        ("ethereum", &["usdc", "eurc", "ausd", "pyusd"]),
+        ("base", &["usdc", "eurc"]),
+        ("polygon", &["usdc", "ausd"]),
+        ("arbitrum", &["usdc", "ausd", "usdt"]),
+        ("optimism", &["usdc", "usdt"]),
+        ("avalanche", &["usdc", "eurc", "ausd"]),
+        ("celo", &["usdc", "usdt"]),
+        ("hyperevm", &["usdc"]),
+        ("unichain", &["usdc"]),
+        ("monad", &["usdc", "ausd", "usdt"]),
+        ("bsc", &["ausd"]),
+        ("skale-base", &["usdc"]),
+        ("scroll", &["usdc"]),
+        ("robinhood", &["usdg"]),
+        ("arc-testnet", &["usdc", "eurc"]),
+        ("base-sepolia", &["usdc"]),
+        ("polygon-amoy", &["usdc"]),
+        ("arbitrum-sepolia", &["usdc"]),
+        ("optimism-sepolia", &["usdc"]),
+        ("avalanche-fuji", &["usdc"]),
+        ("celo-sepolia", &["usdc"]),
+        ("hyperevm-testnet", &["usdc"]),
+        ("unichain-sepolia", &["usdc"]),
+        ("skale-base-sepolia", &["usdc"]),
+        ("robinhood-testnet", &["usdg"]),
+    ];
+    let matrix = evm_matrix();
+    for (name, symbols) in ON_THE_RAIL {
+        let network: Network = name.parse().unwrap();
+        assert!(supported(network), "{name} left the rail");
+        for symbol in *symbols {
+            let on = matrix.iter().any(|case| {
+                case.network == network
+                    && serde_json::to_value(case.token.token).unwrap() == json!(symbol)
+            });
+            assert!(on, "{name} {symbol} left the rail");
+        }
+    }
+    for case in &matrix {
+        let (name, symbol) = (
+            case.network.to_string(),
+            serde_json::to_value(case.token.token).unwrap(),
+        );
+        let listed = ON_THE_RAIL
+            .iter()
+            .any(|(listed, symbols)| *listed == name && symbols.iter().any(|s| json!(s) == symbol));
+        assert!(
+            listed,
+            "{name} {symbol} joined the rail: add it to ON_THE_RAIL so it cannot leave silently"
+        );
+    }
+    #[cfg(feature = "hedera")]
+    for network in [Network::Hedera, Network::HederaTestnet] {
+        assert!(supported(network), "{network} left the rail");
+    }
+}
+
+/// What was admitted before the matrix stays admitted: on Arc, Arc testnet
+/// and Base every asset verification accepts is one of the matrix's tokens,
+/// so no authorization admitted then goes back to the path without receipts
+/// when it is resent.
+#[test]
+fn every_asset_admitted_before_the_matrix_stays_on_the_rail() {
+    for network in [Network::Arc, Network::ArcTestnet, Network::Base] {
+        let tokens: Vec<_> = evm_exact_tokens(network)
+            .into_iter()
+            .map(|token| token.address)
+            .collect();
+        let accepted = crate::network::supported_asset_addresses(network);
+        assert!(!accepted.is_empty(), "{network}");
+        for asset in accepted {
+            assert!(tokens.contains(&asset), "{network} {asset}");
+            let body = body_on(&network.to_string(), &asset.to_string(), 1);
+            assert!(
+                parse_request(&HeaderMap::new(), &body).is_some(),
+                "{network} {asset}"
+            );
+        }
+    }
 }
 
 /// Base is announced: a Base settle is admitted without any test override.
@@ -1025,14 +1435,20 @@ fn hedera_body(network: &str, asset: &str) -> Bytes {
     )
 }
 
-/// CAIP-2 id and a synthetic request for one authorization, per network.
+/// CAIP-2 id and a synthetic request for one authorization, per network: on
+/// EVM, every network of the matrix with its first token.
 fn admitted_networks() -> Vec<(&'static str, Bytes)> {
+    let mut first = evm_matrix();
+    first.dedup_by_key(|case| case.network);
     #[allow(unused_mut)]
-    let mut cases = vec![
-        ("eip155:5042", body_on("arc", ARC_USDC, 1)),
-        ("eip155:5042002", body_on("arc-testnet", ARC_USDC, 1)),
-        ("eip155:8453", body_on("base", BASE_USDC, 1)),
-    ];
+    let mut cases: Vec<(&'static str, Bytes)> = EVM_RECEIPT_NETWORKS
+        .iter()
+        .zip(first)
+        .map(|(network, case)| {
+            assert_eq!(*network, case.caip2());
+            (network.as_str(), case.v1(1))
+        })
+        .collect();
     #[cfg(feature = "hedera")]
     cases.extend([
         (

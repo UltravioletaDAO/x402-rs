@@ -121,12 +121,19 @@ X402-CI-GATES.
 - **`BAZAAR_ADMIN_TOKEN` reaches production.** Nothing put it in the container
   before, so the Bazaar admin routes (`DELETE /discovery/resources`,
   `/discovery/admin/*`, `POST /discovery/refresh`) answered 404 there. It now
-  comes from the Secrets Manager secret `facilitator-bazaar-admin-token` (JSON
-  key `token`), read by name like the ERC-8004 and DX402 tokens: the value never
-  reaches the Terraform state, and the CI user cannot read it. Create the secret
-  by hand and apply the execution role's policy before the merge (`secrets.tf`
-  has both commands): the CI user can do neither, and until the secret exists
-  every plan fails on its data source.
+  comes from the SSM Parameter Store SecureString `/facilitator/bazaar-admin-token`,
+  encrypted with a KMS key of its own (`alias/facilitator-bazaar-admin-token`,
+  rotated every year; owner's decision 230). On that key `ssm:GetParameter` alone
+  returns only ciphertext: the execution role is granted `ssm:GetParameters` on
+  the parameter and `kms:Decrypt` on the key, through SSM only, and the CI user
+  is explicitly denied `kms:Decrypt` on it (`facilitator-cicd-infra`,
+  `DenyBazaarTokenDecrypt`). Terraform creates the key and composes the
+  parameter's ARN without reading it, so neither the value nor its ciphertext
+  reaches the state; the drift gate's new "Bazaar admin token parameter is in
+  place" step reads the parameter's metadata and is red while it is missing, is
+  not a SecureString or is on another key. Before the merge, by hand (the CI user
+  can do none of it; `secrets.tf` has the commands): apply the key, the CI
+  policy and the execution role's policy, then put the value from a file.
 
 ## [2.49.0] - 2026-10-06
 

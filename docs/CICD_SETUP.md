@@ -42,7 +42,11 @@ then give it the policies below.
 > `DenyPrivilegeEscalation` (Deny), `BalancesLambdaDeploy`, `AlertTopicManage`,
 > `FacilitatorAlarmManage`, `FacilitatorMetricFilterManage`, `FacilitatorScheduleManage`,
 > `AlertsBackupQueueManage`, `FacilitatorLogRetention`, `DiscoveryBucketVersioning`,
-> `EcsClusterUpdate`, `EcsDeployUntag`. The `.tf` file is the list; this one is a reading aid.
+> `EcsClusterUpdate`, `EcsDeployUntag`, `DenyBazaarTokenDecrypt` (Deny). The `.tf` file is the list;
+> this one is a reading aid. `DenyBazaarTokenDecrypt` denies `kms:Decrypt` on the KMS key of the SSM
+> SecureString `/facilitator/bazaar-admin-token` (owner's decision 230): `ReadOnlyAccess` grants
+> `ssm:GetParameter`, which on that key returns only ciphertext, and the deny keeps it so whatever is
+> attached later -- the role `DenySecretValueReads` below plays for Secrets Manager.
 > `EcsDeployUntag` (`ecs:UntagResource` on the cluster, the service and the task-definition family)
 > is the inverse of the inline policy's `ecs:TagResource`, which it never had: dropping a tag would
 > have failed a deploy the same way `ecs:UpdateCluster` did. It covers the ECS half only: dropping a

@@ -336,6 +336,19 @@ resource "aws_iam_policy" "cicd_infra" {
           "arn:aws:ecs:us-east-2:${data.aws_caller_identity.current.account_id}:service/facilitator-production/facilitator-production",
           "arn:aws:ecs:us-east-2:${data.aws_caller_identity.current.account_id}:task-definition/facilitator-production:*"
         ]
+      },
+      {
+        # Owner's decision 230. BAZAAR_ADMIN_TOKEN is an SSM SecureString on its own KMS key
+        # (secrets.tf). ReadOnlyAccess grants ssm:GetParameter, which on that key returns only
+        # ciphertext, and grants no kms:Decrypt; this Deny keeps it that way whatever is
+        # attached later -- the role DenySecretValueReads plays for secretsmanager:GetSecretValue
+        # in the inline policy (docs/CICD_SETUP.md).
+        "Sid" : "DenyBazaarTokenDecrypt",
+        "Effect" : "Deny",
+        "Action" : [
+          "kms:Decrypt"
+        ],
+        "Resource" : "${aws_kms_key.bazaar_admin_token.arn}"
       }
     ]
   })

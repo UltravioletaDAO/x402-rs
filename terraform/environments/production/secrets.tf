@@ -98,35 +98,60 @@ data "aws_secretsmanager_secret" "erc8004_admin_token" {
 # no environment entry -- so in production every one of those routes answered
 # 404 (fail closed, admin_auth in src/handlers.rs).
 #
-# Secrets Manager, like the ERC-8004 and DX402 tokens, and for the same two
-# reasons, measured 2026-10-10: the CI user's DenySecretValueReads keeps it from
-# reading the value (an SSM SecureString on the aws/ssm key is readable by any
-# principal with ssm:GetParameter, ReadOnlyAccess and the CI user included), and
-# a data source reads only the secret's metadata, so the value never reaches the
-# Terraform state. Its own secret, deliberately not the ERC-8004 or DX402 token
-# (above): leaking this one hides or deletes a catalog listing, and nothing else.
+# An SSM Parameter Store SecureString, /facilitator/bazaar-admin-token, encrypted
+# with a KMS key of its own (owner's decision 230). On the default aws/ssm key a
+# SecureString is readable by any principal with ssm:GetParameter -- ReadOnlyAccess,
+# and so the CI user -- because that key lets every principal of the account
+# decrypt through SSM. On this key ssm:GetParameter alone reads only ciphertext:
+# decrypting also takes kms:Decrypt on THIS key, which the execution role is granted
+# (aws_iam_role_policy.secrets_access) and the CI user is explicitly denied
+# (aws_iam_policy.cicd_infra, DenyBazaarTokenDecrypt). Its own credential, not the
+# ERC-8004 or DX402 token (above): leaking it hides or deletes a catalog listing,
+# and nothing else.
 #
-# Created by hand, with any high-entropy value, never printed:
-#   aws secretsmanager create-secret --name facilitator-bazaar-admin-token \
-#     --secret-string "{\"token\":\"$(openssl rand -hex 32)\"}" \
-#     --region us-east-2 --query Name --output text
-# and only then, BEFORE the merge that ships this and with the merge right after,
-# the execution role's policy -- the CI user cannot write it
-# (scripts/drift_gate_iam.py prints the command). With a human's credentials, on
-# Terraform 1.9.8:
-#   terraform apply -target=aws_iam_role_policy.secrets_access
-# Any deploy from a main that lacks this file in between tries to undo that
-# policy and fails red. Until the secret exists every plan of this configuration
-# fails on this data source.
+# Terraform creates the key and its alias and never touches the parameter: the ARN
+# is composed (local.bazaar_admin_token_parameter_arn), so neither the value nor its
+# ciphertext reaches the state, and the plan does not need the parameter to exist.
+# The drift gate's "Bazaar admin token parameter is in place" step reads its
+# metadata (never the value) and goes red while it is missing or on another key.
+#
+# BEFORE the merge that ships this, with a human's credentials, on Terraform 1.9.8,
+# from WSL -- the CI user can create neither the key nor these policies:
+#   terraform apply -target=aws_kms_alias.bazaar_admin_token \
+#     -target=aws_iam_policy.cicd_infra -target=aws_iam_role_policy.secrets_access
+# then the value, from a file only you can read, never on screen or in argv:
+#   umask 077; openssl rand -hex 32 | tr -d '\n' > /dev/shm/bazaar-admin-token
+#   aws ssm put-parameter --name /facilitator/bazaar-admin-token --type SecureString \
+#     --key-id alias/facilitator-bazaar-admin-token \
+#     --value file:///dev/shm/bazaar-admin-token --region us-east-2 \
+#     --query Version --output text
+#   shred -u /dev/shm/bazaar-admin-token
 #
 # Read it without printing it:
-#   BAZAAR_ADMIN_TOKEN=$(aws secretsmanager get-secret-value \
-#     --secret-id facilitator-bazaar-admin-token --region us-east-2 \
-#     --query SecretString --output text | jq -r .token)
-# Rotate with put-secret-value and the same --secret-string, then a deploy -- a
-# task reads it when it starts.
-data "aws_secretsmanager_secret" "bazaar_admin_token" {
-  name = "facilitator-bazaar-admin-token"
+#   BAZAAR_ADMIN_TOKEN=$(aws ssm get-parameter --name /facilitator/bazaar-admin-token \
+#     --with-decryption --region us-east-2 --query Parameter.Value --output text)
+# Rotate with the same put-parameter plus --overwrite, then a deploy -- a task
+# reads it when it starts.
+resource "aws_kms_key" "bazaar_admin_token" {
+  description             = "Encrypts the SSM parameter /facilitator/bazaar-admin-token (BAZAAR_ADMIN_TOKEN)"
+  enable_key_rotation     = true
+  rotation_period_in_days = 365
+  deletion_window_in_days = 30
+
+  tags = {
+    Name = "facilitator-bazaar-admin-token"
+  }
+}
+
+resource "aws_kms_alias" "bazaar_admin_token" {
+  name          = local.bazaar_admin_token_kms_alias
+  target_key_id = aws_kms_key.bazaar_admin_token.key_id
+}
+
+locals {
+  bazaar_admin_token_parameter     = "/facilitator/bazaar-admin-token"
+  bazaar_admin_token_parameter_arn = "arn:aws:ssm:${var.aws_region}:${data.aws_caller_identity.current.account_id}:parameter${local.bazaar_admin_token_parameter}"
+  bazaar_admin_token_kms_alias     = "alias/facilitator-bazaar-admin-token"
 }
 
 # DX402 receipt signing key.
@@ -297,7 +322,6 @@ locals {
   admin_secret_arns = concat(
     [data.aws_secretsmanager_secret.facilitator_receipt_key.arn],
     [data.aws_secretsmanager_secret.erc8004_admin_token.arn],
-    [data.aws_secretsmanager_secret.bazaar_admin_token.arn],
     var.enable_dx402 ? [data.aws_secretsmanager_secret.dx402_signing_key[0].arn] : [],
     var.enable_dx402 ? [data.aws_secretsmanager_secret.dx402_admin_token[0].arn] : [],
     var.enable_dx402 && var.dx402_storage_backend == "ipfs" ? [data.aws_secretsmanager_secret.dx402_pinata[0].arn] : []
@@ -505,8 +529,9 @@ locals {
       valueFrom = "${data.aws_secretsmanager_secret.erc8004_admin_token.arn}:token::"
     },
     {
+      # An SSM SecureString on its own KMS key (above), not Secrets Manager.
       name      = "BAZAAR_ADMIN_TOKEN"
-      valueFrom = "${data.aws_secretsmanager_secret.bazaar_admin_token.arn}:token::"
+      valueFrom = local.bazaar_admin_token_parameter_arn
     },
     ], var.enable_dx402 ? [
     {

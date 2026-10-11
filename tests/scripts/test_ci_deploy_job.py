@@ -379,14 +379,15 @@ class AMergeNeverDeploys(unittest.TestCase):
 
     def test_the_drift_gate_only_reads_aws(self):
         # plan holds the AWS keys and runs on every push and pull request: whatever it
-        # runs must only read. Its one AWS call and its one script, nothing else.
+        # runs must only read. Its two AWS calls -- metadata only, never a secret's value
+        # -- and its one script, nothing else.
         for s in CI["jobs"]["plan"]["steps"]:
             for line in joined(str(s.get("run", ""))).splitlines():
                 if line.strip().startswith("#"):
                     continue
                 with self.subTest(step=s.get("name"), line=line.strip()[:80]):
                     if re.search(r"\baws\s", line):
-                        self.assertRegex(line, r"\baws s3api get-bucket-versioning\b")
+                        self.assertRegex(line, r"\baws (s3api get-bucket-versioning|ssm describe-parameters)\b")
                     for path in re.findall(r"\bscripts/[\w./-]+", line):
                         self.assertEqual(path, "scripts/drift_gate_iam.py")
 

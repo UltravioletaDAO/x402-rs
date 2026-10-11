@@ -579,6 +579,48 @@ jobs:
               ;;
           esac
 
+      # ---------------------------------------------------------------------
+      # BAZAAR_ADMIN_TOKEN's parameter exists, on its own KMS key
+      # ---------------------------------------------------------------------
+      #
+      # The task definition reads BAZAAR_ADMIN_TOKEN from the SSM SecureString
+      # /facilitator/bazaar-admin-token by an ARN Terraform composes instead of
+      # reading (secrets.tf): neither the value nor its ciphertext reaches the
+      # state, so no plan fails while the parameter is missing -- and a task that
+      # cannot read it never starts. This asks SSM for the parameter's metadata
+      # (describe-parameters never returns a value) and goes red while it is
+      # missing, is not a SecureString, or is not on the dedicated key. Public
+      # logs: nothing it prints carries an account id.
+      # tests/scripts/test_ci_bazaar_token.py runs this step.
+      - name: Bazaar admin token parameter is in place
+        if: '!cancelled()'
+        run: |
+          NAME=/facilitator/bazaar-admin-token
+          ALIAS=alias/facilitator-bazaar-admin-token
+          if ! got=$(aws ssm describe-parameters --region "$AWS_REGION" --parameter-filters "Key=Name,Option=Equals,Values=${NAME}" --query 'Parameters[0].[Type,KeyId]' --output text 2>&1); then
+            got=$(printf '%s' "$got" | sed -E 's/[0-9]{12}/<account>/g' | head -c 300)
+            echo "::warning title=Bazaar admin token check inconclusive::Could not read the metadata of ${NAME}: ${got}. Not failing on a read we did not complete."
+            exit 0
+          fi
+          read -r type key_id _ <<< "$got"
+          if [ -z "$type" ] || [ "$type" = "None" ]; then
+            echo "::error title=Bazaar admin token parameter missing::${NAME} does not exist, and a task cannot start without it. Create it before the merge (secrets.tf has the command): put-parameter --type SecureString --key-id ${ALIAS}."
+            exit 1
+          fi
+          if [ "$type" != "SecureString" ]; then
+            echo "::error title=Bazaar admin token parameter is not secret::${NAME} is a ${type}, not a SecureString. Delete it and create it again as in secrets.tf."
+            exit 1
+          fi
+          case "$key_id" in
+            "$ALIAS"|arn:aws:kms:*:"$ALIAS")
+              echo "${NAME} is a SecureString on ${ALIAS}."
+              ;;
+            *)
+              echo "::error title=Bazaar admin token on the wrong key::${NAME} is encrypted with another key, not ${ALIAS}. On the default aws/ssm key any principal with ssm:GetParameter decrypts it. Put it again with --key-id ${ALIAS} --overwrite."
+              exit 1
+              ;;
+          esac
+
   deploy:
     name: Push to ECR & deploy to ECS (production)
     needs: [test, preflight]

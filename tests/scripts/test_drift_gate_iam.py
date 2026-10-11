@@ -125,6 +125,23 @@ class TheDeclaredPolicy(unittest.TestCase):
         for role in (EXECUTION_ROLE, LAMBDA_ROLE, "anything-else"):
             self.assertEqual(gate.evaluate(self.doc, "iam:PutRolePolicy", self.arn(role)), "explicit_deny", role)
 
+    def test_the_bazaar_token_key_cannot_be_used_to_decrypt(self):
+        # Owner's decision 230: BAZAAR_ADMIN_TOKEN is an SSM SecureString on its own KMS key, and the
+        # CI user reads only ciphertext. Only that key: a deny on every key would also refuse the
+        # AWS-managed keys the deploy reads through.
+        key = f"arn:aws:kms:us-east-2:{ACCOUNT}:key/0a0a0a0a-0b0b-0c0c-0d0d-0e0e0e0e0e0e"
+        other = f"arn:aws:kms:us-east-2:{ACCOUNT}:key/1f1f1f1f-2e2e-3d3d-4c4c-5b5b5b5b5b5b"
+        doc = json.loads(json.dumps(self.doc).replace("${aws_kms_key.bazaar_admin_token.arn}", key))
+        self.assertEqual(gate.evaluate(doc, "kms:Decrypt", key), "explicit_deny")
+        self.assertEqual(gate.evaluate(doc, "kms:Decrypt", other), "no_allow")
+        deny = [s for s in doc["Statement"] if s.get("Sid") == "DenyBazaarTokenDecrypt"]
+        self.assertEqual(len(deny), 1)
+        self.assertNotIn("Condition", deny[0], "a condition can switch the deny off")
+        for s in doc["Statement"]:
+            actions = s.get("Action") if isinstance(s.get("Action"), list) else [s.get("Action")]
+            if s.get("Effect") == "Allow":
+                self.assertFalse(any(a in ("kms:Decrypt", "kms:*", "*") for a in actions), s.get("Sid"))
+
     def test_policies_cannot_be_versioned(self):
         arn = f"arn:aws:iam::{ACCOUNT}:policy/facilitator-cicd-infra"
         self.assertEqual(gate.evaluate(self.doc, "iam:CreatePolicyVersion", arn), "explicit_deny")

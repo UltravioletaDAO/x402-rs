@@ -2778,10 +2778,12 @@ for it, and a first-hand listing never; and `scanPastCap` -- the `sources` read 
 `maxItemsPerSource`, `pagesPerCycle` pages of `pageSize` a cycle, resuming where the last cycle
 stopped, keeping only copies of listings already held, so nothing new enters that way),
 `healthProber` (the probe budget -- `budgetPerTick` is
-`maxRps * tickSeconds` and is the number the revalidation queue spends from, never adds to),
+`maxRps * tickSeconds` and is the number the revalidation queue spends from, never adds to; a
+read of an origin's `/.well-known/x402` is one request of it, and of its host's),
 `revalidation`, `observedTerms`, `ownership` (the origin proof of listings from open routes:
 `requireOriginProof`, off unless phase 2 is on, `cacheSeconds` and `retrySeconds` between reads
-of one origin's `/.well-known/x402`, and `maxFileBytes` read of it), `search` (`maxQueryChars`, the longest `q` that
+of one origin's `/.well-known/x402` -- `retrySeconds` never above `cacheSeconds`, and both the
+values in force -- and `maxFileBytes` read of it), `search` (`maxQueryChars`, the longest `q` that
 `GET /discovery/resources` accepts, which the `/bazaar` page reads instead of typing it), and
 `runtime` (whether this replica owns the periodic jobs, the queue depth, and the catalog size
 right now).
@@ -3049,8 +3051,10 @@ the health prober reads the URL afterwards, in the background.
   calls it with the method it declares (with `{}`, and with your example body only when `{}` is
   refused with a 400 or 422) instead of a bare GET. Register no input and the prober takes the
   one your own 402 declares in `extensions.bazaar` (`extensionsProvenance: origin_response`, the
-  parts it filled in listed in `extensionsAdopted`); what you register is never replaced or
-  removed.
+  parts it filled in listed in `extensionsAdopted`), unless that 402's `resource.url` names
+  another resource (another host or path); what you register is never replaced or removed. A
+  method taken that way is where the prober starts, not one it is held to: it keeps the one-retry
+  fallback of a listing that declares none.
 
 **Schemes you cannot settle here are still registrable.** `scheme` is stored as published, so a
 listing for a scheme this facilitator does not implement is catalogued under its own name rather
@@ -3070,14 +3074,20 @@ whether its own origin vouches for what it says. `health.ownership` is `origin-a
 `/.well-known/x402` on the URL's host has an entry for the URL, in the same format as the request
 body above, that declares every `payTo` your `accepts` declare (with its network), the same
 `description`, and the same `category`, `provider` and `tags` wherever your `metadata` names
-them; `unattested` when there is no such file or entry, or it says something else -- an entry
-that only lists the URL vouches for nothing -- and `unknown` when the file could not be read,
-including a 401/403 or a page that is not such a file (what a WAF or a CDN answers a bot); an
-`unknown` read never erases an earlier verdict. The entry's `url` is matched exactly as written,
-apart from the host's case, a trailing dot and the default port, and your listing's URL has to be
-in its plain spelling (`https://host./path` is never attested). The health prober reads that file
-at the root of your URL's origin, never during this request, once your listing verifies alive:
-normally once per origin per `ownership.cacheSeconds` of `GET /discovery/config`, sooner after a
+them; `unattested` when there is no such file or entry, a JSON document that lists no resources
+(emptying the file to `{}` takes your word back), or an entry that says something else -- an
+entry that only lists the URL vouches for nothing -- and `unknown` when the file could not be
+read, including a 401/403 or a body that is not JSON (what a WAF or a CDN answers a bot). An
+`unknown` read leaves an earlier verdict on the same listing standing for
+`observedTerms.freshnessWindowSeconds` of `GET /discovery/config`, and no longer. The verdict is
+about the listing it judged: the same URL registered again with other content does not carry
+it. The entry's `url` is matched exactly as written, apart from the host's case, a trailing dot
+and the default port, and your listing's URL has to be in its plain spelling
+(`https://host./path` is never attested). The health prober reads that file at the root of your
+URL's origin, never during this request and never inside a probe: once your listing verifies
+alive, on a later tick, as one request of the few it makes to your host per tick, and not while
+your host has asked it to back off (a 429 or 503 to the file, with its `Retry-After`, counts like
+one to a probe). That is normally once per origin per `ownership.cacheSeconds`, sooner after a
 read that failed (`ownership.retrySeconds`), and at most `ownership.maxFileBytes` of it. A file
 served from another host after a redirect counts as none. With `DISCOVERY_REQUIRE_ORIGIN_PROOF`
 on, a self-registered listing that is not `origin-attested` is not listed.

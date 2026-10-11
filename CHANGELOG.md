@@ -12,9 +12,14 @@ X402-CI-GATES.
   a day started by hand). The deploy job of `ci.yaml` runs only on
   `workflow_dispatch`; push and pull request still run the tests and the drift
   gate. The concurrency group carries the event, so a merge landing while a
-  release waits no longer cancels it. `tests/scripts/test_ci_deploy_job.py` holds
-  it, and checks that no other job applies Terraform, pushes an image or moves
+  release waits no longer cancels it. The deploy job's first step refuses any
+  commit that is not `main`'s head, so re-running an old release no longer ships
+  that old commit. `tests/scripts/test_ci_deploy_job.py` holds it, runs that
+  step, and checks that no other job applies Terraform, pushes an image or moves
   the service.
+- **A Bazaar setting that is set but is not a usable number** (or is `0` where
+  zero is refused) is its default and logs a warning, once per value; before,
+  it fell back without a word.
 - **The CI user's managed policy `facilitator-cicd-infra`** gains
   `EcsClusterUpdate` (`ecs:UpdateCluster` on the production cluster, which every
   image deploy drags in as a dependency: #115's deploy died on it on 2026-10-07)
@@ -50,6 +55,13 @@ X402-CI-GATES.
   read, applies it and reads again (up to three reads); a cycle whose snapshot
   is still not published says so (`DiscoveryRegistry::import` reports
   `unpublished`, and the aggregator logs it).
+- **A settlement no longer writes a replica's copy of the listing back to the
+  store.** Recorded on the replica that does not own the discovery jobs, it
+  saved that replica's copy whole, which could be an aggregation interval old:
+  it put back a listing deleted on the other replica, replaced the settlement
+  count the other replica had recorded with its own, and would have walked back
+  a declaration adopted there. It is now a patch: one more settlement and the
+  later `lastSettledAt` on the stored listing, nothing else, never an insert.
 
 ### Added
 
@@ -59,17 +71,25 @@ X402-CI-GATES.
   somebody else's endpoint with its real `payTo` and a description and category
   of their own. Once a probe verifies such a listing alive, the prober reads
   `/.well-known/x402` at the root of the listing's own origin, through the same
-  SSRF-hardened connector and never in the register request (normally once per
-  origin per `DISCOVERY_ORIGIN_PROOF_CACHE_SECS`, 6 h; a failed read is retried
-  after 15 min), and publishes `health.ownership`: `origin-attested` when an
+  SSRF-hardened connector and never in the register request nor inside a probe:
+  on a later tick, as one of the requests it allows itself per host and per
+  tick, and not while the host is backing it off (a 429 or 503 to the file holds
+  it off like one to a probe). That is normally once per origin per
+  `DISCOVERY_ORIGIN_PROOF_CACHE_SECS`, 6 h; a failed read is reused for at most
+  `DISCOVERY_ORIGIN_PROOF_RETRY_SECS`, 15 min and never longer than the cache
+  window, so the next verified probe after that asks again. It publishes
+  `health.ownership`: `origin-attested` when an
   entry for the URL declares the listing's recipients and description, the
   category, provider and tags it names, and every key of the `extensions` it
   registered with the same value (all but the input's `type` and `method`, which
   the probe's own 402 answered, and what was adopted from that 402);
-  `unattested` when there is no file, no
-  such entry, or one that declares something else; `unknown` when the file
-  could not be read and no earlier read decided it. A failed read never
-  overwrites a verdict. `DISCOVERY_REQUIRE_ORIGIN_PROOF` (default off, phase 2)
+  `unattested` when there is no file, a JSON document that lists no resources
+  (an emptied file takes the word back), no such entry, or one that declares
+  something else; `unknown` when the file could not be read and no fresh read
+  decided it. A verdict the origin gave stands for the observed-terms freshness
+  window after the read that reached it, through failed reads, and is `unknown`
+  past that; and a verdict is the listing's it judged: the URL registered again
+  with other content does not carry it. `DISCOVERY_REQUIRE_ORIGIN_PROOF` (default off, phase 2)
   stops listing the unattested ones; both switches are in `GET /discovery/config`
   (group `ownership`). The verdict lives in the health overlay, never on the
   resource, so a registrant cannot attest itself.
@@ -85,7 +105,10 @@ X402-CI-GATES.
   an example) is kept whole; the result has to declare an input and fit the
   bounds of a registered `extensions`. Only through a 402 to the method the
   declaration names -- the prober learns a declared POST and adopts on the next
-  probe -- since a declared method is probed with no fallback. The listing then
+  probe -- and never from a 402 whose `resource.url` names another resource
+  (another host or path). An adopted method is where the probe starts, not a
+  declaration it is held to: the listing keeps the fallback of one that declares
+  none. The listing then
   reports `hasInputSchema: true` and `extensionsProvenance: origin_response`,
   with the parts filled in as JSON Pointers in `extensionsAdopted`, both
   persisted with it and never taken from a caller; what was adopted that way

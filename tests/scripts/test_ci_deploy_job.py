@@ -21,9 +21,13 @@ from __future__ import annotations
 
 import fnmatch
 import json
+import os
 import re
 import shlex
+import shutil
+import subprocess
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -37,6 +41,7 @@ CI = ci_paths_selftest.load_workflows()["ci.yaml"]
 DEPLOY = CI["jobs"]["deploy"]
 STEPS = DEPLOY["steps"]
 
+HEAD_GUARD = "Refuse anything but the head of main"
 ECS_APPLY = "Terraform apply (roll ECS to the new image)"
 LAMBDA = "Deploy balances Lambda"
 OBSERVABILITY = "Deploy observability"
@@ -195,6 +200,68 @@ class NoApplySkipsOnOnePushDiff(unittest.TestCase):
                          "without actions: read the runs API may refuse the token, and "
                          "the Lambda would be applied on every deploy.")
         self.assertIn("GH_TOKEN", step(LAMBDA).get("env") or {})
+
+
+class AnOldReleaseNeverShips(unittest.TestCase):
+    """A re-run runs on the commit its run was started at, so re-running an old
+    release deployed that old commit: a rollback with a green run to show for it
+    (refutation of #122, P3-10). The deploy job's first step refuses any commit
+    that is not main's head, before anything is built or applied."""
+
+    SHA = "1111111111111111111111111111111111111111"
+    OLDER = "2222222222222222222222222222222222222222"
+    REPO = "owner/repo"
+
+    def test_the_guard_is_the_first_step_and_always_runs(self):
+        first = STEPS[0]
+        self.assertEqual(first.get("name"), HEAD_GUARD,
+                         "the guard must run before the checkout, the image build and every apply")
+        self.assertNotIn("if", first, "a condition can skip the guard")
+        env = {k: " ".join(str(v).split()) for k, v in (first.get("env") or {}).items()}
+        self.assertEqual(env.get("RELEASE_SHA"), "${{ github.sha }}")
+        self.assertEqual(env.get("REPO"), "${{ github.repository }}")
+        self.assertIn("GH_TOKEN", env)
+
+    def run_guard(self, gh_body: str, release_sha: str = SHA) -> subprocess.CompletedProcess:
+        """The guard's `run:`, as the runner's bash runs it, with a stand-in `gh`
+        that answers only the question the guard must ask."""
+        if os.name != "posix" or shutil.which("bash") is None:
+            self.skipTest("needs a POSIX bash, as the runner has")
+        with tempfile.TemporaryDirectory() as tmp:
+            gh = Path(tmp) / "gh"
+            gh.write_text(
+                "#!/bin/sh\n"
+                f'[ "$*" = "api repos/{self.REPO}/git/ref/heads/main --jq .object.sha" ] || exit 2\n'
+                + gh_body,
+                encoding="utf-8",
+            )
+            gh.chmod(0o755)
+            env = {
+                "PATH": f"{tmp}{os.pathsep}{os.environ.get('PATH', '')}",
+                "GH_TOKEN": "not-a-token",
+                "RELEASE_SHA": release_sha,
+                "REPO": self.REPO,
+            }
+            return subprocess.run(
+                ["bash", "--noprofile", "--norc", "-eo", "pipefail", "-c", str(STEPS[0]["run"])],
+                env=env, capture_output=True, text=True, check=False)
+
+    def test_mains_head_ships(self):
+        done = self.run_guard(f"echo {self.SHA}\n")
+        self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
+
+    def test_an_older_commit_does_not(self):
+        done = self.run_guard(f"echo {self.OLDER}\n")
+        self.assertNotEqual(done.returncode, 0, "an old release shipped its old commit")
+        self.assertIn("::error", done.stdout)
+
+    def test_a_head_that_cannot_be_read_does_not(self):
+        for body in ("exit 1\n", "true\n"):
+            for release in (self.SHA, ""):
+                with self.subTest(gh=body.strip(), release_sha=release):
+                    done = self.run_guard(body, release)
+                    self.assertNotEqual(done.returncode, 0,
+                                        "a release shipped without knowing main's head")
 
 
 class TheTestJobRunsTheseGuards(unittest.TestCase):

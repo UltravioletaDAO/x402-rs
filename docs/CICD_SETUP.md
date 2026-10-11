@@ -175,8 +175,10 @@ stays off for `main`, so a running release is never cut between `terraform apply
 wait). The concurrency group carries the event: GitHub keeps one pending run per group and cancels
 it when a newer one arrives, and with pushes and manual runs in one group a merge could cancel a
 release that was waiting in the queue. **Never re-run an old release run**: a re-run joins the group
-as the newest, cancels a newer release waiting there and deploys its own old commit — a silent
-rollback. Start a new one with `gh workflow run ci.yaml --ref main` instead.
+as the newest and cancels a newer release waiting there. Its own old commit no longer ships — the
+deploy job's first step refuses any commit that is not `main`'s head, which used to make it a
+silent rollback — so nothing deploys. Start a new one with `gh workflow run ci.yaml --ref main`
+instead.
 
 A release now costs two runs: the merge's push run (test + drift gate) and the manual run (test +
 drift gate + deploy). The second test is on purpose — `deploy` needs `test`, and the manual run

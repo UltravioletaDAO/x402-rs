@@ -1071,6 +1071,39 @@ enum StoreOp {
     Save(Box<DiscoveryResource>),
     Delete(String),
     Adopt(Box<Adoption>),
+    /// A settlement on a listing already held, as a patch ([`apply_settlement`]).
+    Settle {
+        url: String,
+        at: Option<u64>,
+    },
+}
+
+/// Record a settlement on the stored listing as ONE conditional patch.
+///
+/// A patch, never a save, for the reason [`apply_adoptions`] gives: the record
+/// a save carries is this replica's copy, and on the replica that does not own
+/// the discovery jobs it can be an aggregation interval behind the store.
+/// Written back whole it walked back what the owner had adopted onto the
+/// listing since -- its `extensions`, their provenance and adopted parts -- and
+/// the settlements the other replica had counted, because a settlement does not
+/// move `last_updated` and the store keeps the later of two records only by it
+/// (refutation of #122, P3-8). This adds one to the stored count, keeps the
+/// later `lastSettledAt`, touches nothing else, and never inserts a listing the
+/// store no longer holds. Returns whether a write landed.
+async fn apply_settlement(
+    store: &dyn DiscoveryStore,
+    url: &str,
+    at: Option<u64>,
+) -> Result<bool, StoreError> {
+    crate::discovery_store::read_modify_write_if(store, "settle", |catalog| {
+        let Some(record) = catalog.iter_mut().find(|r| r.url.as_str() == url) else {
+            return false;
+        };
+        record.settlement_count = Some(record.settlement_count.unwrap_or(0).saturating_add(1));
+        record.last_settled_at = record.last_settled_at.max(at);
+        true
+    })
+    .await
 }
 
 /// A declaration adopted from a listing's own 402, as a patch to the stored
@@ -1202,6 +1235,10 @@ impl WriteQueue {
                 StoreOp::Delete(url) => {
                     let result = store.delete(&url).await;
                     (url, result)
+                }
+                StoreOp::Settle { url, at } => {
+                    let result = apply_settlement(store.as_ref(), &url, at).await;
+                    (url, result.map(|_| ()))
                 }
                 StoreOp::Adopt(first) => {
                     let mut batch = vec![*first];
@@ -1548,11 +1585,11 @@ impl DiscoveryRegistry {
         };
         // Phase 2 of the origin proof, off unless DISCOVERY_REQUIRE_ORIGIN_PROOF
         // is set: a listing from a route that takes a URL from anyone, whose
-        // own origin has not vouched for it in `/.well-known/x402`, stays here
-        // whatever its 402 says (`discovery_health::origin_ownership`).
+        // own origin has not vouched for IT in `/.well-known/x402`, stays here
+        // whatever its 402 says (`discovery_health::prove_from_cache`).
         if crate::discovery_health::needs_origin_proof(r.source)
             && crate::discovery_config::require_origin_proof()
-            && state.ownership != Some(crate::types_v2::Ownership::OriginAttested)
+            && state.ownership_of(r) != Some(crate::types_v2::Ownership::OriginAttested)
         {
             return false;
         }
@@ -1563,9 +1600,8 @@ impl DiscoveryRegistry {
         if mcp && !self.curation.pay_to_backed(r) {
             return false;
         }
-        let request = crate::discovery_health::probe_request(
-            &r.url,
-            r.extensions.as_ref(),
+        let request = crate::discovery_health::listing_probe_request(
+            r,
             self.curation.probes_get_only(&r.url),
         );
         // A record from before `verifiedAt` existed stands on its probe's
@@ -1653,7 +1689,7 @@ impl DiscoveryRegistry {
             .take(limit as usize)
             .map(|r| {
                 let mut c = r.clone();
-                c.health = health.get(r.url.as_str()).cloned();
+                c.health = health.get(r.url.as_str()).map(|s| s.for_listing(r));
                 c
             })
             .collect();
@@ -1683,9 +1719,8 @@ impl DiscoveryRegistry {
                 url: r.url.clone(),
                 resource_type: r.resource_type.clone(),
                 pay_to: crate::discovery_health::declared_offers(&r.accepts),
-                request: crate::discovery_health::probe_request(
-                    &r.url,
-                    r.extensions.as_ref(),
+                request: crate::discovery_health::listing_probe_request(
+                    r,
                     self.curation.probes_get_only(&r.url),
                 ),
             })
@@ -2287,7 +2322,7 @@ impl DiscoveryRegistry {
     /// The canonical keys of every catalog URL on `origin` (`scheme://host[:port]`),
     /// the only entries of that origin's `/.well-known/x402` worth keeping: a file
     /// can list tens of thousands of URLs, and the catalog is what bounds what the
-    /// prober holds of it (`discovery_health::origin_ownership`).
+    /// prober holds of it (`discovery_health::read_wanted_origin`).
     pub async fn urls_on_origin(&self, origin: &str) -> std::collections::HashSet<String> {
         let resources = self.resources.read().await;
         resources
@@ -2476,7 +2511,7 @@ impl DiscoveryRegistry {
             .take(limit as usize)
             .map(|(r, cur, _)| {
                 let mut c = r.clone();
-                c.health = health.get(r.url.as_str()).cloned();
+                c.health = health.get(r.url.as_str()).map(|s| s.for_listing(r));
                 c.curation = cur;
                 // What it sells and where it belongs, from the closed vocabulary,
                 // beside (never instead of) what the seller declared.
@@ -3223,7 +3258,7 @@ impl DiscoveryRegistry {
             // the facilitator sees one payment's requirements, not the seller's
             // price list, and one settled amount is not a universal price.
             existing.record_settlement();
-            let resource_for_store = existing.clone();
+            let at = existing.last_settled_at;
             debug!(
                 url = %url_key,
                 settlement_count = existing.settlement_count,
@@ -3233,8 +3268,10 @@ impl DiscoveryRegistry {
             // Release lock before async persistence
             drop(resources);
 
-            // Persist asynchronously
-            self.persist_async(resource_for_store);
+            // Persisted as a patch of the count, never as this copy
+            // ([`apply_settlement`]).
+            self.writes.push(StoreOp::Settle { url: url_key, at });
+            self.drain_writes();
 
             Ok(false)
         } else {
@@ -3272,9 +3309,11 @@ impl DiscoveryRegistry {
     /// what is adopted, and how, is [`DiscoveryResource::with_offered_bazaar`].
     ///
     /// Only a declaration whose method is the one that just verified the
-    /// listing: a declared method is the one the prober then uses, with no
-    /// fallback, and a method the endpoint does not answer with a 402 would
-    /// hide a live listing for good.
+    /// listing: the declaration is what an agent reads to call it, and a
+    /// method the endpoint does not answer with a 402 would send it to a wall.
+    /// The prober does not take the adopted method as a declaration: it starts
+    /// there and keeps its fallback
+    /// ([`crate::discovery_health::listing_probe_request`]).
     ///
     /// Persisted as a patch ([`apply_adoptions`]), and `last_updated` does not
     /// move: an adoption is not the seller revising the listing. Returns
@@ -3285,16 +3324,13 @@ impl DiscoveryRegistry {
         offered: &serde_json::Value,
         verified_with: crate::discovery_health::ProbeMethod,
     ) -> bool {
-        // Nearly every verified probe has nothing to adopt, and must not take
-        // the write guard to find that out. Only a filter: the decision is
+        // Nearly every verified probe has nothing to adopt -- an aggregated or
+        // crawled copy never does -- and must not take the write guard to find
+        // that out (refutation of #122, P3-8). Only a filter: the decision is
         // made again below, under the write guard, on the listing as it is then.
-        if !self
-            .resources
-            .read()
-            .await
-            .get(url)
-            .is_some_and(|r| r.with_offered_bazaar(offered).is_some())
-        {
+        if !self.resources.read().await.get(url).is_some_and(|r| {
+            r.source == DiscoverySource::SelfRegistered && r.with_offered_bazaar(offered).is_some()
+        }) {
             return false;
         }
 
@@ -6653,6 +6689,93 @@ mod tests {
             held.settlement_count, settled,
             "the adoption walked back a settlement"
         );
+    }
+
+    /// ...and the other way round: a settlement recorded on the replica that
+    /// does not own the jobs -- whose copy predates the adoption -- reaches the
+    /// store as a patch of the count, and the declaration the owner adopted
+    /// there stays (refutation of #122, P3-8).
+    #[tokio::test]
+    async fn a_settlement_on_the_other_replica_keeps_the_adoption() {
+        use crate::discovery_health::ProbeMethod;
+        let url = "https://paid.example.com/x";
+        let (store, owner, other) = two_replicas(&[url]).await;
+        assert!(
+            owner
+                .adopt_declaration(url, &declared_get("q"), ProbeMethod::Get)
+                .await
+        );
+        owner.writes.drain(&owner.store).await;
+        assert_eq!(other.get(url).await.unwrap().extensions, None);
+
+        other
+            .track_settlement(create_test_resource(url, None))
+            .await
+            .unwrap();
+        other.writes.drain(&other.store).await;
+
+        let held = stored_record(&store, url).await.unwrap();
+        assert_eq!(
+            held.extensions,
+            Some(serde_json::json!({ "bazaar": declared_get("q") })),
+            "the settlement walked back the adoption"
+        );
+        assert_eq!(held.extensions_adopted, Some(vec!["/bazaar".to_string()]));
+        assert_eq!(held.settlement_count, Some(1));
+        assert!(held.last_settled_at.is_some());
+    }
+
+    /// Settlements on both replicas add up in the store: each is one more,
+    /// never a copy of the count one replica happened to hold.
+    #[tokio::test]
+    async fn settlements_on_both_replicas_add_up() {
+        let url = "https://paid.example.com/x";
+        let (store, owner, other) = two_replicas(&[url]).await;
+        for replica in [&owner, &other, &other] {
+            replica
+                .track_settlement(create_test_resource(url, None))
+                .await
+                .unwrap();
+            replica.writes.drain(&replica.store).await;
+        }
+        assert_eq!(
+            stored_record(&store, url).await.unwrap().settlement_count,
+            Some(3)
+        );
+        // A settlement never puts back a listing the store no longer holds.
+        let gone = "https://gone.example.com/x";
+        let (store, owner, other) = two_replicas(&[gone]).await;
+        other.unregister(gone).await.unwrap();
+        other.writes.drain(&other.store).await;
+        owner
+            .track_settlement(create_test_resource(gone, None))
+            .await
+            .unwrap();
+        owner.writes.drain(&owner.store).await;
+        assert!(stored_record(&store, gone).await.is_none());
+    }
+
+    /// An aggregated copy never takes a declaration, and the check that spares
+    /// a verified probe the write guard turns it away under the read guard: a
+    /// listing request in flight does not hold the prober up (refutation of
+    /// #122, P3-8).
+    #[tokio::test]
+    async fn an_aggregated_copy_is_turned_away_without_the_write_guard() {
+        use crate::discovery_health::ProbeMethod;
+        let url = "https://feed.example.com/x";
+        let registry = DiscoveryRegistry::new();
+        registry
+            .update(aggregated(url, Some(now_secs() - 3_600), "a feed's copy"))
+            .await
+            .unwrap();
+        let reading = registry.resources.read().await;
+        let adopted = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            registry.adopt_declaration(url, &declared_get("q"), ProbeMethod::Get),
+        )
+        .await;
+        drop(reading);
+        assert_eq!(adopted, Ok(false));
     }
 
     /// An adoption computed from a copy the seller has since revised is

@@ -137,9 +137,11 @@ concurrency:
   # a release waited behind another run would cancel the release, and the push
   # that replaced it does not deploy. Keyed apart, a newer release replaces an
   # older pending one, which shipped a subset of what it does -- unless the
-  # "newer" one is a RE-RUN of an old release: it joins the group last, cancels a
-  # newer release waiting there and deploys its own old SHA. Never re-run an old
-  # release; start a new one. tests/scripts/test_ci_deploy_job.py holds the key.
+  # "newer" one is a RE-RUN of an old release: it joins the group last and
+  # cancels a newer release waiting there. Its own old SHA no longer ships (the
+  # deploy job's first step refuses anything but main's head), so nothing does.
+  # Never re-run an old release; start a new one.
+  # tests/scripts/test_ci_deploy_job.py holds the key and the step.
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
@@ -601,6 +603,25 @@ jobs:
       # scripts/ci_last_green_deploy.py reads this workflow's runs and jobs.
       actions: read
     steps:
+      # A re-run runs on the commit its run was started at, so re-running an old
+      # release deployed that old commit: a rollback nobody asked for, with a
+      # green run to show for it. Only main's head ships; anything else stops
+      # here, before the image is built. A re-run can still cancel a newer
+      # release waiting in the queue (see the concurrency note above): start a
+      # new one. tests/scripts/test_ci_deploy_job.py holds this step.
+      - name: Refuse anything but the head of main
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_SHA: ${{ github.sha }}
+          REPO: ${{ github.repository }}
+        run: |
+          head=$(gh api "repos/${REPO}/git/ref/heads/main" --jq .object.sha) || head=""
+          if [ -z "$head" ] || [ "$head" != "$RELEASE_SHA" ]; then
+            echo "::error title=Not the head of main::This run would deploy ${RELEASE_SHA}; main is at ${head:-a ref that could not be read}. Start a new release: gh workflow run ci.yaml --ref main"
+            exit 1
+          fi
+          echo "Deploying main's head ${RELEASE_SHA}."
+
       - uses: actions/checkout@v4
 
       - name: Compute image tag (version + short SHA)

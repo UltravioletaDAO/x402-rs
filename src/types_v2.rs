@@ -1196,11 +1196,14 @@ pub enum Ownership {
     /// the listing names, and the `extensions` it registered past what the
     /// probe verified on its own.
     OriginAttested,
-    /// No such file, no entry for this URL, or an entry that declares something
-    /// else.
+    /// No such file, a JSON document from the origin that lists no resources
+    /// (an emptied file takes its word back), no entry for this URL, or an
+    /// entry that declares something else.
     Unattested,
     /// The file could not be read (network error, 401/403, 429, 5xx, or a 2xx
-    /// that is not such a file), and no earlier read decided it.
+    /// that is not JSON at all, such as a CDN's challenge page), and no read
+    /// within `observedTerms.freshnessWindowSeconds` of `GET /discovery/config`
+    /// decided it.
     Unknown,
 }
 
@@ -1248,6 +1251,55 @@ pub struct HealthState {
     /// listing and on one not checked yet.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ownership: Option<Ownership>,
+    /// The listing `ownership` was reached on
+    /// ([`DiscoveryResource::registered_fingerprint`]). Never published: it is
+    /// what [`Self::ownership_of`] checks the verdict against.
+    #[serde(skip)]
+    pub ownership_basis: Option<String>,
+    /// When the read that reached `ownership` was made, for a verdict the
+    /// origin gave. Never published either: [`Self::ownership_of`] reads it.
+    #[serde(skip)]
+    pub ownership_read_at: Option<u64>,
+}
+
+impl HealthState {
+    /// The origin's verdict on `listing`: the one the prober reached on this
+    /// very listing -- this URL with the content it judged
+    /// ([`DiscoveryResource::registered_fingerprint`]) -- and `None` for any
+    /// other. The health overlay is keyed by URL, so a listing deleted and
+    /// registered again by somebody else would otherwise wear the verdict on
+    /// the old one until the next probe (refutation of #122, P3-7).
+    ///
+    /// A verdict the origin gave stands for as long as a verification does
+    /// (the observed-terms freshness window) after the read that reached it;
+    /// past that, with no read since, it is `Unknown` (refutation of #122,
+    /// P3-3).
+    pub fn ownership_of(&self, listing: &DiscoveryResource) -> Option<Ownership> {
+        let ownership = self.ownership?;
+        let basis = self.ownership_basis.as_deref()?;
+        if basis != listing.registered_fingerprint() {
+            return None;
+        }
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let window = crate::discovery_terms::freshness_window_secs();
+        let stale = self
+            .ownership_read_at
+            .is_some_and(|at| now.saturating_sub(at) >= window);
+        Some(if stale { Ownership::Unknown } else { ownership })
+    }
+
+    /// This state as `listing` publishes it: the ownership verdict only when it
+    /// is this listing's ([`Self::ownership_of`]).
+    pub fn for_listing(&self, listing: &DiscoveryResource) -> HealthState {
+        let mut state = self.clone();
+        if state.ownership.is_some() {
+            state.ownership = self.ownership_of(listing);
+        }
+        state
+    }
 }
 
 /// Curated tier of a resource (WS-C). Orders the listing:
@@ -1879,6 +1931,19 @@ impl DiscoveryResource {
     /// The hash detects change. It does not prove origin and it does not prove
     /// currency; a stale document hashes as confidently as a fresh one.
     pub fn content_fingerprint(&self) -> String {
+        self.fingerprint_with(self.extensions.as_ref())
+    }
+
+    /// [`Self::content_fingerprint`] of the listing as its seller registered
+    /// it: `extensions` without what an adoption filled in
+    /// ([`Self::registered_extensions`]). What the origin proof judges, and so
+    /// what its verdict is bound to ([`HealthState::ownership_of`]): an
+    /// adoption leaves it where it was.
+    pub fn registered_fingerprint(&self) -> String {
+        self.fingerprint_with(self.registered_extensions().as_ref())
+    }
+
+    fn fingerprint_with(&self, extensions: Option<&serde_json::Value>) -> String {
         use sha2::{Digest, Sha256};
         // `serde_json::Value` maps are BTreeMaps in this build (no
         // `preserve_order`), so a nested `extra` or `extensions` blob serializes
@@ -1901,7 +1966,7 @@ impl DiscoveryResource {
                 })
             }).collect::<Vec<_>>(),
             "metadata": self.metadata,
-            "extensions": self.extensions,
+            "extensions": extensions,
         });
         let bytes = serde_json::to_vec(&canonical).unwrap_or_default();
         hex::encode(Sha256::digest(bytes))

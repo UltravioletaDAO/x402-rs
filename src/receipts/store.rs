@@ -1,5 +1,6 @@
-//! Durable receipt reservations. These rows deliberately have NO DynamoDB TTL:
-//! expiry of a cache must never authorize a second payment.
+//! Durable receipt reservations. Every row carries the table's TTL attribute,
+//! set so that it outlives the authorization it protects (`expires_at`): the
+//! expiry of a row must never be what lets a second payment in.
 use super::{Record, Result};
 use async_trait::async_trait;
 use aws_sdk_dynamodb::{
@@ -7,6 +8,39 @@ use aws_sdk_dynamodb::{
     types::{AttributeValue as A, Put, TransactWriteItem},
 };
 use std::{collections::HashMap, sync::Arc, time::Duration};
+
+/// The table's TTL attribute: `ttl.attribute_name` of
+/// `aws_dynamodb_table.idempotency_store`, shared with the Idempotency-Key cache.
+pub const TTL_ATTRIBUTE: &str = "expires_at";
+
+/// How long a receipt row outlives the authorization it protects, counted from
+/// the later of its `validBefore` and the write. Until `validBefore` the row is
+/// what stops the same authorization from being admitted twice; after it the
+/// authorization can no longer move funds, and the row still answers the
+/// purchase binding (`X-UVD-Purchase`, `Idempotency-Key`) that a client resumes
+/// or retries with, and the private lookup. Ninety days, the retention of the
+/// transaction index (`TRANSACTIONS_TTL_DAYS`) and of DX402 evidence; a test
+/// keeps it at thirty days or more.
+pub const RECEIPT_RETENTION_SECS: u64 = 90 * 24 * 60 * 60;
+
+/// The message the CloudWatch metric filter of the receipt store alarm matches
+/// (`alerts-receipts-store.tf`): a bare token, as `stuck_tx_monitor::STUCK_EVENT`.
+pub const STORE_FAILURE: &str = "receipt_store_failure";
+
+/// When DynamoDB may delete a row written at `now` for `record`.
+pub fn expires_at(record: &Record, now: u64) -> u64 {
+    record
+        .authorization_expires_at
+        .max(now)
+        .saturating_add(RECEIPT_RETENTION_SECS)
+}
+
+/// A store request that did not answer as the store: an error from DynamoDB
+/// other than a lost condition, or no answer within the timeout. What the
+/// facilitator then answers is the caller's business; this line is the alarm's.
+fn failed(op: &'static str, kind: &'static str) {
+    tracing::warn!(op, kind, "{STORE_FAILURE}: receipt store request failed");
+}
 
 #[async_trait]
 pub trait Store: Send + Sync {
@@ -128,7 +162,7 @@ mod integration {
         let rows = client.scan().table_name(&table).send().await.unwrap();
         assert_eq!(rows.items().len(), 3, "record, authorization, one key");
         for row in rows.items() {
-            assert!(!row.contains_key("ttl") && !row.contains_key("expires_at"));
+            assert_expires_past_the_floor(row);
         }
         client
             .delete_table()
@@ -230,9 +264,65 @@ mod integration {
         (client, table)
     }
 
+    /// Every receipt row expires, and not before thirty days from now.
+    fn assert_expires_past_the_floor(row: &HashMap<String, A>) {
+        let at: u64 = row
+            .get(TTL_ATTRIBUTE)
+            .expect("a receipt row without its TTL attribute")
+            .as_n()
+            .unwrap()
+            .parse()
+            .unwrap();
+        assert!(at >= crate::receipts::now() + 30 * 24 * 60 * 60, "{at}");
+    }
+
+    /// DynamoDB sweeps expired rows in no particular order. An alias whose
+    /// record is gone reads as an expired admission once the alias itself has
+    /// expired, and as corruption while it has not.
     #[tokio::test]
     #[ignore = "requires an explicitly configured local DynamoDB emulator"]
-    async fn local_dynamodb_atomic_admission_cas_and_no_ttl() {
+    async fn local_dynamodb_an_expired_alias_without_its_record_is_no_admission() {
+        let (client, table) = local_table().await;
+        let store = DynamoStore {
+            client: client.clone(),
+            table: table.clone(),
+        };
+        let now = crate::receipts::now();
+        for (alias, at, expired) in [
+            ("receipt:auth:v1:local-expired", now - 60, true),
+            ("receipt:auth:v1:local-live", now + 3_600, false),
+        ] {
+            client
+                .put_item()
+                .table_name(&table)
+                .item("idempotency_key", A::S(alias.into()))
+                .item("receipt_ref", A::S(uuid::Uuid::new_v4().to_string()))
+                .item(TTL_ATTRIBUTE, A::N(at.to_string()))
+                .send()
+                .await
+                .unwrap();
+            let found = store.get(alias).await;
+            if expired {
+                assert!(matches!(found, Ok(None)), "{alias}");
+            } else {
+                assert_eq!(
+                    found.err().as_deref(),
+                    Some("receipt_store_corrupt"),
+                    "{alias}"
+                );
+            }
+        }
+        client
+            .delete_table()
+            .table_name(&table)
+            .send()
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    #[ignore = "requires an explicitly configured local DynamoDB emulator"]
+    async fn local_dynamodb_atomic_admission_cas_and_ttl() {
         let (client, table) = local_table().await;
         let first = Arc::new(DynamoStore {
             client: client.clone(),
@@ -280,7 +370,7 @@ mod integration {
         let rows = client.scan().table_name(&table).send().await.unwrap();
         assert_eq!(rows.items().len(), 6);
         for row in rows.items() {
-            assert!(!row.contains_key("ttl") && !row.contains_key("expires_at"));
+            assert_expires_past_the_floor(row);
         }
         client
             .delete_table()
@@ -322,6 +412,105 @@ mod requests {
         );
         assert_eq!(readmit.get_transact_items().as_ref().map(Vec::len), Some(2));
     }
+
+    fn offline() -> DynamoStore {
+        let config = aws_sdk_dynamodb::config::Builder::new()
+            .behavior_version_latest()
+            .region(Region::new("us-east-1"))
+            .credentials_provider(Credentials::new("offline", "offline", None, None, "test"))
+            .build();
+        DynamoStore {
+            client: aws_sdk_dynamodb::Client::from_conf(config),
+            table: "offline".into(),
+        }
+    }
+
+    /// Every row an admission writes -- the record and each alias, on
+    /// reservation, readmission and every revision -- carries the table's TTL
+    /// attribute, set the retention past the later of the authorization's
+    /// `validBefore` and the write. The retention never goes under thirty
+    /// days: the rows keep answering the purchase a client resumes or retries
+    /// well after the authorization itself is dead.
+    #[test]
+    fn every_row_written_outlives_its_authorization() {
+        const FLOOR: u64 = 30 * 24 * 60 * 60;
+        assert!(RECEIPT_RETENTION_SECS >= FLOOR, "retention under 30 days");
+        let store = offline();
+        let aliases = [
+            "receipt:auth:v1:offline".to_owned(),
+            "receipt:purchase:v1:offline".to_owned(),
+        ];
+        let evm = crate::receipts::tests::fixture_record();
+        assert!(evm.authorization_expires_at > crate::receipts::now());
+        // Hedera keeps no validBefore here: its transactions live 180 s at most.
+        let mut native = evm.clone();
+        native.authorization_expires_at = 0;
+        for record in [evm, native] {
+            let before = crate::receipts::now();
+            let reserve = store.reserve_request(&record, &aliases, "first").unwrap();
+            let readmit = store
+                .readmit_request(&record, 1, &aliases, "second")
+                .unwrap();
+            let mut rows: Vec<HashMap<String, A>> = [reserve, readmit]
+                .iter()
+                .flat_map(|tx| tx.get_transact_items().clone().unwrap_or_default())
+                .map(|item| item.put().expect("admissions only put").item().clone())
+                .collect();
+            rows.push(DynamoStore::item(&record).unwrap());
+            let after = crate::receipts::now();
+            assert_eq!(rows.len(), 2 * (1 + aliases.len()) + 1);
+            for row in rows {
+                let at: u64 = row
+                    .get(TTL_ATTRIBUTE)
+                    .unwrap_or_else(|| panic!("a row without {TTL_ATTRIBUTE}: {row:?}"))
+                    .as_n()
+                    .unwrap()
+                    .parse()
+                    .unwrap();
+                let from = record.authorization_expires_at.max(before);
+                assert!(at >= from + FLOOR, "{at} expires under the floor");
+                assert!(
+                    at >= from + RECEIPT_RETENTION_SECS
+                        && at
+                            <= record.authorization_expires_at.max(after) + RECEIPT_RETENTION_SECS,
+                    "{at}"
+                );
+            }
+        }
+    }
+
+    /// The names the infrastructure must agree on: the table's TTL attribute
+    /// and the message the receipt store alarm counts.
+    #[test]
+    fn the_terraform_reads_the_attribute_and_the_message_written_here() {
+        fn block<'a>(file: &'a str, header: &str) -> String {
+            let start = file.find(header).unwrap_or_else(|| panic!("{header}"));
+            let rest = &file[start + header.len()..];
+            let end = rest.find("\nresource ").unwrap_or(rest.len());
+            rest[..end].split_whitespace().collect()
+        }
+        let main = include_str!("../../terraform/environments/production/main.tf");
+        let table = block(
+            main,
+            "resource \"aws_dynamodb_table\" \"idempotency_store\"",
+        );
+        assert!(
+            table.contains(&format!(
+                "ttl{{attribute_name=\"{TTL_ATTRIBUTE}\"enabled=true}}"
+            )),
+            "aws_dynamodb_table.idempotency_store must expire rows on {TTL_ATTRIBUTE}"
+        );
+        let alerts =
+            include_str!("../../terraform/environments/production/alerts-receipts-store.tf");
+        let filter = block(
+            alerts,
+            "resource \"aws_cloudwatch_log_metric_filter\" \"receipt_store_failure\"",
+        );
+        assert!(
+            filter.contains(&format!("pattern=\"{STORE_FAILURE}\"")),
+            "the receipt store alarm must count {STORE_FAILURE}"
+        );
+    }
 }
 
 impl DynamoStore {
@@ -348,6 +537,10 @@ impl DynamoStore {
             ),
             ("revision".into(), A::N(record.receipt.revision.to_string())),
             ("data".into(), A::S(data)),
+            (
+                TTL_ATTRIBUTE.into(),
+                A::N(expires_at(record, super::now()).to_string()),
+            ),
         ]))
     }
 
@@ -362,9 +555,15 @@ impl DynamoStore {
                 .send(),
         )
         .await
-        .map_err(|_| "receipt_store_timeout")?
+        .map_err(|_| {
+            failed("get", "timeout");
+            "receipt_store_timeout"
+        })?
         .map(|r| r.item)
-        .map_err(|_| "receipt_store_unavailable".into())
+        .map_err(|_| {
+            failed("get", "error");
+            "receipt_store_unavailable".into()
+        })
     }
 
     fn alias_put(&self, key: &str, record: &Record) -> Result<TransactWriteItem> {
@@ -375,6 +574,10 @@ impl DynamoStore {
                 (
                     "receipt_ref".into(),
                     A::S(record.receipt.receipt_id.clone()),
+                ),
+                (
+                    TTL_ATTRIBUTE.into(),
+                    A::N(expires_at(record, super::now()).to_string()),
                 ),
             ])))
             .condition_expression("attribute_not_exists(idempotency_key)")
@@ -439,10 +642,20 @@ impl Store for DynamoStore {
             return Ok(None);
         };
         if let Some(id) = item.get("receipt_ref").and_then(|v| v.as_s().ok()) {
-            item = self
-                .read_item(&format!("receipt:v1:{id}"))
-                .await?
-                .ok_or("receipt_store_corrupt")?;
+            let expired = item
+                .get(TTL_ATTRIBUTE)
+                .and_then(|v| v.as_n().ok())
+                .and_then(|n| n.parse::<u64>().ok())
+                .is_some_and(|at| at <= super::now());
+            item = match self.read_item(&format!("receipt:v1:{id}")).await? {
+                Some(record) => record,
+                // The record row is rewritten at every revision, so it never
+                // expires before its aliases; DynamoDB sweeps expired rows in
+                // no particular order. An expired alias whose record is gone
+                // is an expired admission, not a corrupt one.
+                None if expired => return Ok(None),
+                None => return Err("receipt_store_corrupt".into()),
+            };
         }
         let data = item
             .get("data")
@@ -459,7 +672,16 @@ impl Store for DynamoStore {
             Ok(Ok(_)) => Ok(true),
             // A timeout may have committed. Never claim ownership after an
             // ambiguous transaction; a later request can read the reservation.
-            _ => {
+            outcome => {
+                match outcome {
+                    // An alias already taken: contention, the store answered.
+                    Ok(Err(e))
+                        if e.as_service_error()
+                            .is_some_and(|e| e.is_transaction_canceled_exception()) => {}
+                    Ok(Err(_)) => failed("reserve", "error"),
+                    Err(_) => failed("reserve", "timeout"),
+                    Ok(Ok(_)) => {}
+                }
                 for key in aliases {
                     if self.get(key).await?.is_some() {
                         return Ok(false);
@@ -486,7 +708,14 @@ impl Store for DynamoStore {
             {
                 Ok(false)
             }
-            _ => Err("receipt_store_unavailable".into()),
+            Ok(Err(_)) => {
+                failed("save", "error");
+                Err("receipt_store_unavailable".into())
+            }
+            Err(_) => {
+                failed("save", "timeout");
+                Err("receipt_store_unavailable".into())
+            }
         }
     }
 
@@ -510,7 +739,14 @@ impl Store for DynamoStore {
             }
             // Anything else may still have committed; the caller never runs
             // under it and closes it again (`release_unrun`).
-            _ => Err("receipt_store_unavailable".into()),
+            Ok(Err(_)) => {
+                failed("readmit", "error");
+                Err("receipt_store_unavailable".into())
+            }
+            Err(_) => {
+                failed("readmit", "timeout");
+                Err("receipt_store_unavailable".into())
+            }
         }
     }
 
@@ -530,8 +766,14 @@ impl Store for DynamoStore {
                     .send(),
             )
             .await
-            .map_err(|_| "receipt_store_timeout")?
-            .map_err(|_| "receipt_store_unavailable")?;
+            .map_err(|_| {
+                failed("scan", "timeout");
+                "receipt_store_timeout"
+            })?
+            .map_err(|_| {
+                failed("scan", "error");
+                "receipt_store_unavailable"
+            })?;
             for item in page.items() {
                 let data = item
                     .get("data")

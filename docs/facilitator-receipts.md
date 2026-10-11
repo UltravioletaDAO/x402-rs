@@ -165,10 +165,23 @@ for every resend.
 Requests that `/settle` routes to their own settlement paths never enter
 admission, even when their inner requirements say `exact`: the `upto`,
 `escrow`/`commerce` and `fhe-transfer` schemes and the x402r `refund` extension.
-There is **no TTL on these rows**: legacy cache expiry cannot admit another
-payment. Existing legacy cache hits are replayed before checking a consumed
-nonce, preserving their original success/conflict semantics. They are not
-fabricated into portable receipts, and their previous retention policy remains.
+**Expiry (since 2.51.0).** Every receipt row, the record and each of its
+aliases, carries the table's TTL attribute `expires_at`: 90 days after the
+later of the authorization's `validBefore` and the write. The rows therefore
+always outlive the authorization they protect: until `validBefore` they are
+what stops it being admitted twice, and after it the authorization can no
+longer move funds (an EIP-3009 transfer past `validBefore` reverts). The 90
+days that follow keep the purchase binding a client resumes or retries with
+(`X-UVD-Purchase`, `Idempotency-Key`) and the private lookup, the retention of
+the transaction index and of DX402 evidence; a test keeps it at 30 days or
+more. Native Hedera keeps no `validBefore` here (its transactions are valid for
+180 s at most) and expires 90 days after the write. The record row is rewritten
+at every revision, so it never expires before its aliases; an expired alias
+whose record DynamoDB already swept reads as no admission. Rows written before
+2.51.0 carry no `expires_at` and stay until removed by hand. Existing legacy
+cache hits are replayed before checking a consumed nonce, preserving their
+original success/conflict semantics. They are not fabricated into portable
+receipts, and their previous retention policy remains.
 
 EVM networks save the exact signed transaction and hash before
 broadcast. A POST retry can rebroadcast only those bytes under the writer lease,
@@ -266,7 +279,8 @@ released authorization that has expired simply fails verification when resent.
 Known limits: a process that dies between admission and send leaves its
 admission `unknown` until the operator command closes it. Confirmed receipts
 reflect the provider's confirmation policy and are not a continuous reorg
-monitor. Receipt records have no automatic archival job yet. Key rotation
+monitor. Receipt rows expire by TTL (see "Expiry" above); rows written before
+2.51.0 have no expiry and are not archived. Key rotation
 requires retaining the previous public keys externally. An exact request
 conflicting with an existing purchase is refused with 409, without exposing
 that purchase's private receipt.
@@ -307,9 +321,15 @@ that added them.
 What the rail costs on each network it covers, as on Arc and Base: a `/settle`
 verifies once before admission and the provider verifies again, and admission
 and each revision are writes to the receipt store; a `/verify` reads the
-authorization's row. Receipt rows do not expire. With the store unreachable an
-`exact` settle on any of these networks answers `503 receipt_store_unavailable`
-and sends nothing, where before 2.51.0 only Arc, Base and Hedera did.
+authorization's row. Receipt rows expire 90 days after the authorization's
+`validBefore` (see "Expiry"). With the store unreachable an `exact` settle on
+any of these networks answers `503 receipt_store_unavailable` and sends nothing,
+where before 2.51.0 only Arc, Base and Hedera did. Three alarms on the
+facilitator's SNS topic watch the store (`alerts-receipts-store.tf`): the
+facilitator's own count of store requests that failed or timed out (log line
+`receipt_store_failure`, any one raises it), DynamoDB `SystemErrors` and
+`ThrottledRequests` on the table, and a p99 latency above one second for
+fifteen minutes.
 
 Joining the matrix takes no receipts code: an EVM network with an ERC-3009
 token and `exactServed` in the catalog is announced and admitted. **Leaving it
@@ -345,7 +365,7 @@ What a Base `exact` caller observes compared with 2.39:
 | --- | --- | --- |
 | Any verify/settle response | No `receipt` | Additive `receipt`, `Cache-Control: no-store`; all previous fields unchanged |
 | Request carrying `X-UVD-Purchase` | `/settle` answers `400 receipt_request_not_supported`; `/verify` ignores the header | Admitted; its receipt is private to that capability (`GET /receipts/{receiptId}`) |
-| Same authorization after it settled, with the Idempotency-Key or `X-UVD-Purchase` that admitted it | With the key, the cached 200 with `Idempotent-Replayed: true` for 24 hours; after that it runs again and fails on the consumed nonce | Original 200 replayed with `Idempotent-Replayed: true`; receipt rows do not expire |
+| Same authorization after it settled, with the Idempotency-Key or `X-UVD-Purchase` that admitted it | With the key, the cached 200 with `Idempotent-Replayed: true` for 24 hours; after that it runs again and fails on the consumed nonce | Original 200 replayed with `Idempotent-Replayed: true`; receipt rows did not expire until 2.51.0, and since then expire 90 days after the authorization's `validBefore` |
 | Same authorization after it settled, without that binding | Runs again; fails on the consumed nonce | `409 authorization_already_settled`, with the receipt when the payment carried no `X-UVD-Purchase`; a payment admitted with `X-UVD-Purchase` answers `409 receipt_request_conflict` without it. Verify `isValid: false`, `authorization_already_settled` |
 | Same authorization while its settlement runs | Second attempt runs | `202 settlement_in_progress` to the admitting binding. Without it, `409 authorization_in_flight`, with the receipt when the payment carried no `X-UVD-Purchase`; a payment admitted with `X-UVD-Purchase` answers `409 receipt_request_conflict` without it |
 | New signature, same `Idempotency-Key` | Runs, unless an earlier attempt succeeded in the last 24 hours (then `409 idempotency_key_conflict`) | `409 receipt_request_conflict` once the first one was admitted |
@@ -393,7 +413,12 @@ bytes, the send latch or a named transaction; an EVM test drives the real send
 path under an admission (lease lost: nothing sent or latched; sent: bytes stored
 first, then latched). Explicit local DynamoDB tests exercise transaction/CAS
 behavior, including readmission and a write resent with its token, using two
-store clients. Every network and token of the EVM matrix runs through two
+store clients, and that every row they write carries `expires_at`. Offline
+tests check that every row of a reservation, a readmission and a revision
+carries it, 90 days past the later of `validBefore` and the write and never
+under 30, and that the Terraform table expires on that attribute and the store
+alarm counts the line the store writes; `terraform test` pins the TTL and the
+three alarms. Every network and token of the EVM matrix runs through two
 replicas racing one purchase over a shared store (every copy reaches the
 reservation, so only its atomicity picks the one that sends), a lost response,
 a restart with an unknown outcome and the storage outages: one send, the same

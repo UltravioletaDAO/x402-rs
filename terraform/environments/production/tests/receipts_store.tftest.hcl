@@ -1,0 +1,133 @@
+# The receipt store (idempotency_records): its TTL, and the alarms that make a store outage
+# visible (alerts-receipts-store.tf). Against a mocked AWS.
+#
+# No credentials and no state: in terraform/environments/production,
+#   terraform init -backend=false && terraform test
+# (CI: job "Build & test", step "Terraform NAT guards", which runs every file in tests/).
+# Nothing here reaches AWS. The names the Rust code shares with this configuration (the TTL
+# attribute and the filter's pattern) are held by a Rust test in src/receipts/store.rs.
+
+mock_provider "aws" {
+  # The HTTPS listener validates certificate_arn as an ARN, and a mock makes up a random
+  # string. No account id in it: this repo is public (.github/workflows/no-account-id.yml).
+  mock_resource "aws_acm_certificate" {
+    defaults = {
+      arn = "arn:aws:acm:us-east-2::certificate/mock"
+    }
+  }
+}
+mock_provider "archive" {}
+
+# Setup, first, as in nat_guard.tftest.hcl: the teardown walks the whole configuration, and
+# the certificate validation records take their for_each keys from the certificates.
+run "the_certificates_exist" {
+  command = apply
+
+  plan_options {
+    target = [aws_acm_certificate.main, aws_acm_certificate.metrics]
+  }
+}
+
+run "the_receipt_store_expires_rows_and_is_watched" {
+  command = apply
+
+  plan_options {
+    target = [
+      aws_dynamodb_table.idempotency_store,
+      aws_cloudwatch_log_metric_filter.receipt_store_failure,
+      aws_cloudwatch_metric_alarm.receipt_store_failures,
+      aws_cloudwatch_metric_alarm.receipt_store_dynamodb_errors,
+      aws_cloudwatch_metric_alarm.receipt_store_latency,
+    ]
+  }
+
+  # Receipt rows carry expires_at (src/receipts/store.rs, TTL_ATTRIBUTE): the table must
+  # sweep on it, or the rows never leave.
+  assert {
+    condition     = aws_dynamodb_table.idempotency_store.ttl[0].attribute_name == "expires_at" && aws_dynamodb_table.idempotency_store.ttl[0].enabled == true
+    error_message = "idempotency_records must expire rows on expires_at, the attribute receipt rows carry."
+  }
+
+  # Every receipt store alarm speaks on the facilitator's own topic, both ways.
+  assert {
+    condition = alltrue([
+      for alarm in [
+        aws_cloudwatch_metric_alarm.receipt_store_failures,
+        aws_cloudwatch_metric_alarm.receipt_store_dynamodb_errors,
+        aws_cloudwatch_metric_alarm.receipt_store_latency,
+      ] :
+      tolist(alarm.alarm_actions) == [aws_sns_topic.alerts.arn] && tolist(alarm.ok_actions) == [aws_sns_topic.alerts.arn]
+    ])
+    error_message = "Every receipt store alarm must notify aws_sns_topic.alerts on alarm and on recovery."
+  }
+
+  # The facilitator's own count: the filter reads the facilitator's log group for the bare
+  # token, and the alarm reads the metric the filter writes, on the first failure.
+  assert {
+    condition = (
+      aws_cloudwatch_log_metric_filter.receipt_store_failure.pattern == "receipt_store_failure" &&
+      aws_cloudwatch_log_metric_filter.receipt_store_failure.log_group_name == aws_cloudwatch_log_group.facilitator.name &&
+      aws_cloudwatch_log_metric_filter.receipt_store_failure.metric_transformation[0].namespace == aws_cloudwatch_metric_alarm.receipt_store_failures.namespace &&
+      aws_cloudwatch_log_metric_filter.receipt_store_failure.metric_transformation[0].name == aws_cloudwatch_metric_alarm.receipt_store_failures.metric_name
+    )
+    error_message = "The failures alarm must read the metric its filter writes from the facilitator's log group."
+  }
+
+  assert {
+    condition = (
+      aws_cloudwatch_metric_alarm.receipt_store_failures.threshold == 1 &&
+      aws_cloudwatch_metric_alarm.receipt_store_failures.comparison_operator == "GreaterThanOrEqualToThreshold" &&
+      aws_cloudwatch_metric_alarm.receipt_store_failures.evaluation_periods == 1 &&
+      aws_cloudwatch_metric_alarm.receipt_store_failures.treat_missing_data == "notBreaching"
+    )
+    error_message = "One store failure in five minutes must raise the alarm; no data is no failure."
+  }
+
+  # DynamoDB's side: SystemErrors and ThrottledRequests, for each operation the rail uses,
+  # on this table, summed.
+  assert {
+    condition = toset([
+      for q in aws_cloudwatch_metric_alarm.receipt_store_dynamodb_errors.metric_query :
+      "${q.metric[0].metric_name}/${q.metric[0].dimensions["Operation"]}" if length(q.metric) > 0 && q.metric[0].dimensions["TableName"] == aws_dynamodb_table.idempotency_store.name
+      ]) == toset([
+      "SystemErrors/GetItem", "SystemErrors/PutItem", "SystemErrors/TransactWriteItems",
+      "ThrottledRequests/GetItem", "ThrottledRequests/PutItem", "ThrottledRequests/TransactWriteItems",
+    ])
+    error_message = "The DynamoDB errors alarm must read SystemErrors and ThrottledRequests of GetItem, PutItem and TransactWriteItems on idempotency_records."
+  }
+
+  assert {
+    condition = length([
+      for q in aws_cloudwatch_metric_alarm.receipt_store_dynamodb_errors.metric_query : q
+      if q.expression == "SUM(METRICS())" && q.return_data == true
+    ]) == 1 && aws_cloudwatch_metric_alarm.receipt_store_dynamodb_errors.threshold == 1
+    error_message = "The DynamoDB errors alarm must fire on the sum of those metrics reaching one."
+  }
+
+  # Latency: p99 of each of the three operations, the slowest one, over a second for three
+  # periods running.
+  assert {
+    condition = toset([
+      for q in aws_cloudwatch_metric_alarm.receipt_store_latency.metric_query :
+      "${q.metric[0].metric_name}/${q.metric[0].stat}/${q.metric[0].dimensions["Operation"]}" if length(q.metric) > 0 && q.metric[0].dimensions["TableName"] == aws_dynamodb_table.idempotency_store.name
+      ]) == toset([
+      "SuccessfulRequestLatency/p99/GetItem",
+      "SuccessfulRequestLatency/p99/PutItem",
+      "SuccessfulRequestLatency/p99/TransactWriteItems",
+    ])
+    error_message = "The latency alarm must read the p99 SuccessfulRequestLatency of GetItem, PutItem and TransactWriteItems on idempotency_records."
+  }
+
+  assert {
+    condition = (
+      aws_cloudwatch_metric_alarm.receipt_store_latency.threshold == 1000 &&
+      aws_cloudwatch_metric_alarm.receipt_store_latency.evaluation_periods == 3 &&
+      aws_cloudwatch_metric_alarm.receipt_store_latency.datapoints_to_alarm == 3 &&
+      length([
+        for q in aws_cloudwatch_metric_alarm.receipt_store_latency.metric_query : q
+        if q.expression == "MAX(METRICS())" && q.return_data == true
+      ]) == 1
+    )
+    error_message = "The latency alarm must fire when the slowest operation's p99 stays above 1000 ms for three periods."
+  }
+}

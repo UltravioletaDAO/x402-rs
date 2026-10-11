@@ -13,8 +13,9 @@
   kind (`exactServed` in `config/supported_tokens.json`; Ethereum Sepolia and
   the EVM networks nothing serves stay out). Each newly covered network
   changes for its callers as Base did in 2.40.0, including its dependency on
-  the receipt store: with the store unreachable its `exact` settles answer
-  `503 receipt_store_unavailable` and send nothing. Hedera is unchanged.
+  the receipt store: the rail fails closed, so with the store unreachable its
+  `exact` settles answer `503 receipt_store_unavailable` and send nothing.
+  Hedera is unchanged.
 - **Leaving the rail is pinned.** A network or token that drops out of the
   matrix would send resends of its stored receipts down the ordinary path, so
   the pairs the rail admits are listed in a test that must equal the matrix:
@@ -28,6 +29,21 @@
   carries `X-UVD-Purchase`). On Arc and Base this only touches requests that
   verification already refused, which no longer carry a `rejected` receipt.
   Every EVM receipt now carries the token's `decimals`.
+- **Receipt rows expire.** Every row a receipt admission writes, the record
+  and each alias, carries `expires_at`, the TTL attribute the
+  `idempotency_records` table already sweeps on: 90 days after the later of
+  the authorization's `validBefore` and the write, so a row always outlives
+  the authorization it protects and keeps the purchase binding and the
+  private lookup for 90 days after it. A test keeps the retention at 30 days
+  or more. Rows written before 2.51.0 carry no `expires_at` and stay. An
+  expired alias whose record was already swept reads as no admission instead
+  of a corrupt store.
+- **The receipt store has alarms** (`alerts-receipts-store.tf`, on the
+  facilitator's SNS topic, applied by the deploy's observability step): the
+  facilitator's own count of store requests that failed or timed out (a new
+  `receipt_store_failure` log line), DynamoDB `SystemErrors` and
+  `ThrottledRequests` on the table, and a p99 latency over one second for
+  fifteen minutes. `terraform test` pins them and the table's TTL.
 - `networks` in the receipt capability is derived from the network list; it
   keeps every entry it had, in a different order.
 - `/verify` and `/settle` in OpenAPI, the MCP `x402_settle` tool, `index.md`,

@@ -763,7 +763,11 @@ jobs:
             -target=aws_cloudwatch_log_metric_filter.evm_signer_transactions_stuck \
             -target=aws_cloudwatch_metric_alarm.evm_signer_transactions_stuck \
             -target=aws_cloudwatch_log_metric_filter.network_startup_probe \
-            -target=aws_cloudwatch_metric_alarm.network_startup_probe
+            -target=aws_cloudwatch_metric_alarm.network_startup_probe \
+            -target=aws_cloudwatch_log_metric_filter.receipt_store_failure \
+            -target=aws_cloudwatch_metric_alarm.receipt_store_failures \
+            -target=aws_cloudwatch_metric_alarm.receipt_store_dynamodb_errors \
+            -target=aws_cloudwatch_metric_alarm.receipt_store_latency
 
       # The wait and the health check run whenever the image apply RAN, even if it or a
       # step after it failed. Skipping the two leaves a service that may already have

@@ -765,7 +765,6 @@ jobs:
             -target=aws_cloudwatch_log_metric_filter.network_startup_probe \
             -target=aws_cloudwatch_metric_alarm.network_startup_probe \
             -target=aws_cloudwatch_log_metric_filter.receipt_store_failure \
-            -target=aws_cloudwatch_metric_alarm.receipt_store_failures \
             -target=aws_cloudwatch_metric_alarm.receipt_store_dynamodb_errors \
             -target=aws_cloudwatch_metric_alarm.receipt_store_latency
 

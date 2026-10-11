@@ -39,11 +39,14 @@
   expired alias whose record was already swept reads as no admission instead
   of a corrupt store.
 - **The receipt store has alarms** (`alerts-receipts-store.tf`, on the
-  facilitator's SNS topic, applied by the deploy's observability step): the
-  facilitator's own count of store requests that failed or timed out (a new
-  `receipt_store_failure` log line), DynamoDB `SystemErrors` and
-  `ThrottledRequests` on the table, and a p99 latency over one second for
-  fifteen minutes. `terraform test` pins them and the table's TTL.
+  facilitator's SNS topic, applied by the deploy's observability step), on
+  DynamoDB's own metrics: `SystemErrors` and `ThrottledRequests` on the table
+  in two five-minute periods running, and a p99 latency over one second for
+  fifteen minutes. The facilitator also counts its failed store requests (a
+  new `receipt_store_failure` log line with `op` and `kind`, metric
+  `Facilitator/Receipts` `ReceiptStoreFailures`) as a metric to read, not a
+  page: request text reaches the logs, so a log-based page could be forged.
+  `terraform test` pins the alarms and the table's TTL.
 - `networks` in the receipt capability is derived from the network list; it
   keeps every entry it had, in a different order.
 - `/verify` and `/settle` in OpenAPI, the MCP `x402_settle` tool, `index.md`,

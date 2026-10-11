@@ -440,8 +440,9 @@ mod requests {
             "receipt:auth:v1:offline".to_owned(),
             "receipt:purchase:v1:offline".to_owned(),
         ];
-        let evm = crate::receipts::tests::fixture_record();
-        assert!(evm.authorization_expires_at > crate::receipts::now());
+        let mut evm = crate::receipts::tests::fixture_record();
+        // An authorization still valid for an hour, whatever the date of the run.
+        evm.authorization_expires_at = crate::receipts::now() + 3_600;
         // Hedera keeps no validBefore here: its transactions live 180 s at most.
         let mut native = evm.clone();
         native.authorization_expires_at = 0;
@@ -541,6 +542,55 @@ mod requests {
             assert!(
                 flat.contains(&said),
                 "docs/facilitator-receipts.md must say: {said}"
+            );
+        }
+        // And every period the guide counts in days is one of those two.
+        let words: Vec<&str> = flat.split(' ').collect();
+        for pair in words.windows(2) {
+            if pair[1].trim_end_matches(|c: char| !c.is_alphanumeric()) == "days" {
+                if let Ok(n) = pair[0].parse::<u64>() {
+                    assert!(
+                        n == days || n == floor,
+                        "docs/facilitator-receipts.md says {n} days; the code keeps {days}, floor {floor}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// Reading through an alias: its record when there is one; no admission
+    /// when the record is gone and the alias expired; a corrupt store when the
+    /// record is gone and the alias has not expired (or carries no expiry).
+    #[test]
+    fn an_alias_whose_record_is_gone_is_no_admission_only_once_it_expired() {
+        let now = 1_900_000_000;
+        let alias = |expiry: Option<u64>| {
+            let mut row = HashMap::from([
+                (
+                    "idempotency_key".to_owned(),
+                    A::S("receipt:auth:v1:x".into()),
+                ),
+                ("receipt_ref".to_owned(), A::S("id".into())),
+            ]);
+            if let Some(at) = expiry {
+                row.insert(TTL_ATTRIBUTE.to_owned(), A::N(at.to_string()));
+            }
+            row
+        };
+        let record = HashMap::from([("data".to_owned(), A::S("{}".into()))]);
+        for expiry in [Some(now - 1), Some(now + 1), None] {
+            assert_eq!(
+                through_alias(&alias(expiry), Some(record.clone()), now),
+                Ok(Some(record.clone())),
+                "{expiry:?}"
+            );
+        }
+        assert_eq!(through_alias(&alias(Some(now - 1)), None, now), Ok(None));
+        for expiry in [Some(now + 1), None] {
+            assert_eq!(
+                through_alias(&alias(expiry), None, now),
+                Err("receipt_store_corrupt".to_owned()),
+                "{expiry:?}"
             );
         }
     }
@@ -783,6 +833,24 @@ fn expired_alias(item: &HashMap<String, A>, now: u64) -> bool {
         .is_some_and(|at| at <= now)
 }
 
+/// What reading an alias yields, given the record row it points at: that
+/// record; no admission when the record is gone and the alias has expired;
+/// a corrupt store when the record is gone and the alias has not.
+fn through_alias(
+    alias: &HashMap<String, A>,
+    record: Option<HashMap<String, A>>,
+    now: u64,
+) -> Result<Option<HashMap<String, A>>> {
+    match record {
+        Some(record) => Ok(Some(record)),
+        None if expired_alias(alias, now) => Ok(None),
+        None => {
+            failed("get", "corrupt");
+            Err("receipt_store_corrupt".into())
+        }
+    }
+}
+
 #[async_trait]
 impl Store for DynamoStore {
     async fn get(&self, key: &str) -> Result<Option<Record>> {
@@ -790,15 +858,11 @@ impl Store for DynamoStore {
             return Ok(None);
         };
         if let Some(id) = item.get("receipt_ref").and_then(|v| v.as_s().ok()) {
-            let expired = expired_alias(&item, super::now());
-            item = match self.read_item(&format!("receipt:v1:{id}")).await? {
-                Some(record) => record,
-                None if expired => return Ok(None),
-                None => {
-                    failed("get", "corrupt");
-                    return Err("receipt_store_corrupt".into());
-                }
-            };
+            let record = self.read_item(&format!("receipt:v1:{id}")).await?;
+            match through_alias(&item, record, super::now())? {
+                Some(record) => item = record,
+                None => return Ok(None),
+            }
         }
         let record = item
             .get("data")

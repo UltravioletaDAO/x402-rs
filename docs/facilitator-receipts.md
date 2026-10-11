@@ -69,11 +69,12 @@ order handling; the facilitator prevents duplicate admission of payment.
 
 **For how long.** The facilitator keeps a purchase's binding and its receipt
 until the rows expire: 90 days after the authorization's `validBefore` (see
-"Expiry"). A resume or a lookup after that finds no receipt; the authorization
-itself is long dead and is refused by verification. A new signature for the
-same capability or Idempotency-Key is, from then on, a new payment. Finish or
-abandon a purchase within that window, and keep fulfillment records of your
-own beyond it.
+"Expiry"). Once DynamoDB deletes them, usually within days of expiry, a resume
+or a lookup finds no receipt; the authorization itself is long dead and is
+refused by verification, and a new signature for the same capability or
+Idempotency-Key is a new payment. Until the deletion the rows still answer as
+before. Finish or abandon a purchase within that window, and keep fulfillment
+records of your own beyond it.
 
 `GET /receipts/{receiptId}` with `Authorization: Bearer <accessToken>` returns the
 latest receipt and performs read-only chain reconciliation. Missing or incorrect
@@ -189,8 +190,9 @@ whose record DynamoDB already swept reads as no admission. Rows written before
 2.51.0 carry no `expires_at` and stay until removed by hand. An admission from
 before 2.51.0 that is revised afterwards (a resend that reconciles it, the
 operator command) gets an expiry on its record only: 90 days later its old
-aliases point at nothing and answer `503 receipt_store_unavailable`, failing
-closed, until removed by hand. Existing legacy
+aliases point at nothing, and a `/settle` that reaches them answers
+`503 receipt_store_unavailable`, failing closed, until they are removed by hand
+(`/verify` falls back to simulation). Existing legacy
 cache hits are replayed before checking a consumed nonce, preserving their
 original success/conflict semantics. They are not fabricated into portable
 receipts, and their previous retention policy remains.
@@ -336,12 +338,16 @@ and each revision are writes to the receipt store; a `/verify` reads the
 authorization's row. Receipt rows expire 90 days after the authorization's
 `validBefore` (see "Expiry"). With the store unreachable an `exact` settle on
 any of these networks answers `503 receipt_store_unavailable` and sends nothing,
-where before 2.51.0 only Arc, Base and Hedera did. Three alarms on the
-facilitator's SNS topic watch the store (`alerts-receipts-store.tf`): the
-facilitator's own count of store requests that failed or timed out (log line
-`receipt_store_failure`, any one raises it), DynamoDB `SystemErrors` and
-`ThrottledRequests` on the table, and a p99 latency above one second for
-fifteen minutes.
+where before 2.51.0 only Arc, Base and Hedera did. Two alarms on the
+facilitator's SNS topic watch the store (`alerts-receipts-store.tf`), both on
+DynamoDB's own metrics: `SystemErrors` and `ThrottledRequests` on the table
+in two five-minute periods running, and a p99 latency above one second for
+fifteen minutes. The 503s themselves reach the load balancer's 5xx alarm,
+already on the same topic. The facilitator's own count of store requests that
+failed (log line `receipt_store_failure`, with `op` and `kind`) is a metric to
+read during an incident, not a page: it is counted from log lines, and the
+facilitator logs text taken from requests, so one request could write the
+token.
 
 Joining the matrix takes no receipts code: an EVM network with an ERC-3009
 token and `exactServed` in the catalog is announced and admitted. **Leaving it
@@ -428,9 +434,10 @@ behavior, including readmission and a write resent with its token, using two
 store clients, and that every row they write carries `expires_at`. Offline
 tests check that every row of a reservation, a readmission and a revision
 carries it, 90 days past the later of `validBefore` and the write and never
-under 30, and that the Terraform table expires on that attribute and the store
-alarm counts the line the store writes; `terraform test` pins the TTL and the
-three alarms. Every network and token of the EVM matrix runs through two
+under 30, that the Terraform table expires on that attribute and the store's
+metric counts the line the store writes, that every failed request writes that
+line, and how an alias whose record is gone reads; `terraform test` pins the TTL
+and the alarms, which read DynamoDB's metrics only. Every network and token of the EVM matrix runs through two
 replicas racing one purchase over a shared store (every copy reaches the
 reservation, so only its atomicity picks the one that sends), a lost response,
 a restart with an unknown outcome and the storage outages: one send, the same

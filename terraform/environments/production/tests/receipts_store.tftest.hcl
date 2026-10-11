@@ -49,7 +49,6 @@ run "the_receipt_store_expires_rows_and_is_watched" {
     target = [
       aws_dynamodb_table.idempotency_store,
       aws_cloudwatch_log_metric_filter.receipt_store_failure,
-      aws_cloudwatch_metric_alarm.receipt_store_failures,
       aws_cloudwatch_metric_alarm.receipt_store_dynamodb_errors,
       aws_cloudwatch_metric_alarm.receipt_store_latency,
     ]
@@ -66,7 +65,6 @@ run "the_receipt_store_expires_rows_and_is_watched" {
   assert {
     condition = alltrue([
       for alarm in [
-        aws_cloudwatch_metric_alarm.receipt_store_failures,
         aws_cloudwatch_metric_alarm.receipt_store_dynamodb_errors,
         aws_cloudwatch_metric_alarm.receipt_store_latency,
       ] :
@@ -75,26 +73,29 @@ run "the_receipt_store_expires_rows_and_is_watched" {
     error_message = "Every receipt store alarm must notify aws_sns_topic.alerts on alarm and on recovery."
   }
 
-  # The facilitator's own count: the filter reads the facilitator's log group for the bare
-  # token, and the alarm reads the metric the filter writes, on the first failure.
+  # The facilitator's own count, a metric to read during an incident: the filter reads the
+  # facilitator's log group for the bare token. It pages nobody (alerts-receipts-store.tf says
+  # why): the paging alarms read AWS/DynamoDB only.
   assert {
     condition = (
       aws_cloudwatch_log_metric_filter.receipt_store_failure.pattern == "receipt_store_failure" &&
       aws_cloudwatch_log_metric_filter.receipt_store_failure.log_group_name == aws_cloudwatch_log_group.facilitator.name &&
-      aws_cloudwatch_log_metric_filter.receipt_store_failure.metric_transformation[0].namespace == aws_cloudwatch_metric_alarm.receipt_store_failures.namespace &&
-      aws_cloudwatch_log_metric_filter.receipt_store_failure.metric_transformation[0].name == aws_cloudwatch_metric_alarm.receipt_store_failures.metric_name
+      aws_cloudwatch_log_metric_filter.receipt_store_failure.metric_transformation[0].namespace == "Facilitator/Receipts" &&
+      aws_cloudwatch_log_metric_filter.receipt_store_failure.metric_transformation[0].name == "ReceiptStoreFailures"
     )
-    error_message = "The failures alarm must read the metric its filter writes from the facilitator's log group."
+    error_message = "The filter must count receipt_store_failure lines of the facilitator's log group into Facilitator/Receipts ReceiptStoreFailures."
   }
 
   assert {
-    condition = (
-      aws_cloudwatch_metric_alarm.receipt_store_failures.threshold == 1 &&
-      aws_cloudwatch_metric_alarm.receipt_store_failures.comparison_operator == "GreaterThanOrEqualToThreshold" &&
-      aws_cloudwatch_metric_alarm.receipt_store_failures.evaluation_periods == 1 &&
-      aws_cloudwatch_metric_alarm.receipt_store_failures.treat_missing_data == "notBreaching"
-    )
-    error_message = "One store failure in five minutes must raise the alarm; no data is no failure."
+    condition = alltrue(flatten([
+      for alarm in [
+        aws_cloudwatch_metric_alarm.receipt_store_dynamodb_errors,
+        aws_cloudwatch_metric_alarm.receipt_store_latency,
+        ] : [
+        for q in alarm.metric_query : [for m in q.metric : m.namespace == "AWS/DynamoDB"]
+      ]
+    ]))
+    error_message = "The receipt store alarms must page on AWS/DynamoDB metrics only, which no request can write."
   }
 
   # DynamoDB's side: SystemErrors and ThrottledRequests, for each operation the rail uses,

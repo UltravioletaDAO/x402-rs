@@ -308,6 +308,18 @@ def main(argv: list[str] | None = None) -> int:
 
     with open(a.targeted, encoding="utf-8") as f:
         targeted = json.load(f)
+    # Terraform writes a plan file even when planning failed, and `show -json` of
+    # it carries `"errored": true` and whatever resource changes it reached: an
+    # empty list there is no evidence of a clean deploy.
+    if targeted.get("errored"):
+        markdown = ("## IAM changes the deploy cannot apply\n\n**Not evaluated.** The deploy's targeted plan "
+                    "errored, so it says nothing about what the deploy would change. Fix the plan first.\n")
+        if a.summary:
+            with open(a.summary, "a", encoding="utf-8") as f:
+                f.write(markdown)
+        print(markdown)
+        print("::error title=IAM changes not evaluated::the targeted plan errored; see the Plan step.")
+        return 1
     plans = []
     if a.full:
         with open(a.full, encoding="utf-8") as f:

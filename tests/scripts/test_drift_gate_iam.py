@@ -212,6 +212,19 @@ class TheGate(unittest.TestCase):
         self.assertNotIn("::error", out)
         self.assertIn("| yes |", summary)
 
+    def test_a_plan_that_errored_is_red_not_clean(self):
+        """Terraform 1.9 still writes the plan file when planning fails (PR #122's run)."""
+        errored = plan([])
+        errored["errored"] = True
+        code, out, summary = run(errored)
+        self.assertEqual(code, 1, summary)
+        self.assertNotIn("Clean", summary)
+        self.assertIn("Not evaluated", summary)
+        self.assertIn("::error title=IAM changes not evaluated::", out)
+        code, _, summary = run(plan([]))
+        self.assertEqual(code, 0, summary)
+        self.assertIn("Clean", summary)
+
     def test_only_the_blocked_ones_go_in_the_command(self):
         code, _, summary = run(plan([
             role_policy_change(HEDERA, TASK_ROLE),

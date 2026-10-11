@@ -59,7 +59,7 @@ User: "add facilitator scroll"
 │ 5. SHIP (if auto-deploy)        │
 │    - bump VERSION               │
 │    - stage per file, commit     │
-│    - push to main -> CI deploys │
+│    - push + Run workflow (main) │
 │    - Verify /supported          │
 └─────────────────────────────────┘
 ```
@@ -710,11 +710,13 @@ curl http://localhost:8080/supported | jq '[.kinds[].network] | map(select(conta
 
 ## Phase 5: Deploy
 
-**There is no manual deploy. Pushing to `main` IS the deploy.**
+**Pushing to `main` does NOT deploy. A manual "Run workflow" on `main` IS the deploy**
+(`gh workflow run ci.yaml --ref main`) -- since X402-CI-GATES, the owner's rule of one release
+a day, started by hand. A push only builds, tests and runs the drift gate.
 
-`.github/workflows/ci.yaml` tests, builds the image, pushes it to ECR and
+On that manual run `.github/workflows/ci.yaml` tests, builds the image, pushes it to ECR and
 `terraform apply -auto-approve`s it onto ECS, then waits for the rollout and
-checks `/health`. A merge is a release. The `docker build` / `aws ecs
+checks `/health`. A merge is NOT a release. The `docker build` / `aws ecs
 update-service` sequence this section used to describe is not how anything has
 shipped for a long time, and `aws ecs update-service --force-new-deployment` on
 its own re-runs the CURRENT task definition -- it does not move the image.
@@ -756,13 +758,14 @@ git commit -m "feat(network): add {Network} mainnet and testnet ({mainnet-id}/{t
 Run `git config core.hooksPath .githooks` once per clone: the pre-commit hook
 refuses a staged diff that adds `0x` + 64 hex.
 
-### 5.3 Push and let CI ship it
+### 5.3 Push, then start the release
 
 ```bash
-git push origin main
+git push origin main                  # tests and plans; ships nothing
+gh workflow run ci.yaml --ref main    # the release: only a manual run deploys
 ```
 
-What CI then does, in order (`.github/workflows/ci.yaml`):
+What the manual run then does, in order (`.github/workflows/ci.yaml`; a push runs 1-3 only):
 
 1. `test` -- clippy + the full feature-set test suite. Red here blocks everything.
 2. `preflight` -- emits `deploy=true` when the AWS repo secrets are present.
@@ -778,7 +781,7 @@ Two consequences worth knowing:
 - The workflow has a `paths` filter. `.claude/**`, `docs/**` and `guides/**` are
   NOT in it, so a documentation-only commit never triggers CI and never deploys.
   Every file in the alta inventory except those three trees IS in it.
-- A failed deploy leaves `main` ahead of production. Compare
+- A failed or not-yet-started deploy leaves `main` ahead of production. Compare
   `curl -s https://facilitator.ultravioletadao.xyz/version` with `git log -1`
   before assuming your commit is live.
 
@@ -799,11 +802,13 @@ python scripts/verify_landing_canonical.py
 
 ## Automatic Deployment Decision
 
-**Read this first: "deploy" here means `git push origin main`.** There is no
-separate deploy button. CI builds the image and rolls production on that push, so
-an automatic deploy is an automatic production release. The repository rule is
-that the model does not compile or deploy on its own initiative: make the change,
-say it is ready, and let the person push. "Automatic" below means *do not stop to
+**Read this first: "deploy" here means a manual "Run workflow" on `main`**
+(`gh workflow run ci.yaml --ref main`), after the push. Since X402-CI-GATES a push
+to `main` only builds and tests; the manual run builds the image and rolls
+production, so an automatic deploy is an automatic production release. The
+repository rule is that the model does not compile or deploy on its own
+initiative: make the change, say it is ready, and let the person push and start
+the release. "Automatic" below means *do not stop to
 re-ask about each prerequisite*, not *ship without being asked*.
 
 **Proceed without further questions when ALL conditions are met:**
@@ -977,9 +982,9 @@ Claude: [Checks prerequisites]
   - Testnet: 0.1 ETH FUNDED
 Claude: All prerequisites met. Implementing the 17 files...
 [Implements all changes, bumps VERSION, stages per file, commits]
-Claude: Committed. Pushing to main deploys to production - your call.
-User: push it
-[Push; CI builds, applies to ECS, waits for the rollout]
+Claude: Committed. A push to main only tests; the release is a manual Run workflow - your call.
+User: push it and release it
+[Push; then gh workflow run ci.yaml --ref main: CI builds, applies to ECS, waits for the rollout]
 Claude: Live. /supported lists scroll + scroll-sepolia; /version reports 2.30.0.
 ```
 

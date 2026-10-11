@@ -10,7 +10,7 @@
 | 3 | v1.53.0 | WS-D `/bazaar` UI + `q=` + `/discovery/stats` + read-route governor (F6) | UI live, deep links work |
 | 4 | v1.54.0 | WS-E ERC-8004 attested curation | attestations on-chain for first_party (kill-switch default off) |
 
-Standard delivery per project convention: `/ship` pipeline (CI on push to main → ECR → ECS; fallback `fast-build.sh` + targeted terraform apply). **Never compile/deploy automatically — the user builds and deploys manually.** Before each release: check deployed version first (`curl -s https://facilitator.ultravioletadao.xyz/version`), bump from THAT. Cargo.lock gotcha: hand-sync the x402-rs version line (CI runs `--locked`).
+Standard delivery per project convention: `/ship` pipeline (CI on a manual "Run workflow" on main → ECR → ECS since X402-CI-GATES, which ended the deploy on every push to main; fallback `fast-build.sh` + targeted terraform apply). **Never compile/deploy automatically — the user builds and deploys manually.** Before each release: check deployed version first (`curl -s https://facilitator.ultravioletadao.xyz/version`), bump from THAT. Cargo.lock gotcha: hand-sync the x402-rs version line (CI runs `--locked`).
 
 ## 2. Phase 0 detail
 

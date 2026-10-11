@@ -664,8 +664,9 @@ async fn adopt_published_catalog(registry: &crate::discovery::DiscoveryRegistry)
         // is the failure this is trying to avoid. Say it loudly instead.
         Err(e) => warn!(
             error = %e,
-            "Could not adopt the published catalog; this cycle publishes from the copy this \
-             task already had, which may be behind what another replica wrote"
+            "Could not adopt the published catalog; this cycle imports into the copy this task \
+             already had. Its snapshot is conditional on the version that copy was read at, so \
+             if another replica wrote since, it is refused and the published catalog adopted then"
         ),
     }
 }
@@ -1354,14 +1355,23 @@ async fn run_aggregation(
     }
 
     match registry
-        .bulk_import(resources, crate::discovery::ImportPolicy::Filtered)
+        .import(resources, crate::discovery::ImportPolicy::Filtered)
         .await
     {
-        Ok((added, updated, skipped)) => {
+        Ok(outcome) if outcome.unpublished => {
+            warn!(
+                added = outcome.added,
+                updated = outcome.updated,
+                skipped = outcome.skipped,
+                "Discovery aggregation cycle imported, but its snapshot was not published: the \
+                 other replicas do not have it. The next cycle computes it again"
+            );
+        }
+        Ok(outcome) => {
             info!(
-                added = added,
-                updated = updated,
-                skipped = skipped,
+                added = outcome.added,
+                updated = outcome.updated,
+                skipped = outcome.skipped,
                 "Discovery aggregation cycle completed"
             );
         }

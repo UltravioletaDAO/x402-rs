@@ -2646,7 +2646,8 @@ on a listing whose URL is a template (`{id}`), which no paid URL equals.
 `input` property in `schema`); the declaration itself stays in `extensions.bazaar`, with the input
 and the output apart. A self-registered listing that declares no input, whose own 402 declares one
 in its `extensions.bazaar`, takes it from there -- only into what its registration left out -- and
-reports **`extensionsProvenance: origin_response`**. `kind`, `categories`, `categorySource`,
+reports **`extensionsProvenance: origin_response`**, with the parts it filled in as JSON Pointers in
+**`extensionsAdopted`** (everything else in `extensions` is the registration). `kind`, `categories`, `categorySource`,
 `hasInputSchema`, `upstream`, `upstreamSource` and `usage` are response-only, like `health` and
 `curation`.
 
@@ -3040,14 +3041,16 @@ the health prober reads the URL afterwards, in the background.
   listing resells or wraps (`exa`, `tavily`, `firecrawl`...; an id or name of the closed list in
   `GET /discovery/resources`, any case). Each is stored as declared; a listing that declares no
   `category` has one inferred from what it says about itself.
-- `extensions` (optional): resource-level x402 extensions, stored verbatim. `extensions.bazaar` is
+- `extensions` (optional): resource-level x402 extensions, stored as registered (within a size
+  and depth bound). `extensions.bazaar` is
   where you declare what to send and what comes back -- `info.input` / `info.output`, and
   optionally a JSON Schema in `schema` -- exactly as the x402 bazaar extension publishes it in a
   402. A listing that declares its input reports `hasInputSchema: true`, and the health prober
   calls it with the method it declares (with `{}`, and with your example body only when `{}` is
   refused with a 400 or 422) instead of a bare GET. Register no input and the prober takes the
-  one your own 402 declares in `extensions.bazaar` (`extensionsProvenance: origin_response`);
-  what you register is never replaced.
+  one your own 402 declares in `extensions.bazaar` (`extensionsProvenance: origin_response`, the
+  parts it filled in listed in `extensionsAdopted`); what you register is never replaced or
+  removed.
 
 **Schemes you cannot settle here are still registrable.** `scheme` is stored as published, so a
 listing for a scheme this facilitator does not implement is catalogued under its own name rather

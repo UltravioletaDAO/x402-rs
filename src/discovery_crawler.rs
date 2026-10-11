@@ -311,6 +311,7 @@ impl DiscoveryCrawler {
             upstream: None,
             upstream_source: None,
             extensions_provenance: None,
+            extensions_adopted: None,
             usage: None,
         }
     }

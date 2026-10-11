@@ -86,8 +86,9 @@ Register a new resource in the discovery registry.
 ```
 
 **Response:** `201 Created`, `400 Bad Request`, or `409 Conflict` when the URL is already in the
-catalog from any source (listed, or waiting for its first verification). There is no public route
-to update or remove a listing; the operator does that.
+catalog from any source (listed, or waiting for its first verification). The URL is stored and
+compared in its canonical spelling (lowercase host, no trailing dot, no default port). There is no
+public route to update or remove a listing; the operator does that.
 
 **Ownership.** Registration takes the URL and its description from anyone and makes no outbound
 fetch; so does a settlement that asks to be discoverable. Once such a listing verifies alive, the
@@ -95,9 +96,12 @@ health prober reads `/.well-known/x402` on the URL's host and publishes the verd
 `health.ownership` on the listing in `GET /discovery/resources`:
 
 - `origin-attested`: the file has an entry for the URL, in the request body's format, declaring
-  every `network` + `payTo` the listing's `accepts` declares, the same `description`, and the same
-  `category`, `provider` and `tags` wherever the listing names them. An entry that only lists the
-  URL vouches for nothing: the URL is not what an impostor fakes.
+  every `network` + `payTo` the listing's `accepts` declares, the same `description`, the same
+  `category`, `provider` and `tags` wherever the listing names them, and every key of the
+  `extensions` the listing registered with the same value -- all but the input's `type` and
+  `method`, which the probe's own 402 already answered, and what was adopted from that 402
+  (`extensionsAdopted`). An entry that only lists the URL vouches for nothing: the URL is not what
+  an impostor fakes.
 - `unattested`: no such file (404, 410...) or entry, an entry that says something else, a file
   served from another host after a redirect, one over 512 KB, or a URL in a non-plain spelling
   (`https://host./path`). The entry's `url` is matched exactly as written, apart from the host's

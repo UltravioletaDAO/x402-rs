@@ -23,7 +23,11 @@ X402-CI-GATES.
   (`terraform apply -target=aws_iam_policy.cicd_infra`).
 - **The drift gate's IAM step** (`scripts/drift_gate_iam.py`) also evaluates the
   cluster changes a targeted plan drags in, and `ecs:UntagResource` when a
-  deploy would drop a tag.
+  deploy would drop a tag. A targeted plan that errored is red ("not
+  evaluated"), no longer reported clean.
+- **`POST /discovery/register` keys a listing by its URL's canonical spelling**
+  (register: canonical key), the one the overlays and the origin proof use, and
+  stores it that way.
 
 ### Fixed
 
@@ -41,7 +45,11 @@ X402-CI-GATES.
   the object where it was publishes the same snapshot again. Giving up
   overwrites nothing. A refresh landing in the middle of a publish can no longer
   mark an older catalog as the one just published. After publishing, the owner
-  no longer re-reads its own object.
+  no longer re-reads its own object. Adopting the published catalog applies the
+  writes this task had queued and, when one of its own lands while the store is
+  read, applies it and reads again (up to three reads); a cycle whose snapshot
+  is still not published says so (`DiscoveryRegistry::import` reports
+  `unpublished`, and the aggregator logs it).
 
 ### Added
 
@@ -54,8 +62,11 @@ X402-CI-GATES.
   SSRF-hardened connector and never in the register request (normally once per
   origin per `DISCOVERY_ORIGIN_PROOF_CACHE_SECS`, 6 h; a failed read is retried
   after 15 min), and publishes `health.ownership`: `origin-attested` when an
-  entry for the URL declares the listing's recipients and description and the
-  category, provider and tags it names; `unattested` when there is no file, no
+  entry for the URL declares the listing's recipients and description, the
+  category, provider and tags it names, and every key of the `extensions` it
+  registered with the same value (all but the input's `type` and `method`, which
+  the probe's own 402 answered, and what was adopted from that 402);
+  `unattested` when there is no file, no
   such entry, or one that declares something else; `unknown` when the file
   could not be read and no earlier read decided it. A failed read never
   overwrites a verdict. `DISCOVERY_REQUIRE_ORIGIN_PROOF` (default off, phase 2)
@@ -76,8 +87,10 @@ X402-CI-GATES.
   declaration names -- the prober learns a declared POST and adopts on the next
   probe -- since a declared method is probed with no fallback. The listing then
   reports `hasInputSchema: true` and `extensionsProvenance: origin_response`,
-  persisted with it and never taken from a caller; an input adopted that way
-  follows a newer 402. It reaches the store as a patch of the declaration alone,
+  with the parts filled in as JSON Pointers in `extensionsAdopted`, both
+  persisted with it and never taken from a caller; what was adopted that way
+  follows a newer 402 whole, and a key the seller registered is never replaced
+  or removed by a later adoption. It reaches the store as a patch of the declaration alone,
   on a record still holding the content it was judged against, never as a save
   of the owner's copy (which could resurrect a listing deleted on the other
   replica or walk back its settlements), and queued adoptions share one write.

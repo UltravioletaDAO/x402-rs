@@ -120,6 +120,37 @@ const FUTURE_TIMESTAMP_SKEW_SECS: u64 = 300;
 /// Giving up overwrites nothing, and the next cycle starts from a fresh read.
 const MAX_PUBLISH_ATTEMPTS: u32 = 3;
 
+/// How many times [`DiscoveryRegistry::adopt_store`] reads the store when
+/// writes of this task's own keep arriving while it does. Each round first
+/// applies the writes queued until then.
+const MAX_ADOPT_ROUNDS: u32 = 3;
+
+/// What [`DiscoveryRegistry::adopt_store`] did with the cache.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Adopted {
+    /// Replaced by the published catalog: the change is computed again on top.
+    Replaced,
+    /// Kept, and the store is where the cache was read from (S3's
+    /// `ConditionalRequestConflict`): published again as is.
+    Unmoved,
+    /// Kept, behind the store: writes of this task's own kept arriving while
+    /// it was read, so it could not be replaced, and a snapshot of it would be
+    /// refused.
+    Busy,
+}
+
+/// What one [`DiscoveryRegistry::import`] did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ImportOutcome {
+    pub added: usize,
+    pub updated: usize,
+    pub skipped: usize,
+    /// The import changed the catalog and its snapshot never reached the
+    /// store: this task's cache holds it, the other replicas do not, and the
+    /// next cycle computes it again from a fresh read.
+    pub unpublished: bool,
+}
+
 /// What one pass of [`DiscoveryRegistry::bulk_import`] did to the cache.
 struct ImportPass {
     added: usize,
@@ -1050,6 +1081,8 @@ struct Adoption {
     /// The content fingerprint of the record the adoption was computed from.
     from: String,
     extensions: serde_json::Value,
+    /// What the adoption filled in, as JSON Pointers.
+    parts: Vec<String>,
 }
 
 /// Apply adoptions to the stored catalog as ONE conditional patch.
@@ -1058,7 +1091,8 @@ struct Adoption {
 /// up to an aggregation interval behind the store, and writing it back whole
 /// would put a listing an admin deleted on the other replica back in the
 /// catalog, or walk back the settlements recorded there since. This touches
-/// `extensions` and its provenance and nothing else, only on a record that is
+/// `extensions`, its provenance and its adopted parts and nothing else, only
+/// on a record that is
 /// still there with the content the adoption was computed from, and never
 /// inserts one. Nothing is written when no adoption applies.
 async fn apply_adoptions(
@@ -1075,6 +1109,7 @@ async fn apply_adoptions(
                 record.extensions = Some(adoption.extensions.clone());
                 record.extensions_provenance =
                     Some(crate::discovery_terms::TermsProvenance::OriginResponse);
+                record.extensions_adopted = Some(adoption.parts.clone());
                 changed = true;
             }
         }
@@ -1151,10 +1186,17 @@ impl WriteQueue {
         self.pending.lock().map(|q| q.len()).unwrap_or(1)
     }
 
-    /// Apply everything queued, one at a time, in order.
+    /// Apply what is queued when the drain starts, one at a time, in order.
+    /// A write queued while this one drains has kicked a drainer of its own,
+    /// which runs next.
     async fn drain(&self, store: &Arc<dyn DiscoveryStore>) {
         let _one_at_a_time = self.draining.write().await;
-        while let Some(op) = self.pop() {
+        let mut left = self.pending();
+        while left > 0 {
+            let Some(op) = self.pop() else {
+                break;
+            };
+            left -= 1;
             let (what, result) = match op {
                 StoreOp::Save(resource) => (resource.url.to_string(), store.save(&resource).await),
                 StoreOp::Delete(url) => {
@@ -1164,6 +1206,7 @@ impl WriteQueue {
                 StoreOp::Adopt(first) => {
                     let mut batch = vec![*first];
                     batch.extend(self.pop_adoptions());
+                    left = left.saturating_sub(batch.len() - 1);
                     let what = format!("{} (+{} adopted)", batch[0].url, batch.len() - 1);
                     (
                         what,
@@ -1851,14 +1894,24 @@ impl DiscoveryRegistry {
     /// down while any is pending, and once they are in the store the read
     /// brings them back.
     ///
-    /// `Ok(true)` when the cache was replaced, and the change has to be
-    /// computed again on top of it. `Ok(false)` when it was not -- the refusal
-    /// left the object where it was (S3's `ConditionalRequestConflict`), or a
-    /// write of this task's arrived while reading and the refresh stood down --
-    /// so the cache still holds the refused work, to be published again as is.
-    async fn adopt_store(&self) -> Result<bool, StoreError> {
-        self.writes.drain(&self.store).await;
-        Ok(self.refresh_from_store().await?.is_some())
+    /// A write of this task's that arrives while the store is read makes the
+    /// refresh stand down again, and the store has moved by the time it is
+    /// applied: so it is applied and the store read again, up to
+    /// [`MAX_ADOPT_ROUNDS`] reads. Publishing the cache as is would only be
+    /// refused once more, and spend an attempt of the caller's on it.
+    async fn adopt_store(&self) -> Result<Adopted, StoreError> {
+        for _ in 0..MAX_ADOPT_ROUNDS {
+            self.writes.drain(&self.store).await;
+            if self.refresh_from_store().await?.is_some() {
+                return Ok(Adopted::Replaced);
+            }
+            // Nothing of ours queued: the refresh found the store where the
+            // cache was read from.
+            if self.writes.pending() == 0 {
+                return Ok(Adopted::Unmoved);
+            }
+        }
+        Ok(Adopted::Busy)
     }
 
     /// The whole catalog, as a snapshot to publish.
@@ -2104,17 +2157,33 @@ impl DiscoveryRegistry {
     ///
     /// Returns `DiscoveryError::AlreadyExists` if a resource with the same URL
     /// is already registered. Use `update` to modify existing resources.
+    ///
+    /// The URL is keyed and stored by its canonical spelling
+    /// ([`crate::discovery_security::canonical_url`]), the one every overlay
+    /// and the origin proof key on: one endpoint, one listing.
     pub async fn register(&self, resource: DiscoveryResource) -> Result<(), DiscoveryError> {
         // Validate resource
         self.validate_resource(&resource)?;
         let mut resource = resource;
         resource.strip_response_only();
 
-        let url_key = resource.url.to_string();
+        let canonical = crate::discovery_security::canonical_url(resource.url.as_str())
+            .map_err(|e| DiscoveryError::InvalidUrl(e.to_string()))?;
+        resource.url = canonical.url;
+        let url_key = canonical.key;
 
         let mut resources = self.write_catalog().await;
 
-        if resources.contains_key(&url_key) {
+        // A record held under another spelling of the same URL is the same
+        // listing.
+        let held_elsewhere = || {
+            resources.values().any(|r| {
+                r.url.host_str().is_some_and(|h| h.ends_with('.'))
+                    && crate::discovery_security::canonical_url(r.url.as_str())
+                        .is_ok_and(|c| c.key == url_key)
+            })
+        };
+        if resources.contains_key(&url_key) || held_elsewhere() {
             warn!(url = %url_key, "Attempted to register duplicate resource");
             return Err(DiscoveryError::AlreadyExists(url_key));
         }
@@ -2555,16 +2624,32 @@ impl DiscoveryRegistry {
         resources: Vec<DiscoveryResource>,
         policy: ImportPolicy,
     ) -> Result<(usize, usize, usize), DiscoveryError> {
+        self.import(resources, policy)
+            .await
+            .map(|o| (o.added, o.updated, o.skipped))
+    }
+
+    /// [`Self::bulk_import`], saying also whether its snapshot was published
+    /// ([`ImportOutcome::unpublished`]).
+    pub async fn import(
+        &self,
+        resources: Vec<DiscoveryResource>,
+        policy: ImportPolicy,
+    ) -> Result<ImportOutcome, DiscoveryError> {
         let now = now_secs();
         let mut pass = self.import_pass(&resources, policy, now).await;
         let mut pending = pass.publish.take();
         let mut attempt = 1;
+        let mut unpublished = false;
         // Persist synchronously so that, within the single aggregation task,
         // this write completes BEFORE the retention GC's snapshot — otherwise
         // an out-of-order spawned write could re-persist junk the GC removed.
         while let Some(snapshot) = pending.take() {
             let n = snapshot.resources.len();
-            match self.publish_snapshot(&snapshot).await {
+            let published = self.publish_snapshot(&snapshot).await;
+            // A whole catalog: not kept alive next to the one adopted below.
+            drop(snapshot);
+            match published {
                 Ok(()) => info!(count = n, "Persisted bulk import snapshot to store"),
                 // Refused, not failed. Another replica wrote since this cache
                 // was read -- a registration, a delete -- and publishing this
@@ -2579,27 +2664,46 @@ impl DiscoveryRegistry {
                     );
                     match self.adopt_store().await {
                         // Import again on top of what the others wrote.
-                        Ok(true) => {
+                        Ok(Adopted::Replaced) => {
                             pass = self.import_pass(&resources, policy, now).await;
                             pending = pass.publish.take();
                         }
                         // The cache still holds this import: publish it as is.
-                        Ok(false) => pending = Some(self.snapshot_of_cache().await),
-                        Err(e) => error!(
-                            error = %e,
-                            "Could not adopt the published catalog; bulk import snapshot not \
-                             published"
-                        ),
+                        Ok(Adopted::Unmoved) => pending = Some(self.snapshot_of_cache().await),
+                        Ok(Adopted::Busy) => {
+                            unpublished = true;
+                            warn!(
+                                count = n,
+                                "Bulk import snapshot not published: this task's own writes kept \
+                                 moving the catalog while it was read. Nothing was overwritten; \
+                                 the next cycle recomputes it from a fresh read"
+                            );
+                        }
+                        Err(e) => {
+                            unpublished = true;
+                            error!(
+                                error = %e,
+                                "Could not adopt the published catalog; bulk import snapshot not \
+                                 published"
+                            );
+                        }
                     }
                 }
-                Err(StoreError::VersionConflict(detail)) => warn!(
-                    detail = %detail,
-                    count = n,
-                    attempts = attempt,
-                    "Bulk import snapshot not published: the catalog kept moving underneath it. \
-                     Nothing was overwritten; the next cycle recomputes it from a fresh read"
-                ),
-                Err(e) => error!(error = %e, "Failed to persist bulk import snapshot"),
+                Err(StoreError::VersionConflict(detail)) => {
+                    unpublished = true;
+                    warn!(
+                        detail = %detail,
+                        count = n,
+                        attempts = attempt,
+                        "Bulk import snapshot not published: the catalog kept moving underneath \
+                         it. Nothing was overwritten; the next cycle recomputes it from a fresh \
+                         read"
+                    );
+                }
+                Err(e) => {
+                    unpublished = true;
+                    error!(error = %e, "Failed to persist bulk import snapshot");
+                }
             }
             attempt += 1;
         }
@@ -2626,10 +2730,16 @@ impl DiscoveryRegistry {
             updated = pass.updated,
             skipped = pass.skipped,
             rejects = ?pass.reject_counts,
+            unpublished,
             "Bulk import completed"
         );
 
-        Ok((pass.added, pass.updated, pass.skipped))
+        Ok(ImportOutcome {
+            added: pass.added,
+            updated: pass.updated,
+            skipped: pass.skipped,
+            unpublished,
+        })
     }
 
     /// One pass of [`Self::bulk_import`] over the cache: the import itself,
@@ -2893,7 +3003,10 @@ impl DiscoveryRegistry {
         // aggregation cycle (see bulk_import note).
         while let Some(keep) = pending.take() {
             let kept = keep.resources.len();
-            match self.publish_snapshot(&keep).await {
+            let published = self.publish_snapshot(&keep).await;
+            // A whole catalog: not kept alive next to the one adopted below.
+            drop(keep);
+            match published {
                 Ok(()) => info!(kept = kept, "Retention GC snapshot persisted"),
                 // Another replica wrote since this cache was read. The GC is
                 // deterministic on stored data: adopt that catalog and collect
@@ -2906,11 +3019,17 @@ impl DiscoveryRegistry {
                          read. Adopting the published catalog before publishing again"
                     );
                     match self.adopt_store().await {
-                        Ok(true) => {
+                        Ok(Adopted::Replaced) => {
                             (removed, pending) = self.retention_pass().await;
                         }
                         // The cache still lacks what this GC removed: publish it as is.
-                        Ok(false) => pending = Some(self.snapshot_of_cache().await),
+                        Ok(Adopted::Unmoved) => pending = Some(self.snapshot_of_cache().await),
+                        Ok(Adopted::Busy) => warn!(
+                            kept = kept,
+                            "Retention GC snapshot not published: this task's own writes kept \
+                             moving the catalog while it was read. The next cycle removes the \
+                             same set from the newer catalog"
+                        ),
                         Err(e) => error!(
                             error = %e,
                             "Could not adopt the published catalog; retention GC snapshot not \
@@ -3180,7 +3299,7 @@ impl DiscoveryRegistry {
         }
 
         let mut cache = self.write_catalog().await;
-        let Some((from, adopted)) = cache
+        let Some((from, (adopted, parts))) = cache
             .get(url)
             .filter(|r| r.source == DiscoverySource::SelfRegistered)
             .and_then(|r| Some((r.content_fingerprint(), r.with_offered_bazaar(offered)?)))
@@ -3206,6 +3325,7 @@ impl DiscoveryRegistry {
         record.extensions = Some(adopted.clone());
         record.extensions_provenance =
             Some(crate::discovery_terms::TermsProvenance::OriginResponse);
+        record.extensions_adopted = Some(parts.clone());
         drop(cache);
 
         info!(
@@ -3216,6 +3336,7 @@ impl DiscoveryRegistry {
             url: url.to_string(),
             from,
             extensions: adopted,
+            parts,
         })));
         self.drain_writes();
         true
@@ -4932,6 +5053,54 @@ mod tests {
         assert!(matches!(result, Err(DiscoveryError::AlreadyExists(_))));
     }
 
+    /// One endpoint, one listing: a registration is keyed and stored by its
+    /// URL's canonical spelling (refutation of #122, P2-3).
+    #[tokio::test]
+    async fn register_keys_a_listing_by_its_canonical_url() {
+        let registry = DiscoveryRegistry::new();
+        registry
+            .register(create_test_resource("https://seller.example/r", None))
+            .await
+            .unwrap();
+        let second = registry
+            .register(create_test_resource("https://seller.example./r", None))
+            .await;
+        assert!(
+            matches!(second, Err(DiscoveryError::AlreadyExists(_))),
+            "same endpoint, second key: {second:?}"
+        );
+
+        let registry = DiscoveryRegistry::new();
+        registry
+            .register(create_test_resource("https://seller.example./r", None))
+            .await
+            .unwrap();
+        let held: Vec<String> = registry
+            .all_urls()
+            .await
+            .into_iter()
+            .map(String::from)
+            .collect();
+        assert_eq!(held, vec!["https://seller.example/r".to_string()]);
+    }
+
+    /// ...including against a record held under another spelling from before.
+    #[tokio::test]
+    async fn register_finds_a_listing_held_under_another_spelling() {
+        let registry = DiscoveryRegistry::new();
+        registry
+            .update(create_test_resource("https://seller.example./r", None))
+            .await
+            .unwrap();
+        let second = registry
+            .register(create_test_resource("https://seller.example/r", None))
+            .await;
+        assert!(
+            matches!(second, Err(DiscoveryError::AlreadyExists(_))),
+            "{second:?}"
+        );
+    }
+
     #[tokio::test]
     async fn test_update_upsert() {
         let registry = DiscoveryRegistry::new();
@@ -5783,9 +5952,9 @@ mod tests {
         };
         let owner = DiscoveryRegistry::with_store(store.clone()).await.unwrap();
 
-        tokio::time::timeout(
+        let outcome = tokio::time::timeout(
             std::time::Duration::from_secs(30),
-            owner.bulk_import(
+            owner.import(
                 vec![create_test_resource(feed, None)],
                 ImportPolicy::Filtered,
             ),
@@ -5794,6 +5963,7 @@ mod tests {
         .expect("a catalog that keeps moving held the cycle for good")
         .unwrap();
 
+        assert!(outcome.unpublished, "giving up is said, not only logged");
         assert_eq!(
             store.refused.load(Ordering::SeqCst),
             u64::from(MAX_PUBLISH_ATTEMPTS)
@@ -6048,6 +6218,268 @@ mod tests {
             .unwrap_or_else(|_| panic!("{what} never happened"))
     }
 
+    /// A write of the owner's own queued while it reads the published catalog
+    /// makes that refresh stand down. It is applied and the catalog read again,
+    /// so the import is computed on top and published: two such writes used to
+    /// spend two of its three attempts on snapshots bound to be refused
+    /// (refutation of #122, P2-4).
+    #[tokio::test]
+    async fn writes_of_the_owners_own_while_it_adopts_do_not_keep_the_import_out() {
+        let alta = "https://alta.example.com/x";
+        let feed = "https://feed.example.com/x";
+        let store = Paused::default();
+        store
+            .inner
+            .save(&create_test_resource("https://seed.example.com/x", None))
+            .await
+            .unwrap();
+        let owner = DiscoveryRegistry::with_store(store.clone()).await.unwrap();
+        let other = DiscoveryRegistry::with_store(store.inner.clone())
+            .await
+            .unwrap();
+        other
+            .register(create_test_resource(alta, None))
+            .await
+            .unwrap();
+        other.writes.drain(&other.store).await;
+        let (reached1, release1) = Paused::arm(&store.read);
+        let cycle = {
+            let owner = owner.clone();
+            tokio::spawn(async move {
+                owner
+                    .import(
+                        vec![create_test_resource(feed, None)],
+                        ImportPolicy::Filtered,
+                    )
+                    .await
+            })
+        };
+        within("adoption GET 1", reached1).await.unwrap();
+        owner
+            .writes
+            .push(StoreOp::Save(Box::new(create_test_resource(
+                "https://mine-1.example.com/x",
+                None,
+            ))));
+        let (reached2, release2) = Paused::arm(&store.read);
+        release1.send(()).unwrap();
+        within("adoption GET 2", reached2).await.unwrap();
+        owner
+            .writes
+            .push(StoreOp::Save(Box::new(create_test_resource(
+                "https://mine-2.example.com/x",
+                None,
+            ))));
+        release2.send(()).unwrap();
+        let outcome = within("the cycle", cycle).await.unwrap().unwrap();
+        assert!(!outcome.unpublished);
+        let held = stored(&store.inner).await;
+        for url in [
+            alta,
+            feed,
+            "https://mine-1.example.com/x",
+            "https://mine-2.example.com/x",
+        ] {
+            assert!(held.contains(&url.to_string()), "{url} missing: {held:?}");
+        }
+    }
+
+    /// One such write: the same, with the alta, the owner's write and the
+    /// import all in the published catalog.
+    #[tokio::test]
+    async fn a_refresh_standing_down_mid_adoption_still_publishes_on_the_caches_version() {
+        let (alta, mine, feed) = (
+            "https://alta.example.com/x",
+            "https://mine.example.com/x",
+            "https://feed.example.com/x",
+        );
+        let store = Paused::default();
+        store
+            .inner
+            .save(&create_test_resource("https://seed.example.com/x", None))
+            .await
+            .unwrap();
+        let owner = DiscoveryRegistry::with_store(store.clone()).await.unwrap();
+        let other = DiscoveryRegistry::with_store(store.inner.clone())
+            .await
+            .unwrap();
+        other
+            .register(create_test_resource(alta, None))
+            .await
+            .unwrap();
+        other.writes.drain(&other.store).await;
+        let (reached, release) = Paused::arm(&store.read);
+        let cycle = {
+            let owner = owner.clone();
+            tokio::spawn(async move {
+                owner
+                    .bulk_import(
+                        vec![create_test_resource(feed, None)],
+                        ImportPolicy::Filtered,
+                    )
+                    .await
+            })
+        };
+        within("the adoption's GET", reached).await.unwrap();
+        owner
+            .writes
+            .push(StoreOp::Save(Box::new(create_test_resource(mine, None))));
+        release.send(()).unwrap();
+        within("the cycle", cycle).await.unwrap().unwrap();
+        let held = stored(&store.inner).await;
+        for url in [alta, mine, feed] {
+            assert!(held.contains(&url.to_string()), "{url} missing: {held:?}");
+        }
+    }
+
+    /// A store where every write queues another write of the same task.
+    #[derive(Debug, Clone)]
+    struct EverBusy {
+        inner: crate::discovery_store::MemoryStore,
+        queue: Arc<std::sync::Mutex<Option<Arc<WriteQueue>>>>,
+        written: Arc<AtomicU64>,
+        refused: Arc<AtomicU64>,
+    }
+
+    #[async_trait::async_trait]
+    impl DiscoveryStore for EverBusy {
+        async fn load_all(&self) -> Result<Vec<DiscoveryResource>, StoreError> {
+            self.inner.load_all().await
+        }
+
+        async fn load_snapshot(&self) -> Result<Snapshot, StoreError> {
+            self.inner.load_snapshot().await
+        }
+
+        async fn current_version(&self) -> Result<Version, StoreError> {
+            self.inner.current_version().await
+        }
+
+        async fn save_snapshot(
+            &self,
+            resources: &[DiscoveryResource],
+            expected: &Version,
+        ) -> Result<Version, StoreError> {
+            let saved = self.inner.save_snapshot(resources, expected).await;
+            if matches!(saved, Err(StoreError::VersionConflict(_))) {
+                self.refused.fetch_add(1, Ordering::SeqCst);
+            }
+            saved
+        }
+
+        async fn save(&self, resource: &DiscoveryResource) -> Result<(), StoreError> {
+            self.inner.save(resource).await?;
+            let n = self.written.fetch_add(1, Ordering::SeqCst);
+            if let Some(queue) = self.queue.lock().unwrap().as_ref() {
+                queue.push(StoreOp::Save(Box::new(create_test_resource(
+                    &format!("https://busy-{n}.example.com/x"),
+                    None,
+                ))));
+            }
+            tokio::task::yield_now().await;
+            Ok(())
+        }
+
+        async fn delete(&self, url: &str) -> Result<(), StoreError> {
+            self.inner.delete(url).await
+        }
+
+        async fn health_check(&self) -> Result<(), StoreError> {
+            Ok(())
+        }
+
+        fn store_type(&self) -> &'static str {
+            "ever-busy"
+        }
+    }
+
+    /// The cycle applies the writes queued before each read of the store. When
+    /// its snapshot is not published it stops after one refusal, not three,
+    /// and the outcome says so (refutation of #122, P2-5).
+    #[tokio::test]
+    async fn the_aggregation_cycle_applies_the_writes_queued_before_it_reads() {
+        let inner = crate::discovery_store::MemoryStore::new();
+        inner
+            .save(&create_test_resource("https://seed.example.com/x", None))
+            .await
+            .unwrap();
+        let store = EverBusy {
+            inner: inner.clone(),
+            queue: Default::default(),
+            written: Default::default(),
+            refused: Default::default(),
+        };
+        let owner = DiscoveryRegistry::with_store(store.clone()).await.unwrap();
+        *store.queue.lock().unwrap() = Some(Arc::clone(&owner.writes));
+        inner
+            .save(&create_test_resource("https://alta.example.com/x", None))
+            .await
+            .unwrap();
+        owner
+            .writes
+            .push(StoreOp::Save(Box::new(create_test_resource(
+                "https://mine.example.com/x",
+                None,
+            ))));
+        let done = tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            owner.import(
+                vec![create_test_resource("https://feed.example.com/x", None)],
+                ImportPolicy::Filtered,
+            ),
+        )
+        .await;
+        *store.queue.lock().unwrap() = None;
+        let outcome = done.expect("the cycle did not finish").unwrap();
+        assert!(outcome.unpublished);
+        assert_eq!(store.refused.load(Ordering::SeqCst), 1);
+        assert!(
+            stored(&inner)
+                .await
+                .contains(&"https://alta.example.com/x".to_string()),
+            "nothing was overwritten"
+        );
+    }
+
+    /// The same for the retention GC's snapshot: one refusal, nothing
+    /// overwritten.
+    #[tokio::test]
+    async fn the_retention_gc_applies_the_writes_queued_before_it_reads() {
+        let inner = crate::discovery_store::MemoryStore::new();
+        for url in ["https://seed.example.com/x", "http://127.0.0.1/x"] {
+            inner.save(&create_test_resource(url, None)).await.unwrap();
+        }
+        let store = EverBusy {
+            inner: inner.clone(),
+            queue: Default::default(),
+            written: Default::default(),
+            refused: Default::default(),
+        };
+        let owner = DiscoveryRegistry::with_store(store.clone()).await.unwrap();
+        *store.queue.lock().unwrap() = Some(Arc::clone(&owner.writes));
+        inner
+            .save(&create_test_resource("https://alta.example.com/x", None))
+            .await
+            .unwrap();
+        owner
+            .writes
+            .push(StoreOp::Save(Box::new(create_test_resource(
+                "https://mine.example.com/x",
+                None,
+            ))));
+        let done =
+            tokio::time::timeout(std::time::Duration::from_secs(10), owner.apply_retention()).await;
+        *store.queue.lock().unwrap() = None;
+        done.expect("the GC did not finish");
+        assert_eq!(store.refused.load(Ordering::SeqCst), 1);
+        assert!(
+            stored(&inner)
+                .await
+                .contains(&"https://alta.example.com/x".to_string()),
+            "nothing was overwritten"
+        );
+    }
+
     /// A refresh whose GET started before an alta and finished after the
     /// owner had already published on top of that alta installs an OLDER
     /// catalog. Marking that catalog with the version just published would let
@@ -6265,6 +6697,7 @@ mod tests {
                 url: url.to_string(),
                 from,
                 extensions: serde_json::json!({ "bazaar": declared_get("q") }),
+                parts: vec!["/bazaar".to_string()],
             })));
         }
         owner.writes.drain(&owner.store).await;
@@ -6299,6 +6732,40 @@ mod tests {
             stored_record(&store, url).await.unwrap().extensions,
             expected
         );
+    }
+
+    /// ...whole: what the earlier 402 declared besides the input -- its output,
+    /// an example -- goes with it, instead of staying behind as if the seller
+    /// had written it (refutation of #122, P2-1).
+    #[tokio::test]
+    async fn an_adopted_declaration_is_the_newer_402s_whole_not_a_blend_of_two() {
+        use crate::discovery_health::ProbeMethod;
+        let url = "https://moves.example.com/x";
+        let (store, owner, _other) = two_replicas(&[url]).await;
+        let declared = |query: &str, v: u64| {
+            let mut params = serde_json::Map::new();
+            params.insert(query.to_string(), serde_json::json!("string"));
+            serde_json::json!({ "info": {
+                "input": { "type": "http", "method": "GET", "queryParams": params },
+                "output": { "example": { "v": v } } } })
+        };
+        assert!(
+            owner
+                .adopt_declaration(url, &declared("q", 1), ProbeMethod::Get)
+                .await
+        );
+        assert!(
+            owner
+                .adopt_declaration(url, &declared("query", 2), ProbeMethod::Get)
+                .await
+        );
+        owner.writes.drain(&owner.store).await;
+
+        let expected = Some(serde_json::json!({ "bazaar": declared("query", 2) }));
+        assert_eq!(owner.get(url).await.unwrap().extensions, expected);
+        let held = stored_record(&store, url).await.unwrap();
+        assert_eq!(held.extensions, expected);
+        assert_eq!(held.extensions_adopted, Some(vec!["/bazaar".to_string()]));
     }
 
     // ------------------------------------------------------------------------

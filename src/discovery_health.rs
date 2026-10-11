@@ -1504,7 +1504,6 @@ impl HealthTracker {
         }
     }
 
-    /// The origin's file as last read, while it is still fresh at `now`.
     /// The origin's file as last read, while it is still fresh at `now` and was
     /// read with `key` among the URLs it kept: a listing registered after the
     /// read is not in it, and gets a read of its own.
@@ -1551,7 +1550,8 @@ impl HealthTracker {
 // The proof is the origin's own word, and it has to cover what the registrant
 // wrote, not only the URL: `/.well-known/x402` on the listing's own origin
 // carries an entry for the URL that declares the listing's recipients and its
-// description, and the category, provider and tags the listing names. An entry
+// description, the category, provider and tags the listing names, and the
+// `extensions` it registered past what the probe verified on its own. An entry
 // that only lists the URL vouches for nothing. The prober reads the file --
 // never the register request, which makes no outbound fetch -- once per origin
 // per cache window, for a listing from one of those two routes that a probe just
@@ -1587,6 +1587,8 @@ struct OriginEntry {
     provider: Option<String>,
     /// Lowercased.
     tags: Vec<String>,
+    /// Its `extensions`, within the bounds of a registered one.
+    extensions: Option<serde_json::Value>,
 }
 
 /// An origin's `/.well-known/x402`, as one read found it.
@@ -1688,16 +1690,61 @@ fn listed_entries(body: &str, keep: impl Fn(&str) -> bool) -> Option<HashMap<Str
                 category: declared_text(metadata.and_then(|m| m.get("category"))),
                 provider: declared_text(metadata.and_then(|m| m.get("provider"))),
                 tags,
+                extensions: crate::discovery_price::sanitize_extensions(
+                    item.get("extensions").cloned(),
+                ),
             },
         );
     }
     Some(entries)
 }
 
+/// `value` without the objects that hold nothing, at any depth; `None` when
+/// that is all of it.
+fn without_empty_objects(value: serde_json::Value) -> Option<serde_json::Value> {
+    match value {
+        serde_json::Value::Object(map) => {
+            let kept: serde_json::Map<String, serde_json::Value> = map
+                .into_iter()
+                .filter_map(|(k, v)| Some((k, without_empty_objects(v)?)))
+                .collect();
+            (!kept.is_empty()).then_some(serde_json::Value::Object(kept))
+        }
+        other => Some(other),
+    }
+}
+
+/// What a listing's `extensions` claim on the registrant's word alone: the
+/// registered part ([`crate::types_v2::DiscoveryResource::registered_extensions`],
+/// so not what was adopted from its 402), less the request the probe itself
+/// verified -- the input's `type` and `method`, which its 402 answered to.
+fn registrant_claims(listing: &crate::types_v2::DiscoveryResource) -> Option<serde_json::Value> {
+    let mut claims = listing.registered_extensions()?;
+    if let Some(serde_json::Value::Object(input)) = claims.pointer_mut("/bazaar/info/input") {
+        input.remove("type");
+        input.remove("method");
+    }
+    without_empty_objects(claims)
+}
+
+/// Whether `theirs` declares everything `ours` does: every key of an object,
+/// with the same value at every depth.
+fn declares_all_of(ours: &serde_json::Value, theirs: Option<&serde_json::Value>) -> bool {
+    match (ours, theirs) {
+        (serde_json::Value::Object(ours), Some(serde_json::Value::Object(theirs))) => ours
+            .iter()
+            .all(|(key, value)| declares_all_of(value, theirs.get(key))),
+        (ours, Some(theirs)) => ours == theirs,
+        (_, None) => false,
+    }
+}
+
 /// Whether `entry` vouches for what `listing` declares: every recipient (an
-/// MCP listing's recipients are checked nowhere else), its description, and
-/// the category, provider and tags it names. A field the listing leaves empty
-/// claims nothing and needs no word.
+/// MCP listing's recipients are checked nowhere else), its description, the
+/// category, provider and tags it names, and its `extensions` -- the schema an
+/// agent reads to call it -- past what the probe verified
+/// ([`registrant_claims`]). A field the listing leaves empty claims nothing
+/// and needs no word.
 fn entry_vouches_for(entry: &OriginEntry, listing: &crate::types_v2::DiscoveryResource) -> bool {
     let named = |ours: Option<&String>, theirs: &Option<String>| match ours
         .map(|s| s.trim())
@@ -1722,6 +1769,8 @@ fn entry_vouches_for(entry: &OriginEntry, listing: &crate::types_v2::DiscoveryRe
                 .filter(|t| !t.is_empty())
                 .all(|t| entry.tags.contains(&t))
         })
+        && registrant_claims(listing)
+            .is_none_or(|claims| declares_all_of(&claims, entry.extensions.as_ref()))
 }
 
 /// The verdict a file gives `listing`, whose canonical key is `key`.
@@ -1805,9 +1854,7 @@ async fn origin_ownership<T: ProbeTransport + ?Sized>(
     let Ok(canonical) = crate::discovery_security::canonical_url(url.as_str()) else {
         return Ownership::Unattested;
     };
-    // A listing keyed by another spelling of its URL (`https://host./path`) is a
-    // second key for the same endpoint: it got past the 409 the canonical
-    // spelling would have met, and must not inherit that listing's word.
+    // Only the canonical spelling of a URL is the origin's to vouch for.
     if canonical.key != url.as_str() {
         return Ownership::Unattested;
     }
@@ -7427,6 +7474,59 @@ mod declared_method_tests {
         assert_eq!(ext["bazaar"]["category"], json!("search"));
         assert_eq!(ext["other"], json!({ "k": "v" }));
         assert!(adopted_from_origin(&held));
+        // The provenance covers what was filled in, and nothing the seller wrote.
+        assert_eq!(
+            held.extensions_adopted,
+            Some(vec!["/bazaar/info/input".to_string()])
+        );
+    }
+
+    /// A key the seller registered survives every later adoption, not only the
+    /// first (refutation of #122, P2-1).
+    #[tokio::test]
+    async fn a_second_adoption_never_removes_what_the_seller_registered() {
+        let own = json!({ "bazaar": { "schema": { "properties": { "input": {} } } } });
+        let get = json!({ "info": { "input": { "type": "http", "method": "GET" } } });
+        let says = Says::header(&challenge_with(get));
+        let (_registry, held) = probed_times(registered(Some(own.clone())), &says, 2).await;
+        assert_eq!(
+            held.extensions.unwrap()["bazaar"]["schema"],
+            own["bazaar"]["schema"]
+        );
+    }
+
+    /// ...nor when the second 402 declares something else: the adopted input
+    /// follows it, and the seller's key stays.
+    #[tokio::test]
+    async fn a_newer_402_never_removes_what_the_seller_registered() {
+        let own = json!({ "bazaar": { "schema": { "properties": { "input": {} } } } });
+        let first = json!({ "info": { "input": {
+            "type": "http", "method": "GET", "queryParams": { "q": "string" } } } });
+        let second = json!({ "info": { "input": {
+            "type": "http", "method": "GET", "queryParams": { "query": "string" } } } });
+        let (registry, _held) = probed_times(
+            registered(Some(own.clone())),
+            &Says::header(&challenge_with(first)),
+            1,
+        )
+        .await;
+        let health = registry.health();
+        let target = registry.probe_targets().await.remove(0);
+        probe_and_record(
+            &Says::header(&challenge_with(second)),
+            &registry,
+            &health,
+            target,
+        )
+        .await;
+        let held = registry.get("https://seller.example/r").await.unwrap();
+        let ext = held.extensions.unwrap();
+        assert_eq!(ext["bazaar"]["schema"], own["bazaar"]["schema"], "{ext}");
+        assert_eq!(
+            ext["bazaar"]["info"]["input"]["queryParams"],
+            json!({ "query": "string" }),
+            "{ext}"
+        );
     }
 
     /// Nothing is adopted from a declaration that is not one, that does not
@@ -7590,9 +7690,11 @@ mod declared_method_tests {
         let mut claiming = registered(Some(json!({ "bazaar": offered_bazaar() })));
         claiming.extensions_provenance =
             Some(crate::discovery_terms::TermsProvenance::OriginResponse);
+        claiming.extensions_adopted = Some(vec!["/bazaar".to_string()]);
         registry.register(claiming).await.unwrap();
         let held = registry.get("https://seller.example/r").await.unwrap();
         assert_eq!(held.extensions_provenance, None, "a caller asserted it");
+        assert_eq!(held.extensions_adopted, None, "a caller asserted it");
 
         let registry = DiscoveryRegistry::with_store(store.clone()).await.unwrap();
         let mut bare = registered(None);
@@ -7620,6 +7722,7 @@ mod declared_method_tests {
             stored.extensions,
             Some(json!({ "bazaar": offered_bazaar() }))
         );
+        assert_eq!(stored.extensions_adopted, Some(vec!["/bazaar".to_string()]));
     }
 
     // ------------------------------------------------------------------------
@@ -7819,6 +7922,91 @@ mod declared_method_tests {
         assert_eq!(
             ownership_from(&OriginFile::Failed, LISTING, &listing),
             Ownership::Unknown
+        );
+    }
+
+    /// The input schema an agent reads to call a listing is the registrant's
+    /// word like its description: an origin entry that never declared it does
+    /// not vouch for it (refutation of #122, P2-2).
+    #[tokio::test]
+    async fn extensions_the_origin_never_declared_are_not_attested() {
+        // Control: the same listing, nothing added, is attested by the same file.
+        let mut plain = listing_of("/r", Some("GET"));
+        plain.source = DiscoverySource::SelfRegistered;
+        let (_, control) = probed_listing(&Origin::new(200, &well_known(&[LISTING])), plain).await;
+        assert_eq!(control, Some(Ownership::OriginAttested), "control");
+        // A registrant adds an input schema the origin's entry never declared.
+        let mut listing = listing_of("/r", Some("GET"));
+        listing.source = DiscoverySource::SelfRegistered;
+        listing.extensions.as_mut().unwrap()["bazaar"]["info"]["input"]["queryParams"] =
+            json!({ "note": { "type": "string", "description": "a field of the registrant's" } });
+        let (_, got) = probed_listing(&Origin::new(200, &well_known(&[LISTING])), listing).await;
+        assert_eq!(
+            got,
+            Some(Ownership::Unattested),
+            "extensions the origin never declared"
+        );
+    }
+
+    /// What the origin has to declare is every key the registrant wrote, with
+    /// the same value; not what the probe verified on its own (the input's
+    /// type and method), and not what was adopted from the listing's own 402.
+    #[test]
+    fn the_origin_vouches_for_every_extension_the_registrant_wrote() {
+        let params = json!({ "q": { "type": "string" }, "n": { "type": "number" } });
+        let mut listing = listing_from(DiscoverySource::SelfRegistered);
+        listing.extensions = Some(json!({ "bazaar": { "info": { "input": {
+            "type": "http", "method": "GET", "queryParams": params.clone() } } } }));
+        let with_extensions = |extensions: Value| {
+            let mut e = entry(LISTING);
+            e["extensions"] = extensions;
+            OriginFile::Lists(listed_entries(&file_of(vec![e]), |_| true).unwrap())
+        };
+        let cases = [
+            (
+                "declares it all",
+                json!({ "bazaar": { "info": { "input": { "queryParams": params.clone() } } } }),
+                Ownership::OriginAttested,
+            ),
+            (
+                "declares it all, and more",
+                json!({ "bazaar": { "info": { "input": {
+                    "type": "http", "method": "GET", "queryParams": params.clone(),
+                    "headers": { "x": "y" } } } } }),
+                Ownership::OriginAttested,
+            ),
+            (
+                "declares another value",
+                json!({ "bazaar": { "info": { "input": { "queryParams": {
+                    "q": { "type": "number" }, "n": { "type": "number" } } } } } }),
+                Ownership::Unattested,
+            ),
+            (
+                "declares part of it",
+                json!({ "bazaar": { "info": { "input": { "queryParams": {
+                    "q": { "type": "string" } } } } } }),
+                Ownership::Unattested,
+            ),
+            (
+                "declares something else",
+                json!({ "other": 1 }),
+                Ownership::Unattested,
+            ),
+        ];
+        for (name, extensions, expected) in cases {
+            let file = with_extensions(extensions);
+            assert_eq!(ownership_from(&file, LISTING, &listing), expected, "{name}");
+        }
+
+        // The same schema adopted from the listing's own 402 needs no word.
+        listing.extensions_provenance =
+            Some(crate::discovery_terms::TermsProvenance::OriginResponse);
+        listing.extensions_adopted = Some(vec!["/bazaar".to_string()]);
+        let silent = OriginFile::Lists(listed_entries(&well_known(&[LISTING]), |_| true).unwrap());
+        assert_eq!(
+            ownership_from(&silent, LISTING, &listing),
+            Ownership::OriginAttested,
+            "adopted from the 402"
         );
     }
 
@@ -8041,14 +8229,20 @@ mod declared_method_tests {
         );
     }
 
-    /// A second spelling of a listed URL is a second key for the same endpoint:
-    /// it got past the 409, and must not inherit the first one's word.
+    /// Only the canonical spelling of a URL is the origin's to vouch for: a
+    /// record held under another one is not attested on it.
     #[tokio::test]
     async fn another_spelling_of_the_url_does_not_inherit_the_origins_word() {
+        let spelling = "https://seller.example./r";
         let mut listing = listing_from(DiscoverySource::SelfRegistered);
-        listing.url = url::Url::parse("https://seller.example./r").unwrap();
+        listing.url = url::Url::parse(spelling).unwrap();
         let origin = Origin::new(200, &well_known(&[LISTING]));
-        let (_, got) = probed_listing(&origin, listing).await;
+        let registry = DiscoveryRegistry::new();
+        registry.update(listing).await.unwrap();
+        let target = registry.probe_targets().await.remove(0);
+        let health = registry.health();
+        probe_and_record(&origin, &registry, &health, target).await;
+        let got = health.snapshot().await.remove(spelling).unwrap().ownership;
         assert_eq!(got, Some(Ownership::Unattested));
         assert_eq!(origin.reads(), 0);
     }

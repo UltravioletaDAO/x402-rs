@@ -1,6 +1,29 @@
 # Changelog
 
-## [2.49.1] - 2026-10-10
+## [2.50.0] - 2026-10-11
+
+Tanda 1011: X402-BAZAAR-REPLICAS + X4-BAZAAR-ADOPTA, X402-REGISTER-OWNER and
+X402-CI-GATES.
+
+### Changed
+
+- **A merge no longer deploys; a release is a manual "Run workflow" on `main`**
+  (`gh workflow run ci.yaml --ref main`; owner's rule of 2026-09-27, one release
+  a day started by hand). The deploy job of `ci.yaml` runs only on
+  `workflow_dispatch`; push and pull request still run the tests and the drift
+  gate. The concurrency group carries the event, so a merge landing while a
+  release waits no longer cancels it. `tests/scripts/test_ci_deploy_job.py` holds
+  it, and checks that no other job applies Terraform, pushes an image or moves
+  the service.
+- **The CI user's managed policy `facilitator-cicd-infra`** gains
+  `EcsClusterUpdate` (`ecs:UpdateCluster` on the production cluster, which every
+  image deploy drags in as a dependency: #115's deploy died on it on 2026-10-07)
+  and `EcsDeployUntag` (`ecs:UntagResource` on the cluster, the service and the
+  task-definition family). Applied by hand like the rest of that file
+  (`terraform apply -target=aws_iam_policy.cicd_infra`).
+- **The drift gate's IAM step** (`scripts/drift_gate_iam.py`) also evaluates the
+  cluster changes a targeted plan drags in, and `ecs:UntagResource` when a
+  deploy would drop a tag.
 
 ### Fixed
 
@@ -22,6 +45,23 @@
 
 ### Added
 
+- **Origin proof of ownership for listings from open routes (phase 1).**
+  `POST /discovery/register` and a discoverable settlement take a URL from
+  anyone; nothing tied such a listing to its origin, so a stranger could list
+  somebody else's endpoint with its real `payTo` and a description and category
+  of their own. Once a probe verifies such a listing alive, the prober reads
+  `/.well-known/x402` at the root of the listing's own origin, through the same
+  SSRF-hardened connector and never in the register request (normally once per
+  origin per `DISCOVERY_ORIGIN_PROOF_CACHE_SECS`, 6 h; a failed read is retried
+  after 15 min), and publishes `health.ownership`: `origin-attested` when an
+  entry for the URL declares the listing's recipients and description and the
+  category, provider and tags it names; `unattested` when there is no file, no
+  such entry, or one that declares something else; `unknown` when the file
+  could not be read and no earlier read decided it. A failed read never
+  overwrites a verdict. `DISCOVERY_REQUIRE_ORIGIN_PROOF` (default off, phase 2)
+  stops listing the unattested ones; both switches are in `GET /discovery/config`
+  (group `ownership`). The verdict lives in the health overlay, never on the
+  resource, so a registrant cannot attest itself.
 - **A self-registered listing that declares no input takes the one its own 402
   declares.** On 2026-10-10, 905 of the 1 036 self-registered listings in the
   published catalog declared no input, while most of their hosts' 402s carry one
@@ -48,9 +88,9 @@
   comes from the Secrets Manager secret `facilitator-bazaar-admin-token` (JSON
   key `token`), read by name like the ERC-8004 and DX402 tokens: the value never
   reaches the Terraform state, and the CI user cannot read it. Create the secret
-  by hand and apply the execution role's policy right before the merge that
-  ships this (`secrets.tf` has both commands): the CI user can do neither, and
-  until the secret exists every plan fails on its data source.
+  by hand and apply the execution role's policy before the merge (`secrets.tf`
+  has both commands): the CI user can do neither, and until the secret exists
+  every plan fails on its data source.
 
 ## [2.49.0] - 2026-10-06
 

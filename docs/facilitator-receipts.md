@@ -394,9 +394,10 @@ path under an admission (lease lost: nothing sent or latched; sent: bytes stored
 first, then latched). Explicit local DynamoDB tests exercise transaction/CAS
 behavior, including readmission and a write resent with its token, using two
 store clients. Every network and token of the EVM matrix runs through two
-replicas racing one purchase over a shared store, a lost response, a restart
-with an unknown outcome and the storage outages: one send, the same receipt on
-every resend, nothing broadcast without stored bytes. The replays run on every
+replicas racing one purchase over a shared store (every copy reaches the
+reservation, so only its atomicity picks the one that sends), a lost response,
+a restart with an unknown outcome and the storage outages: one send, the same
+receipt on every resend, nothing broadcast without stored bytes. The replays run on every
 network of it, and so does the exclusion of the requests that belong to other
 settlement paths. A test checks the matrix against the tokens
 `config/supported_tokens.json` presents and admits every one of them in v1 and

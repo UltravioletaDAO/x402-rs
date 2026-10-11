@@ -85,7 +85,31 @@ Register a new resource in the discovery registry.
 }
 ```
 
-**Response:** `201 Created` or `400 Bad Request`
+**Response:** `201 Created`, `400 Bad Request`, or `409 Conflict` when the URL is already in the
+catalog from any source (listed, or waiting for its first verification). There is no public route
+to update or remove a listing; the operator does that.
+
+**Ownership.** Registration takes the URL and its description from anyone and makes no outbound
+fetch; so does a settlement that asks to be discoverable. Once such a listing verifies alive, the
+health prober reads `/.well-known/x402` on the URL's host and publishes the verdict as
+`health.ownership` on the listing in `GET /discovery/resources`:
+
+- `origin-attested`: the file has an entry for the URL, in the request body's format, declaring
+  every `network` + `payTo` the listing's `accepts` declares, the same `description`, and the same
+  `category`, `provider` and `tags` wherever the listing names them. An entry that only lists the
+  URL vouches for nothing: the URL is not what an impostor fakes.
+- `unattested`: no such file (404, 410...) or entry, an entry that says something else, a file
+  served from another host after a redirect, one over 512 KB, or a URL in a non-plain spelling
+  (`https://host./path`). The entry's `url` is matched exactly as written, apart from the host's
+  case, a trailing dot and the default port.
+- `unknown`: the file could not be read -- network error, 401/403, 429, 5xx, or a page that is not
+  such a file, which is what a WAF or a CDN answers a bot -- and no earlier read decided it. An
+  `unknown` read never erases an earlier verdict.
+
+Normally one read per origin per `DISCOVERY_ORIGIN_PROOF_CACHE_SECS` (6 h; a failed read is retried after
+`DISCOVERY_ORIGIN_PROOF_RETRY_SECS`, 15 min). `DISCOVERY_REQUIRE_ORIGIN_PROOF` (default off, phase 2)
+stops listing such a resource unless it is `origin-attested`. All three are published by
+`GET /discovery/config` (`ownership`).
 
 ### GET /supported
 
@@ -232,7 +256,7 @@ Resources must pass validation before registration:
 1. **URL**: Must be valid HTTPS (or HTTP for localhost)
 2. **Type**: Must be one of: `http`, `mcp`, `a2a`, `facilitator`
 3. **Accepts**: Must have at least one payment method (except `facilitator` type)
-4. **Duplicates**: Cannot register the same URL twice (use update instead)
+4. **Duplicates**: Cannot register the same URL twice (`409`); there is no public update route
 
 ## Example Use Cases
 

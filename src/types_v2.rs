@@ -1177,6 +1177,32 @@ pub enum VerifiedBy {
     McpHandshake,
 }
 
+/// Whether a listing's own origin vouches for what the listing says.
+/// Response-facing as `health.ownership`, on listings from a route that takes a
+/// URL from anyone (`POST /discovery/register`, a discoverable settlement).
+///
+/// Those routes take the URL and its description from whoever calls them. The
+/// probe ties an HTTP listing's payTo to the live 402, but nothing tied the
+/// listing to its origin, so a stranger could list somebody else's endpoint
+/// with its real payTo and a description and category of their own. The
+/// origin's word is an entry for the URL in `/.well-known/x402` on the
+/// listing's own host, read by the prober ([`crate::discovery_health`]), never
+/// by the register request.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Ownership {
+    /// The origin's `/.well-known/x402` has an entry for this URL declaring the
+    /// listing's recipients and description, and the category, provider and
+    /// tags the listing names.
+    OriginAttested,
+    /// No such file, no entry for this URL, or an entry that declares something
+    /// else.
+    Unattested,
+    /// The file could not be read (network error, 429, 5xx), and no earlier
+    /// read decided it.
+    Unknown,
+}
+
 /// Response-facing health snapshot for a resource. Set on list responses from
 /// the health overlay; never persisted onto the resource in S3.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1215,6 +1241,12 @@ pub struct HealthState {
     /// How `verifiedAt` was earned; present exactly when it is.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub verified_by: Option<VerifiedBy>,
+    /// Whether the listing's own origin vouches for it ([`Ownership`]). Only a
+    /// listing from an open route (self-registered, or a discoverable
+    /// settlement) is asked, once it has verified alive; absent on every other
+    /// listing and on one not checked yet.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ownership: Option<Ownership>,
 }
 
 /// Curated tier of a resource (WS-C). Orders the listing:

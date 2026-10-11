@@ -273,7 +273,7 @@ mod integration {
             .unwrap()
             .parse()
             .unwrap();
-        assert!(at >= crate::receipts::now() + 30 * 24 * 60 * 60, "{at}");
+        assert!(at >= crate::receipts::now() + RETENTION_FLOOR_SECS, "{at}");
     }
 
     /// DynamoDB sweeps expired rows in no particular order. An alias whose
@@ -433,7 +433,7 @@ mod requests {
     /// well after the authorization itself is dead.
     #[test]
     fn every_row_written_outlives_its_authorization() {
-        const FLOOR: u64 = 30 * 24 * 60 * 60;
+        const FLOOR: u64 = RETENTION_FLOOR_SECS;
         assert!(RECEIPT_RETENTION_SECS >= FLOOR, "retention under 30 days");
         let store = offline();
         let aliases = [
@@ -451,22 +451,36 @@ mod requests {
             let readmit = store
                 .readmit_request(&record, 1, &aliases, "second")
                 .unwrap();
-            let mut rows: Vec<HashMap<String, A>> = [reserve, readmit]
-                .iter()
-                .flat_map(|tx| tx.get_transact_items().clone().unwrap_or_default())
-                .map(|item| item.put().expect("admissions only put").item().clone())
-                .collect();
-            rows.push(DynamoStore::item(&record).unwrap());
-            let after = crate::receipts::now();
-            assert_eq!(rows.len(), 2 * (1 + aliases.len()) + 1);
-            for row in rows {
-                let at: u64 = row
-                    .get(TTL_ATTRIBUTE)
+            let expiry = |row: &HashMap<String, A>| -> u64 {
+                row.get(TTL_ATTRIBUTE)
                     .unwrap_or_else(|| panic!("a row without {TTL_ATTRIBUTE}: {row:?}"))
                     .as_n()
                     .unwrap()
                     .parse()
-                    .unwrap();
+                    .unwrap()
+            };
+            let mut rows: Vec<HashMap<String, A>> = Vec::new();
+            for tx in [reserve, readmit] {
+                let written: Vec<HashMap<String, A>> = tx
+                    .get_transact_items()
+                    .clone()
+                    .unwrap_or_default()
+                    .iter()
+                    .map(|item| item.put().expect("admissions only put").item().clone())
+                    .collect();
+                // One write, one expiry: its record never expires before its aliases.
+                let first = expiry(&written[0]);
+                assert!(
+                    written.iter().all(|row| expiry(row) == first),
+                    "{written:?}"
+                );
+                rows.extend(written);
+            }
+            rows.push(DynamoStore::item(&record, crate::receipts::now()).unwrap());
+            let after = crate::receipts::now();
+            assert_eq!(rows.len(), 2 * (1 + aliases.len()) + 1);
+            for row in rows {
+                let at = expiry(&row);
                 let from = record.authorization_expires_at.max(before);
                 assert!(at >= from + FLOOR, "{at} expires under the floor");
                 assert!(
@@ -483,7 +497,7 @@ mod requests {
     /// and the message the receipt store alarm counts.
     #[test]
     fn the_terraform_reads_the_attribute_and_the_message_written_here() {
-        fn block<'a>(file: &'a str, header: &str) -> String {
+        fn block(file: &str, header: &str) -> String {
             let start = file.find(header).unwrap_or_else(|| panic!("{header}"));
             let rest = &file[start + header.len()..];
             let end = rest.find("\nresource ").unwrap_or(rest.len());
@@ -511,7 +525,125 @@ mod requests {
             "the receipt store alarm must count {STORE_FAILURE}"
         );
     }
+
+    /// The guide states the retention this code keeps, in the words a reader
+    /// of either finds: the days after `validBefore`, and the floor.
+    #[test]
+    fn the_guide_states_the_retention_the_code_keeps() {
+        let guide = include_str!("../../docs/facilitator-receipts.md");
+        let flat: String = guide.split_whitespace().collect::<Vec<_>>().join(" ");
+        let days = RECEIPT_RETENTION_SECS / 86_400;
+        let floor = RETENTION_FLOOR_SECS / 86_400;
+        for said in [
+            format!("{days} days after the later of the authorization's `validBefore`"),
+            format!("a test keeps it at {floor} days or more"),
+        ] {
+            assert!(
+                flat.contains(&said),
+                "docs/facilitator-receipts.md must say: {said}"
+            );
+        }
+    }
+
+    /// An alias reads as expired only once its own expiry has passed: never
+    /// without a readable expiry (a row written before rows expired), and
+    /// never ahead of time.
+    #[test]
+    fn an_alias_is_expired_only_once_its_expiry_has_passed() {
+        let alias = |expiry: Option<A>| {
+            let mut row = HashMap::from([
+                (
+                    "idempotency_key".to_owned(),
+                    A::S("receipt:auth:v1:x".into()),
+                ),
+                ("receipt_ref".to_owned(), A::S("id".into())),
+            ]);
+            if let Some(expiry) = expiry {
+                row.insert(TTL_ATTRIBUTE.to_owned(), expiry);
+            }
+            row
+        };
+        let now = 1_900_000_000;
+        assert!(expired_alias(
+            &alias(Some(A::N((now - 1).to_string()))),
+            now
+        ));
+        assert!(expired_alias(&alias(Some(A::N(now.to_string()))), now));
+        assert!(!expired_alias(
+            &alias(Some(A::N((now + 1).to_string()))),
+            now
+        ));
+        assert!(!expired_alias(&alias(None), now));
+        assert!(!expired_alias(&alias(Some(A::N("soon".into()))), now));
+        assert!(!expired_alias(
+            &alias(Some(A::S((now - 1).to_string()))),
+            now
+        ));
+    }
+
+    #[derive(Clone, Default)]
+    struct Captured(Arc<std::sync::Mutex<Vec<u8>>>);
+
+    impl std::io::Write for Captured {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(buf);
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// A store that answers nothing: every request the rail makes fails, and
+    /// each failure writes the line the receipt store alarm counts, naming its
+    /// operation. A closed local port, no retries: nothing leaves the machine.
+    #[tokio::test]
+    async fn every_failed_store_request_writes_the_line_the_alarm_counts() {
+        let captured = Captured::default();
+        let writer = captured.clone();
+        let subscriber = tracing_subscriber::fmt()
+            .with_writer(move || writer.clone())
+            .with_ansi(false)
+            .with_max_level(tracing::Level::TRACE)
+            .finish();
+        let _guard = tracing::subscriber::set_default(subscriber);
+        // As in rate_policy's capture: a second dispatcher keeps another test
+        // thread from caching `never` for these callsites.
+        let _second = tracing::Dispatch::new(tracing::subscriber::NoSubscriber::default());
+        tracing::callsite::rebuild_interest_cache();
+
+        let config = aws_sdk_dynamodb::config::Builder::new()
+            .behavior_version_latest()
+            .region(Region::new("us-east-1"))
+            .credentials_provider(Credentials::new("offline", "offline", None, None, "test"))
+            .endpoint_url("http://127.0.0.1:9")
+            .retry_config(aws_sdk_dynamodb::config::retry::RetryConfig::disabled())
+            .build();
+        let store = DynamoStore {
+            client: aws_sdk_dynamodb::Client::from_conf(config),
+            table: "unreachable".into(),
+        };
+        let record = crate::receipts::tests::fixture_record();
+        let aliases = ["receipt:auth:v1:unreachable".to_owned()];
+        assert!(store.get(&aliases[0]).await.is_err());
+        assert!(store.reserve(&record, &aliases, "first").await.is_err());
+        assert!(store.save(&record, 1).await.is_err());
+        assert!(store.readmit(&record, 1, &aliases, "second").await.is_err());
+
+        let log = String::from_utf8(captured.0.lock().unwrap().clone()).unwrap();
+        let lines: Vec<&str> = log.lines().filter(|l| l.contains(STORE_FAILURE)).collect();
+        for op in ["get", "reserve", "save", "readmit"] {
+            assert!(
+                lines.iter().any(|l| l.contains(&format!("op=\"{op}\""))),
+                "no {STORE_FAILURE} line for {op}:\n{log}"
+            );
+        }
+    }
 }
+
+/// The least retention the rows may keep: thirty days past `validBefore`.
+#[cfg(test)]
+const RETENTION_FLOOR_SECS: u64 = 30 * 24 * 60 * 60;
 
 impl DynamoStore {
     pub async fn from_env() -> Option<Arc<dyn Store>> {
@@ -525,7 +657,9 @@ impl DynamoStore {
         }))
     }
 
-    fn item(record: &Record) -> Result<HashMap<String, A>> {
+    /// The record row of a write at `now`. One `now` per write, shared with
+    /// its aliases, so the record never expires before an alias it writes.
+    fn item(record: &Record, now: u64) -> Result<HashMap<String, A>> {
         let data = serde_json::to_string(record).map_err(|_| "receipt_encoding_failed")?;
         if data.len() > 300_000 {
             return Err("receipt_record_too_large".into());
@@ -539,7 +673,7 @@ impl DynamoStore {
             ("data".into(), A::S(data)),
             (
                 TTL_ATTRIBUTE.into(),
-                A::N(expires_at(record, super::now()).to_string()),
+                A::N(expires_at(record, now).to_string()),
             ),
         ]))
     }
@@ -566,7 +700,7 @@ impl DynamoStore {
         })
     }
 
-    fn alias_put(&self, key: &str, record: &Record) -> Result<TransactWriteItem> {
+    fn alias_put(&self, key: &str, record: &Record, now: u64) -> Result<TransactWriteItem> {
         let put = Put::builder()
             .table_name(&self.table)
             .set_item(Some(HashMap::from([
@@ -577,7 +711,7 @@ impl DynamoStore {
                 ),
                 (
                     TTL_ATTRIBUTE.into(),
-                    A::N(expires_at(record, super::now()).to_string()),
+                    A::N(expires_at(record, now).to_string()),
                 ),
             ])))
             .condition_expression("attribute_not_exists(idempotency_key)")
@@ -592,9 +726,10 @@ impl DynamoStore {
         aliases: &[String],
         token: &str,
     ) -> Result<TransactWriteItemsFluentBuilder> {
+        let now = super::now();
         let row = Put::builder()
             .table_name(&self.table)
-            .set_item(Some(Self::item(record)?))
+            .set_item(Some(Self::item(record, now)?))
             .condition_expression("attribute_not_exists(idempotency_key)")
             .build()
             .map_err(|_| "receipt_store_invalid_write")?;
@@ -604,7 +739,7 @@ impl DynamoStore {
             .client_request_token(token)
             .transact_items(TransactWriteItem::builder().put(row).build());
         for key in aliases {
-            tx = tx.transact_items(self.alias_put(key, record)?);
+            tx = tx.transact_items(self.alias_put(key, record, now)?);
         }
         Ok(tx)
     }
@@ -616,9 +751,10 @@ impl DynamoStore {
         aliases: &[String],
         token: &str,
     ) -> Result<TransactWriteItemsFluentBuilder> {
+        let now = super::now();
         let row = Put::builder()
             .table_name(&self.table)
-            .set_item(Some(Self::item(record)?))
+            .set_item(Some(Self::item(record, now)?))
             .condition_expression("revision = :previous")
             .expression_attribute_values(":previous", A::N(previous_revision.to_string()))
             .build()
@@ -629,10 +765,22 @@ impl DynamoStore {
             .client_request_token(token)
             .transact_items(TransactWriteItem::builder().put(row).build());
         for key in aliases {
-            tx = tx.transact_items(self.alias_put(key, record)?);
+            tx = tx.transact_items(self.alias_put(key, record, now)?);
         }
         Ok(tx)
     }
+}
+
+/// Whether an alias row has expired by `now`. The record row is rewritten at
+/// every revision with a later expiry than any alias it wrote, and DynamoDB
+/// sweeps expired rows in no particular order: an expired alias whose record
+/// is gone is an expired admission. An alias without a readable expiry (one
+/// written before rows expired) is never taken for one.
+fn expired_alias(item: &HashMap<String, A>, now: u64) -> bool {
+    item.get(TTL_ATTRIBUTE)
+        .and_then(|v| v.as_n().ok())
+        .and_then(|n| n.parse::<u64>().ok())
+        .is_some_and(|at| at <= now)
 }
 
 #[async_trait]
@@ -642,28 +790,25 @@ impl Store for DynamoStore {
             return Ok(None);
         };
         if let Some(id) = item.get("receipt_ref").and_then(|v| v.as_s().ok()) {
-            let expired = item
-                .get(TTL_ATTRIBUTE)
-                .and_then(|v| v.as_n().ok())
-                .and_then(|n| n.parse::<u64>().ok())
-                .is_some_and(|at| at <= super::now());
+            let expired = expired_alias(&item, super::now());
             item = match self.read_item(&format!("receipt:v1:{id}")).await? {
                 Some(record) => record,
-                // The record row is rewritten at every revision, so it never
-                // expires before its aliases; DynamoDB sweeps expired rows in
-                // no particular order. An expired alias whose record is gone
-                // is an expired admission, not a corrupt one.
                 None if expired => return Ok(None),
-                None => return Err("receipt_store_corrupt".into()),
+                None => {
+                    failed("get", "corrupt");
+                    return Err("receipt_store_corrupt".into());
+                }
             };
         }
-        let data = item
+        let record = item
             .get("data")
             .and_then(|v| v.as_s().ok())
-            .ok_or("receipt_store_corrupt")?;
-        serde_json::from_str(data)
-            .map(Some)
-            .map_err(|_| "receipt_store_corrupt".into())
+            .and_then(|data| serde_json::from_str::<Record>(data).ok());
+        if record.is_none() {
+            failed("get", "corrupt");
+            return Err("receipt_store_corrupt".into());
+        }
+        Ok(record)
     }
 
     async fn reserve(&self, record: &Record, aliases: &[String], token: &str) -> Result<bool> {
@@ -687,6 +832,8 @@ impl Store for DynamoStore {
                         return Ok(false);
                     }
                 }
+                // Nothing reserved and nothing to read: no verdict.
+                failed("reserve", "unresolved");
                 Err("receipt_store_unavailable".into())
             }
         }
@@ -697,7 +844,7 @@ impl Store for DynamoStore {
             .client
             .put_item()
             .table_name(&self.table)
-            .set_item(Some(Self::item(record)?))
+            .set_item(Some(Self::item(record, super::now())?))
             .condition_expression("revision = :previous")
             .expression_attribute_values(":previous", A::N(previous_revision.to_string()));
         match tokio::time::timeout(Duration::from_secs(5), write.send()).await {

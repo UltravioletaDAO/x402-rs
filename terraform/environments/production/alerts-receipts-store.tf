@@ -10,15 +10,17 @@
 #
 # Three views, because each misses something the others see:
 #   - receipt_store_failures: the facilitator's own count of store requests that did not
-#     answer as the store -- an error other than a lost condition, or no answer within the
-#     5 s the rail waits (src/receipts/store.rs, STORE_FAILURE). Timeouts and denied calls
-#     reach no DynamoDB metric; this is the closest thing to "payers are getting 503".
+#     answer as the store, after the SDK's own retries -- an error other than a lost
+#     condition or contention, no answer within the 5 s the rail waits, an unreadable row
+#     (src/receipts/store.rs, STORE_FAILURE). Timeouts and denied calls reach no DynamoDB
+#     metric; on /settle each of these is a 503, on /verify a fallback to simulation.
 #   - receipt_store_dynamodb_errors: DynamoDB's side, SystemErrors and ThrottledRequests on
-#     the table for the operations the rail uses.
+#     the table for the operations the rail uses. The SDK retries these, so one is not yet
+#     a failed payment: two five-minute periods running.
 #   - receipt_store_latency: p99 of the requests that succeed, before they turn into timeouts.
 #
-# The table is shared with the Idempotency-Key cache, which uses the same three operations:
-# a failure of either is a failure of the same store.
+# The table is shared with the Idempotency-Key cache (GetItem and PutItem): a failure of
+# either is a failure of the same store.
 
 locals {
   # GetItem reads every admission, PutItem writes its revisions, TransactWriteItems reserves
@@ -44,8 +46,8 @@ resource "aws_cloudwatch_log_metric_filter" "receipt_store_failure" {
   }
 }
 
-# One failure is a payer answered 503. Each one is safe to resend, and none should happen:
-# `evaluation_periods = 1`, as for the DX402 store.
+# One failure is a request the SDK could not save: on /settle a payer answered 503 (safe to
+# resend). None should happen: `evaluation_periods = 1`, as for the DX402 store.
 resource "aws_cloudwatch_metric_alarm" "receipt_store_failures" {
   alarm_name  = "facilitator-${var.environment}-receipt-store-failures"
   namespace   = "Facilitator/Receipts"
@@ -62,7 +64,7 @@ resource "aws_cloudwatch_metric_alarm" "receipt_store_failures" {
 
   alarm_description = join(" ", [
     "The facilitator could not read or write the receipt store (DynamoDB idempotency_records).",
-    "While it lasts, exact settles on every network the receipt rail covers answer",
+    "While it lasts, exact settles on the networks the receipt rail covers answer",
     "503 receipt_store_unavailable and send nothing (safe to resend). Check the",
     "receipt-store-dynamodb-errors alarm, the task role's DynamoDB access and the",
     "receipt_store_failure lines (op, kind) in /ecs/facilitator-production.",
@@ -80,13 +82,15 @@ resource "aws_cloudwatch_metric_alarm" "receipt_store_failures" {
 resource "aws_cloudwatch_metric_alarm" "receipt_store_dynamodb_errors" {
   alarm_name          = "facilitator-${var.environment}-receipt-store-dynamodb-errors"
   comparison_operator = "GreaterThanOrEqualToThreshold"
-  evaluation_periods  = 1
+  evaluation_periods  = 2
+  datapoints_to_alarm = 2
   threshold           = 1
   treat_missing_data  = "notBreaching"
 
+  # FILL: a period where one series has no datapoint still sums the others.
   metric_query {
     id          = "errors"
-    expression  = "SUM(METRICS())"
+    expression  = "SUM(FILL(METRICS(), 0))"
     label       = "SystemErrors + ThrottledRequests on the receipt store"
     return_data = true
   }
@@ -111,9 +115,9 @@ resource "aws_cloudwatch_metric_alarm" "receipt_store_dynamodb_errors" {
   }
 
   alarm_description = join(" ", [
-    "DynamoDB answered the receipt store (idempotency_records) with server errors or",
-    "throttling. Each such request is a 503 receipt_store_unavailable on an exact settle",
-    "of the receipt rail, or a lost Idempotency-Key cache hit.",
+    "DynamoDB has answered the receipt store (idempotency_records) with server errors or",
+    "throttling for ten minutes. The SDK retries them; those it cannot save show up in the",
+    "receipt-store-failures alarm as 503 receipt_store_unavailable on exact settles.",
   ])
 
   alarm_actions = [aws_sns_topic.alerts.arn]

@@ -67,6 +67,14 @@ context per order in merchant/buyer storage; this API cannot deduplicate two
 independently created purchases. Merchant fulfillment requires its own durable
 order handling; the facilitator prevents duplicate admission of payment.
 
+**For how long.** The facilitator keeps a purchase's binding and its receipt
+until the rows expire: 90 days after the authorization's `validBefore` (see
+"Expiry"). A resume or a lookup after that finds no receipt; the authorization
+itself is long dead and is refused by verification. A new signature for the
+same capability or Idempotency-Key is, from then on, a new payment. Finish or
+abandon a purchase within that window, and keep fulfillment records of your
+own beyond it.
+
 `GET /receipts/{receiptId}` with `Authorization: Bearer <accessToken>` returns the
 latest receipt and performs read-only chain reconciliation. Missing or incorrect
 capabilities get 404. Receipt IDs and tokens never appear in a public listing.
@@ -147,7 +155,7 @@ signed payment alone is not a purchase binding:
 
 | Resend | `/settle` | `/verify` |
 | --- | --- | --- |
-| Same capability or same Idempotency-Key | Original answer replayed | Stored verdict and receipt |
+| Same capability or same Idempotency-Key (until the rows expire, 90 days after `validBefore`) | Original answer replayed | Stored verdict and receipt |
 | No binding, payment `confirmed` | `409 authorization_already_settled` with the receipt | `isValid: false`, `invalidReason: authorization_already_settled` |
 | No binding, payment `pending` or `unknown` | `409 authorization_in_flight` with the receipt; a resend without the binding learns the final outcome by resending later | `isValid: false`, `invalidReason: authorization_in_flight` |
 | No binding, payment `rejected` | Original rejection replayed | Stored rejection |
@@ -178,7 +186,11 @@ more. Native Hedera keeps no `validBefore` here (its transactions are valid for
 180 s at most) and expires 90 days after the write. The record row is rewritten
 at every revision, so it never expires before its aliases; an expired alias
 whose record DynamoDB already swept reads as no admission. Rows written before
-2.51.0 carry no `expires_at` and stay until removed by hand. Existing legacy
+2.51.0 carry no `expires_at` and stay until removed by hand. An admission from
+before 2.51.0 that is revised afterwards (a resend that reconciles it, the
+operator command) gets an expiry on its record only: 90 days later its old
+aliases point at nothing and answer `503 receipt_store_unavailable`, failing
+closed, until removed by hand. Existing legacy
 cache hits are replayed before checking a consumed nonce, preserving their
 original success/conflict semantics. They are not fabricated into portable
 receipts, and their previous retention policy remains.
@@ -368,8 +380,8 @@ What a Base `exact` caller observes compared with 2.39:
 | Same authorization after it settled, with the Idempotency-Key or `X-UVD-Purchase` that admitted it | With the key, the cached 200 with `Idempotent-Replayed: true` for 24 hours; after that it runs again and fails on the consumed nonce | Original 200 replayed with `Idempotent-Replayed: true`; receipt rows did not expire until 2.51.0, and since then expire 90 days after the authorization's `validBefore` |
 | Same authorization after it settled, without that binding | Runs again; fails on the consumed nonce | `409 authorization_already_settled`, with the receipt when the payment carried no `X-UVD-Purchase`; a payment admitted with `X-UVD-Purchase` answers `409 receipt_request_conflict` without it. Verify `isValid: false`, `authorization_already_settled` |
 | Same authorization while its settlement runs | Second attempt runs | `202 settlement_in_progress` to the admitting binding. Without it, `409 authorization_in_flight`, with the receipt when the payment carried no `X-UVD-Purchase`; a payment admitted with `X-UVD-Purchase` answers `409 receipt_request_conflict` without it |
-| New signature, same `Idempotency-Key` | Runs, unless an earlier attempt succeeded in the last 24 hours (then `409 idempotency_key_conflict`) | `409 receipt_request_conflict` once the first one was admitted |
-| New signature, same `X-UVD-Purchase` | `400 receipt_request_not_supported` | `409 receipt_request_conflict` once the first one was admitted |
+| New signature, same `Idempotency-Key` | Runs, unless an earlier attempt succeeded in the last 24 hours (then `409 idempotency_key_conflict`) | `409 receipt_request_conflict` once the first one was admitted, until its rows expire (since 2.51.0) |
+| New signature, same `X-UVD-Purchase` | `400 receipt_request_not_supported` | `409 receipt_request_conflict` once the first one was admitted, until its rows expire (since 2.51.0) |
 | New signature without key or purchase context | New payment | New payment (unchanged) |
 | Settlement ends before anything is sent (writer lease moved, a read or gas estimate failed, signing or storing the bytes failed) | That failure's own answer | `503` with `Retry-After` and `safeToRetry: true`; receipt `rejected` with `refusalReason: reservation_abandoned`; the same request is admitted again under the same receipt |
 | The node refuses the transaction on nonce grounds | Up to two more attempts, each with a new nonce and a new signed transaction | No second transaction. A failure after the send: `502 upstream_nonce_or_mempool` with `retryable: false`, the stored `transaction` and its `paymentId`, no `Retry-After`, and the receipt `unknown`; the purchase's resends get the same answer and reconcile or rebroadcast it (see below) |

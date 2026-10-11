@@ -21,6 +21,14 @@ mock_provider "aws" {
       arn = "arn:aws:sns:us-east-2::facilitator-alerts-mock"
     }
   }
+  # The imported alarms (alerts-imported.tf) build Execution Market's topic ARN from the
+  # account id, and the teardown validates it once the facilitator's topic is in state.
+  # A placeholder of the right shape, not an account.
+  mock_data "aws_caller_identity" {
+    defaults = {
+      account_id = "000000000000"
+    }
+  }
 }
 mock_provider "archive" {}
 
@@ -62,7 +70,7 @@ run "the_receipt_store_expires_rows_and_is_watched" {
         aws_cloudwatch_metric_alarm.receipt_store_dynamodb_errors,
         aws_cloudwatch_metric_alarm.receipt_store_latency,
       ] :
-      tolist(alarm.alarm_actions) == [aws_sns_topic.alerts.arn] && tolist(alarm.ok_actions) == [aws_sns_topic.alerts.arn]
+      toset(alarm.alarm_actions) == toset([aws_sns_topic.alerts.arn]) && toset(alarm.ok_actions) == toset([aws_sns_topic.alerts.arn])
     ])
     error_message = "Every receipt store alarm must notify aws_sns_topic.alerts on alarm and on recovery."
   }
@@ -90,33 +98,44 @@ run "the_receipt_store_expires_rows_and_is_watched" {
   }
 
   # DynamoDB's side: SystemErrors and ThrottledRequests, for each operation the rail uses,
-  # on this table, summed.
+  # on this table, summed. (HCL's && does not short-circuit: the expression query, which
+  # has no metric, is skipped by iterating its empty `metric` instead of indexing it.)
   assert {
-    condition = toset([
-      for q in aws_cloudwatch_metric_alarm.receipt_store_dynamodb_errors.metric_query :
-      "${q.metric[0].metric_name}/${q.metric[0].dimensions["Operation"]}" if length(q.metric) > 0 && q.metric[0].dimensions["TableName"] == aws_dynamodb_table.idempotency_store.name
-      ]) == toset([
+    condition = toset(flatten([
+      for q in aws_cloudwatch_metric_alarm.receipt_store_dynamodb_errors.metric_query : [
+        for m in q.metric :
+        "${m.metric_name}/${m.dimensions["Operation"]}" if m.dimensions["TableName"] == aws_dynamodb_table.idempotency_store.name
+      ]
+      ])) == toset([
       "SystemErrors/GetItem", "SystemErrors/PutItem", "SystemErrors/TransactWriteItems",
       "ThrottledRequests/GetItem", "ThrottledRequests/PutItem", "ThrottledRequests/TransactWriteItems",
     ])
     error_message = "The DynamoDB errors alarm must read SystemErrors and ThrottledRequests of GetItem, PutItem and TransactWriteItems on idempotency_records."
   }
 
+  # The SDK retries these: two five-minute periods running, each with at least one.
   assert {
-    condition = length([
-      for q in aws_cloudwatch_metric_alarm.receipt_store_dynamodb_errors.metric_query : q
-      if q.expression == "SUM(METRICS())" && q.return_data == true
-    ]) == 1 && aws_cloudwatch_metric_alarm.receipt_store_dynamodb_errors.threshold == 1
-    error_message = "The DynamoDB errors alarm must fire on the sum of those metrics reaching one."
+    condition = (
+      length([
+        for q in aws_cloudwatch_metric_alarm.receipt_store_dynamodb_errors.metric_query : q
+        if q.expression == "SUM(FILL(METRICS(), 0))" && q.return_data == true
+      ]) == 1 &&
+      aws_cloudwatch_metric_alarm.receipt_store_dynamodb_errors.threshold == 1 &&
+      aws_cloudwatch_metric_alarm.receipt_store_dynamodb_errors.evaluation_periods == 2 &&
+      aws_cloudwatch_metric_alarm.receipt_store_dynamodb_errors.datapoints_to_alarm == 2
+    )
+    error_message = "The DynamoDB errors alarm must fire when the summed metrics reach one in two periods running."
   }
 
   # Latency: p99 of each of the three operations, the slowest one, over a second for three
   # periods running.
   assert {
-    condition = toset([
-      for q in aws_cloudwatch_metric_alarm.receipt_store_latency.metric_query :
-      "${q.metric[0].metric_name}/${q.metric[0].stat}/${q.metric[0].dimensions["Operation"]}" if length(q.metric) > 0 && q.metric[0].dimensions["TableName"] == aws_dynamodb_table.idempotency_store.name
-      ]) == toset([
+    condition = toset(flatten([
+      for q in aws_cloudwatch_metric_alarm.receipt_store_latency.metric_query : [
+        for m in q.metric :
+        "${m.metric_name}/${m.stat}/${m.dimensions["Operation"]}" if m.dimensions["TableName"] == aws_dynamodb_table.idempotency_store.name
+      ]
+      ])) == toset([
       "SuccessfulRequestLatency/p99/GetItem",
       "SuccessfulRequestLatency/p99/PutItem",
       "SuccessfulRequestLatency/p99/TransactWriteItems",

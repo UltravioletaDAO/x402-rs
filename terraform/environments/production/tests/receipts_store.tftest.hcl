@@ -15,6 +15,12 @@ mock_provider "aws" {
       arn = "arn:aws:acm:us-east-2::certificate/mock"
     }
   }
+  # Alarm actions are validated as ARNs.
+  mock_resource "aws_sns_topic" {
+    defaults = {
+      arn = "arn:aws:sns:us-east-2::facilitator-alerts-mock"
+    }
+  }
 }
 mock_provider "archive" {}
 

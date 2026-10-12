@@ -46,7 +46,36 @@
   new `receipt_store_failure` log line with `op` and `kind`, metric
   `Facilitator/Receipts` `ReceiptStoreFailures`) as a metric to read, not a
   page: request text reaches the logs, so a log-based page could be forged.
-  `terraform test` pins the alarms and the table's TTL.
+  `terraform test` pins the alarms and the table's TTL. A request DynamoDB
+  refuses for access, or one that never reaches it, shows only at the load
+  balancer's 5xx alarm.
+- **One Idempotency-Key per payer on the rail.** A new signature from the same
+  payer under a key already admitted is refused with
+  `409 receipt_request_conflict` on any network, token or `payTo`, until the
+  rows expire. A payment settled under a key is also filed in the 24-hour
+  Idempotency-Key cache, as `/settle` files what it settles off the rail: for
+  a day another body under the key is `409 idempotency_key_conflict` from any
+  payer, and a release before 2.51.0 reads the same row.
+- **An admitted authorization stays on the rail.** A later request for it whose
+  terms cannot be normalized (free-form `extra` or `outputSchema` carrying a
+  float) is answered as that admission: `409 receipt_request_conflict` on
+  `/settle`, `isValid: false` on `/verify`, nothing sent or simulated. Without
+  an admission such a request runs as before, without a receipt.
+- **`/verify` fails closed on the receipt store**, as `/settle` does:
+  `503 receipt_store_unavailable` with `Retry-After`, never a simulated verdict.
+- **Reconciliation refuses an EVM admission only once its authorization can no
+  longer move funds**: the saved transaction reverted, `validBefore` has
+  passed, and the token reports the authorization unused
+  (`authorizationState`). Until then, or while the token cannot be read, the
+  receipt keeps its state. Records keep the authorization's signer and nonce
+  for this; records written before keep their state.
+- **An unconfirmed store write cannot strand an admission.** Closing a
+  reservation or re-admission whose write was not confirmed now writes the
+  record when it is not there yet, so a write that lands later writes nothing.
+  When the store refuses both the prepared transaction and the release, the
+  answer is `503 receipt_store_unavailable` with `safeToRetry`, not the
+  provider's `400`. An expired alias that DynamoDB has not swept no longer
+  blocks a new admission.
 - `networks` in the receipt capability is derived from the network list; it
   keeps every entry it had, in a different order.
 - `/verify` and `/settle` in OpenAPI, the MCP `x402_settle` tool, `index.md`,

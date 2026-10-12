@@ -99,7 +99,12 @@ Canonical JSON sorts ASCII object keys, uses compact JSON strings without ASCII
 escaping, preserves array order, and accepts only null, booleans, strings, and
 integers from zero through the JavaScript safe-integer maximum. Floats and
 non-ASCII keys are rejected. This is a constrained canonical profile, not a claim
-to implement arbitrary JCS. `paymentRequestHash` uses domain
+to implement arbitrary JCS. A request the rail admits whose terms cannot be
+written this way (free-form `extra` or `outputSchema` may carry a float) gets no
+receipt and runs as before, unless its authorization was already admitted under
+another request: then `/settle` answers `409 receipt_request_conflict` and
+`/verify` `isValid: false` with that admission's reason, and nothing is sent or
+simulated (since 2.51.0). `paymentRequestHash` uses domain
 `uvd-x402-payment-v1` and the complete normalized internal verify request.
 `authorizationId` binds network, asset, payer and EIP-3009 nonce, or Hedera network
 and native transaction ID. It does not expose reusable signed bytes.
@@ -138,7 +143,8 @@ because the helper does not cover unrelated infrastructure changes.
 
 Receipt rows and aliases use a new `receipt:*` namespace in the existing
 idempotency table. A DynamoDB transaction conditionally reserves the record,
-authorization, purchase capability and optional scoped Idempotency-Key together.
+authorization, purchase capability and optional Idempotency-Key together (see
+"Idempotency-Key scope").
 Caller-supplied Idempotency-Key values beginning with `receipt:` are rejected
 across all networks, preventing legacy cache writes from replacing receipt rows.
 Signature verification happens before admission. Revision updates use CAS.
@@ -167,10 +173,22 @@ These 409s never carry `success: true`, a top-level `transaction` or
 `Idempotent-Replayed`; the receipt inside proves the payment to whoever holds
 the payment itself. A receipt made under a purchase context is never returned
 without that context. `/verify` answers from the stored receipt and does not
-simulate the consumed authorization again. If receipt storage fails while the
-binding is being resolved, both answer `503 receipt_store_unavailable`, never a
-verdict. Recovery by reconciliation and rebroadcast of saved bytes is unchanged
-for every resend.
+simulate the consumed authorization again. If receipt storage fails, while the
+authorization or the binding is being read, both answer
+`503 receipt_store_unavailable` with `Retry-After`, never a verdict (`/verify`
+since 2.51.0; before, it fell back to simulation when the authorization could
+not be read). Recovery by reconciliation and rebroadcast of saved bytes is
+unchanged for every resend.
+
+**Idempotency-Key scope (since 2.51.0).** A key binds the request that admitted
+a payment (the replays above) and refuses any other: a new signature from the
+same payer under a key it already used is `409 receipt_request_conflict` and
+nothing is sent, on any network, token or `payTo` of the rail, until the rows
+expire. A payment settled under a key is also filed in the 24-hour
+Idempotency-Key cache that `/settle` keeps for every network, as that path files
+what it settles: for a day any other body under the key, from any payer and on
+any network, is `409 idempotency_key_conflict`. The key is compared trimmed, as
+that cache compares it. Use a fresh key per purchase, as the SDKs do.
 Requests that `/settle` routes to their own settlement paths never enter
 admission, even when their inner requirements say `exact`: the `upto`,
 `escrow`/`commerce` and `fhe-transfer` schemes and the x402r `refund` extension.
@@ -190,9 +208,10 @@ whose record DynamoDB already swept reads as no admission. Rows written before
 2.51.0 carry no `expires_at` and stay until removed by hand. An admission from
 before 2.51.0 that is revised afterwards (a resend that reconciles it, the
 operator command) gets an expiry on its record only: 90 days later its old
-aliases point at nothing, and a `/settle` that reaches them answers
-`503 receipt_store_unavailable`, failing closed, until they are removed by hand
-(`/verify` falls back to simulation). Existing legacy
+aliases point at nothing, and a `/settle` or `/verify` that reaches them
+answers `503 receipt_store_unavailable`, failing closed, until they are removed
+by hand. An expired alias that DynamoDB has not swept yet does not block a new
+admission: the reservation overwrites it. Existing legacy
 cache hits are replayed before checking a consumed nonce, preserving their
 original success/conflict semantics. They are not fabricated into portable
 receipts, and their previous retention policy remains.
@@ -202,7 +221,16 @@ broadcast. A POST retry can rebroadcast only those bytes under the writer lease,
 while the authorization is valid; it never signs a replacement or changes the
 nonce. An admission prepares one transaction: if the node refuses it on nonce
 grounds, no second transaction is signed for that admission, the receipt stays
-`unknown`, and later retries reconcile or rebroadcast the saved one. Hedera links the
+`unknown`, and later retries reconcile or rebroadcast the saved one. Reconciliation
+refuses an EVM admission (`rejected`, `settlement_failed_on_chain`) only once its
+authorization can no longer move the payer's funds: the saved transaction
+reverted, `validBefore` has passed by a minute, and the token reports the
+authorization unused (`authorizationState`). A revert alone is no refusal:
+another transaction may have executed the same authorization first, and a mined
+transaction publishes the signed authorization, which can be executed until
+`validBefore`. Until then, or while the token cannot be read, the receipt stays
+as it was (since 2.51.0). Records written before 2.51.0 do not keep the
+authorization's nonce and are never refused this way. Hedera links the
 native ID before its existing store can persist co-signed bytes and recover them.
 Terminal receipt updates remove private EVM signed bytes. Native byte retention
 continues under the existing Hedera store policy.
@@ -240,11 +268,19 @@ flight. Never sign a replacement for a released admission.
 
 Failures before admission say the same: `receipt_store_unavailable`,
 `receipt_signing_unavailable` and `receipt_reservation_uncertain` are `503` with
-`Retry-After`, `retryable: true` and `safeToRetry: true`. A reservation whose
-store write could not be confirmed is never run; if it landed anyway it is
-released as above. Admission and re-admission writes carry a fresh idempotency
-token each, so a write the store client resends after losing its answer gets
-its original success back.
+`Retry-After`, `retryable: true` and `safeToRetry: true`. A reservation or
+re-admission whose store write could not be confirmed is never run, and it is
+closed as above whether it landed or not: the close writes the record if there
+is none yet (since 2.51.0), so a write that lands after it finds the record
+taken and writes nothing. Admission and re-admission writes carry a fresh
+idempotency token each, so a write the store client resends after losing its
+answer gets its original success back. When the store that refused the bytes
+also refuses the release, nothing was sent and the answer is the same `503
+receipt_store_unavailable` with `safeToRetry: true` (since 2.51.0; before, the
+provider's own `400`), with `receiptWarning: receipt_persistence_unavailable`
+and the receipt as stored, `unknown`. Resends of it are answered as an
+admission in flight until the operator command below releases it; after a
+store outage, run its read-only pass.
 
 ### Failures after the send
 
@@ -343,7 +379,10 @@ facilitator's SNS topic watch the store (`alerts-receipts-store.tf`), both on
 DynamoDB's own metrics: `SystemErrors` and `ThrottledRequests` on the table
 in two five-minute periods running, and a p99 latency above one second for
 fifteen minutes. The 503s themselves reach the load balancer's 5xx alarm,
-already on the same topic. The facilitator's own count of store requests that
+already on the same topic, and it is the only one that sees a request refused
+for access (DynamoDB counts those only in its account-wide `UserErrors`, not per
+table) or one that never reached DynamoDB. The facilitator's own count of store
+requests that
 failed (log line `receipt_store_failure`, with `op` and `kind`) is a metric to
 read during an incident, not a page: it is counted from log lines, and the
 facilitator logs text taken from requests, so one request could write the
@@ -362,8 +401,17 @@ test on purpose and deciding what happens to the receipts already stored.
 The same holds for what the test cannot see:
 
 - **Rolling back to a release before 2.51.0** takes 23 networks off the rail at
-  once. Their admissions still in flight, until each authorization's
-  `validBefore`, would be resent down the ordinary path. Prefer a forward fix.
+  once, and that release reads none of their receipts. Their payments are then
+  resent down the ordinary path for as long as a client resumes them, not only
+  until each authorization's `validBefore`. One settled under an
+  Idempotency-Key in the previous 24 hours is answered from the Idempotency-Key
+  cache (2.51.0 files it there), as is another body under that key. Any other
+  resend of a settled payment fails on its consumed nonce, an answer that
+  invites a new signature, and an admission still in flight can have its
+  authorization sent a second time (the token executes it once). That release
+  also rewrites the receipt records it revises without `expires_at`. Treat a
+  rollback below 2.51.0 as a change that moves money, not a routine
+  operation; prefer a forward fix.
 - Changing a token's address or a network's chain id in `src/network.rs`
   changes what the rail admits and the `authorizationId` it looks receipts up
   by.
@@ -386,7 +434,7 @@ What a Base `exact` caller observes compared with 2.39:
 | Same authorization after it settled, with the Idempotency-Key or `X-UVD-Purchase` that admitted it | With the key, the cached 200 with `Idempotent-Replayed: true` for 24 hours; after that it runs again and fails on the consumed nonce | Original 200 replayed with `Idempotent-Replayed: true`; receipt rows did not expire until 2.51.0, and since then expire 90 days after the authorization's `validBefore` |
 | Same authorization after it settled, without that binding | Runs again; fails on the consumed nonce | `409 authorization_already_settled`, with the receipt when the payment carried no `X-UVD-Purchase`; a payment admitted with `X-UVD-Purchase` answers `409 receipt_request_conflict` without it. Verify `isValid: false`, `authorization_already_settled` |
 | Same authorization while its settlement runs | Second attempt runs | `202 settlement_in_progress` to the admitting binding. Without it, `409 authorization_in_flight`, with the receipt when the payment carried no `X-UVD-Purchase`; a payment admitted with `X-UVD-Purchase` answers `409 receipt_request_conflict` without it |
-| New signature, same `Idempotency-Key` | Runs, unless an earlier attempt succeeded in the last 24 hours (then `409 idempotency_key_conflict`) | `409 receipt_request_conflict` once the first one was admitted, until its rows expire (since 2.51.0) |
+| New signature, same `Idempotency-Key` | Runs, unless an earlier attempt succeeded in the last 24 hours (then `409 idempotency_key_conflict`) | `409 receipt_request_conflict` once the first one was admitted, until its rows expire; since 2.51.0 on any network, token or `payTo` for the same payer, and `409 idempotency_key_conflict` from any payer for 24 hours after the first one settled (see "Idempotency-Key scope") |
 | New signature, same `X-UVD-Purchase` | `400 receipt_request_not_supported` | `409 receipt_request_conflict` once the first one was admitted, until its rows expire (since 2.51.0) |
 | New signature without key or purchase context | New payment | New payment (unchanged) |
 | Settlement ends before anything is sent (writer lease moved, a read or gas estimate failed, signing or storing the bytes failed) | That failure's own answer | `503` with `Retry-After` and `safeToRetry: true`; receipt `rejected` with `refusalReason: reservation_abandoned`; the same request is admitted again under the same receipt |

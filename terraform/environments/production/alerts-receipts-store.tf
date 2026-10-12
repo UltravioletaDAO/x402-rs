@@ -16,6 +16,10 @@
 #   - and, already in place, facilitator-production-5xx-errors (alerts-imported.tf): the
 #     503s themselves, at the load balancer, on the same topic.
 #
+# Only that last one sees a request DynamoDB refused for access (an IAM change, a key policy:
+# DynamoDB counts those in its account-wide UserErrors, with no table dimension) or one that
+# never reached DynamoDB (a network failure): neither publishes the per-table metrics above.
+#
 # What does not page: receipt_store_failure, the facilitator's own count of store requests
 # that did not answer as the store (src/receipts/store.rs, STORE_FAILURE: an error other than
 # a lost condition, no answer within 5 s, an unreadable row, a reservation with no verdict),

@@ -50,7 +50,7 @@ tokio::task_local! { static ACTIVE: Arc<Admission>; }
 #[cfg(test)]
 tokio::task_local! { static TEST_SERVICE: Arc<Service>; }
 #[cfg(test)]
-tokio::task_local! { static TEST_LEGACY_RECORD: crate::idempotency_store::IdempotencyRecord; }
+tokio::task_local! { static TEST_LEGACY: Arc<dyn crate::idempotency_store::IdempotencyStore>; }
 fn service() -> Option<Arc<Service>> {
     #[cfg(test)]
     if let Ok(service) = TEST_SERVICE.try_with(Arc::clone) {
@@ -99,6 +99,17 @@ pub struct Record {
     // Private recovery material, never serialized into a public receipt.
     pub prepared: Option<Value>,
     pub authorization_expires_at: u64,
+    /// The ERC-3009 authorization an EVM admission settles, by the key the
+    /// token tracks it under (`authorizationState`). Absent on Hedera, and on
+    /// records written before 2.51.0.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub evm_authorization: Option<EvmAuthorization>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct EvmAuthorization {
+    pub from: alloy::primitives::Address,
+    pub nonce: alloy::primitives::B256,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -414,6 +425,13 @@ fn initial(
             ExactPaymentPayload::Evm(evm) => evm.authorization.valid_before.seconds_since_epoch(),
             _ => 0,
         },
+        evm_authorization: match &request.payment_payload.payload {
+            ExactPaymentPayload::Evm(evm) => Some(EvmAuthorization {
+                from: evm.authorization.from.0,
+                nonce: evm.authorization.nonce.0.into(),
+            }),
+            _ => None,
+        },
     })
 }
 
@@ -447,6 +465,17 @@ impl Service {
         }
         *record = next;
         Ok(())
+    }
+
+    /// `save` for an admission this process wrote and never ran: written at
+    /// the next revision whether the store holds it at one of `held` or not at
+    /// all (`store::Store::release`).
+    async fn release(&self, record: &Record, held: &[u64]) -> Result<bool> {
+        let mut next = record.clone();
+        next.receipt.revision += 1;
+        next.receipt.issued_at = now();
+        self.sign(&mut next.receipt)?;
+        self.store.release(&next, held).await
     }
 }
 
@@ -806,6 +835,21 @@ async fn finish(
             // prepared bytes, so nothing was sent under it.
             return resend_later(&stable);
         }
+        if released.is_some() {
+            // Nothing was sent and the release was not stored either: the
+            // store that refused the bytes refused the close. Resending is as
+            // safe as after any failure before the send, so the answer says
+            // so, not the provider's 4xx, with the receipt as stored.
+            let mut body = json!({"success":false,"error":"receipt_store_unavailable",
+                "retryable":true,"safeToRetry":true,"safeToReplay":false,
+                "receiptWarning":"receipt_persistence_unavailable"});
+            body["receipt"] = serde_json::to_value(stable.receipt).unwrap();
+            let mut response = (StatusCode::SERVICE_UNAVAILABLE, Json(body)).into_response();
+            response
+                .headers_mut()
+                .insert(RETRY_AFTER, HeaderValue::from(RETRY_AFTER_SECS));
+            return response;
+        }
         // The provider's own answer: a release that was not stored did not happen.
         let mut body = value;
         body["receipt"] = serde_json::to_value(stable.receipt).unwrap();
@@ -846,18 +890,36 @@ pub async fn verify<F: Future<Output = Response>>(
     };
     let mut record = match initial(&request, context.as_ref(), "verify") {
         Ok(r) => r,
-        Err(_) => return call.await,
+        Err(_) => {
+            return match unnormalized_admission(&service, &request).await {
+                // Admitted under another request: never valid again, and never
+                // simulated again, as below.
+                Ok(Some(existing))
+                    if !is_abandoned(&existing) && existing.receipt.status != "rejected" =>
+                {
+                    let body = json!({"isValid":false,"invalidReason":admitted_reason(&existing),"payer":existing.receipt.payer});
+                    (StatusCode::OK, Json(body)).into_response()
+                }
+                Ok(_) => call.await,
+                Err(answer) => answer,
+            };
+        }
     };
-    // An abandoned admission sent nothing: verify as if it did not exist.
-    if let Ok(Some(existing)) = service
+    // An abandoned admission sent nothing: verify as if it did not exist. A
+    // store fault is no verdict: simulating a consumed nonce would invite a new
+    // signature for a payment that may have settled.
+    let existing = match service
         .store
         .get(&format!(
             "receipt:auth:v1:{}",
             record.receipt.authorization_id
         ))
         .await
-        .map(|found| found.filter(|existing| !is_abandoned(existing)))
     {
+        Ok(found) => found.filter(|existing| !is_abandoned(existing)),
+        Err(_) => return unavailable("receipt_store_unavailable"),
+    };
+    if let Some(existing) = existing {
         let same = same_request(&existing, &record);
         let rejected = existing.receipt.status == "rejected";
         let is_bound = if same && !rejected {
@@ -891,6 +953,28 @@ pub async fn verify<F: Future<Output = Response>>(
     finish(&service, &mut record, call.await, false, None, false).await
 }
 
+/// The admission of the authorization a request names, for a request the rail
+/// admits but cannot normalize (`initial` failed: its terms carry a float, an
+/// integer past 2^53 or a non-ASCII key, which free-form `extra` and
+/// `outputSchema` may). Such a request cannot be the one an admission holds,
+/// but it can name the same authorization, and an admitted authorization never
+/// goes around the rail. `Ok(None)`: no admission, or an authorization that
+/// cannot be read, which stays the provider's to refuse. `Err` is the answer:
+/// the store gave none.
+async fn unnormalized_admission(
+    service: &Service,
+    request: &VerifyRequest,
+) -> std::result::Result<Option<Record>, Response> {
+    let Ok(id) = authorization(request) else {
+        return Ok(None);
+    };
+    service
+        .store
+        .get(&format!("receipt:auth:v1:{id}"))
+        .await
+        .map_err(|_| unavailable("receipt_store_unavailable"))
+}
+
 fn aliases(record: &Record, headers: &HeaderMap) -> Vec<String> {
     let mut keys = vec![format!(
         "receipt:auth:v1:{}",
@@ -902,9 +986,14 @@ fn aliases(record: &Record, headers: &HeaderMap) -> Vec<String> {
         keys.push(format!("receipt:purchase:v1:{}", record.token_hash));
     }
     keys.extend(idempotency_alias(record, headers));
+    keys.extend(idempotency_conflict_alias(record, headers));
     keys
 }
 
+/// The binding of an Idempotency-Key: what a resend of the same request is
+/// recognised by (`bound`). Too narrow to refuse a second signature under the
+/// same key, which may name another network or `payTo`; that is
+/// `idempotency_conflict_alias`.
 fn idempotency_alias(record: &Record, headers: &HeaderMap) -> Option<String> {
     let key = headers
         .get("idempotency-key")
@@ -921,6 +1010,24 @@ fn idempotency_alias(record: &Record, headers: &HeaderMap) -> Option<String> {
             )
             .as_bytes()
         )
+    ))
+}
+
+/// One Idempotency-Key per payer, on every network, token and `payTo`: a second
+/// signature from the same payer under a key already admitted is refused
+/// (`receipt_request_conflict`), as the published contract says of the same
+/// key with a different body. The key is read as `post_settle` reads it,
+/// trimmed. Other payers meet the key in the 24-hour cache once the first
+/// payment settles (`remember_settled`).
+fn idempotency_conflict_alias(record: &Record, headers: &HeaderMap) -> Option<String> {
+    let key = headers.get("idempotency-key")?.as_bytes().trim_ascii();
+    if key.is_empty() {
+        return None;
+    }
+    let payer = record.receipt.payer.as_deref().unwrap_or_default();
+    Some(format!(
+        "receipt:idemkey:v1:{}",
+        hash(format!("{}:{}", payer.to_lowercase(), hash(key)).as_bytes())
     ))
 }
 
@@ -960,6 +1067,7 @@ async fn replay<A: HasProviderMap>(
     facilitator: &A,
     mut existing: Record,
     headers: &HeaderMap,
+    raw: &Bytes,
 ) -> Response
 where
     A::Map: ProviderMap<Value = NetworkProvider>,
@@ -973,7 +1081,11 @@ where
         return response(&existing, true);
     }
     match bound(service, &existing, headers).await {
-        Ok(true) => response(&existing, true),
+        Ok(true) => {
+            // Settled while its first answer was out, or reconciled just now.
+            remember_settled(headers, raw, &existing).await;
+            response(&existing, true)
+        }
         Ok(false) => {
             let mut body = json!({"success":false,"error":admitted_reason(&existing),"retryable":false,"safeToReplay":false});
             // Capability-scoped receipts stay private; `bound` admits those.
@@ -1019,7 +1131,9 @@ fn legacy_response(
     response
 }
 
-async fn legacy_replay(headers: &HeaderMap, raw: &Bytes) -> Option<Response> {
+/// What `post_settle`'s 24-hour Idempotency-Key cache files a request under:
+/// the trimmed key, and the hash of the body as decoded.
+fn legacy_entry(headers: &HeaderMap, raw: &Bytes) -> Option<(String, String)> {
     let key = headers.get("idempotency-key")?.to_str().ok()?.trim();
     if key.is_empty() {
         return None;
@@ -1031,19 +1145,99 @@ async fn legacy_replay(headers: &HeaderMap, raw: &Bytes) -> Option<Response> {
     } else {
         raw.as_ref()
     };
-    let request_hash = crate::idempotency_store::hash_request_body(bytes);
-    #[cfg(test)]
-    if let Ok(record) = TEST_LEGACY_RECORD.try_with(Clone::clone) {
-        assert_eq!(record.idempotency_key, key);
-        return Some(legacy_response(record, &request_hash));
+    Some((
+        key.to_owned(),
+        crate::idempotency_store::hash_request_body(bytes),
+    ))
+}
+
+/// A receipt test's own 24-hour cache: the one it installs, or none at all,
+/// never the process-wide one the handler tests share.
+#[cfg(test)]
+fn test_legacy() -> Option<Arc<dyn crate::idempotency_store::IdempotencyStore>> {
+    if let Ok(cache) = TEST_LEGACY.try_with(Arc::clone) {
+        return Some(cache);
     }
-    match crate::idempotency_store::lookup_record(key.to_owned()).await {
+    TEST_SERVICE
+        .try_with(|_| {
+            Arc::new(crate::idempotency_store::NoopIdempotencyStore)
+                as Arc<dyn crate::idempotency_store::IdempotencyStore>
+        })
+        .ok()
+}
+
+async fn legacy_get(
+    key: String,
+) -> std::result::Result<
+    Option<crate::idempotency_store::IdempotencyRecord>,
+    crate::idempotency_store::IdempotencyStoreError,
+> {
+    #[cfg(test)]
+    if let Some(cache) = test_legacy() {
+        return cache.get(&key).await;
+    }
+    crate::idempotency_store::lookup_record(key).await
+}
+
+async fn legacy_put(
+    record: crate::idempotency_store::IdempotencyRecord,
+) -> std::result::Result<(), crate::idempotency_store::IdempotencyStoreError> {
+    #[cfg(test)]
+    if let Some(cache) = test_legacy() {
+        return cache.put(record).await;
+    }
+    crate::idempotency_store::store_record(record).await
+}
+
+async fn legacy_replay(headers: &HeaderMap, raw: &Bytes) -> Option<Response> {
+    let (key, request_hash) = legacy_entry(headers, raw)?;
+    match legacy_get(key).await {
         Ok(Some(record)) => Some(legacy_response(record, &request_hash)),
         Ok(None) => None,
         Err(_) => Some(failure(
             "idempotency_cache_unavailable",
             StatusCode::SERVICE_UNAVAILABLE,
         )),
+    }
+}
+
+/// Files a settled admission in `post_settle`'s 24-hour Idempotency-Key cache,
+/// under the key and body it was admitted with, as `post_settle` files what it
+/// settles. Under an admission the handler keeps out of that cache, so without
+/// this row a second signature under the same key would find nothing there: on
+/// a path off the rail, from another payer, or on a release before 2.51.0 after
+/// a rollback. Best effort: the receipt is the record, this row is a fence.
+async fn remember_settled(headers: &HeaderMap, raw: &Bytes, record: &Record) {
+    if record.receipt.operation != "settle" || record.receipt.status != "confirmed" {
+        return;
+    }
+    let Some((key, request_hash)) = legacy_entry(headers, raw) else {
+        return;
+    };
+    let settled =
+        serde_json::from_value::<crate::types::SettleResponse>(record.response.clone()).ok();
+    let Some(response_json) = settled
+        .filter(|settled| settled.success)
+        .and_then(|settled| serde_json::to_string(&settled).ok())
+    else {
+        tracing::warn!(
+            receipt_id = %record.receipt.receipt_id,
+            "settled admission has no settle response to file under its Idempotency-Key"
+        );
+        return;
+    };
+    let row = crate::idempotency_store::IdempotencyRecord {
+        idempotency_key: key,
+        request_hash,
+        response_json,
+        expires_at: now() + crate::idempotency_store::IDEMPOTENCY_TTL_SECONDS,
+    };
+    if let Err(error) = legacy_put(row).await {
+        tracing::warn!(
+            receipt_id = %record.receipt.receipt_id,
+            %error,
+            "settled admission not filed under its Idempotency-Key"
+        );
     }
 }
 
@@ -1087,10 +1281,17 @@ where
     };
     let mut candidate = match initial(&request, context.as_ref(), "settle") {
         Ok(r) => r,
-        Err(_) if context.is_some() => {
-            return failure("receipt_request_not_supported", StatusCode::BAD_REQUEST)
+        Err(_) => {
+            return match unnormalized_admission(&service, &request).await {
+                // Another request for an admitted authorization, as below.
+                Ok(Some(_)) => failure("receipt_request_conflict", StatusCode::CONFLICT),
+                Ok(None) if context.is_some() => {
+                    failure("receipt_request_not_supported", StatusCode::BAD_REQUEST)
+                }
+                Ok(None) => call.await,
+                Err(answer) => answer,
+            };
         }
-        Err(_) => return call.await,
     };
     if let Some(context) = &context {
         if url::Url::parse(&context.url).ok().as_ref()
@@ -1108,7 +1309,7 @@ where
                 return failure("receipt_request_conflict", StatusCode::CONFLICT);
             }
             if !is_abandoned(&existing) {
-                return replay(&service, facilitator, existing, headers).await;
+                return replay(&service, facilitator, existing, headers, raw).await;
             }
             Some(existing)
         }
@@ -1137,9 +1338,18 @@ where
     let keys = aliases(&candidate, headers);
     let admitted = match abandoned {
         Some(abandoned) => {
-            readmit(&service, facilitator, abandoned, candidate, &keys, headers).await
+            readmit(
+                &service,
+                facilitator,
+                abandoned,
+                candidate,
+                &keys,
+                headers,
+                raw,
+            )
+            .await
         }
-        None => admit(&service, facilitator, candidate, &keys, headers).await,
+        None => admit(&service, facilitator, candidate, &keys, headers, raw).await,
     };
     let record = match admitted {
         Ok(record) => record,
@@ -1150,7 +1360,9 @@ where
     let unsent = admission.unsent();
     let latched = admission.latched();
     let mut record = admission.record.lock().await;
-    finish(&service, &mut record, result, true, unsent, latched).await
+    let answer = finish(&service, &mut record, result, true, unsent, latched).await;
+    remember_settled(headers, raw, &record).await;
+    answer
 }
 
 /// Reserves a new admission: the record and every alias atomically, or none.
@@ -1160,6 +1372,7 @@ async fn admit<A>(
     mut candidate: Record,
     keys: &[String],
     headers: &HeaderMap,
+    raw: &Bytes,
 ) -> std::result::Result<Record, Box<Response>>
 where
     A: HasProviderMap,
@@ -1180,7 +1393,7 @@ where
                     Ok(Some(existing))
                         if existing.receipt.receipt_id == candidate.receipt.receipt_id =>
                     {
-                        release_unrun(service, &candidate).await;
+                        release_unrun(service, &candidate, None).await;
                         return Err(Box::new(unavailable("receipt_store_unavailable")));
                     }
                     Ok(Some(existing)) => {
@@ -1191,7 +1404,7 @@ where
                             )));
                         }
                         return Err(Box::new(
-                            replay(service, facilitator, existing, headers).await,
+                            replay(service, facilitator, existing, headers, raw).await,
                         ));
                     }
                     Err(_) => return Err(Box::new(unavailable("receipt_store_unavailable"))),
@@ -1201,7 +1414,7 @@ where
             Err(Box::new(unavailable("receipt_reservation_uncertain")))
         }
         Err(_) => {
-            release_unrun(service, &candidate).await;
+            release_unrun(service, &candidate, None).await;
             Err(Box::new(unavailable("receipt_store_unavailable")))
         }
     }
@@ -1219,6 +1432,7 @@ async fn readmit<A>(
     mut candidate: Record,
     keys: &[String],
     headers: &HeaderMap,
+    raw: &Bytes,
 ) -> std::result::Result<Record, Box<Response>>
 where
     A: HasProviderMap,
@@ -1269,7 +1483,7 @@ where
             if !is_abandoned(&current) {
                 // Another resend won: this one is a replay of its admission.
                 return Err(Box::new(
-                    replay(service, facilitator, current, headers).await,
+                    replay(service, facilitator, current, headers, raw).await,
                 ));
             }
             for key in &fresh {
@@ -1287,18 +1501,21 @@ where
             Err(Box::new(resend_later(&current)))
         }
         Err(_) => {
-            release_unrun(service, &candidate).await;
+            release_unrun(service, &candidate, Some(abandoned.receipt.revision)).await;
             Err(Box::new(unavailable("receipt_store_unavailable")))
         }
     }
 }
 
 /// Closes an admission this request wrote but never ran: a store write that
-/// failed ambiguously can still have landed. The CAS is on the revision this
-/// request wrote. In a race it can instead close another resend's re-admission
-/// at that revision; that one then cannot save prepared bytes, so it never
-/// sends, and its caller is told to resend.
-async fn release_unrun(service: &Service, record: &Record) {
+/// failed ambiguously can still have landed, or still land. The close is
+/// written over the revision this request wrote, over `before` (the revision a
+/// re-admission moved on from), or where there is no record yet; the write
+/// landing late then finds the record taken and writes nothing. In a race it
+/// can instead close another resend's re-admission at the same revision; that
+/// one then cannot save prepared bytes, so it never sends, and its caller is
+/// told to resend.
+async fn release_unrun(service: &Service, record: &Record, before: Option<u64>) {
     let mut closed = record.clone();
     abandon(
         &mut closed,
@@ -1306,7 +1523,10 @@ async fn release_unrun(service: &Service, record: &Record) {
         RETRY_AFTER_SECS,
         json!({}),
     );
-    if service.save(&mut closed).await.is_ok() {
+    let held: Vec<u64> = std::iter::once(record.receipt.revision)
+        .chain(before)
+        .collect();
+    if service.release(&closed, &held).await == Ok(true) {
         tracing::warn!(
             receipt_id = %closed.receipt.receipt_id,
             network = %closed.receipt.network,
@@ -1440,6 +1660,42 @@ where
     .await;
 }
 
+/// How long past `validBefore` an authorization is given before the chain is
+/// trusted to have passed it too: block timestamps and this clock can differ.
+const EXPIRY_MARGIN_SECS: u64 = 60;
+
+/// Whether the authorization behind a reverted transaction can no longer move
+/// the payer's funds, which is what refusing the admission states. The revert
+/// alone does not say so: another transaction may have executed the same
+/// authorization first, and a mined transaction publishes the signed
+/// authorization, which anyone can still execute until `validBefore`. So:
+/// `validBefore` has passed and the token reports the authorization unused
+/// (`authorizationState`). Anything unread is no verdict.
+async fn authorization_dead<P: alloy::providers::Provider>(provider: &P, record: &Record) -> bool {
+    let Some(authorization) = &record.evm_authorization else {
+        return false;
+    };
+    if now()
+        < record
+            .authorization_expires_at
+            .saturating_add(EXPIRY_MARGIN_SECS)
+    {
+        return false;
+    }
+    let Ok(token) = record.receipt.asset.parse::<alloy::primitives::Address>() else {
+        return false;
+    };
+    let token = crate::chain::evm::USDC::new(token, provider);
+    let used = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        token
+            .authorizationState(authorization.from, authorization.nonce)
+            .call()
+            .await
+    })
+    .await;
+    matches!(used, Ok(Ok(false)))
+}
+
 async fn reconcile<A: HasProviderMap>(service: &Service, facilitator: &A, record: &mut Record)
 where
     A::Map: ProviderMap<Value = NetworkProvider>,
@@ -1471,7 +1727,10 @@ where
             .await
             {
                 Ok(Ok(Some(receipt))) if receipt.block_hash.is_some() => {
-                    Some((receipt.status(), tx.to_string()))
+                    let success = receipt.status();
+                    // A revert alone is no refusal (`authorization_dead`).
+                    (success || authorization_dead(provider.inner(), record).await)
+                        .then(|| (success, tx.to_string()))
                 }
                 _ => None,
             }

@@ -94,7 +94,7 @@ data "aws_secretsmanager_secret" "erc8004_admin_token" {
 # Bearer token for the Bazaar curation routes (src/handlers.rs,
 # discovery_admin_routes): DELETE /discovery/resources, POST
 # /discovery/admin/suppress and /release, GET /discovery/admin/pending, POST
-# /discovery/refresh. Until 2.50.0 nothing put it in the container -- no secret,
+# /discovery/refresh. Until 2.51.0 nothing put it in the container -- no secret,
 # no environment entry -- so in production every one of those routes answered
 # 404 (fail closed, admin_auth in src/handlers.rs).
 #

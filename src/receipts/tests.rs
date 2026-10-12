@@ -3454,6 +3454,82 @@ async fn a_revert_is_refused_only_once_the_authorization_can_never_move_the_fund
     assert!(old.evm_authorization.is_none());
 }
 
+/// The mock facilitator's verdicts over the providers of a mock node.
+struct OnChain(crate::payment_operator::test_rpc::Providers);
+
+impl HasProviderMap for OnChain {
+    type Map = crate::payment_operator::test_rpc::Providers;
+    fn provider_map(&self) -> &Self::Map {
+        &self.0
+    }
+}
+
+impl Facilitator for OnChain {
+    type Error = StatusCode;
+    async fn verify(
+        &self,
+        request: &VerifyRequest,
+    ) -> std::result::Result<VerifyResponse, Self::Error> {
+        MockFacilitator { invalid: false }.verify(request).await
+    }
+    async fn settle(&self, _: &SettleRequest) -> std::result::Result<SettleResponse, Self::Error> {
+        panic!("use the guarded closure")
+    }
+    async fn supported(&self) -> std::result::Result<SupportedPaymentKindsResponse, Self::Error> {
+        unreachable!()
+    }
+}
+
+/// A payment whose answer was lost after its bytes were stored, and that the
+/// chain then confirms: the resend with its Idempotency-Key reconciles it and
+/// files it in the 24-hour cache, as a settle that confirmed at once does.
+#[tokio::test]
+async fn a_payment_confirmed_on_a_resend_is_filed_under_its_key() {
+    let node = crate::payment_operator::test_rpc::MockNode::start(Network::Base).await;
+    let chain = OnChain(crate::payment_operator::test_rpc::Providers::one(
+        Network::Base,
+        crate::payment_operator::test_rpc::provider(Network::Base, &node, false).await,
+    ));
+    let body = body_on("base", BASE_USDC, 6);
+    let cache = Arc::new(LegacyCache::default());
+    TEST_SERVICE
+        .scope(
+            service_fixture(),
+            TEST_LEGACY.scope(cache.clone(), async {
+                let lost = settle(&chain, &keyed("order-7"), &body, async {
+                    prepared_evm(prepared_hash(), vec![1, 2, 3]).await.unwrap();
+                    sending();
+                    (
+                        StatusCode::GATEWAY_TIMEOUT,
+                        Json(json!({"error":"upstream_timeout"})),
+                    )
+                        .into_response()
+                })
+                .await;
+                assert_eq!(value(lost).await["receipt"]["status"], "unknown");
+                assert!(
+                    cache.0.lock().unwrap().is_empty(),
+                    "filed before it settled"
+                );
+                let again = settle(&chain, &keyed("order-7"), &body, async {
+                    panic!("a stored transaction was sent again")
+                })
+                .await;
+                assert_eq!(again.status(), StatusCode::OK);
+                assert_eq!(value(again).await["receipt"]["status"], "confirmed");
+                let row = cache.0.lock().unwrap().get("order-7").cloned();
+                let row = row.expect("not filed once it settled");
+                assert_eq!(
+                    row.request_hash,
+                    crate::idempotency_store::hash_request_body(&body)
+                );
+                let filed: SettleResponse = serde_json::from_str(&row.response_json).unwrap();
+                assert!(filed.success);
+            }),
+        )
+        .await;
+}
+
 /// A write held back in the test's hand, as one whose answer was lost and that
 /// lands later.
 enum HeldWrite {

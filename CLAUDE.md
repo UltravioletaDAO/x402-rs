@@ -1023,7 +1023,7 @@ This complete checklist covers:
 11b. **UPDATE `src/openapi.rs`** - it hardcodes network lists in prose (`:31`, `:34`, `:57`, `:523`, `:527`, `:959`, `:1018`). A new network is invisible in `/docs` until these are edited.
 12. **UPDATE README.md** - Update the network count and add the new network to the tables
 13. **VERIFY STABLECOIN MATRIX** - Run `python scripts/stablecoin_matrix.py` and update README stablecoin tables
-14. **UPDATE `config/supported_tokens.json`** - Add the new network with chainId, displayName, icon, tokens, explorer + explorerPaths, and facilitatorWallet (this is what `/networks.json` and every page's icon and explorer link read). Copy wallet address from `lambda/balances/handler.py` — NEVER type from memory.
+14. **UPDATE `config/supported_tokens.json`** - Add the new network with chainId, displayName, icon, tokens, explorer + explorerPaths, and facilitatorWallet (this is what `/networks.json` and every page's icon and explorer link read). Copy wallet address from `lambda/balances/handler.py` — NEVER type from memory. Its `exactServed` (default `true`) also puts an EVM network with an ERC-3009 token on the facilitator receipt rail (`receipts::evm_exact_tokens`, `GET /receipts`): admission, announcement and normalization follow it; add the new pairs to `every_network_and_token_on_the_rail_stays_on_it`. Taking a network or token OFF the rail is a money change, not a config edit: resends of its stored receipts would run as ordinary settles (`docs/facilitator-receipts.md`, "EVM coverage").
 15. **UPDATE `lambda/balances/handler.py`** - Add the new network to `get_network_configs()` with RPC and wallet address.
 
 **CRITICAL**: Always update these files when adding a new network OR stablecoin:

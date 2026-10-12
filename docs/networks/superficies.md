@@ -53,11 +53,11 @@ de íconos, exploradores, JSON de tokens, `/networks` y el visor de `/events` ca
 | Guía MCP | `static/mcp.md` | **a mano** | sí | negociación de markdown, no el contenido |
 | Sitemap | `static/sitemap.xml` (16 URLs, sin lista de redes) | **a mano**; cada `lastmod` es la fecha de commit del archivo que respalda la URL | sí | `the_sitemap_stamps_every_url` (formato, no frescura) |
 | Estadísticas | `static/stats.html` | **generada** de `/api/stats` | sí | — |
-| Capacidad de recibos | `src/receipts/mod.rs` | **a mano**, 4 ids CAIP-2 | código | `capability_lists_exactly_the_supported_networks` (`src/receipts/tests.rs`) |
+| Capacidad de recibos | `src/receipts/mod.rs` | **derivada** (2.51.0): redes EVM con `exactServed` y token ERC-3009 (`receipts::evm_exact_tokens`) más Hedera | código | `capability_lists_exactly_the_supported_networks`, `every_evm_exact_token_is_announced_admitted_and_normalized` y `every_network_and_token_on_the_rail_stays_on_it` (`src/receipts/tests.rs`) |
 | Guía de integración | `static/integrar.html` | **a mano**, nombra Arc y Hedera | sí | nada |
 | `auth.md` | `static/auth.md` | **a mano**, conteos de ERC-8004 (13 / 23) | sí | nada sobre el conteo |
 | OpenAPI / Swagger | `src/openapi.rs` | **a mano**: prosa de redes de pago, ERC-8004, escrow | código | `the_erc8004_prose_names_every_supported_network` y el test de la prosa del relé; la prosa de redes de pago, nada |
-| JSON de tokens | `config/supported_tokens.json` | **a mano**, 43 redes con Hedera; compilado desde 2.41.0 (es la presentación de `/networks.json`); también lo leen `scripts/arc_canary.py` y `scripts/scan/scan_evm.py` | sí | `the_json_lists_the_tokens_supported_publishes` y `the_json_describes_every_servable_network` (`src/networks_json.rs`) |
+| JSON de tokens | `config/supported_tokens.json` | **a mano**, 43 redes con Hedera; compilado desde 2.41.0 (es la presentación de `/networks.json`; desde 2.51.0 su `exactServed` también decide qué redes EVM entran al riel de recibos); también lo leen `scripts/arc_canary.py` y `scripts/scan/scan_evm.py` | sí | `the_json_lists_the_tokens_supported_publishes` y `the_json_describes_every_servable_network` (`src/networks_json.rs`) |
 | `.env.example` | `.env.example` | **a mano** | no, y no dispara el CI | nada |
 | Matriz de stablecoins | `scripts/stablecoin_matrix.py` | **generada** de `src/network.rs`, solo mainnets | — | no corre en el CI |
 | Verificador de la portada | `scripts/verify_landing_canonical.py` | lee `/supported`, `payment_operator` y `erc8004/mod.rs` | — | paso «Landing page matches its canonical sources (offline)» del CI: conteos de ERC-8004 y escrow en/es, hero, enlaces a upstream |

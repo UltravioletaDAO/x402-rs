@@ -1,4 +1,5 @@
 use super::*;
+use crate::idempotency_store::{IdempotencyRecord, IdempotencyStore, IdempotencyStoreError};
 use crate::types::{MixedAddress, SettleRequest, SettleResponse, SupportedPaymentKindsResponse};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -68,6 +69,12 @@ async fn pre_receipt_cache_preserves_success_and_conflict_without_a_fabricated_r
     assert!(cached.get("receipt").is_none());
     let mut migrated = old.clone();
     migrated.request_hash = crate::idempotency_store::hash_request_body(&body(1));
+    let cache = Arc::new(LegacyCache::default());
+    cache
+        .0
+        .lock()
+        .unwrap()
+        .insert("before-upgrade".into(), migrated);
     let mut h = headers();
     h.insert(
         "idempotency-key",
@@ -76,7 +83,7 @@ async fn pre_receipt_cache_preserves_success_and_conflict_without_a_fabricated_r
     TEST_SERVICE
         .scope(
             service_fixture(),
-            TEST_LEGACY_RECORD.scope(migrated, async {
+            TEST_LEGACY.scope(cache, async {
                 let replay = settle(&MockFacilitator { invalid: true }, &h, &body(1), async {
                     panic!("old payment broadcast again")
                 })
@@ -160,92 +167,181 @@ impl store::Store for UpdateOutage {
     }
 }
 
+/// The store takes the admission, then fails the save of the prepared bytes:
+/// on every network and token of the matrix, nothing is broadcast, the answer
+/// carries the stored revision, and a resend gets that same receipt back
+/// without sending.
 #[tokio::test]
 async fn preparation_outage_blocks_broadcast_and_never_returns_an_unstored_revision() {
-    let service = Arc::new(Service {
-        store: Arc::new(UpdateOutage(store::MemoryStore::default())),
-        signing_key: Some(SigningKey::from_bytes(&[7; 32])),
-    });
-    TEST_SERVICE
-        .scope(service.clone(), async {
-            let result = settle(
-                &MockFacilitator { invalid: false },
-                &headers(),
-                &body(1),
-                async {
-                    assert!(
-                        prepared_evm(format!("0x{}", "22".repeat(32)), vec![1, 2, 3])
+    for case in evm_matrix() {
+        let (network, body) = (case.caip2(), case.v1(1));
+        let service = Arc::new(Service {
+            store: Arc::new(UpdateOutage(store::MemoryStore::default())),
+            signing_key: Some(SigningKey::from_bytes(&[7; 32])),
+        });
+        let sends = AtomicUsize::new(0);
+        TEST_SERVICE
+            .scope(service.clone(), async {
+                let result = settle(
+                    &MockFacilitator { invalid: false },
+                    &headers(),
+                    &body,
+                    async {
+                        // As the EVM provider does: broadcast only bytes it stored.
+                        if prepared_evm(format!("0x{}", "22".repeat(32)), vec![1, 2, 3])
                             .await
-                            .is_err()
-                    );
-                    let current = ACTIVE.with(Arc::clone);
-                    assert!(current.record.lock().await.prepared.is_none());
-                    failure("preparation_unavailable", StatusCode::SERVICE_UNAVAILABLE)
-                },
-            )
+                            .is_ok()
+                        {
+                            sending();
+                            sends.fetch_add(1, Ordering::SeqCst);
+                        }
+                        let current = ACTIVE.with(Arc::clone);
+                        assert!(current.record.lock().await.prepared.is_none());
+                        failure("preparation_unavailable", StatusCode::SERVICE_UNAVAILABLE)
+                    },
+                )
+                .await;
+                let output = value(result).await;
+                let id = output["receipt"]["receiptId"].as_str().unwrap();
+                let stored = service
+                    .store
+                    .get(&format!("receipt:v1:{id}"))
+                    .await
+                    .unwrap()
+                    .unwrap();
+                assert_eq!(
+                    output["receipt"],
+                    serde_json::to_value(stored.receipt).unwrap(),
+                    "{network}"
+                );
+                assert_eq!(output["receipt"]["revision"], 1, "{network}");
+                assert_eq!(output["receipt"]["status"], "unknown", "{network}");
+                assert_eq!(output["receipt"]["network"], network.as_str());
+                let again = value(settle_again(&headers(), &body).await).await;
+                assert_eq!(again["receipt"], output["receipt"], "{network}");
+            })
             .await;
-            let output = value(result).await;
-            let id = output["receipt"]["receiptId"].as_str().unwrap();
-            let stored = service
-                .store
-                .get(&format!("receipt:v1:{id}"))
-                .await
-                .unwrap()
-                .unwrap();
-            assert_eq!(
-                output["receipt"],
-                serde_json::to_value(stored.receipt).unwrap()
-            );
-            assert_eq!(output["receipt"]["revision"], 1);
-            assert_eq!(output["receipt"]["status"], "unknown");
-        })
-        .await;
+        assert_eq!(sends.load(Ordering::SeqCst), 0, "{network}");
+    }
 }
 
+/// The provider stored its bytes and the answer was lost: on every network
+/// and token of the matrix the bytes are recoverable, they never reach the
+/// public receipt, and the purchase's resend gets the same receipt back
+/// without a second send.
 #[tokio::test]
 async fn persisted_transaction_is_recoverable_after_lost_response() {
-    let service = service_fixture();
-    TEST_SERVICE
-        .scope(service.clone(), async {
-            let result = settle(
-                &MockFacilitator { invalid: false },
-                &headers(),
-                &body(1),
-                async {
-                    prepared_evm(format!("0x{}", "22".repeat(32)), vec![1, 2, 3])
-                        .await
-                        .unwrap();
-                    failure("response_lost", StatusCode::BAD_GATEWAY)
-                },
-            )
+    for case in evm_matrix() {
+        let (network, body) = (case.caip2(), case.v1(1));
+        let service = service_fixture();
+        let sends = AtomicUsize::new(0);
+        TEST_SERVICE
+            .scope(service.clone(), async {
+                let result = settle(
+                    &MockFacilitator { invalid: false },
+                    &headers(),
+                    &body,
+                    async {
+                        prepared_evm(format!("0x{}", "22".repeat(32)), vec![1, 2, 3])
+                            .await
+                            .unwrap();
+                        sending();
+                        sends.fetch_add(1, Ordering::SeqCst);
+                        failure("response_lost", StatusCode::BAD_GATEWAY)
+                    },
+                )
+                .await;
+                let output = value(result).await;
+                assert_eq!(output["receipt"]["status"], "unknown", "{network}");
+                assert_eq!(output["receipt"]["network"], network.as_str());
+                let id = output["receipt"]["receiptId"].as_str().unwrap();
+                let stored = service
+                    .store
+                    .get(&format!("receipt:v1:{id}"))
+                    .await
+                    .unwrap()
+                    .unwrap();
+                assert_eq!(
+                    stored.prepared.unwrap()["signedTransaction"],
+                    STANDARD.encode([1, 2, 3]),
+                    "{network}"
+                );
+                assert!(output["receipt"].get("signedTransaction").is_none());
+                let again = settle_again(&headers(), &body).await;
+                assert_eq!(again.headers()["idempotent-replayed"], "true", "{network}");
+                assert_eq!(
+                    value(again).await["receipt"],
+                    output["receipt"],
+                    "{network}"
+                );
+            })
             .await;
-            let output = value(result).await;
-            assert_eq!(output["receipt"]["status"], "unknown");
-            let id = output["receipt"]["receiptId"].as_str().unwrap();
-            let stored = service
-                .store
-                .get(&format!("receipt:v1:{id}"))
-                .await
-                .unwrap()
-                .unwrap();
-            assert_eq!(
-                stored.prepared.unwrap()["signedTransaction"],
-                STANDARD.encode([1, 2, 3])
-            );
-            assert!(output["receipt"].get("signedTransaction").is_none());
-        })
-        .await;
+        assert_eq!(sends.load(Ordering::SeqCst), 1, "{network}");
+    }
 }
 const ARC_USDC: &str = "0x3600000000000000000000000000000000000000";
 const BASE_USDC: &str = "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913";
 const BASE_EURC: &str = "0x60a3E35Cc302bFA44Cb288Bc5a4F316Fdb1adb42";
-/// Every EVM network admitted through receipts: the v1 name a body carries,
-/// the CAIP-2 id its receipt must carry, and an exact asset on it.
-const EVM_RECEIPT_NETWORKS: [(&str, &str, &str); 3] = [
-    ("arc", "eip155:5042", ARC_USDC),
-    ("arc-testnet", "eip155:5042002", ARC_USDC),
-    ("base", "eip155:8453", BASE_USDC),
-];
+
+/// One EVM payment the rail admits: a network of the matrix and one of its
+/// tokens.
+struct EvmCase {
+    network: Network,
+    token: crate::types::SupportedTokenInfo,
+}
+
+impl EvmCase {
+    /// The token's address as a client writes it (EIP-55 checksum casing).
+    fn asset(&self) -> String {
+        self.token.address.to_string()
+    }
+    fn caip2(&self) -> String {
+        self.network.to_caip2()
+    }
+    /// An x402 v1 body, under the network's v1 name.
+    fn v1(&self, nonce: u8) -> Bytes {
+        body_on(&self.network.to_string(), &self.asset(), nonce)
+    }
+    /// The same payment as an x402 v2 body, under the network's CAIP-2 id.
+    fn v2(&self, nonce: u8) -> Bytes {
+        let v1: Value = serde_json::from_slice(&self.v1(nonce)).unwrap();
+        let r = &v1["paymentRequirements"];
+        Bytes::from(serde_json::to_vec(&json!({
+            "x402Version":2,
+            "paymentPayload":{"x402Version":2,"payload":v1["paymentPayload"]["payload"]},
+            "resource":{"url":r["resource"],"description":r["description"],"mimeType":r["mimeType"]},
+            "accepted":{"network":self.caip2(),"scheme":"exact","asset":r["asset"],
+                "amount":r["maxAmountRequired"],"payTo":r["payTo"],"maxTimeoutSeconds":180,"extra":r["extra"]}
+        })).unwrap())
+    }
+}
+
+/// The EVM matrix exactly as production reads it (`evm_exact_tokens`), one
+/// case per network and token. Never empty: a harness that iterates it must
+/// not pass by running nothing.
+fn evm_matrix() -> Vec<EvmCase> {
+    let cases: Vec<EvmCase> = Network::variants()
+        .iter()
+        .flat_map(|network| {
+            evm_exact_tokens(*network).into_iter().map(|token| EvmCase {
+                network: *network,
+                token,
+            })
+        })
+        .collect();
+    assert!(!cases.is_empty(), "the EVM matrix is empty");
+    cases
+}
+
+/// CAIP-2 ids of the matrix's networks, kept for the life of the test binary
+/// so the replay harness can hand them to spawned tasks.
+static EVM_RECEIPT_NETWORKS: once_cell::sync::Lazy<Vec<String>> =
+    once_cell::sync::Lazy::new(|| {
+        let mut networks: Vec<String> = evm_matrix().iter().map(EvmCase::caip2).collect();
+        networks.dedup();
+        networks
+    });
+
 fn body(nonce: u8) -> Bytes {
     body_on("arc-testnet", ARC_USDC, nonce)
 }
@@ -332,24 +428,74 @@ async fn arc_v2_receipt_keeps_the_wire_version_after_internal_normalization() {
         .await;
 }
 
+/// A durable store shared by replicas whose reservations wait for every
+/// contender: all of them pass the authorization lookup before any reserves,
+/// so only the store's atomic reservation can choose the one that sends.
+struct ContendedStore {
+    inner: store::MemoryStore,
+    contenders: tokio::sync::Barrier,
+}
+#[async_trait::async_trait]
+impl store::Store for ContendedStore {
+    async fn get(&self, key: &str) -> Result<Option<Record>> {
+        self.inner.get(key).await
+    }
+    async fn reserve(&self, record: &Record, aliases: &[String], token: &str) -> Result<bool> {
+        self.contenders.wait().await;
+        self.inner.reserve(record, aliases, token).await
+    }
+    async fn save(&self, record: &Record, previous_revision: u64) -> Result<bool> {
+        self.inner.save(record, previous_revision).await
+    }
+    async fn readmit(
+        &self,
+        record: &Record,
+        previous: u64,
+        aliases: &[String],
+        token: &str,
+    ) -> Result<bool> {
+        self.inner.readmit(record, previous, aliases, token).await
+    }
+    async fn records(&self) -> Result<Vec<Record>> {
+        self.inner.records().await
+    }
+}
+
+/// Two replicas of the facilitator share one durable store and race twenty
+/// copies of the same purchase between them, every copy reaching the
+/// reservation, on every network and token of the matrix: one send, one
+/// receipt, and a replay of it from either replica.
 #[tokio::test]
 async fn concurrent_replicas_reserve_one_payment_and_replay_the_same_receipt() {
-    for (network, caip2, asset) in EVM_RECEIPT_NETWORKS {
-        let service = service_fixture();
+    const CONTENDERS: usize = 20;
+    for case in evm_matrix() {
+        let (network, asset, body) = (case.caip2(), case.asset(), case.v1(1));
+        let shared: Arc<dyn store::Store> = Arc::new(ContendedStore {
+            inner: store::MemoryStore::default(),
+            contenders: tokio::sync::Barrier::new(CONTENDERS),
+        });
+        let replicas: Vec<Arc<Service>> = (0..2)
+            .map(|_| {
+                Arc::new(Service {
+                    store: shared.clone(),
+                    signing_key: Some(SigningKey::from_bytes(&[7; 32])),
+                })
+            })
+            .collect();
         let sends = Arc::new(AtomicUsize::new(0));
         let mut tasks = Vec::new();
-        for _ in 0..20 {
-            let service = service.clone();
-            let sends = sends.clone();
+        for attempt in 0..CONTENDERS {
+            let service = replicas[attempt % 2].clone();
+            let (sends, body, network) = (sends.clone(), body.clone(), network.clone());
             tasks.push(tokio::spawn(TEST_SERVICE.scope(service, async move {
                 settle(
                     &MockFacilitator { invalid: false },
                     &headers(),
-                    &body_on(network, asset, 1),
+                    &body,
                     async {
                         sends.fetch_add(1, Ordering::SeqCst);
                         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-                        success_on(network)
+                        success_on(&network)
                     },
                 )
                 .await
@@ -357,7 +503,12 @@ async fn concurrent_replicas_reserve_one_payment_and_replay_the_same_receipt() {
         }
         let mut receipt_id = None;
         for task in tasks {
-            let output = value(task.await.unwrap()).await;
+            // A contender that never reaches the reservation would hold the
+            // barrier: fail instead of hanging.
+            let answered = tokio::time::timeout(std::time::Duration::from_secs(30), task)
+                .await
+                .unwrap_or_else(|_| panic!("{network}: a contender never reserved"));
+            let output = value(answered.unwrap()).await;
             let id = output["receipt"]["receiptId"].clone();
             if let Some(expected) = &receipt_id {
                 assert_eq!(&id, expected, "{network}");
@@ -365,41 +516,31 @@ async fn concurrent_replicas_reserve_one_payment_and_replay_the_same_receipt() {
                 receipt_id = Some(id);
             }
         }
-        assert_eq!(sends.load(Ordering::SeqCst), 1, "{network}");
-        let replay = TEST_SERVICE
-            .scope(service, async {
-                settle(
-                    &MockFacilitator { invalid: false },
-                    &headers(),
-                    &body_on(network, asset, 1),
-                    async { panic!("second broadcast on {network}") },
-                )
-                .await
-            })
-            .await;
-        assert_eq!(replay.headers()["idempotent-replayed"], "true", "{network}");
-        let output = value(replay).await;
-        assert_eq!(output["receipt"]["status"], "confirmed", "{network}");
-        assert_eq!(
-            output["receipt"]["receiptId"],
-            receipt_id.unwrap(),
-            "{network}"
-        );
-        assert_eq!(output["receipt"]["amount"], "1000", "{network}");
-        assert_eq!(output["receipt"]["decimals"], 6, "{network}");
-        assert_eq!(output["receipt"]["network"], caip2);
-        // EVM addresses are lowercase in the receipt and its request hash,
-        // whatever checksum casing the payment requirements used.
-        assert_eq!(
-            output["receipt"]["asset"],
-            asset.to_lowercase(),
-            "{network}"
-        );
-        assert_eq!(
-            output["receipt"]["request"]["asset"],
-            asset.to_lowercase(),
-            "{network}"
-        );
+        assert_eq!(sends.load(Ordering::SeqCst), 1, "{network} {asset}");
+        for replica in &replicas {
+            let replay = TEST_SERVICE
+                .scope(replica.clone(), settle_again(&headers(), &body))
+                .await;
+            assert_eq!(replay.headers()["idempotent-replayed"], "true", "{network}");
+            let output = value(replay).await;
+            assert_eq!(output["receipt"]["status"], "confirmed", "{network}");
+            assert_eq!(output["receipt"]["receiptId"], receipt_id.clone().unwrap());
+            assert_eq!(output["receipt"]["amount"], "1000", "{network}");
+            assert_eq!(output["receipt"]["decimals"], case.token.decimals);
+            assert_eq!(output["receipt"]["network"], network.as_str());
+            // EVM addresses are lowercase in the receipt and its request hash,
+            // whatever checksum casing the payment requirements used.
+            assert_eq!(
+                output["receipt"]["asset"],
+                asset.to_lowercase(),
+                "{network}"
+            );
+            assert_eq!(
+                output["receipt"]["request"]["asset"],
+                asset.to_lowercase(),
+                "{network}"
+            );
+        }
     }
 }
 
@@ -439,46 +580,58 @@ async fn new_signature_same_purchase_and_changed_terms_never_charge_again() {
         .await;
 }
 
+/// An uncertain outcome survives a restart on every network and token of the
+/// matrix: the new process reads the same receipt from the store and sends
+/// nothing.
 #[tokio::test]
 async fn unknown_survives_restart_and_has_no_refusal_or_second_send() {
-    let first = service_fixture();
-    TEST_SERVICE
-        .scope(first.clone(), async {
-            let response = settle(
-                &MockFacilitator { invalid: false },
-                &headers(),
-                &body(1),
-                async {
-                    (
-                        StatusCode::BAD_GATEWAY,
-                        Json(json!({"error":"rpc_timeout"})),
-                    )
-                        .into_response()
-                },
-            )
+    for case in evm_matrix() {
+        let (network, body) = (case.caip2(), case.v1(1));
+        let first = service_fixture();
+        let sends = AtomicUsize::new(0);
+        let original = TEST_SERVICE
+            .scope(first.clone(), async {
+                let response = settle(
+                    &MockFacilitator { invalid: false },
+                    &headers(),
+                    &body,
+                    async {
+                        sends.fetch_add(1, Ordering::SeqCst);
+                        (
+                            StatusCode::BAD_GATEWAY,
+                            Json(json!({"error":"rpc_timeout"})),
+                        )
+                            .into_response()
+                    },
+                )
+                .await;
+                let output = value(response).await;
+                assert_eq!(output["receipt"]["status"], "unknown", "{network}");
+                assert!(output["receipt"]["refusalReason"].is_null());
+                output
+            })
             .await;
-            let output = value(response).await;
-            assert_eq!(output["receipt"]["status"], "unknown");
-            assert!(output["receipt"]["refusalReason"].is_null());
-        })
-        .await;
-    // A new service instance uses only the durable store, no in-memory lock.
-    let restarted = Arc::new(Service {
-        store: first.store.clone(),
-        signing_key: None,
-    });
-    TEST_SERVICE
-        .scope(restarted, async {
-            let replay = settle(
-                &MockFacilitator { invalid: false },
-                &headers(),
-                &body(1),
-                async { panic!("uncertainty must not authorize another transfer") },
-            )
+        // A new service instance uses only the durable store, no in-memory lock.
+        let restarted = Arc::new(Service {
+            store: first.store.clone(),
+            signing_key: None,
+        });
+        TEST_SERVICE
+            .scope(restarted, async {
+                let replay = settle(
+                    &MockFacilitator { invalid: false },
+                    &headers(),
+                    &body,
+                    async { panic!("uncertainty must not authorize another transfer") },
+                )
+                .await;
+                let replay = value(replay).await;
+                assert_eq!(replay["receipt"]["status"], "unknown", "{network}");
+                assert_eq!(replay["receipt"], original["receipt"], "{network}");
+            })
             .await;
-            assert_eq!(value(replay).await["receipt"]["status"], "unknown");
-        })
-        .await;
+        assert_eq!(sends.load(Ordering::SeqCst), 1, "{network}");
+    }
 }
 
 #[tokio::test]
@@ -734,89 +887,116 @@ impl store::Store for BrokenStore {
         Err("offline".into())
     }
 }
+/// Receipt storage down, on every network and token of the matrix, with and
+/// without a purchase context: nothing is admitted and nothing is sent.
 #[tokio::test]
 async fn no_storage_no_broadcast() {
     let service = Arc::new(Service {
         store: Arc::new(BrokenStore),
         signing_key: None,
     });
-    TEST_SERVICE
-        .scope(service, async {
-            let refused = settle(
-                &MockFacilitator { invalid: false },
-                &headers(),
-                &body(1),
-                async { panic!("storage outage allowed a send") },
-            )
-            .await;
-            assert_eq!(refused.status(), StatusCode::SERVICE_UNAVAILABLE);
-        })
-        .await;
+    for case in evm_matrix() {
+        let network = case.caip2();
+        for (h, body) in [
+            (headers(), case.v1(1)),
+            (HeaderMap::new(), case.v1(1)),
+            (keyed("storage-down"), case.v2(1)),
+        ] {
+            TEST_SERVICE
+                .scope(service.clone(), async {
+                    let refused = settle(&MockFacilitator { invalid: false }, &h, &body, async {
+                        panic!("storage outage allowed a send on {network}")
+                    })
+                    .await;
+                    assert_eq!(
+                        refused.status(),
+                        StatusCode::SERVICE_UNAVAILABLE,
+                        "{network}"
+                    );
+                    assert_eq!(value(refused).await["error"], "receipt_store_unavailable");
+                })
+                .await;
+        }
+    }
 }
 
+/// Requests that `/settle` hands to their own settlement paths never enter
+/// admission, on any network of the matrix, even when their inner
+/// requirements read `exact`.
 #[tokio::test]
-async fn base_escrow_and_refund_requests_keep_their_own_settlement_path() {
-    let exact: Value = serde_json::from_slice(&body_on("base", BASE_USDC, 1)).unwrap();
-    assert!(parse_request(&HeaderMap::new(), &body_on("base", BASE_USDC, 1)).is_some());
-    let mut refund = exact.clone();
-    refund["paymentPayload"]["extensions"] = json!({"refund":{"info":{}}});
-    let mut escrow = exact.clone();
-    escrow["scheme"] = json!("escrow");
-    let mut commerce = exact.clone();
-    commerce["paymentPayload"]["scheme"] = json!("commerce");
-    let mut upto = exact.clone();
-    upto["paymentPayload"]["scheme"] = json!("upto");
-    let mut fhe = exact.clone();
-    fhe["paymentPayload"]["scheme"] = json!("fhe-transfer");
-    // x402 v2 names the scheme inside paymentPayload.accepted.
-    let r = &exact["paymentRequirements"];
-    let accepted = json!({"network":"eip155:8453","scheme":"exact","asset":r["asset"],
-        "amount":r["maxAmountRequired"],"payTo":r["payTo"],"maxTimeoutSeconds":60,"extra":r["extra"]});
-    let v2 = |scheme: &str| {
-        let mut inner = accepted.clone();
-        inner["scheme"] = json!(scheme);
-        json!({"x402Version":2,
-            "paymentPayload":{"x402Version":2,"accepted":inner,"payload":exact["paymentPayload"]["payload"]},
-            "resource":{"url":r["resource"],"description":r["description"],"mimeType":r["mimeType"]},
-            "accepted":accepted})
-    };
-    let v2_exact = Bytes::from(serde_json::to_vec(&v2("exact")).unwrap());
-    assert!(parse_request(&HeaderMap::new(), &v2_exact).is_some());
-    for (route, request) in [
-        ("refund", refund),
-        ("escrow", escrow),
-        ("commerce", commerce),
-        ("upto", upto),
-        ("fhe-transfer", fhe),
-        ("v2 escrow", v2("escrow")),
-    ] {
-        let raw = Bytes::from(serde_json::to_vec(&request).unwrap());
-        assert!(parse_request(&HeaderMap::new(), &raw).is_none(), "{route}");
-        let store = Arc::new(store::MemoryStore::default());
-        let service = Arc::new(Service {
-            store: store.clone(),
-            signing_key: Some(SigningKey::from_bytes(&[7; 32])),
-        });
-        TEST_SERVICE
-            .scope(service, async {
-                let own_path =
-                    || async { (StatusCode::OK, Json(json!({"route": route}))).into_response() };
-                let settled = settle(
-                    &MockFacilitator { invalid: false },
-                    &HeaderMap::new(),
-                    &raw,
-                    own_path(),
-                )
-                .await;
-                assert_eq!(value(settled).await, json!({"route": route}));
-                let verified = verify(&HeaderMap::new(), &raw, own_path()).await;
-                assert_eq!(value(verified).await, json!({"route": route}));
-            })
-            .await;
+async fn alternative_routes_keep_their_own_settlement_path_on_every_evm_network() {
+    let mut cases = evm_matrix();
+    cases.dedup_by_key(|case| case.network);
+    for case in cases {
+        let network = case.caip2();
+        let exact: Value = serde_json::from_slice(&case.v1(1)).unwrap();
         assert!(
-            store.0.lock().await.is_empty(),
-            "{route} reserved a receipt"
+            parse_request(&HeaderMap::new(), &case.v1(1)).is_some(),
+            "{network}"
         );
+        let mut refund = exact.clone();
+        refund["paymentPayload"]["extensions"] = json!({"refund":{"info":{}}});
+        let mut escrow = exact.clone();
+        escrow["scheme"] = json!("escrow");
+        let mut commerce = exact.clone();
+        commerce["paymentPayload"]["scheme"] = json!("commerce");
+        let mut upto = exact.clone();
+        upto["paymentPayload"]["scheme"] = json!("upto");
+        let mut fhe = exact.clone();
+        fhe["paymentPayload"]["scheme"] = json!("fhe-transfer");
+        // x402 v2 names the scheme inside paymentPayload.accepted.
+        let v2_exact: Value = serde_json::from_slice(&case.v2(1)).unwrap();
+        assert!(
+            parse_request(&HeaderMap::new(), &case.v2(1)).is_some(),
+            "{network}"
+        );
+        let v2 = |scheme: &str| {
+            let mut request = v2_exact.clone();
+            let mut inner = request["accepted"].clone();
+            inner["scheme"] = json!(scheme);
+            request["paymentPayload"]["accepted"] = inner;
+            request
+        };
+        for (route, request) in [
+            ("refund", refund),
+            ("escrow", escrow),
+            ("commerce", commerce),
+            ("upto", upto),
+            ("fhe-transfer", fhe),
+            ("v2 escrow", v2("escrow")),
+        ] {
+            let raw = Bytes::from(serde_json::to_vec(&request).unwrap());
+            assert!(
+                parse_request(&HeaderMap::new(), &raw).is_none(),
+                "{network} {route}"
+            );
+            let store = Arc::new(store::MemoryStore::default());
+            let service = Arc::new(Service {
+                store: store.clone(),
+                signing_key: Some(SigningKey::from_bytes(&[7; 32])),
+            });
+            TEST_SERVICE
+                .scope(service, async {
+                    let own_path = || async {
+                        (StatusCode::OK, Json(json!({"route": route}))).into_response()
+                    };
+                    let settled = settle(
+                        &MockFacilitator { invalid: false },
+                        &HeaderMap::new(),
+                        &raw,
+                        own_path(),
+                    )
+                    .await;
+                    assert_eq!(value(settled).await, json!({"route": route}));
+                    let verified = verify(&HeaderMap::new(), &raw, own_path()).await;
+                    assert_eq!(value(verified).await, json!({"route": route}));
+                })
+                .await;
+            assert!(
+                store.0.lock().await.is_empty(),
+                "{network} {route} reserved a receipt"
+            );
+        }
     }
 }
 
@@ -836,6 +1016,286 @@ fn capability_lists_exactly_the_supported_networks() {
     listed.sort();
     expected.sort();
     assert_eq!(listed, expected);
+    // The same list from a source `capability` does not read: the chain ids of
+    // the EVM networks the catalog presents with `exact` tokens, and Hedera.
+    let presented: Value =
+        serde_json::from_str(include_str!("../../config/supported_tokens.json")).unwrap();
+    #[allow(unused_mut)]
+    let mut independent: Vec<String> = ["evm_mainnets", "evm_testnets"]
+        .iter()
+        .flat_map(|group| presented[*group].as_object().unwrap().iter())
+        .filter(|(name, entry)| !name.starts_with('_') && entry.is_object())
+        .filter(|(_, entry)| !entry["tokens"].as_array().unwrap().is_empty())
+        .map(|(_, entry)| format!("eip155:{}", entry["chainId"].as_u64().unwrap()))
+        .collect();
+    #[cfg(feature = "hedera")]
+    independent.extend(["hedera:mainnet".to_owned(), "hedera:testnet".to_owned()]);
+    independent.sort();
+    assert_eq!(listed, independent);
+}
+
+/// The EVM matrix is the one production already serves, announced, admitted
+/// and normalized as one. Its tokens are checked against the ones
+/// `config/supported_tokens.json` presents for every EVM network (tied to
+/// `/supported` by `networks_json`), not against the function under test.
+/// Every token of every network is admitted in x402 v1 and v2, and its receipt
+/// names the CAIP-2 network and carries the lowercase asset and payTo and the
+/// token's own decimals.
+#[test]
+fn every_evm_exact_token_is_announced_admitted_and_normalized() {
+    use crate::types::TokenType;
+    let presented: Value =
+        serde_json::from_str(include_str!("../../config/supported_tokens.json")).unwrap();
+    let mut expected: Vec<(String, String)> = ["evm_mainnets", "evm_testnets"]
+        .iter()
+        .flat_map(|group| presented[*group].as_object().unwrap().iter())
+        .filter(|(name, entry)| !name.starts_with('_') && entry.is_object())
+        .flat_map(|(name, entry)| {
+            entry["tokens"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(move |symbol| (name.clone(), symbol.as_str().unwrap().to_owned()))
+        })
+        .collect();
+    let matrix = evm_matrix();
+    let symbol = |token: TokenType| {
+        serde_json::to_value(token)
+            .unwrap()
+            .as_str()
+            .unwrap()
+            .to_owned()
+    };
+    let mut admitted: Vec<(String, String)> = matrix
+        .iter()
+        .map(|case| (case.network.to_string(), symbol(case.token.token)))
+        .collect();
+    expected.sort();
+    admitted.sort();
+    assert_eq!(admitted, expected);
+    let tokens_on = |network: Network| {
+        let mut on: Vec<TokenType> = matrix
+            .iter()
+            .filter(|case| case.network == network)
+            .map(|case| case.token.token)
+            .collect();
+        on.sort_by_key(|token| symbol(*token));
+        on
+    };
+    assert_eq!(
+        tokens_on(Network::Ethereum),
+        [
+            TokenType::Ausd,
+            TokenType::Eurc,
+            TokenType::Pyusd,
+            TokenType::Usdc
+        ]
+    );
+    assert_eq!(tokens_on(Network::Bsc), [TokenType::Ausd]);
+    assert_eq!(tokens_on(Network::Robinhood), [TokenType::Usdg]);
+
+    // A payee in capitals, so its lowercase in the receipt is a real change.
+    const PAY_TO: &str = "0xABCDEF0123456789ABCDEF0123456789ABCDEF01";
+    let paying = |body: Bytes| {
+        let mut request: Value = serde_json::from_slice(&body).unwrap();
+        for terms in ["paymentRequirements", "accepted"] {
+            if request[terms].is_object() {
+                request[terms]["payTo"] = json!(PAY_TO);
+            }
+        }
+        Bytes::from(serde_json::to_vec(&request).unwrap())
+    };
+    let announced = capability()["networks"].clone();
+    for case in &matrix {
+        let network = case.caip2();
+        assert!(supported(case.network), "{network}");
+        assert!(
+            announced.as_array().unwrap().contains(&json!(network)),
+            "{network} is admitted and not announced"
+        );
+        for (version, body) in [(1, paying(case.v1(1))), (2, paying(case.v2(1)))] {
+            let request = parse_request(&HeaderMap::new(), &body).unwrap_or_else(|| {
+                panic!("{network} {} x402 v{version} is not admitted", case.asset())
+            });
+            let receipt = initial(&request, None, "settle").unwrap().receipt;
+            let asset = case.asset().to_lowercase();
+            assert_eq!(receipt.network, network);
+            assert_eq!(receipt.x402_version, version, "{network}");
+            assert_eq!(receipt.asset, asset, "{network}");
+            assert_eq!(receipt.request["asset"], asset.as_str(), "{network}");
+            assert_eq!(receipt.request["network"], network.as_str());
+            assert_eq!(receipt.pay_to, PAY_TO.to_lowercase(), "{network}");
+            assert_eq!(receipt.request["payTo"], PAY_TO.to_lowercase().as_str());
+            assert_eq!(
+                receipt.decimals,
+                Some(case.token.decimals),
+                "{network} {asset}"
+            );
+        }
+    }
+}
+
+/// What the matrix leaves out stays out of announcement and admission: the
+/// EVM network production serves no `exact` on (Ethereum Sepolia) and the EVM
+/// variants nothing serves, though each has an ERC-3009 deployment on paper;
+/// a token of an admitted network that is not one of its `exact` tokens; a
+/// body whose payload and terms name two networks, or whose terms are not
+/// `exact`; and Solana and the other families.
+#[test]
+fn nothing_outside_the_evm_matrix_is_announced_or_admitted() {
+    use crate::types::TokenType;
+    let announced = capability()["networks"].clone();
+    let announced = announced.as_array().unwrap();
+    for network in [
+        Network::EthereumSepolia,
+        Network::Sei,
+        Network::SeiTestnet,
+        Network::XdcMainnet,
+    ] {
+        let on_paper = crate::network::exact_payment_tokens(network);
+        assert!(!on_paper.is_empty(), "{network}");
+        assert!(evm_exact_tokens(network).is_empty(), "{network}");
+        assert!(!supported(network), "{network}");
+        assert!(!announced.contains(&json!(network.to_caip2())), "{network}");
+        let body = body_on(&network.to_string(), &on_paper[0].address.to_string(), 1);
+        assert!(
+            parse_request(&HeaderMap::new(), &body).is_none(),
+            "{network}"
+        );
+    }
+
+    // BSC's USDC has no ERC-3009 and is no `exact` token there; AUSD is.
+    let bsc_usdc = crate::network::get_token_deployment(Network::Bsc, TokenType::Usdc)
+        .unwrap()
+        .address()
+        .to_string();
+    let bsc_ausd = crate::network::get_token_deployment(Network::Bsc, TokenType::Ausd)
+        .unwrap()
+        .address()
+        .to_string();
+    assert!(parse_request(&HeaderMap::new(), &body_on("bsc", &bsc_ausd, 1)).is_some());
+    assert!(parse_request(&HeaderMap::new(), &body_on("bsc", &bsc_usdc, 1)).is_none());
+    // A token of another network, and one that is nobody's.
+    for asset in [BASE_USDC, "0x000000000000000000000000000000000000dEaD"] {
+        assert!(
+            parse_request(&HeaderMap::new(), &body_on("ethereum", asset, 1)).is_none(),
+            "{asset}"
+        );
+    }
+
+    // Both halves of a v1 body name admitted networks, but not the same one.
+    let mut split: Value = serde_json::from_slice(&body_on("base", BASE_USDC, 1)).unwrap();
+    split["paymentRequirements"]["network"] = json!("ethereum");
+    let split = Bytes::from(serde_json::to_vec(&split).unwrap());
+    assert!(parse_request(&HeaderMap::new(), &split).is_none());
+    // Terms in another scheme under an `exact` payload stay out too.
+    let mut terms: Value = serde_json::from_slice(&body_on("base", BASE_USDC, 1)).unwrap();
+    terms["paymentRequirements"]["scheme"] = json!("upto");
+    let terms = Bytes::from(serde_json::to_vec(&terms).unwrap());
+    assert!(parse_request(&HeaderMap::new(), &terms).is_none());
+
+    assert!(!supported(Network::Solana));
+    assert!(!announced.contains(&json!(Network::Solana.to_caip2())));
+    // A well-formed EVM payment that names a network of another family.
+    for network in ["solana", "near", "stellar"] {
+        let body = body_on(network, ARC_USDC, 1);
+        assert!(
+            parse_request(&HeaderMap::new(), &body).is_none(),
+            "{network}"
+        );
+    }
+}
+
+/// What the rail admits, network by network and token by token, written down.
+/// The list and the matrix are the same set both ways: a pair that joins the
+/// matrix has to be added here, so that it cannot later leave it silently. A
+/// resend of a receipt stored for a pair that left skips the receipt and runs
+/// as an ordinary settle (`docs/facilitator-receipts.md`, "EVM coverage"). To
+/// take one off the rail, edit this list on purpose and decide what happens to
+/// the receipts already stored for it.
+#[test]
+fn every_network_and_token_on_the_rail_stays_on_it() {
+    const ON_THE_RAIL: &[(&str, &[&str])] = &[
+        ("arc", &["usdc", "eurc"]),
+        ("ethereum", &["usdc", "eurc", "ausd", "pyusd"]),
+        ("base", &["usdc", "eurc"]),
+        ("polygon", &["usdc", "ausd"]),
+        ("arbitrum", &["usdc", "ausd", "usdt"]),
+        ("optimism", &["usdc", "usdt"]),
+        ("avalanche", &["usdc", "eurc", "ausd"]),
+        ("celo", &["usdc", "usdt"]),
+        ("hyperevm", &["usdc"]),
+        ("unichain", &["usdc"]),
+        ("monad", &["usdc", "ausd", "usdt"]),
+        ("bsc", &["ausd"]),
+        ("skale-base", &["usdc"]),
+        ("scroll", &["usdc"]),
+        ("robinhood", &["usdg"]),
+        ("arc-testnet", &["usdc", "eurc"]),
+        ("base-sepolia", &["usdc"]),
+        ("polygon-amoy", &["usdc"]),
+        ("arbitrum-sepolia", &["usdc"]),
+        ("optimism-sepolia", &["usdc"]),
+        ("avalanche-fuji", &["usdc"]),
+        ("celo-sepolia", &["usdc"]),
+        ("hyperevm-testnet", &["usdc"]),
+        ("unichain-sepolia", &["usdc"]),
+        ("skale-base-sepolia", &["usdc"]),
+        ("robinhood-testnet", &["usdg"]),
+    ];
+    let matrix = evm_matrix();
+    for (name, symbols) in ON_THE_RAIL {
+        let network: Network = name.parse().unwrap();
+        assert!(supported(network), "{name} left the rail");
+        for symbol in *symbols {
+            let on = matrix.iter().any(|case| {
+                case.network == network
+                    && serde_json::to_value(case.token.token).unwrap() == json!(symbol)
+            });
+            assert!(on, "{name} {symbol} left the rail");
+        }
+    }
+    for case in &matrix {
+        let (name, symbol) = (
+            case.network.to_string(),
+            serde_json::to_value(case.token.token).unwrap(),
+        );
+        let listed = ON_THE_RAIL
+            .iter()
+            .any(|(listed, symbols)| *listed == name && symbols.iter().any(|s| json!(s) == symbol));
+        assert!(
+            listed,
+            "{name} {symbol} joined the rail: add it to ON_THE_RAIL so it cannot leave silently"
+        );
+    }
+    #[cfg(feature = "hedera")]
+    for network in [Network::Hedera, Network::HederaTestnet] {
+        assert!(supported(network), "{network} left the rail");
+    }
+}
+
+/// What was admitted before the matrix stays admitted: on Arc, Arc testnet
+/// and Base every asset verification accepts is one of the matrix's tokens,
+/// so no authorization admitted then goes back to the path without receipts
+/// when it is resent.
+#[test]
+fn every_asset_admitted_before_the_matrix_stays_on_the_rail() {
+    for network in [Network::Arc, Network::ArcTestnet, Network::Base] {
+        let tokens: Vec<_> = evm_exact_tokens(network)
+            .into_iter()
+            .map(|token| token.address)
+            .collect();
+        let accepted = crate::network::supported_asset_addresses(network);
+        assert!(!accepted.is_empty(), "{network}");
+        for asset in accepted {
+            assert!(tokens.contains(&asset), "{network} {asset}");
+            let body = body_on(&network.to_string(), &asset.to_string(), 1);
+            assert!(
+                parse_request(&HeaderMap::new(), &body).is_some(),
+                "{network} {asset}"
+            );
+        }
+    }
 }
 
 /// Base is announced: a Base settle is admitted without any test override.
@@ -1025,14 +1485,20 @@ fn hedera_body(network: &str, asset: &str) -> Bytes {
     )
 }
 
-/// CAIP-2 id and a synthetic request for one authorization, per network.
+/// CAIP-2 id and a synthetic request for one authorization, per network: on
+/// EVM, every network of the matrix with its first token.
 fn admitted_networks() -> Vec<(&'static str, Bytes)> {
+    let mut first = evm_matrix();
+    first.dedup_by_key(|case| case.network);
     #[allow(unused_mut)]
-    let mut cases = vec![
-        ("eip155:5042", body_on("arc", ARC_USDC, 1)),
-        ("eip155:5042002", body_on("arc-testnet", ARC_USDC, 1)),
-        ("eip155:8453", body_on("base", BASE_USDC, 1)),
-    ];
+    let mut cases: Vec<(&'static str, Bytes)> = EVM_RECEIPT_NETWORKS
+        .iter()
+        .zip(first)
+        .map(|(network, case)| {
+            assert_eq!(*network, case.caip2());
+            (network.as_str(), case.v1(1))
+        })
+        .collect();
     #[cfg(feature = "hedera")]
     cases.extend([
         (
@@ -2466,4 +2932,1102 @@ async fn a_named_transaction_is_kept_and_a_failure_before_the_send_keeps_its_ret
             assert!(before.get("retryable").is_none(), "{before}");
         })
         .await;
+}
+
+// --- Keys, identities and verdicts across the matrix --------------------------
+
+/// A 24-hour Idempotency-Key cache of a test's own (`TEST_LEGACY`), keyed as
+/// `post_settle`'s.
+#[derive(Debug, Default)]
+struct LegacyCache(std::sync::Mutex<std::collections::HashMap<String, IdempotencyRecord>>);
+
+#[async_trait::async_trait]
+impl IdempotencyStore for LegacyCache {
+    async fn get(
+        &self,
+        key: &str,
+    ) -> std::result::Result<Option<IdempotencyRecord>, IdempotencyStoreError> {
+        Ok(self.0.lock().unwrap().get(key).cloned())
+    }
+    async fn put(
+        &self,
+        record: IdempotencyRecord,
+    ) -> std::result::Result<(), IdempotencyStoreError> {
+        self.0
+            .lock()
+            .unwrap()
+            .insert(record.idempotency_key.clone(), record);
+        Ok(())
+    }
+    fn store_type(&self) -> &'static str {
+        "test"
+    }
+}
+
+/// AUSD: one CREATE2 address on every network that has it.
+const AUSD: &str = "0x00000000eFE302BEAA2b3e6e1b18d08D69a9012a";
+
+/// `body` with `edit` applied to its JSON.
+fn edited(body: &Bytes, edit: impl FnOnce(&mut Value)) -> Bytes {
+    let mut value: Value = serde_json::from_slice(body).unwrap();
+    edit(&mut value);
+    Bytes::from(serde_json::to_vec(&value).unwrap())
+}
+
+/// A settled payment on `network`, as `post_settle` answers it.
+fn settled_on(network: Network) -> Response {
+    let settled = SettleResponse {
+        success: true,
+        error_reason: None,
+        payer: MixedAddress::Evm(
+            "0x1111111111111111111111111111111111111111"
+                .parse()
+                .unwrap(),
+        ),
+        transaction: Some(crate::types::TransactionHash::Evm([0x22; 32])),
+        network,
+        proof_of_payment: None,
+        extensions: None,
+    };
+    (StatusCode::OK, Json(settled)).into_response()
+}
+
+/// One Idempotency-Key, two signatures from the same payer: the second is
+/// refused and nothing is sent for it, on the first one's network and `payTo`,
+/// on another network with the same token address, and to another `payTo`.
+/// The published contract refuses the same key with a different body; the
+/// binding alias alone is scoped to a network and a `payTo`.
+#[tokio::test]
+async fn refutador_xr_one_idempotency_key_never_charges_a_second_signature() {
+    const OTHER_PAY_TO: &str = "0x3333333333333333333333333333333333333333";
+    let first = body_on("ethereum", AUSD, 1);
+    let elsewhere = evm_matrix()
+        .into_iter()
+        .find(|case| case.network != Network::Ethereum && case.asset().eq_ignore_ascii_case(AUSD))
+        .expect("AUSD on a second network of the matrix");
+    let cases = [
+        (
+            "same network and payTo (control)",
+            body_on("ethereum", AUSD, 2),
+        ),
+        ("another network", elsewhere.v1(2)),
+        (
+            "another payTo",
+            edited(&body_on("ethereum", AUSD, 2), |v| {
+                v["paymentRequirements"]["payTo"] = json!(OTHER_PAY_TO);
+                v["paymentPayload"]["payload"]["authorization"]["to"] = json!(OTHER_PAY_TO);
+            }),
+        ),
+    ];
+    let mut outcomes = vec![];
+    for (case, second) in cases {
+        for body in [&first, &second] {
+            assert!(
+                parse_request(&HeaderMap::new(), body).is_some(),
+                "{case}: off the rail"
+            );
+        }
+        let sends = AtomicUsize::new(0);
+        let status = TEST_SERVICE
+            .scope(service_fixture(), async {
+                let paid = settle(
+                    &MockFacilitator { invalid: false },
+                    &keyed("order-42"),
+                    &first,
+                    async {
+                        sends.fetch_add(1, Ordering::SeqCst);
+                        settled_on(Network::Ethereum)
+                    },
+                )
+                .await;
+                assert_eq!(paid.status(), StatusCode::OK, "{case}");
+                let again = settle(
+                    &MockFacilitator { invalid: false },
+                    &keyed("order-42"),
+                    &second,
+                    async {
+                        sends.fetch_add(1, Ordering::SeqCst);
+                        settled_on(Network::Ethereum)
+                    },
+                )
+                .await;
+                let status = again.status().as_u16();
+                if status == 409 {
+                    let refused = value(again).await;
+                    assert_eq!(refused["error"], "receipt_request_conflict", "{case}");
+                    assert!(refused.get("receipt").is_none(), "{case}");
+                }
+                status
+            })
+            .await;
+        outcomes.push((case, status, sends.load(Ordering::SeqCst)));
+    }
+    assert_eq!(
+        outcomes,
+        vec![
+            ("same network and payTo (control)", 409, 1),
+            ("another network", 409, 1),
+            ("another payTo", 409, 1),
+        ]
+    );
+}
+
+/// A payment settled under an Idempotency-Key is filed in the 24-hour cache as
+/// `post_settle` files what it settles: under the trimmed key, with the hash of
+/// the body as sent and the settle response, for a day. Every path that reads
+/// that cache then refuses another body under the key, whoever signs it and on
+/// whatever network, as it did before the rail covered these networks and as a
+/// release before 2.51.0 does after a rollback. The same request still gets its
+/// receipt back, on every network the rail admits.
+#[tokio::test]
+async fn a_settled_idempotency_key_is_filed_in_the_day_long_cache() {
+    for (network, body) in admitted_networks() {
+        let cache = Arc::new(LegacyCache::default());
+        let settled_network = Network::from_caip2(network).unwrap();
+        TEST_SERVICE
+            .scope(
+                service_fixture(),
+                TEST_LEGACY.scope(cache.clone(), async {
+                    let h = keyed(" order-42 ");
+                    let paid = settle(&MockFacilitator { invalid: false }, &h, &body, async {
+                        settled_on(settled_network)
+                    })
+                    .await;
+                    assert_eq!(paid.status(), StatusCode::OK, "{network}");
+                    let paid = value(paid).await;
+                    let row = cache.0.lock().unwrap().get("order-42").cloned();
+                    let row = row.unwrap_or_else(|| panic!("{network}: not filed"));
+                    assert_eq!(
+                        row.request_hash,
+                        crate::idempotency_store::hash_request_body(&body),
+                        "{network}"
+                    );
+                    let day = now() + crate::idempotency_store::IDEMPOTENCY_TTL_SECONDS;
+                    assert!(
+                        row.expires_at <= day && row.expires_at + 60 >= day,
+                        "{network}"
+                    );
+                    let filed: SettleResponse = serde_json::from_str(&row.response_json).unwrap();
+                    assert!(filed.success, "{network}");
+                    assert_eq!(filed.network, settled_network);
+                    let same = legacy_response(row.clone(), &row.request_hash);
+                    assert_eq!(same.status(), StatusCode::OK, "{network}");
+                    let other = legacy_response(row, "another-body");
+                    assert_eq!(other.status(), StatusCode::CONFLICT, "{network}");
+                    let replay = settle_again(&h, &body).await;
+                    assert_eq!(replay.status(), StatusCode::OK, "{network}");
+                    assert_eq!(value(replay).await["receipt"], paid["receipt"]);
+                }),
+            )
+            .await;
+    }
+    // Another payer under the key, on another network: refused before anything
+    // is verified, and nothing is sent.
+    TEST_SERVICE
+        .scope(
+            service_fixture(),
+            TEST_LEGACY.scope(Arc::new(LegacyCache::default()), async {
+                let paid = settle(
+                    &MockFacilitator { invalid: false },
+                    &keyed("order-42"),
+                    &body_on("base", BASE_USDC, 1),
+                    async { settled_on(Network::Base) },
+                )
+                .await;
+                assert_eq!(paid.status(), StatusCode::OK);
+                let another_payer = edited(&body_on("arc-testnet", ARC_USDC, 2), |v| {
+                    v["paymentPayload"]["payload"]["authorization"]["from"] =
+                        json!("0x4444444444444444444444444444444444444444");
+                });
+                let refused = settle_again(&keyed("order-42"), &another_payer).await;
+                assert_eq!(refused.status(), StatusCode::CONFLICT);
+                assert_eq!(value(refused).await["error"], "idempotency_key_conflict");
+            }),
+        )
+        .await;
+}
+
+/// An authorization admitted under one request, its answer lost after its
+/// bytes were stored, and then the same payment under terms the rail cannot
+/// normalize (a float in `extra`): never a second transaction, on every network
+/// and token of the matrix. The authorization can still be named and its
+/// admission answers for it; `/verify` does not simulate it again either.
+#[tokio::test]
+async fn refutador_xr_an_admitted_authorization_never_goes_around_the_rail() {
+    for case in evm_matrix() {
+        let network = case.caip2();
+        let body = case.v1(1);
+        let odd = edited(&body, |v| {
+            v["paymentRequirements"]["extra"]["note"] = json!(1.5);
+        });
+        let request = parse_request(&HeaderMap::new(), &odd).expect("on the rail");
+        assert!(
+            initial(&request, None, "settle").is_err(),
+            "{network}: normalized"
+        );
+        let sends = AtomicUsize::new(0);
+        TEST_SERVICE
+            .scope(service_fixture(), async {
+                let lost = settle(
+                    &MockFacilitator { invalid: false },
+                    &HeaderMap::new(),
+                    &body,
+                    async {
+                        sends.fetch_add(1, Ordering::SeqCst);
+                        prepared_evm(prepared_hash(), vec![1, 2, 3]).await.unwrap();
+                        sending();
+                        (
+                            StatusCode::GATEWAY_TIMEOUT,
+                            Json(json!({"error":"upstream_timeout"})),
+                        )
+                            .into_response()
+                    },
+                )
+                .await;
+                assert_eq!(value(lost).await["retryable"], false, "{network}");
+                let again = settle(
+                    &MockFacilitator { invalid: false },
+                    &HeaderMap::new(),
+                    &odd,
+                    async {
+                        sends.fetch_add(1, Ordering::SeqCst);
+                        settled_on(case.network)
+                    },
+                )
+                .await;
+                assert_eq!(again.status(), StatusCode::CONFLICT, "{network}");
+                assert_eq!(value(again).await["error"], "receipt_request_conflict");
+                let verified = verify_again(&HeaderMap::new(), &odd).await;
+                assert_eq!(verified["isValid"], false, "{network}");
+                assert_eq!(verified["invalidReason"], "authorization_in_flight");
+                assert!(verified.get("receipt").is_none(), "{network}");
+            })
+            .await;
+        assert_eq!(sends.load(Ordering::SeqCst), 1, "{network}");
+    }
+}
+
+/// A request the rail cannot normalize whose authorization nothing admitted
+/// goes the provider's way, as before: free-form terms (`extra`,
+/// `outputSchema`) may carry a float, and refusing those would refuse payments
+/// that settle today.
+#[tokio::test]
+async fn an_unnormalizable_request_without_an_admission_goes_the_providers_way() {
+    let odd = edited(&body_on("base", BASE_USDC, 3), |v| {
+        v["paymentRequirements"]["outputSchema"] = json!({"output":{"minimum":0.5}});
+    });
+    TEST_SERVICE
+        .scope(service_fixture(), async {
+            let paid = settle(
+                &MockFacilitator { invalid: false },
+                &HeaderMap::new(),
+                &odd,
+                async { settled_on(Network::Base) },
+            )
+            .await;
+            assert_eq!(paid.status(), StatusCode::OK);
+            assert!(value(paid).await.get("receipt").is_none());
+            let verified = verify(&HeaderMap::new(), &odd, async {
+                (StatusCode::OK, Json(json!({"isValid":true}))).into_response()
+            })
+            .await;
+            assert_eq!(value(verified).await["isValid"], true);
+        })
+        .await;
+}
+
+/// `/verify` with the receipt store unreachable answers what `/settle` does,
+/// `503 receipt_store_unavailable` with `Retry-After`, and never simulates: a
+/// simulation's verdict on a consumed nonce would invite a new signature for a
+/// payment that may have settled. Also for a request the rail cannot
+/// normalize, on `/settle` too.
+#[tokio::test]
+async fn verify_without_the_store_is_no_verdict() {
+    let service = Arc::new(Service {
+        store: Arc::new(BrokenStore),
+        signing_key: None,
+    });
+    for case in evm_matrix() {
+        let network = case.caip2();
+        let odd = edited(&case.v1(1), |v| {
+            v["paymentRequirements"]["extra"]["note"] = json!(1.5);
+        });
+        for (h, body) in [
+            (headers(), case.v1(1)),
+            (HeaderMap::new(), case.v2(1)),
+            (HeaderMap::new(), odd.clone()),
+        ] {
+            TEST_SERVICE
+                .scope(service.clone(), async {
+                    let answer = verify(&h, &body, async {
+                        panic!("simulated without the store on {network}")
+                    })
+                    .await;
+                    assert_eq!(
+                        answer.status(),
+                        StatusCode::SERVICE_UNAVAILABLE,
+                        "{network}"
+                    );
+                    assert_eq!(answer.headers()[RETRY_AFTER], "2", "{network}");
+                    assert_eq!(value(answer).await["error"], "receipt_store_unavailable");
+                })
+                .await;
+        }
+        TEST_SERVICE
+            .scope(service.clone(), async {
+                let refused = settle(
+                    &MockFacilitator { invalid: false },
+                    &HeaderMap::new(),
+                    &odd,
+                    async { panic!("sent without the store on {network}") },
+                )
+                .await;
+                assert_eq!(
+                    refused.status(),
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "{network}"
+                );
+            })
+            .await;
+    }
+}
+
+/// The same token address on two networks (AUSD), the same payer and the same
+/// nonce: one authorization per network, so neither admission answers for, or
+/// blocks, the other.
+#[test]
+fn refutador_x_the_same_token_address_on_two_networks_is_two_authorizations() {
+    let networks: Vec<Network> = evm_matrix()
+        .into_iter()
+        .filter(|case| case.asset().eq_ignore_ascii_case(AUSD))
+        .map(|case| case.network)
+        .collect();
+    assert!(networks.len() >= 2, "AUSD on fewer than two networks");
+    let ids: std::collections::HashSet<String> = networks
+        .iter()
+        .map(|network| {
+            let body = body_on(&network.to_string(), AUSD, 1);
+            authorization(&parse_request(&HeaderMap::new(), &body).unwrap()).unwrap()
+        })
+        .collect();
+    assert_eq!(ids.len(), networks.len());
+}
+
+/// The same nonce from the same payer in two tokens of one network (Base USDC
+/// and EURC): two authorizations. The casing of the token or of the nonce
+/// never makes two of one.
+#[test]
+fn refutador_x_the_same_nonce_on_two_tokens_is_two_authorizations() {
+    let id =
+        |body: &Bytes| authorization(&parse_request(&HeaderMap::new(), body).unwrap()).unwrap();
+    let usdc = id(&body_on("base", BASE_USDC, 0xab));
+    assert_ne!(usdc, id(&body_on("base", BASE_EURC, 0xab)));
+    assert_eq!(usdc, id(&body_on("base", &BASE_USDC.to_lowercase(), 0xab)));
+    let upper = edited(&body_on("base", BASE_USDC, 0xab), |v| {
+        let nonce = &mut v["paymentPayload"]["payload"]["authorization"]["nonce"];
+        *nonce = json!(format!("0x{}", hex::encode_upper([0xab; 32])));
+    });
+    assert_eq!(usdc, id(&upper));
+}
+
+/// An authorization valid for longer than the rows' retention: every row its
+/// admission writes outlives it, because the record carries the `validBefore`
+/// of the signed payload, on every network and token of the matrix.
+#[test]
+fn refutador_x_a_long_lived_authorization_outlives_its_rows_never() {
+    let valid_before = now() + 3 * store::RECEIPT_RETENTION_SECS;
+    for case in evm_matrix() {
+        let body = edited(&case.v1(1), |v| {
+            v["paymentPayload"]["payload"]["authorization"]["validBefore"] =
+                json!(valid_before.to_string());
+        });
+        let record = initial(
+            &parse_request(&HeaderMap::new(), &body).unwrap(),
+            None,
+            "settle",
+        )
+        .unwrap();
+        assert_eq!(
+            record.authorization_expires_at,
+            valid_before,
+            "{}",
+            case.caip2()
+        );
+        assert!(
+            store::expires_at(&record, now()) > valid_before,
+            "{}",
+            case.caip2()
+        );
+    }
+}
+
+/// `Never` turns on the second the latest block is stamped at `validBefore`,
+/// not a second before, and the token is read at that latest block, not at the
+/// reverted one: someone may execute the published authorization in between.
+#[tokio::test]
+async fn the_latest_block_and_its_stamp_decide_to_the_second() {
+    use crate::chain::evm::MetaEvmProvider;
+    use crate::payment_operator::test_rpc::{self, CallAnswer, MockNode, Providers};
+    use alloy::sol_types::SolCall;
+    // The stamp of every block the mock node serves; its latest is 0x100.
+    const CHAIN_NOW: u64 = 0x68c0_0000;
+    let node = MockNode::start(Network::Base).await;
+    let providers = Providers::one(
+        Network::Base,
+        test_rpc::provider(Network::Base, &node, false).await,
+    );
+    let token: alloy::primitives::Address = BASE_USDC.parse().unwrap();
+    let selector = crate::chain::evm::USDC::authorizationStateCall::SELECTOR;
+    node.on_call(token, selector, CallAnswer::Return(vec![0u8; 32]));
+    let provider = test_rpc::evm(&providers, Network::Base).inner();
+    let mut record = fixture_record_on("base", BASE_USDC);
+    for (valid_before, expected) in [(CHAIN_NOW, Spent::Never), (CHAIN_NOW + 1, Spent::Unknown)] {
+        record.authorization_expires_at = valid_before;
+        let spent = authorization_spent(provider, &record, Some(0x100)).await;
+        assert_eq!(spent, expected, "{valid_before}");
+    }
+    record.authorization_expires_at = CHAIN_NOW;
+    node.clear_log();
+    let spent = authorization_spent(provider, &record, Some(0x80)).await;
+    assert_eq!(spent, Spent::Never);
+    let blocks: Vec<Value> = node
+        .call_log()
+        .into_iter()
+        .map(|(_, _, block)| block)
+        .collect();
+    assert_eq!(blocks, vec![json!("0x100")], "read at the reverted block");
+}
+
+/// What reconciliation makes of a reverted transaction.
+#[derive(Debug, PartialEq)]
+enum AfterRevert {
+    /// `rejected`, `settlement_failed_on_chain`.
+    Refused,
+    /// `unknown`, `authorization_used_elsewhere`, nothing left to resend.
+    UsedElsewhere,
+    /// As it was.
+    Unchanged,
+}
+
+/// A reverted transaction is no refusal while the authorization behind it may
+/// have moved the funds, or still can. Read at the chain's latest block: used
+/// there, it was executed by another transaction or cancelled, and the
+/// receipt says so without refusing; unused but stamped before `validBefore`
+/// (by the chain's clock, whatever this one says), it can still execute; and
+/// unread, or with no key kept, is no verdict. Only an unused authorization at
+/// a block stamped past `validBefore` is `rejected`. The read names the signed
+/// authorization, at that block.
+#[tokio::test]
+async fn a_revert_is_refused_only_once_the_authorization_can_never_move_the_funds() {
+    use crate::payment_operator::test_rpc::{self, CallAnswer, MockNode, Providers};
+    use alloy::sol_types::SolCall;
+    let node = MockNode::start(Network::Base).await;
+    node.revert_receipts(true);
+    let providers = Providers::one(
+        Network::Base,
+        test_rpc::provider(Network::Base, &node, false).await,
+    );
+    let token: alloy::primitives::Address = BASE_USDC.parse().unwrap();
+    let selector = crate::chain::evm::USDC::authorizationStateCall::SELECTOR;
+    let state = |used: bool| {
+        let mut word = vec![0u8; 32];
+        word[31] = used.into();
+        Some(CallAnswer::Return(word))
+    };
+    // The stamp of every block the mock node serves (`test_rpc::block_json`),
+    // long before this clock: only the chain's says whether it has passed.
+    const CHAIN_NOW: u64 = 0x68c0_0000;
+    assert!(now() > CHAIN_NOW + 600);
+    let (passed, ahead) = (CHAIN_NOW - 120, CHAIN_NOW + 600);
+    use AfterRevert::*;
+    // (case, what the token answers, validBefore, the record keeps the key, outcome)
+    let cases = [
+        ("used on chain", state(true), passed, true, UsedElsewhere),
+        (
+            "used while still valid",
+            state(true),
+            ahead,
+            true,
+            UsedElsewhere,
+        ),
+        ("unreadable", None, passed, true, Unchanged),
+        (
+            "unused, still valid on chain",
+            state(false),
+            ahead,
+            true,
+            Unchanged,
+        ),
+        (
+            "unused, no key kept",
+            state(false),
+            passed,
+            false,
+            Unchanged,
+        ),
+        (
+            "unused, past validBefore",
+            state(false),
+            passed,
+            true,
+            Refused,
+        ),
+    ];
+    for (case, answer, valid_before, kept, outcome) in cases {
+        match answer {
+            Some(answer) => {
+                node.fail_reads(false);
+                node.on_call(token, selector, answer);
+            }
+            None => node.fail_reads(true),
+        }
+        let service = service_fixture();
+        let mut record = fixture_record_on("base", BASE_USDC);
+        record.prepared = Some(
+            json!({"transactionHash": prepared_hash(), "signedTransaction": STANDARD.encode([1, 2, 3])}),
+        );
+        record.receipt.settlement = Some(
+            json!({"id": prepared_hash(), "idType": "evm-transaction-hash", "paymentId": null}),
+        );
+        record.receipt.status = "pending".into();
+        record.receipt.diagnostic_code = Some("transaction_prepared".into());
+        record.authorization_expires_at = valid_before;
+        if !kept {
+            record.evm_authorization = None;
+        }
+        let before = record.clone();
+        assert!(service
+            .store
+            .reserve(&record, &[], "reserve")
+            .await
+            .unwrap());
+        reconcile(&service, &providers, &mut record).await;
+        let stored = service
+            .store
+            .get(&format!("receipt:v1:{}", record.receipt.receipt_id))
+            .await
+            .unwrap()
+            .unwrap();
+        for seen in [&record, &stored] {
+            let receipt = &seen.receipt;
+            let signed = seen.prepared.as_ref().unwrap().get("signedTransaction");
+            match outcome {
+                Refused => {
+                    assert_eq!(receipt.status, "rejected", "{case}");
+                    assert_eq!(
+                        receipt.refusal_reason.as_deref(),
+                        Some("settlement_failed_on_chain")
+                    );
+                }
+                UsedElsewhere => {
+                    assert_eq!(receipt.status, "unknown", "{case}");
+                    assert_eq!(receipt.refusal_reason, None, "{case}");
+                    assert_eq!(
+                        receipt.diagnostic_code.as_deref(),
+                        Some(AUTHORIZATION_USED_ELSEWHERE),
+                        "{case}"
+                    );
+                    assert_eq!(receipt.retry, json!({"action":"none"}), "{case}");
+                    assert!(signed.is_none(), "{case}: dead bytes kept for a resend");
+                    // What a bound resend replays says the same.
+                    assert_eq!(seen.http_status, 502, "{case}");
+                    assert_eq!(seen.response["error"], AUTHORIZATION_USED_ELSEWHERE);
+                    assert_eq!(seen.response["retryable"], false, "{case}");
+                    assert_ne!(seen.response["success"], true, "{case}");
+                }
+                Unchanged => {
+                    assert_eq!(receipt.status, "pending", "{case}");
+                    assert_eq!(receipt.revision, before.receipt.revision, "{case}");
+                    assert!(signed.is_some(), "{case}");
+                }
+            }
+        }
+    }
+    // Every read named the signed authorization, at the block it judged by.
+    let signed = crate::chain::evm::USDC::authorizationStateCall {
+        authorizer: "0x1111111111111111111111111111111111111111"
+            .parse()
+            .unwrap(),
+        nonce: alloy::primitives::B256::repeat_byte(1),
+    }
+    .abi_encode();
+    let reads: Vec<_> = node
+        .call_log()
+        .into_iter()
+        .filter(|(to, input, _)| *to == token && input.starts_with(&selector))
+        .collect();
+    assert!(!reads.is_empty());
+    for (_, input, block) in reads {
+        assert_eq!(input, signed);
+        assert_eq!(block, json!("0x100"));
+    }
+    // A node whose latest block is behind the reverted transaction's (0x100),
+    // or a revert that names no block, gives no verdict.
+    use crate::chain::evm::MetaEvmProvider;
+    node.fail_reads(false);
+    node.on_call(token, selector, state(false).unwrap());
+    let provider = test_rpc::evm(&providers, Network::Base).inner();
+    let mut record = fixture_record_on("base", BASE_USDC);
+    record.authorization_expires_at = passed;
+    for reverted_in in [Some(0x101), None] {
+        let spent = authorization_spent(provider, &record, reverted_in).await;
+        assert_eq!(spent, Spent::Unknown, "{reverted_in:?}");
+    }
+    let spent = authorization_spent(provider, &record, Some(0x100)).await;
+    assert_eq!(spent, Spent::Never);
+    // A record written before the key was kept still reads.
+    let mut old = serde_json::to_value(fixture_record_on("base", BASE_USDC)).unwrap();
+    old.as_object_mut().unwrap().remove("evm_authorization");
+    let old: Record = serde_json::from_value(old).unwrap();
+    assert!(old.evm_authorization.is_none());
+}
+
+/// The mock facilitator's verdicts over the providers of a mock node.
+struct OnChain(crate::payment_operator::test_rpc::Providers);
+
+impl HasProviderMap for OnChain {
+    type Map = crate::payment_operator::test_rpc::Providers;
+    fn provider_map(&self) -> &Self::Map {
+        &self.0
+    }
+}
+
+impl Facilitator for OnChain {
+    type Error = StatusCode;
+    async fn verify(
+        &self,
+        request: &VerifyRequest,
+    ) -> std::result::Result<VerifyResponse, Self::Error> {
+        MockFacilitator { invalid: false }.verify(request).await
+    }
+    async fn settle(&self, _: &SettleRequest) -> std::result::Result<SettleResponse, Self::Error> {
+        panic!("use the guarded closure")
+    }
+    async fn supported(&self) -> std::result::Result<SupportedPaymentKindsResponse, Self::Error> {
+        unreachable!()
+    }
+}
+
+/// A payment whose answer was lost after its bytes were stored, and that the
+/// chain then confirms: the resend with its Idempotency-Key reconciles it and
+/// files it in the 24-hour cache, as a settle that confirmed at once does.
+#[tokio::test]
+async fn a_payment_confirmed_on_a_resend_is_filed_under_its_key() {
+    let node = crate::payment_operator::test_rpc::MockNode::start(Network::Base).await;
+    let chain = OnChain(crate::payment_operator::test_rpc::Providers::one(
+        Network::Base,
+        crate::payment_operator::test_rpc::provider(Network::Base, &node, false).await,
+    ));
+    let body = body_on("base", BASE_USDC, 6);
+    let cache = Arc::new(LegacyCache::default());
+    TEST_SERVICE
+        .scope(
+            service_fixture(),
+            TEST_LEGACY.scope(cache.clone(), async {
+                let lost = settle(&chain, &keyed("order-7"), &body, async {
+                    prepared_evm(prepared_hash(), vec![1, 2, 3]).await.unwrap();
+                    sending();
+                    (
+                        StatusCode::GATEWAY_TIMEOUT,
+                        Json(json!({"error":"upstream_timeout"})),
+                    )
+                        .into_response()
+                })
+                .await;
+                assert_eq!(value(lost).await["receipt"]["status"], "unknown");
+                assert!(
+                    cache.0.lock().unwrap().is_empty(),
+                    "filed before it settled"
+                );
+                let again = settle(&chain, &keyed("order-7"), &body, async {
+                    panic!("a stored transaction was sent again")
+                })
+                .await;
+                assert_eq!(again.status(), StatusCode::OK);
+                assert_eq!(value(again).await["receipt"]["status"], "confirmed");
+                let row = cache.0.lock().unwrap().get("order-7").cloned();
+                let row = row.expect("not filed once it settled");
+                assert_eq!(
+                    row.request_hash,
+                    crate::idempotency_store::hash_request_body(&body)
+                );
+                let filed: SettleResponse = serde_json::from_str(&row.response_json).unwrap();
+                assert!(filed.success);
+            }),
+        )
+        .await;
+}
+
+/// A purchase capability binds a resend whatever Idempotency-Key it carries,
+/// so a resend files nothing under a key that did not admit the payment: not
+/// over another payment's row, not under a key nobody used. A key that did
+/// admit it is not filed over a row another payment wrote meanwhile either.
+#[tokio::test]
+async fn a_resend_files_only_a_key_that_admitted_its_payment() {
+    let row = |key: &str, hash: &str| IdempotencyRecord {
+        idempotency_key: key.into(),
+        request_hash: hash.into(),
+        response_json: "{}".into(),
+        expires_at: now() + 3600,
+    };
+    let cache = Arc::new(LegacyCache::default());
+    cache
+        .0
+        .lock()
+        .unwrap()
+        .insert("another-order".into(), row("another-order", "another-body"));
+    let body = body_on("base", BASE_USDC, 9);
+    TEST_SERVICE
+        .scope(
+            service_fixture(),
+            TEST_LEGACY.scope(cache.clone(), async {
+                let paid = settle(
+                    &MockFacilitator { invalid: false },
+                    &headers(),
+                    &body,
+                    async { settled_on(Network::Base) },
+                )
+                .await;
+                assert_eq!(paid.status(), StatusCode::OK);
+                for key in ["another-order", "nobodys-order"] {
+                    let mut h = headers();
+                    h.insert("idempotency-key", HeaderValue::from_static(key));
+                    let replay = settle_again(&h, &body).await;
+                    assert_eq!(replay.status(), StatusCode::OK, "{key}");
+                }
+                // Another purchase, admitted under a key whose row another
+                // payment writes while this one settles.
+                let mut h = purchase("cd");
+                h.insert("idempotency-key", HeaderValue::from_static("raced-order"));
+                let paid = settle(
+                    &MockFacilitator { invalid: false },
+                    &h,
+                    &body_on("base", BASE_USDC, 10),
+                    async {
+                        cache
+                            .0
+                            .lock()
+                            .unwrap()
+                            .insert("raced-order".into(), row("raced-order", "raced-body"));
+                        settled_on(Network::Base)
+                    },
+                )
+                .await;
+                assert_eq!(paid.status(), StatusCode::OK);
+            }),
+        )
+        .await;
+    let rows = cache.0.lock().unwrap().clone();
+    assert_eq!(rows["another-order"].request_hash, "another-body");
+    assert!(!rows.contains_key("nobodys-order"));
+    assert_eq!(rows["raced-order"].request_hash, "raced-body");
+}
+
+/// A facilitator whose verdict names the authorization's signer as payer.
+struct SignerIsPayer;
+
+impl ProviderMap for SignerIsPayer {
+    type Value = NetworkProvider;
+    fn by_network<N: std::borrow::Borrow<Network>>(&self, _: N) -> Option<&Self::Value> {
+        None
+    }
+    fn values(&self) -> impl Iterator<Item = &Self::Value> + Send {
+        std::iter::empty()
+    }
+}
+
+impl HasProviderMap for SignerIsPayer {
+    type Map = Self;
+    fn provider_map(&self) -> &Self {
+        self
+    }
+}
+
+impl Facilitator for SignerIsPayer {
+    type Error = StatusCode;
+    async fn verify(
+        &self,
+        request: &VerifyRequest,
+    ) -> std::result::Result<VerifyResponse, Self::Error> {
+        let ExactPaymentPayload::Evm(evm) = &request.payment_payload.payload else {
+            unreachable!("EVM fixtures only")
+        };
+        Ok(VerifyResponse::valid(MixedAddress::Evm(
+            evm.authorization.from,
+        )))
+    }
+    async fn settle(&self, _: &SettleRequest) -> std::result::Result<SettleResponse, Self::Error> {
+        panic!("use the guarded closure")
+    }
+    async fn supported(&self) -> std::result::Result<SupportedPaymentKindsResponse, Self::Error> {
+        unreachable!()
+    }
+}
+
+/// An Idempotency-Key is the payer's own: one payer's payment in flight under
+/// a key does not refuse another payer's signature under the same key, while
+/// the first payer's next signature under it is refused.
+#[tokio::test]
+async fn a_key_in_flight_for_one_payer_never_blocks_another() {
+    let theirs = edited(&body_on("ethereum", AUSD, 2), |v| {
+        v["paymentPayload"]["payload"]["authorization"]["from"] =
+            json!("0x4444444444444444444444444444444444444444");
+    });
+    let sends = AtomicUsize::new(0);
+    TEST_SERVICE
+        .scope(service_fixture(), async {
+            let lost = settle(
+                &SignerIsPayer,
+                &keyed("order-42"),
+                &body_on("base", BASE_USDC, 1),
+                async {
+                    prepared_evm(prepared_hash(), vec![1, 2, 3]).await.unwrap();
+                    sending();
+                    (
+                        StatusCode::GATEWAY_TIMEOUT,
+                        Json(json!({"error":"upstream_timeout"})),
+                    )
+                        .into_response()
+                },
+            )
+            .await;
+            assert_eq!(value(lost).await["retryable"], false);
+            let other = settle(&SignerIsPayer, &keyed("order-42"), &theirs, async {
+                sends.fetch_add(1, Ordering::SeqCst);
+                settled_on(Network::Ethereum)
+            })
+            .await;
+            assert_eq!(other.status(), StatusCode::OK);
+            let mine = settle(
+                &SignerIsPayer,
+                &keyed("order-42"),
+                &body_on("ethereum", AUSD, 3),
+                async { panic!("a second signature under the payer's key was sent") },
+            )
+            .await;
+            assert_eq!(mine.status(), StatusCode::CONFLICT);
+        })
+        .await;
+    assert_eq!(sends.load(Ordering::SeqCst), 1);
+}
+
+/// What reconciliation reads `authorizationState` with is the signed
+/// authorization: its signer and its nonce, on every network and token.
+#[test]
+fn the_authorization_kept_for_reconciliation_is_the_signed_one() {
+    for case in evm_matrix() {
+        let body = edited(&case.v1(0x5a), |v| {
+            v["paymentPayload"]["payload"]["authorization"]["from"] =
+                json!("0x4444444444444444444444444444444444444444");
+        });
+        let record = initial(
+            &parse_request(&HeaderMap::new(), &body).unwrap(),
+            None,
+            "settle",
+        )
+        .unwrap();
+        assert_eq!(
+            record.evm_authorization,
+            Some(EvmAuthorization {
+                from: "0x4444444444444444444444444444444444444444"
+                    .parse()
+                    .unwrap(),
+                nonce: alloy::primitives::B256::repeat_byte(0x5a),
+            }),
+            "{}",
+            case.caip2()
+        );
+    }
+}
+
+/// A write held back in the test's hand, as one whose answer was lost and that
+/// lands later.
+enum HeldWrite {
+    Reserve(Record, Vec<String>),
+    Readmit(Record, u64, Vec<String>),
+}
+
+/// A store whose next reservation or readmission fails without writing, and
+/// lands only when the test lands it (`land`).
+#[derive(Default)]
+struct LateWrite {
+    inner: store::MemoryStore,
+    hold_next: std::sync::Mutex<bool>,
+    held: std::sync::Mutex<Option<HeldWrite>>,
+}
+
+impl LateWrite {
+    fn hold_next(&self) {
+        *self.hold_next.lock().unwrap() = true;
+    }
+    fn holds(&self, write: HeldWrite) -> bool {
+        let hold = std::mem::take(&mut *self.hold_next.lock().unwrap());
+        if hold {
+            *self.held.lock().unwrap() = Some(write);
+        }
+        hold
+    }
+    async fn land(&self) -> Result<bool> {
+        let held = self.held.lock().unwrap().take().expect("a held write");
+        use store::Store as _;
+        match held {
+            HeldWrite::Reserve(record, aliases) => {
+                self.inner.reserve(&record, &aliases, "late").await
+            }
+            HeldWrite::Readmit(record, previous, aliases) => {
+                self.inner
+                    .readmit(&record, previous, &aliases, "late")
+                    .await
+            }
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl store::Store for LateWrite {
+    async fn get(&self, key: &str) -> Result<Option<Record>> {
+        self.inner.get(key).await
+    }
+    async fn reserve(&self, record: &Record, aliases: &[String], token: &str) -> Result<bool> {
+        if self.holds(HeldWrite::Reserve(record.clone(), aliases.to_vec())) {
+            return Err("receipt_store_timeout".into());
+        }
+        self.inner.reserve(record, aliases, token).await
+    }
+    async fn save(&self, record: &Record, previous_revision: u64) -> Result<bool> {
+        self.inner.save(record, previous_revision).await
+    }
+    async fn release(&self, record: &Record, held: &[u64]) -> Result<bool> {
+        self.inner.release(record, held).await
+    }
+    async fn readmit(
+        &self,
+        record: &Record,
+        previous: u64,
+        aliases: &[String],
+        token: &str,
+    ) -> Result<bool> {
+        if self.holds(HeldWrite::Readmit(
+            record.clone(),
+            previous,
+            aliases.to_vec(),
+        )) {
+            return Err("receipt_store_timeout".into());
+        }
+        self.inner.readmit(record, previous, aliases, token).await
+    }
+    async fn records(&self) -> Result<Vec<Record>> {
+        self.inner.records().await
+    }
+}
+
+/// A reservation, and then a readmission, whose write was not confirmed and
+/// lands after the request gave up on it: the request closes the admission
+/// first, so the late write finds it taken and writes nothing. No admission is
+/// left that nobody runs, and the same request, resent, settles once. Before,
+/// the late write stood: every resend got `202` and a new signature for the
+/// purchase `409`, until the operator command released it.
+#[tokio::test]
+async fn a_write_that_lands_after_its_release_strands_nothing() {
+    let store = Arc::new(LateWrite::default());
+    let service = Arc::new(Service {
+        store: store.clone(),
+        signing_key: Some(SigningKey::from_bytes(&[7; 32])),
+    });
+    let body = body_on("base", BASE_USDC, 5);
+    let sends = AtomicUsize::new(0);
+    TEST_SERVICE
+        .scope(service, async {
+            store.hold_next();
+            let lost = settle(
+                &MockFacilitator { invalid: false },
+                &headers(),
+                &body,
+                async { panic!("ran an unconfirmed reservation") },
+            )
+            .await;
+            assert_resend_safely(&lost);
+            assert_eq!(store.land().await, Ok(false), "the late reservation stood");
+
+            // Admitted again; this time the provider sends nothing and the
+            // admission is released, then its readmission is lost on the way.
+            let released = settle(
+                &MockFacilitator { invalid: false },
+                &headers(),
+                &body,
+                async { writer_lease_lost() },
+            )
+            .await;
+            assert_resend_safely(&released);
+            store.hold_next();
+            let lost = settle(
+                &MockFacilitator { invalid: false },
+                &headers(),
+                &body,
+                async { panic!("ran an unconfirmed readmission") },
+            )
+            .await;
+            assert_resend_safely(&lost);
+            assert_eq!(store.land().await, Ok(false), "the late readmission stood");
+
+            let paid = settle(
+                &MockFacilitator { invalid: false },
+                &headers(),
+                &body,
+                async {
+                    sends.fetch_add(1, Ordering::SeqCst);
+                    settled_on(Network::Base)
+                },
+            )
+            .await;
+            assert_eq!(paid.status(), StatusCode::OK);
+            assert_eq!(value(paid).await["receipt"]["status"], "confirmed");
+        })
+        .await;
+    assert_eq!(sends.load(Ordering::SeqCst), 1);
+}
+
+/// The store takes the admission and then refuses everything after it: the
+/// prepared bytes, so nothing is sent, and the release that would say so. The
+/// answer is still the one the guide gives for a failure before the send,
+/// `503` with `Retry-After` and `safeToRetry`, never the provider's `400`, on
+/// every network and token of the matrix. The receipt is the stored one.
+#[tokio::test]
+async fn a_preparation_the_store_refused_is_answered_safe_to_resend() {
+    for case in evm_matrix() {
+        let network = case.caip2();
+        let service = Arc::new(Service {
+            store: Arc::new(UpdateOutage(store::MemoryStore::default())),
+            signing_key: Some(SigningKey::from_bytes(&[7; 32])),
+        });
+        TEST_SERVICE
+            .scope(service, async {
+                let refused = settle(
+                    &MockFacilitator { invalid: false },
+                    &headers(),
+                    &case.v1(1),
+                    async {
+                        // As `send_transaction_from` ends when the bytes cannot be stored.
+                        let stored = prepared_evm(prepared_hash(), vec![1, 2, 3]).await;
+                        crate::chain::FacilitatorLocalError::ContractCall(stored.unwrap_err())
+                            .into_response()
+                    },
+                )
+                .await;
+                assert_eq!(
+                    refused.status(),
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "{network}"
+                );
+                assert_eq!(refused.headers()[RETRY_AFTER], "2", "{network}");
+                let refused = value(refused).await;
+                assert_eq!(refused["error"], "receipt_store_unavailable", "{network}");
+                assert_eq!(refused["safeToRetry"], true, "{network}");
+                assert_eq!(refused["retryable"], true, "{network}");
+                assert_eq!(refused["receipt"]["status"], "unknown", "{network}");
+                assert_eq!(refused["receipt"]["revision"], 1, "{network}");
+                assert!(refused["receipt"]["settlement"].is_null(), "{network}");
+            })
+            .await;
+    }
 }

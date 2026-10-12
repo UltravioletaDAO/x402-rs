@@ -866,7 +866,7 @@ and `static/x402.js`.
 | 7 | `static/newchain.png` | logo, flat in `static/` (there is no `static/images/`) | build fails — `include_bytes!` |
 | 8 | `static/index.html` | 2 balance cards (`data-explorer` + `data-explorer-address`, `<img data-net-icon>`: no explorer URL, no `src`) + CSS + balance config | no |
 | 9 | `static/x402.js` | nothing: icons and explorers come from `GET /networks.json` | — |
-| 10 | `config/supported_tokens.json` | displayName, icon, explorer + explorerPaths, tokens (exactly what `/supported` publishes), chainId, facilitatorWallet | yes — `networks_json` tests: a missing entry or a token list that differs from `/supported` is red |
+| 10 | `config/supported_tokens.json` | displayName, icon, explorer + explorerPaths, tokens (exactly what `/supported` publishes), chainId, facilitatorWallet. Its `exactServed` (default `true`) also puts an EVM network with an ERC-3009 token on the facilitator receipt rail (`GET /receipts`); add the new pairs to `every_network_and_token_on_the_rail_stays_on_it` (`src/receipts/tests.rs`) | yes — `networks_json` tests: a missing entry or a token list that differs from `/supported` is red; and that receipts test while a new EVM pair is missing from its list |
 | 11 | `lambda/balances/handler.py` | `get_network_configs()`: RPC + wallet | no |
 | 12 | `terraform/environments/production/main.tf` | `RPC_URL_*` in the task definition | no — **and this is what keeps it out of `/supported`** |
 | 13 | `scripts/verify_landing_canonical.py` | `--expect-mainnets` default (`:306`) and the docstring count (`:11`) | the guard itself, in CI |

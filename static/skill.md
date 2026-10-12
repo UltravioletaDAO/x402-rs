@@ -968,10 +968,11 @@ conversion is performed. Gas stays USDC. A funded 0.01 EURC payment (10000
 atomic units) was verified and settled on Arc mainnet on 2026-09-22, tx
 0xd9de3864e11698cf730664147ac383acb763279056ac091bab57cfd3bf536128; funded testnet payments remain pending.
 
-## Portable facilitator receipts (Arc, Base and Hedera)
+## Portable facilitator receipts (EVM and Hedera)
 
-Arc and Base exact USDC/EURC and native Hedera USDC return `receipt` alongside
-verify/settle.
+Exact payments on the networks `GET /receipts` lists return `receipt` alongside
+verify/settle: on an EVM network, in the ERC-3009 tokens `/supported` lists for
+its `exact` kind; on Hedera, native USDC.
 Discover `/supported.facilitatorReceipts`, `/receipts`,
 `/schemas/facilitator-receipt-v1.json` and `/.well-known/receipt-keys.json`.
 For private lookup, persist a purchase context and send `X-UVD-Purchase` (base64
@@ -983,7 +984,8 @@ authorization, not a new payment. Receipt confirmation does not prove delivery.
 The original answer is replayed only with the `X-UVD-Purchase` or
 `Idempotency-Key` that admitted the payment; a resend without it answers
 `409 authorization_already_settled` or `409 authorization_in_flight` (verify:
-`isValid: false` with the same reason), never a repeated success.
+`isValid: false` with the same reason), never a repeated success. That binding
+and the receipt last until the receipt rows expire (Expiry, in the full contract).
 A `503` with `safeToRetry: true` and `Retry-After` sent nothing, and a receipt
 `rejected` with `refusalReason: reservation_abandoned` says the same: resend the
 same request after the delay; it is admitted again under the same receipt.
@@ -998,6 +1000,6 @@ Arc testnet is still pending. Other networks
 retain their existing responses. Full contract:
 https://github.com/UltravioletaDAO/x402-rs/blob/main/docs/facilitator-receipts.md
 
-Receipts cover plain `exact` payments only. On Base, `upto`, `escrow`/`commerce`
-and the x402r `refund` extension keep their own settlement paths and carry no
-`receipt`.
+Receipts cover plain `exact` payments only. On every network, `upto`,
+`escrow`/`commerce` and the x402r `refund` extension keep their own settlement
+paths and carry no `receipt`.

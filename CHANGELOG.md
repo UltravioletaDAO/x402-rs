@@ -1,9 +1,10 @@
 # Changelog
 
-## [2.50.0] - 2026-10-11
+## [2.51.0] - 2026-10-12
 
-Tanda 1011: X402-BAZAAR-REPLICAS + X4-BAZAAR-ADOPTA, X402-REGISTER-OWNER and
-X402-CI-GATES.
+Tanda 1011: X402-BAZAAR-REPLICAS + X4-BAZAAR-ADOPTA, X402-REGISTER-OWNER,
+X402-CI-GATES and X4-REC-EVM (facilitator receipts on every EVM network that
+serves `exact`). 2.50.0 was never released on its own: it ships here.
 
 ### Changed
 
@@ -134,6 +135,94 @@ X402-CI-GATES.
   not a SecureString or is on another key. Before the merge, by hand (the CI user
   can do none of it; `secrets.tf` has the commands): apply the key, the CI
   policy and the execution role's policy, then put the value from a file.
+
+X4-REC-EVM (facilitator receipts):
+
+### Changed
+
+- **Facilitator receipts cover every EVM network that serves `exact`**, in
+  each of its ERC-3009 tokens, x402 v1 and v2. Until now they covered Arc, Arc
+  testnet and Base. One matrix (`receipts::evm_exact_tokens`) decides what
+  `GET /receipts` and `/supported.facilitatorReceipts` announce, what is
+  admitted and how a receipt is normalized: the tokens `/supported` lists for
+  a network's `exact` kind, on the networks where production publishes that
+  kind (`exactServed` in `config/supported_tokens.json`; Ethereum Sepolia and
+  the EVM networks nothing serves stay out). Each newly covered network
+  changes for its callers as Base did in 2.40.0, including its dependency on
+  the receipt store: the rail fails closed, so with the store unreachable its
+  `exact` settles answer `503 receipt_store_unavailable` and send nothing.
+  Hedera is unchanged.
+- **Leaving the rail is pinned.** A network or token that drops out of the
+  matrix would send resends of its stored receipts down the ordinary path, so
+  the pairs the rail admits are listed in a test that must equal the matrix:
+  a new pair is added to it, and removing one means editing it on purpose. A
+  rollback to an earlier release takes the new networks off the rail at once;
+  `docs/facilitator-receipts.md` ("EVM coverage") says what that leaves open.
+- **Admission takes one network and one of its tokens.** A request is admitted
+  only when its payload and its terms name the same network and, on EVM, its
+  asset is one of that network's `exact` tokens; anything else runs as before
+  without a receipt (`400 receipt_request_not_supported` on `/settle` when it
+  carries `X-UVD-Purchase`). On Arc and Base this only touches requests that
+  verification already refused, which no longer carry a `rejected` receipt.
+  Every EVM receipt now carries the token's `decimals`.
+- **Receipt rows expire.** Every row a receipt admission writes, the record
+  and each alias, carries `expires_at`, the TTL attribute the
+  `idempotency_records` table already sweeps on: 90 days after the later of
+  the authorization's `validBefore` and the write, so a row always outlives
+  the authorization it protects and keeps the purchase binding and the
+  private lookup for 90 days after it. A test keeps the retention at 30 days
+  or more. Rows written before 2.51.0 carry no `expires_at` and stay. An
+  expired alias whose record was already swept reads as no admission instead
+  of a corrupt store.
+- **The receipt store has alarms** (`alerts-receipts-store.tf`, on the
+  facilitator's SNS topic, applied by the deploy's observability step), on
+  DynamoDB's own metrics: `SystemErrors` and `ThrottledRequests` on the table
+  in two five-minute periods running, and a p99 latency over one second for
+  fifteen minutes. The facilitator also counts its failed store requests (a
+  new `receipt_store_failure` log line with `op` and `kind`, metric
+  `Facilitator/Receipts` `ReceiptStoreFailures`) as a metric to read, not a
+  page: request text reaches the logs, so a log-based page could be forged.
+  `terraform test` pins the alarms and the table's TTL. A request DynamoDB
+  refuses for access, or one that never reaches it, shows only at the load
+  balancer's 5xx alarm.
+- **One Idempotency-Key per payer on the rail.** A new signature from the same
+  payer under a key already admitted is refused with
+  `409 receipt_request_conflict` on any network, token or `payTo`, until the
+  rows expire. A payment that settles in the answer to a request carrying a
+  key it was admitted with is also filed in the 24-hour Idempotency-Key cache,
+  as `/settle` files what it settles off the rail, without replacing a live
+  row: for a day another body under the key is `409 idempotency_key_conflict`
+  from any payer, and a release before 2.51.0 reads the same row.
+- **An admitted authorization stays on the rail.** A later request for it whose
+  terms cannot be normalized (free-form `extra` or `outputSchema` carrying a
+  float) is answered as that admission: `409 receipt_request_conflict` on
+  `/settle`, `isValid: false` on `/verify`, nothing sent or simulated. Without
+  an admission such a request runs as before, without a receipt.
+- **`/verify` fails closed on the receipt store**, as `/settle` does:
+  `503 receipt_store_unavailable` with `Retry-After`, never a simulated verdict.
+- **Reconciliation refuses an EVM admission only once its authorization can no
+  longer move funds**: the saved transaction reverted, and at the latest block
+  (stamped at or past `validBefore`, not behind the reverted one) the token
+  reports the authorization unused (`authorizationState`). Until then, or
+  while the token cannot be read, the receipt keeps its state. An
+  authorization the token reports used leaves the receipt `unknown` with
+  `diagnosticCode: authorization_used_elsewhere`, nothing to resend. Records
+  keep the authorization's signer and nonce for this; records written before
+  keep their state.
+- **An unconfirmed store write cannot strand an admission.** Closing a
+  reservation or re-admission whose write was not confirmed now writes the
+  record when it is not there yet, so a write that lands later writes nothing.
+  When the store refuses both the prepared transaction and the release, the
+  answer is `503 receipt_store_unavailable` with `safeToRetry`, not the
+  provider's `400`. An expired alias that DynamoDB has not swept no longer
+  blocks a new admission.
+- `networks` in the receipt capability is derived from the network list; it
+  keeps every entry it had, in a different order.
+- `/verify` and `/settle` in OpenAPI, the MCP `x402_settle` tool, `index.md`,
+  `skill.md`, `mcp.md` (and `llms-full.txt`), the README,
+  `docs/facilitator-receipts.md` ("EVM coverage") and `docs/settle-errors.md`
+  name the rule instead of a list of networks.
+
 
 ## [2.49.0] - 2026-10-06
 

@@ -184,11 +184,16 @@ unchanged for every resend.
 a payment (the replays above) and refuses any other: a new signature from the
 same payer under a key it already used is `409 receipt_request_conflict` and
 nothing is sent, on any network, token or `payTo` of the rail, until the rows
-expire. A payment settled under a key is also filed in the 24-hour
-Idempotency-Key cache that `/settle` keeps for every network, as that path files
-what it settles: for a day any other body under the key, from any payer and on
-any network, is `409 idempotency_key_conflict`. The key is compared trimmed, as
-that cache compares it. Use a fresh key per purchase, as the SDKs do.
+expire; this refusal compares the key trimmed, the replay binding compares it
+as sent. A payment that settles in the answer to a request carrying a key it
+was admitted with (the first one, or a resend with that key) is also filed in
+the 24-hour Idempotency-Key cache that `/settle` keeps for every network, as
+that path files what it settles, unless the key already has a live row there,
+which is never replaced. That cache is read first, so for that day any other
+body under the key, from any payer and on any network, is
+`409 idempotency_key_conflict`, the same payer included. Filing is best effort,
+and a payment confirmed by a lookup or by a resend without its key is not
+filed. Use a fresh key per purchase.
 Requests that `/settle` routes to their own settlement paths never enter
 admission, even when their inner requirements say `exact`: the `upto`,
 `escrow`/`commerce` and `fhe-transfer` schemes and the x402r `refund` extension.
@@ -224,13 +229,19 @@ grounds, no second transaction is signed for that admission, the receipt stays
 `unknown`, and later retries reconcile or rebroadcast the saved one. Reconciliation
 refuses an EVM admission (`rejected`, `settlement_failed_on_chain`) only once its
 authorization can no longer move the payer's funds: the saved transaction
-reverted, `validBefore` has passed by a minute, and the token reports the
-authorization unused (`authorizationState`). A revert alone is no refusal:
-another transaction may have executed the same authorization first, and a mined
-transaction publishes the signed authorization, which can be executed until
-`validBefore`. Until then, or while the token cannot be read, the receipt stays
-as it was (since 2.51.0). Records written before 2.51.0 do not keep the
-authorization's nonce and are never refused this way. Hedera links the
+reverted, and at the latest block the node serves (not behind the reverted
+one), stamped at or past `validBefore`, the token reports the authorization
+unused (`authorizationState`, read at that block). A revert alone is no
+refusal: another transaction may have executed the same authorization first,
+and a mined transaction publishes the signed authorization, which can be
+executed while blocks are stamped before `validBefore`. Until then, or while
+the token cannot be read, the receipt stays as it was. If the token reports the
+authorization used (executed by another transaction, which pays the same
+`payTo`, or cancelled by the payer), the receipt stays `unknown` with
+`diagnosticCode: authorization_used_elsewhere` and `retry.action: none`, and its
+saved bytes are dropped; never sign a replacement (all since 2.51.0). Records
+written before 2.51.0 do not keep the authorization's nonce and are judged by
+neither. Hedera links the
 native ID before its existing store can persist co-signed bytes and recover them.
 Terminal receipt updates remove private EVM signed bytes. Native byte retention
 continues under the existing Hedera store policy.
@@ -278,9 +289,11 @@ answer gets its original success back. When the store that refused the bytes
 also refuses the release, nothing was sent and the answer is the same `503
 receipt_store_unavailable` with `safeToRetry: true` (since 2.51.0; before, the
 provider's own `400`), with `receiptWarning: receipt_persistence_unavailable`
-and the receipt as stored, `unknown`. Resends of it are answered as an
-admission in flight until the operator command below releases it; after a
-store outage, run its read-only pass.
+and the receipt as stored: `unknown`, and resends of it are answered as an
+admission in flight until the operator command below releases it (after a
+store outage, run its read-only pass); or `pending` with the transaction, if a
+write of the bytes that looked failed did land, and then a resend broadcasts
+those same bytes.
 
 ### Failures after the send
 
@@ -434,7 +447,7 @@ What a Base `exact` caller observes compared with 2.39:
 | Same authorization after it settled, with the Idempotency-Key or `X-UVD-Purchase` that admitted it | With the key, the cached 200 with `Idempotent-Replayed: true` for 24 hours; after that it runs again and fails on the consumed nonce | Original 200 replayed with `Idempotent-Replayed: true`; receipt rows did not expire until 2.51.0, and since then expire 90 days after the authorization's `validBefore` |
 | Same authorization after it settled, without that binding | Runs again; fails on the consumed nonce | `409 authorization_already_settled`, with the receipt when the payment carried no `X-UVD-Purchase`; a payment admitted with `X-UVD-Purchase` answers `409 receipt_request_conflict` without it. Verify `isValid: false`, `authorization_already_settled` |
 | Same authorization while its settlement runs | Second attempt runs | `202 settlement_in_progress` to the admitting binding. Without it, `409 authorization_in_flight`, with the receipt when the payment carried no `X-UVD-Purchase`; a payment admitted with `X-UVD-Purchase` answers `409 receipt_request_conflict` without it |
-| New signature, same `Idempotency-Key` | Runs, unless an earlier attempt succeeded in the last 24 hours (then `409 idempotency_key_conflict`) | `409 receipt_request_conflict` once the first one was admitted, until its rows expire; since 2.51.0 on any network, token or `payTo` for the same payer, and `409 idempotency_key_conflict` from any payer for 24 hours after the first one settled (see "Idempotency-Key scope") |
+| New signature, same `Idempotency-Key` | Runs, unless an earlier attempt succeeded in the last 24 hours (then `409 idempotency_key_conflict`) | `409 receipt_request_conflict` once the first one was admitted, until its rows expire; since 2.51.0 on any network, token or `payTo` for the same payer, and for 24 hours after the first one settled under that key `409 idempotency_key_conflict` from any payer, the same payer included (see "Idempotency-Key scope") |
 | New signature, same `X-UVD-Purchase` | `400 receipt_request_not_supported` | `409 receipt_request_conflict` once the first one was admitted, until its rows expire (since 2.51.0) |
 | New signature without key or purchase context | New payment | New payment (unchanged) |
 | Settlement ends before anything is sent (writer lease moved, a read or gas estimate failed, signing or storing the bytes failed) | That failure's own answer | `503` with `Retry-After` and `safeToRetry: true`; receipt `rejected` with `refusalReason: reservation_abandoned`; the same request is admitted again under the same receipt |

@@ -52,10 +52,11 @@
 - **One Idempotency-Key per payer on the rail.** A new signature from the same
   payer under a key already admitted is refused with
   `409 receipt_request_conflict` on any network, token or `payTo`, until the
-  rows expire. A payment settled under a key is also filed in the 24-hour
-  Idempotency-Key cache, as `/settle` files what it settles off the rail: for
-  a day another body under the key is `409 idempotency_key_conflict` from any
-  payer, and a release before 2.51.0 reads the same row.
+  rows expire. A payment that settles in the answer to a request carrying a
+  key it was admitted with is also filed in the 24-hour Idempotency-Key cache,
+  as `/settle` files what it settles off the rail, without replacing a live
+  row: for a day another body under the key is `409 idempotency_key_conflict`
+  from any payer, and a release before 2.51.0 reads the same row.
 - **An admitted authorization stays on the rail.** A later request for it whose
   terms cannot be normalized (free-form `extra` or `outputSchema` carrying a
   float) is answered as that admission: `409 receipt_request_conflict` on
@@ -64,11 +65,14 @@
 - **`/verify` fails closed on the receipt store**, as `/settle` does:
   `503 receipt_store_unavailable` with `Retry-After`, never a simulated verdict.
 - **Reconciliation refuses an EVM admission only once its authorization can no
-  longer move funds**: the saved transaction reverted, `validBefore` has
-  passed, and the token reports the authorization unused
-  (`authorizationState`). Until then, or while the token cannot be read, the
-  receipt keeps its state. Records keep the authorization's signer and nonce
-  for this; records written before keep their state.
+  longer move funds**: the saved transaction reverted, and at the latest block
+  (stamped at or past `validBefore`, not behind the reverted one) the token
+  reports the authorization unused (`authorizationState`). Until then, or
+  while the token cannot be read, the receipt keeps its state. An
+  authorization the token reports used leaves the receipt `unknown` with
+  `diagnosticCode: authorization_used_elsewhere`, nothing to resend. Records
+  keep the authorization's signer and nonce for this; records written before
+  keep their state.
 - **An unconfirmed store write cannot strand an admission.** Closing a
   reservation or re-admission whose write was not confirmed now writes the
   record when it is not there yet, so a write that lands later writes nothing.

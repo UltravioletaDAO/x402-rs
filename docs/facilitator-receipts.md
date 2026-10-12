@@ -238,8 +238,9 @@ executed while blocks are stamped before `validBefore`. Until then, or while
 the token cannot be read, the receipt stays as it was. If the token reports the
 authorization used (executed by another transaction, which pays the same
 `payTo`, or cancelled by the payer), the receipt stays `unknown` with
-`diagnosticCode: authorization_used_elsewhere` and `retry.action: none`, and its
-saved bytes are dropped; never sign a replacement (all since 2.51.0). Records
+`diagnosticCode: authorization_used_elsewhere` and `retry.action: none`, its
+saved bytes are dropped, and a resend with its binding is answered `502` with
+`retryable: false`; never sign a replacement (all since 2.51.0). Records
 written before 2.51.0 do not keep the authorization's nonce and are judged by
 neither. Hedera links the
 native ID before its existing store can persist co-signed bytes and recover them.

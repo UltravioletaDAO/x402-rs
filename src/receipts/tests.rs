@@ -3361,6 +3361,43 @@ fn refutador_x_a_long_lived_authorization_outlives_its_rows_never() {
     }
 }
 
+/// `Never` turns on the second the latest block is stamped at `validBefore`,
+/// not a second before, and the token is read at that latest block, not at the
+/// reverted one: someone may execute the published authorization in between.
+#[tokio::test]
+async fn the_latest_block_and_its_stamp_decide_to_the_second() {
+    use crate::chain::evm::MetaEvmProvider;
+    use crate::payment_operator::test_rpc::{self, CallAnswer, MockNode, Providers};
+    use alloy::sol_types::SolCall;
+    // The stamp of every block the mock node serves; its latest is 0x100.
+    const CHAIN_NOW: u64 = 0x68c0_0000;
+    let node = MockNode::start(Network::Base).await;
+    let providers = Providers::one(
+        Network::Base,
+        test_rpc::provider(Network::Base, &node, false).await,
+    );
+    let token: alloy::primitives::Address = BASE_USDC.parse().unwrap();
+    let selector = crate::chain::evm::USDC::authorizationStateCall::SELECTOR;
+    node.on_call(token, selector, CallAnswer::Return(vec![0u8; 32]));
+    let provider = test_rpc::evm(&providers, Network::Base).inner();
+    let mut record = fixture_record_on("base", BASE_USDC);
+    for (valid_before, expected) in [(CHAIN_NOW, Spent::Never), (CHAIN_NOW + 1, Spent::Unknown)] {
+        record.authorization_expires_at = valid_before;
+        let spent = authorization_spent(provider, &record, Some(0x100)).await;
+        assert_eq!(spent, expected, "{valid_before}");
+    }
+    record.authorization_expires_at = CHAIN_NOW;
+    node.clear_log();
+    let spent = authorization_spent(provider, &record, Some(0x80)).await;
+    assert_eq!(spent, Spent::Never);
+    let blocks: Vec<Value> = node
+        .call_log()
+        .into_iter()
+        .map(|(_, _, block)| block)
+        .collect();
+    assert_eq!(blocks, vec![json!("0x100")], "read at the reverted block");
+}
+
 /// What reconciliation makes of a reverted transaction.
 #[derive(Debug, PartialEq)]
 enum AfterRevert {
@@ -3492,6 +3529,11 @@ async fn a_revert_is_refused_only_once_the_authorization_can_never_move_the_fund
                     );
                     assert_eq!(receipt.retry, json!({"action":"none"}), "{case}");
                     assert!(signed.is_none(), "{case}: dead bytes kept for a resend");
+                    // What a bound resend replays says the same.
+                    assert_eq!(seen.http_status, 502, "{case}");
+                    assert_eq!(seen.response["error"], AUTHORIZATION_USED_ELSEWHERE);
+                    assert_eq!(seen.response["retryable"], false, "{case}");
+                    assert_ne!(seen.response["success"], true, "{case}");
                 }
                 Unchanged => {
                     assert_eq!(receipt.status, "pending", "{case}");

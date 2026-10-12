@@ -1842,6 +1842,13 @@ where
         if let Some(prepared) = updated.prepared.as_mut().and_then(Value::as_object_mut) {
             prepared.remove("signedTransaction");
         }
+        // The answer a bound resend replays says the same, whatever was stored
+        // before (a `202` in progress, a failure that invited a retry).
+        let mut body =
+            json!({"success":false,"error":AUTHORIZATION_USED_ELSEWHERE,"safeToReplay":false});
+        not_retryable(&mut body, &updated);
+        updated.response = body;
+        updated.http_status = StatusCode::BAD_GATEWAY.as_u16();
         if service.save(&mut updated).await.is_ok() {
             *record = updated;
         }

@@ -1,15 +1,18 @@
 # CI/CD Setup — GitHub Actions → AWS ECR → ECS
 
 The `.github/workflows/ci.yaml` pipeline builds + tests on every PR and push to `main`
-**that touches a build input**, and on such a push to `main` it builds the Docker image, pushes
-it to **AWS ECR**, runs **`terraform apply`** to roll ECS production to the new image, and
-verifies `/health`.
+**that touches a build input**. It deploys **only on a manual "Run workflow" on `main`**
+(`workflow_dispatch`, or `gh workflow run ci.yaml --ref main`): it builds the Docker image,
+pushes it to **AWS ECR**, runs **`terraform apply`** to roll ECS production to the new image,
+and verifies `/health`. **A merge never deploys by itself** — the owner's rule of 2026-09-27
+(one release a day, started by hand), in the deploy job's `if:` since X402-CI-GATES and held by
+`tests/scripts/test_ci_deploy_job.py`. Before that, every push to `main` that touched a build
+input shipped on its own.
 
 A push whose whole diff is documentation triggers nothing: the workflow carries a `paths` list
 holding the union of what its four jobs read. `docs/handoffs/2026-09-11-ci-paths.md` has the
 job-by-job table and `python3 scripts/ci_paths_selftest.py` asserts the list is neither too
-wide nor too narrow. `workflow_dispatch` has no `paths` and deploys whatever the last commit
-changed, which is the escape hatch if a filter ever turns out to be too narrow.
+wide nor too narrow. `workflow_dispatch` has no `paths` and deploys whatever `main` holds.
 
 It authenticates to AWS with **IAM access-key secrets**. Until those secrets exist the deploy job
 is **skipped** (the run still goes green on the `test` job), so merging the workflow itself is safe.
@@ -35,12 +38,24 @@ then give it the policies below.
 > decorative. Declaring it is safe only because the deploy user has no `iam:CreatePolicyVersion`.
 > Apply it by hand, with a human's credentials, on Terraform 1.9.8.
 >
-> Its nine statements at `v5`: `DynamoTableManage`, `IamRolePolicyForTaskRoleOnly`,
+> Its statements, as declared: `DynamoTableManage`, `IamRolePolicyForTaskRoleOnly`,
 > `DenyPrivilegeEscalation` (Deny), `BalancesLambdaDeploy`, `AlertTopicManage`,
-> `FacilitatorAlarmManage`, `FacilitatorScheduleManage`, `AlertsBackupQueueManage`,
-> `FacilitatorLogRetention`.
+> `FacilitatorAlarmManage`, `FacilitatorMetricFilterManage`, `FacilitatorScheduleManage`,
+> `AlertsBackupQueueManage`, `FacilitatorLogRetention`, `DiscoveryBucketVersioning`,
+> `EcsClusterUpdate`, `EcsDeployUntag`, `DenyBazaarTokenDecrypt` (Deny). The `.tf` file is the list;
+> this one is a reading aid. `DenyBazaarTokenDecrypt` denies `kms:Decrypt` on the KMS key of the SSM
+> SecureString `/facilitator/bazaar-admin-token` (owner's decision 230): `ReadOnlyAccess` grants
+> `ssm:GetParameter`, which on that key returns only ciphertext, and the deny keeps it so whatever is
+> attached later -- the role `DenySecretValueReads` below plays for Secrets Manager.
+> `EcsDeployUntag` (`ecs:UntagResource` on the cluster, the service and the task-definition family)
+> is the inverse of the inline policy's `ecs:TagResource`, which it never had: dropping a tag would
+> have failed a deploy the same way `ecs:UpdateCluster` did. It covers the ECS half only: dropping a
+> key of the provider's `default_tags` also untags the target groups, the security group, the
+> subnets, the task roles and the ALB in the deploy's reach, and CI holds none of those untag calls
+> — apply such a change by hand. The drift gate's IAM step evaluates both ECS statements against the
+> live policy (`scripts/drift_gate_iam.py`).
 >
-> **Three of those were added only after a deploy failed on their absence** — the pattern this
+> **Five of those were added only after a deploy failed on their absence** — the pattern this
 > document exists to stop:
 >
 > | When | Missing permission | What it broke |
@@ -48,10 +63,13 @@ then give it the policies below.
 > | 2026-08-20 | `lambda:UpdateFunctionConfiguration` | The balances Lambda had been silently un-deployable for as long as it existed |
 > | 2026-08-28 | `sqs:CreateQueue` | The alerts backup queue |
 > | 2026-08-28 | `logs:PutRetentionPolicy` | A log-retention change broke the **routine** deploy for the whole project |
+> | 2026-09-10 | `logs:PutMetricFilter` | Every log-based alarm: the deploy could create the alarm but not the metric filter it reads (`FacilitatorMetricFilterManage`) |
+> | 2026-10-07 | `ecs:UpdateCluster` | The image deploy of #115: `aws_ecs_cluster.main` is in no target list, but it rides into every image deploy as a dependency of the service, and #115 turned Container Insights off. Granted in `EcsClusterUpdate`, scoped to the one cluster |
 >
-> **AWS caps a managed policy at 5 versions.** `v1` was deleted on 2026-08-28 to make room for
-> `v5`. Terraform does not rotate them, so an apply that fails with `LimitExceeded` means you must
-> delete the oldest non-default version by hand.
+> **AWS caps a managed policy at 5 versions.** `v1` was deleted by hand on 2026-08-28 to make room
+> for `v5`. An apply does **not** fail with `LimitExceeded`: `hashicorp/aws` 5.100.0 deletes the
+> oldest non-default version itself before creating the new one, and the plan does not show it.
+> Save that version first (`aws iam get-policy-version`) if it matters as a rollback copy.
 
 **(a) Reads — attach the AWS managed `ReadOnlyAccess` policy.** A full `terraform apply` refreshes the
 whole prod config (ECS, ALB, ACM, Route53, DynamoDB, Secrets metadata, CloudWatch, Lambda, …), so the
@@ -142,7 +160,7 @@ gh secret set AWS_ACCESS_KEY_ID     --repo UltravioletaDAO/x402-rs --body 'AKIA.
 gh secret set AWS_SECRET_ACCESS_KEY --repo UltravioletaDAO/x402-rs --body 'YOUR_SECRET_KEY'
 ```
 
-That's it. The next push to `main` will build → push to ECR → `terraform apply` → verify automatically.
+That's it. The next manual "Run workflow" on `main` will build → push to ECR → `terraform apply` → verify.
 
 ---
 
@@ -153,11 +171,22 @@ That's it. The next push to `main` will build → push to ECR → `terraform app
 | PR or push touching only `docs/**`, `*.md`, `scripts/bench/**` … | **no run at all** (`paths`) | — |
 | Pull request → `main` (build input changed) | ✅ build + full test suite | skipped |
 | Push → `main` (build input changed, no AWS secrets) | ✅ | **skipped** (run stays green) |
-| Push → `main` (build input changed, secrets set) | ✅ | ✅ build → ECR → terraform apply → verify |
-| `workflow_dispatch` on `main` | ✅ | ✅ — no `paths`, runs whatever changed |
+| Push → `main` (build input changed, secrets set) | ✅ | **skipped** — a merge never deploys (since X402-CI-GATES) |
+| `workflow_dispatch` on `main` (secrets set) | ✅ | ✅ build → ECR → terraform apply → verify — no `paths`, ships whatever `main` holds |
 
 A superseded pull-request run is cancelled (`cancel-in-progress` is on for `pull_request` and
-stays off for `main`, so two releases queued back to back both run to completion).
+stays off for `main`, so a running release is never cut between `terraform apply` and the rollout
+wait). The concurrency group carries the event: GitHub keeps one pending run per group and cancels
+it when a newer one arrives, and with pushes and manual runs in one group a merge could cancel a
+release that was waiting in the queue. **Never re-run an old release run**: a re-run joins the group
+as the newest and cancels a newer release waiting there. Its own old commit no longer ships — the
+deploy job's first step refuses any commit that is not `main`'s head, which used to make it a
+silent rollback — so nothing deploys. Start a new one with `gh workflow run ci.yaml --ref main`
+instead.
+
+A release now costs two runs: the merge's push run (test + drift gate) and the manual run (test +
+drift gate + deploy). The second test is on purpose — `deploy` needs `test`, and the manual run
+ships whatever `main` holds when it starts — but it is ~20-35 more minutes of Actions per release.
 
 - **Image tag:** `<Cargo.toml version>-<short-sha>` (e.g. `1.47.0-6999058`) plus `:latest`, pushed to
   `<AWS_ACCOUNT_ID>.dkr.ecr.us-east-2.amazonaws.com/facilitator`.
@@ -190,8 +219,9 @@ stays off for `main`, so two releases queued back to back both run to completion
   2026-08-20, scoped to that one function ARN) grants the four writes Terraform needs.
   If that commit cannot be determined, or the compare fails or reaches its 300-file cap, the step
   applies anyway — a redundant `UpdateFunctionCode` is cheap, a silently unapplied change is the
-  bug being fixed. A `workflow_dispatch` run always applies the Lambda: that is the manual escape
-  hatch. **Use it to resync the Lambda whenever it drifts from `main`.** The observability step
+  bug being fixed. A `workflow_dispatch` run always applies the Lambda: that was the manual escape
+  hatch to resync it whenever it drifted from `main`, and since every deploy is a
+  `workflow_dispatch` run (X402-CI-GATES) the Lambda applies on every release. The observability step
   below applies it as well whenever it has a pending diff: two of its targets, the schedule's event
   target and its Lambda permission, reference the function (`alerts.tf:346-355`), and `-target`
   pulls in their dependencies.

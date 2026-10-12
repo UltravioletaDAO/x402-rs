@@ -3119,7 +3119,7 @@ fn discovery_error_response(error: DiscoveryError) -> Response {
             Json(json!({
                 "error": "Resource already registered",
                 "url": url,
-                "hint": "Use PUT /discovery/resources/{url} to update an existing resource"
+                "hint": "This URL is already in the catalog, listed or waiting for its first verification. There is no public route to update or remove a listing; ask the facilitator operator."
             })),
         )
             .into_response(),

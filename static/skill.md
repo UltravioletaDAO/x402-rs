@@ -875,7 +875,9 @@ out that host and its subdomains).
   read (an MCP endpoint: its handshake listed a tool), recently, and it is not
   quarantined. No parameter lists anything else -- `health=any` included: every
   item's `health.status` is `alive`, and `health.verifiedBy` says how it was
-  verified (`x402_challenge` or `mcp_handshake`).
+  verified (`x402_challenge` or `mcp_handshake`). A self-registered item, and one
+  a discoverable settlement created, also carries `health.ownership` (see
+  "Registering a resource").
 - **Order.** Without `q`: tier (`first_party`, `vip`, `verified`, `listed`), then
   most recently updated. A one-word `q` keeps that order over the listings that
   contain it; a `q` of two or more words (function words aside) is ranked by
@@ -922,12 +924,35 @@ branch on the status and on `error`:
 | `400` `Invalid URL` | not http(s), credentials in the URL, or a private, loopback or link-local IP literal |
 | `400` `Invalid resource type` | `type` must be `http`, `mcp` or `a2a` (`facilitator` also exists, and is the only type allowed an empty `accepts`) |
 | `400` `No payment methods specified` | `accepts` is empty |
-| `409` `Resource already registered` | that URL is already listed |
+| `409` `Resource already registered` | that URL is already in the catalog (listed, or waiting for its first verification); there is no public update or delete route |
 | `429` | registration has its own, much slower bucket (see `/auth.md`) |
 
 A registered URL is health-probed like any other entry. `first_party` and `vip` are
 curated by hand, `verified` answered a payment challenge correctly, and `listed` is
 everything else.
+
+Registration takes the URL from anyone, so a self-registered item (and one a
+discoverable settlement created) reports whether its own origin vouches for it in
+`health.ownership`. It is `origin-attested` when `/.well-known/x402` on the URL's
+host (not served from another host) has an entry for that exact URL declaring the
+same terms: every `network` + `payTo` your `accepts` lists, the same `description`,
+and the `category`, `provider` and `tags` you named (any case; your tags among its
+tags). The entry has the shape of the body above:
+
+```json
+{"x402Version": 2, "resources": [{
+  "url": "https://api.example.com/premium-data",
+  "description": "Premium market data API",
+  "accepts": [{"network": "eip155:8453", "payTo": "0x0000000000000000000000000000000000000002"}],
+  "metadata": {"category": "finance", "provider": "Example Corp", "tags": ["market-data"]}
+}]}
+```
+
+A bare URL, or an entry without recipients, vouches for nothing: it is
+`unattested`, as is a missing file or one that says something else. `unknown`
+means the file could not be read (including a 401/403 or a challenge page). The
+prober reads it at the root of your URL's origin once your listing verifies alive,
+normally once per origin every `ownership.cacheSeconds` of `GET /discovery/config`.
 
 ---
 
@@ -943,10 +968,11 @@ conversion is performed. Gas stays USDC. A funded 0.01 EURC payment (10000
 atomic units) was verified and settled on Arc mainnet on 2026-09-22, tx
 0xd9de3864e11698cf730664147ac383acb763279056ac091bab57cfd3bf536128; funded testnet payments remain pending.
 
-## Portable facilitator receipts (Arc, Base and Hedera)
+## Portable facilitator receipts (EVM and Hedera)
 
-Arc and Base exact USDC/EURC and native Hedera USDC return `receipt` alongside
-verify/settle.
+Exact payments on the networks `GET /receipts` lists return `receipt` alongside
+verify/settle: on an EVM network, in the ERC-3009 tokens `/supported` lists for
+its `exact` kind; on Hedera, native USDC.
 Discover `/supported.facilitatorReceipts`, `/receipts`,
 `/schemas/facilitator-receipt-v1.json` and `/.well-known/receipt-keys.json`.
 For private lookup, persist a purchase context and send `X-UVD-Purchase` (base64
@@ -958,7 +984,8 @@ authorization, not a new payment. Receipt confirmation does not prove delivery.
 The original answer is replayed only with the `X-UVD-Purchase` or
 `Idempotency-Key` that admitted the payment; a resend without it answers
 `409 authorization_already_settled` or `409 authorization_in_flight` (verify:
-`isValid: false` with the same reason), never a repeated success.
+`isValid: false` with the same reason), never a repeated success. That binding
+and the receipt last until the receipt rows expire (Expiry, in the full contract).
 A `503` with `safeToRetry: true` and `Retry-After` sent nothing, and a receipt
 `rejected` with `refusalReason: reservation_abandoned` says the same: resend the
 same request after the delay; it is admitted again under the same receipt.
@@ -973,6 +1000,6 @@ Arc testnet is still pending. Other networks
 retain their existing responses. Full contract:
 https://github.com/UltravioletaDAO/x402-rs/blob/main/docs/facilitator-receipts.md
 
-Receipts cover plain `exact` payments only. On Base, `upto`, `escrow`/`commerce`
-and the x402r `refund` extension keep their own settlement paths and carry no
-`receipt`.
+Receipts cover plain `exact` payments only. On every network, `upto`,
+`escrow`/`commerce` and the x402r `refund` extension keep their own settlement
+paths and carry no `receipt`.

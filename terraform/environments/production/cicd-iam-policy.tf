@@ -19,6 +19,9 @@
 #   2026-09-10  logs:PutMetricFilter                -> the deploy could create the
 #               ALARM but not the log metric filter it reads, so every log-based
 #               alarm this stack owns was un-deployable. See below.
+#   2026-10-07  ecs:UpdateCluster                   -> #115 turned Container
+#               Insights off and the image deploy failed on the cluster it drags
+#               in as a dependency. See below.
 #
 # There is no drift detection for a resource that is not declared anywhere.
 #
@@ -49,9 +52,12 @@
 # the import is empty. If it is not empty, someone changed the policy by hand
 # after this was written -- read the diff before applying, do not clobber it.
 #
-# NOTE: AWS caps a managed policy at 5 versions. v1 was deleted on 2026-08-28 to
-# make room for v5; Terraform does not manage that rotation, so if an apply ever
-# fails with LimitExceeded, delete the oldest non-default version by hand.
+# NOTE: AWS caps a managed policy at 5 versions. v1 was deleted by hand on
+# 2026-08-28 to make room for v5. An apply does NOT fail with LimitExceeded:
+# hashicorp/aws 5.100.0 (resourcePolicyUpdate -> policyPruneVersions) deletes the
+# oldest non-default version itself before CreatePolicyVersion, and the plan does
+# not show it. If that version matters as a rollback copy, save it first
+# (aws iam get-policy-version) before applying.
 
 resource "aws_iam_policy" "cicd_infra" {
   name        = "facilitator-cicd-infra"
@@ -284,6 +290,65 @@ resource "aws_iam_policy" "cicd_infra" {
           "s3:GetLifecycleConfiguration"
         ],
         "Resource" : "arn:aws:s3:::facilitator-discovery-prod"
+      },
+      {
+        # Added 2026-10-10. aws_ecs_cluster.main is in no deploy step's target list, yet
+        # every image deploy applies it: aws_ecs_service.facilitator (`cluster`) and
+        # aws_appautoscaling_target.ecs_target (`resource_id`) reference it, and a targeted
+        # apply applies every pending change on a target's dependencies. #115 turned
+        # Container Insights off, and the deploy of its merge failed on 2026-10-07:
+        #
+        #   AccessDeniedException: User: .../github-actions-facilitator-deploy is not
+        #   authorized to perform: ecs:UpdateCluster on ...:cluster/facilitator-production
+        #
+        # (fixed forward by c0der with an admin apply of the cluster, R496). Taking the
+        # cluster out of the deploy instead is not possible: it is a dependency, not a
+        # target to drop, and Terraform 1.9.8 has no -exclude.
+        #
+        # hashicorp/aws 5.100.0 (.terraform.lock.hcl) sends a change to `setting`,
+        # `configuration` or `service_connect_defaults` through UpdateCluster alone and
+        # then waits on DescribeClusters, which ReadOnlyAccess already grants. The ECS
+        # writes the deploy always needed (RegisterTaskDefinition, UpdateService,
+        # TagResource) live in the inline facilitator-cicd policy, which is at its size
+        # limit and not in Terraform -- docs/CICD_SETUP.md. Scoped to the one cluster.
+        "Sid" : "EcsClusterUpdate",
+        "Effect" : "Allow",
+        "Action" : [
+          "ecs:UpdateCluster"
+        ],
+        "Resource" : "arn:aws:ecs:us-east-2:${data.aws_caller_identity.current.account_id}:cluster/facilitator-production"
+      },
+      {
+        # Added 2026-10-10. Terraform drops a tag with ecs:UntagResource. The inline facilitator-cicd policy
+        # grants ecs:TagResource (on "*", docs/CICD_SETUP.md) but not its inverse, so removing a tag from the
+        # cluster, the service or the task definition would fail an image deploy the way ecs:UpdateCluster did
+        # on 2026-10-07. Scoped to the three ECS resources an image deploy reaches, narrower than TagResource's
+        # "*". This is the ECS half only: dropping a key of the provider's default_tags also untags the target
+        # groups, the security group, the subnets, the task roles and the ALB in the deploy's reach, and nobody
+        # grants CI those untag calls -- apply such a change by hand.
+        "Sid" : "EcsDeployUntag",
+        "Effect" : "Allow",
+        "Action" : [
+          "ecs:UntagResource"
+        ],
+        "Resource" : [
+          "arn:aws:ecs:us-east-2:${data.aws_caller_identity.current.account_id}:cluster/facilitator-production",
+          "arn:aws:ecs:us-east-2:${data.aws_caller_identity.current.account_id}:service/facilitator-production/facilitator-production",
+          "arn:aws:ecs:us-east-2:${data.aws_caller_identity.current.account_id}:task-definition/facilitator-production:*"
+        ]
+      },
+      {
+        # Owner's decision 230. BAZAAR_ADMIN_TOKEN is an SSM SecureString on its own KMS key
+        # (secrets.tf). ReadOnlyAccess grants ssm:GetParameter, which on that key returns only
+        # ciphertext, and grants no kms:Decrypt; this Deny keeps it that way whatever is
+        # attached later -- the role DenySecretValueReads plays for secretsmanager:GetSecretValue
+        # in the inline policy (docs/CICD_SETUP.md).
+        "Sid" : "DenyBazaarTokenDecrypt",
+        "Effect" : "Deny",
+        "Action" : [
+          "kms:Decrypt"
+        ],
+        "Resource" : "${aws_kms_key.bazaar_admin_token.arn}"
       }
     ]
   })

@@ -39,7 +39,7 @@ two mean "nothing was sent".
 | `502` `success: false`, `error: settlement_unconfirmed` or `broadcast_uncertain` | The `upto`, `escrow` and `refund` routes, same causes, same fields. |
 | `502` `success: false`, `retryable: false` | `fhe-transfer`: the FHE facilitator settles on its own side, and its answer did not come back cleanly. |
 | `502` `reason: forward_unconfirmed` | A task that does not hold the EVM signer forwarded the settle to the one that does, and the answer was lost after it was sent. |
-| `502` `receipt_response_unreadable`, or any failure carrying a `receipt` with `status: unknown` | The receipt rail (Arc, native Hedera): a failure after the send latched or its bytes were prepared. The body carries the prepared `transaction` and its `paymentId`. |
+| `502` `receipt_response_unreadable`, or any failure carrying a `receipt` with `status: unknown` | The receipt rail (the networks `GET /receipts` lists): a failure after the send latched or its bytes were prepared. The body carries the prepared `transaction` and its `paymentId`. |
 
 ## Nothing was sent: the same request may be resent
 

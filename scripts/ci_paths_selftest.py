@@ -3,10 +3,10 @@
 
 A path filter fails silently in both directions. Too wide and the Actions budget
 keeps burning on prose; too narrow and a commit that changes the facilitator
-merges into main, goes green, and never reaches ECS -- with no run to notice,
-because the run is exactly what did not happen. A merge to main IS a release
-here, so the second failure mode has to be caught before the filter ships, not
-after.
+merges into main untested -- with no run to notice, because the run is exactly
+what did not happen. A merge no longer deploys by itself (X402-CI-GATES), but the
+next manual deploy ships whatever main holds, so the second failure mode still
+has to be caught before the filter ships, not after.
 
 So this reimplements GitHub's own glob matching and asserts, file by file:
 

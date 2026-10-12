@@ -5,9 +5,11 @@ name: CI/CD — build, test, and deploy to AWS
 #
 # This pipeline:
 #   - on every PR and push to main THAT TOUCHES A BUILD INPUT (see `paths` below):
-#     build + run the test suite (the green gate)
-#   - on such a push to main (once AWS secrets are set): build the image, push to AWS ECR,
-#     and `terraform apply` the new image to ECS production, then verify.
+#     build + run the test suite (the green gate), and the drift gate
+#   - on a manual "Run workflow" on main, and ONLY then (once AWS secrets are set): build
+#     the image, push to AWS ECR, and `terraform apply` the new image to ECS production,
+#     then verify. A merge never deploys by itself (owner's rule, 2026-09-27: one release a
+#     day, started by hand); see the deploy job's `if:`.
 #
 # AWS auth: IAM access keys stored as repo secrets AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY.
 # See docs/CICD_SETUP.md for the IAM policy and secret setup. Until those secrets exist,
@@ -28,8 +30,8 @@ name: CI/CD — build, test, and deploy to AWS
 # named here is actually matched.
 #
 # workflow_dispatch carries no paths: a manual "Run workflow" on main is the
-# escape hatch that deploys, re-applies the Lambda and re-runs the drift gate
-# regardless of what changed.
+# only thing that deploys, and it re-applies the Lambda and re-runs the drift
+# gate regardless of what changed.
 on:
   push:
     branches: ['main']
@@ -117,7 +119,7 @@ env:
   CARGO_FEATURES: solana,near,stellar,algorand,sui,xrpl,hedera
 
 concurrency:
-  group: cicd-${{ github.ref }}
+  group: cicd-${{ github.ref }}-${{ github.event_name }}
   # A pull request gets a fresh run on every push to its branch, and until now
   # the superseded one kept compiling for another six minutes with nobody
   # waiting on its answer. Measured 2026-09-11: 8 of the 22 pull-request runs in
@@ -125,10 +127,21 @@ concurrency:
   # than the `paths` filter above saves.
   #
   # `false` on main is load-bearing and is what this expression still returns
-  # there. The group key is github.ref, so a push to main never shares a group
-  # with a pull request; two releases queued back to back must BOTH run, because
-  # cancelling the first would stop it between `terraform apply` and the rollout
-  # wait. The deploy job's own deploy-production group is the second guard.
+  # there: a RUNNING release is never cancelled, because cancelling it would stop
+  # it between `terraform apply` and the rollout wait. The deploy job's own
+  # deploy-production group is the second guard.
+  #
+  # The event is part of the key because only a manual "Run workflow" deploys.
+  # GitHub keeps one PENDING run per group and cancels it when a newer one
+  # arrives; with push and workflow_dispatch in one group, a merge landing while
+  # a release waited behind another run would cancel the release, and the push
+  # that replaced it does not deploy. Keyed apart, a newer release replaces an
+  # older pending one, which shipped a subset of what it does -- unless the
+  # "newer" one is a RE-RUN of an old release: it joins the group last and
+  # cancels a newer release waiting there. Its own old SHA no longer ships (the
+  # deploy job's first step refuses anything but main's head), so nothing does.
+  # Never re-run an old release; start a new one.
+  # tests/scripts/test_ci_deploy_job.py holds the key and the step.
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
@@ -207,10 +220,10 @@ jobs:
         run: |
           if [ "$HAS_KEY" = "true" ]; then
             echo "deploy=true" >> "$GITHUB_OUTPUT"
-            echo "AWS credentials present — deploy will run on main."
+            echo "AWS credentials present — a manual Run workflow on main deploys."
           else
             echo "deploy=false" >> "$GITHUB_OUTPUT"
-            echo "::notice title=Deploy skipped::AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY are not set. Add them (see docs/CICD_SETUP.md) to enable auto-deploy."
+            echo "::notice title=Deploy skipped::AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY are not set. Add them (see docs/CICD_SETUP.md) to enable the manual deploy."
           fi
 
   # ---------------------------------------------------------------------------
@@ -249,9 +262,11 @@ jobs:
     permissions:
       contents: read
     # Separate from the deploy's concurrency group: a superseded plan is worthless,
-    # but it must never sit in the queue a release is waiting in.
+    # but it must never sit in the queue a release is waiting in. Keyed by event
+    # like the workflow, so a merge's plan and a release's plan do not cancel each
+    # other and turn one of the two runs "cancelled".
     concurrency:
-      group: tfplan-${{ github.ref }}
+      group: tfplan-${{ github.ref }}-${{ github.event_name }}
       cancel-in-progress: true
     steps:
       - uses: actions/checkout@v4
@@ -465,6 +480,12 @@ jobs:
       # never guessed) and goes red with the exact command to apply it by hand,
       # on 1.9.8, before the merge. `!cancelled()`: a red uncovered-drift row
       # above must not hide this answer.
+      #
+      # It does the same for aws_ecs_cluster.main, which no deploy step targets
+      # but every image deploy applies as a dependency of the service: the
+      # deploy of #115 died on ecs:UpdateCluster on 2026-10-07 (R496). Only the
+      # cluster calls the managed policy can grant are evaluated; the ECS writes
+      # every deploy makes live in the inline policy, outside the plan.
       - name: IAM changes the deploy cannot apply
         if: '!cancelled()'
         working-directory: terraform/environments/production
@@ -490,9 +511,9 @@ jobs:
       # aws_s3_bucket_versioning.discovery is in a deploy step's target list,
       # a suspended bucket shows up in the plan as a change the deploy DOES
       # cover, which the report prints under "Pending, but a deploy applies
-      # these - not a failure". True, and not enough: a deploy only runs on a
-      # push that touches a build input, so until the next one the row would
-      # sit there and never fail anything.
+      # these - not a failure". True, and not enough: a deploy only runs when
+      # somebody starts one by hand, so until the next one the row would sit
+      # there and never fail anything.
       #
       # So ask S3 directly. Read-only, and it runs on every PR and every push.
       #
@@ -548,7 +569,7 @@ jobs:
               # Empty/None. Only legitimate before the resource has ever been created.
               case "$plan_actions" in
                 *create*)
-                  echo "::notice title=Versioning not enabled yet::${BUCKET} is unversioned and the plan creates ${ADDR}. Expected on the change that introduces it; the deploy step enables it on merge."
+                  echo "::notice title=Versioning not enabled yet::${BUCKET} is unversioned and the plan creates ${ADDR}. Expected on the change that introduces it; the next deploy (Run workflow on main) enables it."
                   ;;
                 *)
                   echo "::error title=Discovery catalog bucket is NOT versioned::${BUCKET} reports no versioning status and no plan step creates ${ADDR}. The resource is declared but was never applied -- exactly the hole the drift gate exists to close."
@@ -558,14 +579,60 @@ jobs:
               ;;
           esac
 
+      # ---------------------------------------------------------------------
+      # BAZAAR_ADMIN_TOKEN's parameter exists, on its own KMS key
+      # ---------------------------------------------------------------------
+      #
+      # The task definition reads BAZAAR_ADMIN_TOKEN from the SSM SecureString
+      # /facilitator/bazaar-admin-token by an ARN Terraform composes instead of
+      # reading (secrets.tf): neither the value nor its ciphertext reaches the
+      # state, so no plan fails while the parameter is missing -- and a task that
+      # cannot read it never starts. This asks SSM for the parameter's metadata
+      # (describe-parameters never returns a value) and goes red while it is
+      # missing, is not a SecureString, or is not on the dedicated key. Public
+      # logs: nothing it prints carries an account id.
+      # tests/scripts/test_ci_bazaar_token.py runs this step.
+      - name: Bazaar admin token parameter is in place
+        if: '!cancelled()'
+        run: |
+          NAME=/facilitator/bazaar-admin-token
+          ALIAS=alias/facilitator-bazaar-admin-token
+          if ! got=$(aws ssm describe-parameters --region "$AWS_REGION" --parameter-filters "Key=Name,Option=Equals,Values=${NAME}" --query 'Parameters[0].[Type,KeyId]' --output text 2>&1); then
+            got=$(printf '%s' "$got" | sed -E 's/[0-9]{12}/<account>/g' | head -c 300)
+            echo "::warning title=Bazaar admin token check inconclusive::Could not read the metadata of ${NAME}: ${got}. Not failing on a read we did not complete."
+            exit 0
+          fi
+          read -r type key_id _ <<< "$got"
+          if [ -z "$type" ] || [ "$type" = "None" ]; then
+            echo "::error title=Bazaar admin token parameter missing::${NAME} does not exist, and a task cannot start without it. Create it before the merge (secrets.tf has the command): put-parameter --type SecureString --key-id ${ALIAS}."
+            exit 1
+          fi
+          if [ "$type" != "SecureString" ]; then
+            echo "::error title=Bazaar admin token parameter is not secret::${NAME} is a ${type}, not a SecureString. Delete it and create it again as in secrets.tf."
+            exit 1
+          fi
+          case "$key_id" in
+            "$ALIAS"|arn:aws:kms:*:"$ALIAS")
+              echo "${NAME} is a SecureString on ${ALIAS}."
+              ;;
+            *)
+              echo "::error title=Bazaar admin token on the wrong key::${NAME} is encrypted with another key, not ${ALIAS}. On the default aws/ssm key any principal with ssm:GetParameter decrypts it. Put it again with --key-id ${ALIAS} --overwrite."
+              exit 1
+              ;;
+          esac
+
   deploy:
     name: Push to ECR & deploy to ECS (production)
     needs: [test, preflight]
-    # Deploy on a push to main OR a manual "Run workflow" on main, once AWS secrets exist.
+    # Deploy ONLY on a manual "Run workflow" on main, once AWS secrets exist. A push to
+    # main -- a merge -- builds, tests and plans, and stops there: the owner's rule
+    # (2026-09-27) is one release a day, started by hand, and before this condition
+    # (X402-CI-GATES) every merge that touched a build input shipped on its own. Start one with
+    # `gh workflow run ci.yaml --ref main`. tests/scripts/test_ci_deploy_job.py holds this.
     if: >-
       needs.preflight.outputs.deploy == 'true' &&
       github.ref == 'refs/heads/main' &&
-      (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+      github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     # ~16-min image build + terraform + ECS rollout wait; 50 leaves headroom so the
     # "wait for stable" + verify steps complete (30 was cut off mid-rollout).
@@ -578,6 +645,25 @@ jobs:
       # scripts/ci_last_green_deploy.py reads this workflow's runs and jobs.
       actions: read
     steps:
+      # A re-run runs on the commit its run was started at, so re-running an old
+      # release deployed that old commit: a rollback nobody asked for, with a
+      # green run to show for it. Only main's head ships; anything else stops
+      # here, before the image is built. A re-run can still cancel a newer
+      # release waiting in the queue (see the concurrency note above): start a
+      # new one. tests/scripts/test_ci_deploy_job.py holds this step.
+      - name: Refuse anything but the head of main
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_SHA: ${{ github.sha }}
+          REPO: ${{ github.repository }}
+        run: |
+          head=$(gh api "repos/${REPO}/git/ref/heads/main" --jq .object.sha) || head=""
+          if [ -z "$head" ] || [ "$head" != "$RELEASE_SHA" ]; then
+            echo "::error title=Not the head of main::This run would deploy ${RELEASE_SHA}; main is at ${head:-a ref that could not be read}. Start a new release: gh workflow run ci.yaml --ref main"
+            exit 1
+          fi
+          echo "Deploying main's head ${RELEASE_SHA}."
+
       - uses: actions/checkout@v4
 
       - name: Compute image tag (version + short SHA)
@@ -667,7 +753,7 @@ jobs:
             -target=aws_appautoscaling_policy.ecs_memory \
             -var="image_tag=${{ steps.tag.outputs.image_tag }}"
 
-      - name: Deploy balances Lambda (only when its sources changed)
+      - name: Deploy balances Lambda (always, on a manual run)
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         working-directory: terraform/environments/production
@@ -686,9 +772,11 @@ jobs:
           # applying: a redundant UpdateFunctionCode is cheap, a silently unapplied change
           # is what we are fixing.
           #
-          # The script also answers "aplicar" for a manual "Run workflow", which is the
-          # escape hatch: use it to resync the Lambda when it drifted from main (which is
-          # how it was first fixed).
+          # The script also answers "aplicar" for a manual "Run workflow", which was the
+          # escape hatch to resync the Lambda when it drifted from main (how it was first
+          # fixed). Now every deploy is a manual run (the job's if:), so this step applies on
+          # every release -- which the observability step below already did through its
+          # dependency on the function.
           base=$(python3 "$GITHUB_WORKSPACE/scripts/ci_last_green_deploy.py") || base=aplicar
           # A compare lists at most 300 files. A list that long may have been cut short,
           # and a cut-short list cannot prove the Lambda did not change.
@@ -763,7 +851,10 @@ jobs:
             -target=aws_cloudwatch_log_metric_filter.evm_signer_transactions_stuck \
             -target=aws_cloudwatch_metric_alarm.evm_signer_transactions_stuck \
             -target=aws_cloudwatch_log_metric_filter.network_startup_probe \
-            -target=aws_cloudwatch_metric_alarm.network_startup_probe
+            -target=aws_cloudwatch_metric_alarm.network_startup_probe \
+            -target=aws_cloudwatch_log_metric_filter.receipt_store_failure \
+            -target=aws_cloudwatch_metric_alarm.receipt_store_dynamodb_errors \
+            -target=aws_cloudwatch_metric_alarm.receipt_store_latency
 
       # The wait and the health check run whenever the image apply RAN, even if it or a
       # step after it failed. Skipping the two leaves a service that may already have

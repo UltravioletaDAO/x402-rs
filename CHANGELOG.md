@@ -1,5 +1,229 @@
 # Changelog
 
+## [2.51.0] - 2026-10-12
+
+Tanda 1011: X402-BAZAAR-REPLICAS + X4-BAZAAR-ADOPTA, X402-REGISTER-OWNER,
+X402-CI-GATES and X4-REC-EVM (facilitator receipts on every EVM network that
+serves `exact`). 2.50.0 was never released on its own: it ships here.
+
+### Changed
+
+- **A merge no longer deploys; a release is a manual "Run workflow" on `main`**
+  (`gh workflow run ci.yaml --ref main`; owner's rule of 2026-09-27, one release
+  a day started by hand). The deploy job of `ci.yaml` runs only on
+  `workflow_dispatch`; push and pull request still run the tests and the drift
+  gate. The concurrency group carries the event, so a merge landing while a
+  release waits no longer cancels it. The deploy job's first step refuses any
+  commit that is not `main`'s head, so re-running an old release no longer ships
+  that old commit. `tests/scripts/test_ci_deploy_job.py` holds it, runs that
+  step, and checks that no other job applies Terraform, pushes an image or moves
+  the service.
+- **A Bazaar setting that is set but is not a usable number** (or is `0` where
+  zero is refused) is its default and logs a warning, once per value; before,
+  it fell back without a word.
+- **The CI user's managed policy `facilitator-cicd-infra`** gains
+  `EcsClusterUpdate` (`ecs:UpdateCluster` on the production cluster, which every
+  image deploy drags in as a dependency: #115's deploy died on it on 2026-10-07)
+  and `EcsDeployUntag` (`ecs:UntagResource` on the cluster, the service and the
+  task-definition family). Applied by hand like the rest of that file
+  (`terraform apply -target=aws_iam_policy.cicd_infra`).
+- **The drift gate's IAM step** (`scripts/drift_gate_iam.py`) also evaluates the
+  cluster changes a targeted plan drags in, and `ecs:UntagResource` when a
+  deploy would drop a tag. A targeted plan that errored is red ("not
+  evaluated"), no longer reported clean.
+- **`POST /discovery/register` keys a listing by its URL's canonical spelling**
+  (register: canonical key), the one the overlays and the origin proof use, and
+  stores it that way.
+
+### Fixed
+
+- **A Bazaar alta (or delete) made on one replica is no longer undone by the
+  snapshot the other publishes.** On 2026-10-07 a `POST /discovery/register`
+  that answered 201 was gone from both replicas minutes later. The replica that
+  owns the discovery jobs published its catalog with `save_all`, which conditions
+  the PUT on a HEAD taken just before it: a cache read before the other
+  replica's write passed that check and replaced it, and the other replica then
+  followed the snapshot and dropped it as well. The aggregation snapshot and the
+  retention GC's are now conditional on the version the cache was read at
+  (`DiscoveryRegistry::publish_snapshot`); when another replica wrote in
+  between, the write is refused, the published catalog is adopted and the import
+  or the GC runs again on top of it -- three attempts in all. A refusal that left
+  the object where it was publishes the same snapshot again. Giving up
+  overwrites nothing. A refresh landing in the middle of a publish can no longer
+  mark an older catalog as the one just published. After publishing, the owner
+  no longer re-reads its own object. Adopting the published catalog applies the
+  writes this task had queued and, when one of its own lands while the store is
+  read, applies it and reads again (up to three reads); a cycle whose snapshot
+  is still not published says so (`DiscoveryRegistry::import` reports
+  `unpublished`, and the aggregator logs it).
+- **A settlement no longer writes a replica's copy of the listing back to the
+  store.** Recorded on the replica that does not own the discovery jobs, it
+  saved that replica's copy whole, which could be an aggregation interval old:
+  it put back a listing deleted on the other replica, replaced the settlement
+  count the other replica had recorded with its own, and would have walked back
+  a declaration adopted there. It is now a patch: one more settlement and the
+  later `lastSettledAt` on the stored listing, nothing else, never an insert.
+
+### Added
+
+- **Origin proof of ownership for listings from open routes (phase 1).**
+  `POST /discovery/register` and a discoverable settlement take a URL from
+  anyone; nothing tied such a listing to its origin, so a stranger could list
+  somebody else's endpoint with its real `payTo` and a description and category
+  of their own. Once a probe verifies such a listing alive, the prober reads
+  `/.well-known/x402` at the root of the listing's own origin, through the same
+  SSRF-hardened connector and never in the register request nor inside a probe:
+  on a later tick, as one of the requests it allows itself per host and per
+  tick, and not while the host is backing it off (a 429 or 503 to the file holds
+  it off like one to a probe). That is normally once per origin per
+  `DISCOVERY_ORIGIN_PROOF_CACHE_SECS`, 6 h; a failed read is reused for at most
+  `DISCOVERY_ORIGIN_PROOF_RETRY_SECS`, 15 min and never longer than the cache
+  window, so the next verified probe after that asks again. It publishes
+  `health.ownership`: `origin-attested` when an
+  entry for the URL declares the listing's recipients and description, the
+  category, provider and tags it names, and every key of the `extensions` it
+  registered with the same value (all but the input's `type` and `method`, which
+  the probe's own 402 answered, and what was adopted from that 402);
+  `unattested` when there is no file, a JSON document that lists no resources
+  (an emptied file takes the word back), no such entry, or one that declares
+  something else; `unknown` when the file could not be read and no fresh read
+  decided it. A verdict the origin gave stands for the observed-terms freshness
+  window after the read that reached it, through failed reads, and is `unknown`
+  past that; and a verdict is the listing's it judged: the URL registered again
+  with other content does not carry it. `DISCOVERY_REQUIRE_ORIGIN_PROOF` (default off, phase 2)
+  stops listing the unattested ones; both switches are in `GET /discovery/config`
+  (group `ownership`). The verdict lives in the health overlay, never on the
+  resource, so a registrant cannot attest itself.
+- **A self-registered listing that declares no input takes the one its own 402
+  declares.** On 2026-10-10, 905 of the 1 036 self-registered listings in the
+  published catalog declared no input, while most of their hosts' 402s carry one
+  in `extensions.bazaar` (header or body); the prober read those challenges and
+  kept only the prices. When a probe verifies the listing -- its own answer to
+  the request as sent, offering a payment, recipients clean -- the challenge's
+  `extensions.bazaar` (from the transport whose terms won, or from the other one
+  when the two agree) is filled into what the registration left out: a key the
+  seller registered is never replaced, and what the seller wrote (an `output`,
+  an example) is kept whole; the result has to declare an input and fit the
+  bounds of a registered `extensions`. Only through a 402 to the method the
+  declaration names -- the prober learns a declared POST and adopts on the next
+  probe -- and never from a 402 whose `resource.url` names another resource
+  (another host or path). An adopted method is where the probe starts, not a
+  declaration it is held to: the listing keeps the fallback of one that declares
+  none. The listing then
+  reports `hasInputSchema: true` and `extensionsProvenance: origin_response`,
+  with the parts filled in as JSON Pointers in `extensionsAdopted`, both
+  persisted with it and never taken from a caller; what was adopted that way
+  follows a newer 402 whole, and a key the seller registered is never replaced
+  or removed by a later adoption. It reaches the store as a patch of the declaration alone,
+  on a record still holding the content it was judged against, never as a save
+  of the owner's copy (which could resurrect a listing deleted on the other
+  replica or walk back its settlements), and queued adoptions share one write.
+  Aggregated copies are left to their feeds.
+- **`BAZAAR_ADMIN_TOKEN` reaches production.** Nothing put it in the container
+  before, so the Bazaar admin routes (`DELETE /discovery/resources`,
+  `/discovery/admin/*`, `POST /discovery/refresh`) answered 404 there. It now
+  comes from the SSM Parameter Store SecureString `/facilitator/bazaar-admin-token`,
+  encrypted with a KMS key of its own (`alias/facilitator-bazaar-admin-token`,
+  rotated every year; owner's decision 230). On that key `ssm:GetParameter` alone
+  returns only ciphertext: the execution role is granted `ssm:GetParameters` on
+  the parameter and `kms:Decrypt` on the key, through SSM only, and the CI user
+  is explicitly denied `kms:Decrypt` on it (`facilitator-cicd-infra`,
+  `DenyBazaarTokenDecrypt`). Terraform creates the key and composes the
+  parameter's ARN without reading it, so neither the value nor its ciphertext
+  reaches the state; the drift gate's new "Bazaar admin token parameter is in
+  place" step reads the parameter's metadata and is red while it is missing, is
+  not a SecureString or is on another key. Before the merge, by hand (the CI user
+  can do none of it; `secrets.tf` has the commands): apply the key, the CI
+  policy and the execution role's policy, then put the value from a file.
+
+X4-REC-EVM (facilitator receipts):
+
+### Changed
+
+- **Facilitator receipts cover every EVM network that serves `exact`**, in
+  each of its ERC-3009 tokens, x402 v1 and v2. Until now they covered Arc, Arc
+  testnet and Base. One matrix (`receipts::evm_exact_tokens`) decides what
+  `GET /receipts` and `/supported.facilitatorReceipts` announce, what is
+  admitted and how a receipt is normalized: the tokens `/supported` lists for
+  a network's `exact` kind, on the networks where production publishes that
+  kind (`exactServed` in `config/supported_tokens.json`; Ethereum Sepolia and
+  the EVM networks nothing serves stay out). Each newly covered network
+  changes for its callers as Base did in 2.40.0, including its dependency on
+  the receipt store: the rail fails closed, so with the store unreachable its
+  `exact` settles answer `503 receipt_store_unavailable` and send nothing.
+  Hedera is unchanged.
+- **Leaving the rail is pinned.** A network or token that drops out of the
+  matrix would send resends of its stored receipts down the ordinary path, so
+  the pairs the rail admits are listed in a test that must equal the matrix:
+  a new pair is added to it, and removing one means editing it on purpose. A
+  rollback to an earlier release takes the new networks off the rail at once;
+  `docs/facilitator-receipts.md` ("EVM coverage") says what that leaves open.
+- **Admission takes one network and one of its tokens.** A request is admitted
+  only when its payload and its terms name the same network and, on EVM, its
+  asset is one of that network's `exact` tokens; anything else runs as before
+  without a receipt (`400 receipt_request_not_supported` on `/settle` when it
+  carries `X-UVD-Purchase`). On Arc and Base this only touches requests that
+  verification already refused, which no longer carry a `rejected` receipt.
+  Every EVM receipt now carries the token's `decimals`.
+- **Receipt rows expire.** Every row a receipt admission writes, the record
+  and each alias, carries `expires_at`, the TTL attribute the
+  `idempotency_records` table already sweeps on: 90 days after the later of
+  the authorization's `validBefore` and the write, so a row always outlives
+  the authorization it protects and keeps the purchase binding and the
+  private lookup for 90 days after it. A test keeps the retention at 30 days
+  or more. Rows written before 2.51.0 carry no `expires_at` and stay. An
+  expired alias whose record was already swept reads as no admission instead
+  of a corrupt store.
+- **The receipt store has alarms** (`alerts-receipts-store.tf`, on the
+  facilitator's SNS topic, applied by the deploy's observability step), on
+  DynamoDB's own metrics: `SystemErrors` and `ThrottledRequests` on the table
+  in two five-minute periods running, and a p99 latency over one second for
+  fifteen minutes. The facilitator also counts its failed store requests (a
+  new `receipt_store_failure` log line with `op` and `kind`, metric
+  `Facilitator/Receipts` `ReceiptStoreFailures`) as a metric to read, not a
+  page: request text reaches the logs, so a log-based page could be forged.
+  `terraform test` pins the alarms and the table's TTL. A request DynamoDB
+  refuses for access, or one that never reaches it, shows only at the load
+  balancer's 5xx alarm.
+- **One Idempotency-Key per payer on the rail.** A new signature from the same
+  payer under a key already admitted is refused with
+  `409 receipt_request_conflict` on any network, token or `payTo`, until the
+  rows expire. A payment that settles in the answer to a request carrying a
+  key it was admitted with is also filed in the 24-hour Idempotency-Key cache,
+  as `/settle` files what it settles off the rail, without replacing a live
+  row: for a day another body under the key is `409 idempotency_key_conflict`
+  from any payer, and a release before 2.51.0 reads the same row.
+- **An admitted authorization stays on the rail.** A later request for it whose
+  terms cannot be normalized (free-form `extra` or `outputSchema` carrying a
+  float) is answered as that admission: `409 receipt_request_conflict` on
+  `/settle`, `isValid: false` on `/verify`, nothing sent or simulated. Without
+  an admission such a request runs as before, without a receipt.
+- **`/verify` fails closed on the receipt store**, as `/settle` does:
+  `503 receipt_store_unavailable` with `Retry-After`, never a simulated verdict.
+- **Reconciliation refuses an EVM admission only once its authorization can no
+  longer move funds**: the saved transaction reverted, and at the latest block
+  (stamped at or past `validBefore`, not behind the reverted one) the token
+  reports the authorization unused (`authorizationState`). Until then, or
+  while the token cannot be read, the receipt keeps its state. An
+  authorization the token reports used leaves the receipt `unknown` with
+  `diagnosticCode: authorization_used_elsewhere`, nothing to resend. Records
+  keep the authorization's signer and nonce for this; records written before
+  keep their state.
+- **An unconfirmed store write cannot strand an admission.** Closing a
+  reservation or re-admission whose write was not confirmed now writes the
+  record when it is not there yet, so a write that lands later writes nothing.
+  When the store refuses both the prepared transaction and the release, the
+  answer is `503 receipt_store_unavailable` with `safeToRetry`, not the
+  provider's `400`. An expired alias that DynamoDB has not swept no longer
+  blocks a new admission.
+- `networks` in the receipt capability is derived from the network list; it
+  keeps every entry it had, in a different order.
+- `/verify` and `/settle` in OpenAPI, the MCP `x402_settle` tool, `index.md`,
+  `skill.md`, `mcp.md` (and `llms-full.txt`), the README,
+  `docs/facilitator-receipts.md` ("EVM coverage") and `docs/settle-errors.md`
+  name the rule instead of a list of networks.
+
+
 ## [2.49.0] - 2026-10-06
 
 ### Changed

@@ -1,11 +1,12 @@
 # Portable facilitator receipts v1
 
-Arc exact USDC/EURC (mainnet and testnet, x402 v1/v2), Base exact USDC/EURC
-(mainnet, x402 v1/v2, since 2.40.0) and native Hedera USDC (mainnet and testnet,
-v2) return an additive `receipt` beside `/verify` and `/settle` results. Other
-networks keep their existing behavior. Networks are added one at a time;
-discover runtime availability in `/supported.facilitatorReceipts` or
-`GET /receipts`.
+Exact payments on every EVM network where production serves `exact`, in each of
+its ERC-3009 tokens (x402 v1/v2; Base since 2.40.0, every such network since
+2.51.0), and native Hedera USDC (mainnet and testnet, v2) return an additive
+`receipt` beside `/verify` and `/settle` results. Other networks keep their
+existing behavior. `GET /receipts` and `/supported.facilitatorReceipts` list the
+networks; the tokens are the ones `/supported` lists for each network's `exact`
+kind. See "EVM coverage" below.
 
 The receipt contains `network` (CAIP-2), `asset`, atomic-string `amount`,
 `decimals`, `payTo`, `payer`, `requestHash`, `authorizationId`,
@@ -66,6 +67,15 @@ context per order in merchant/buyer storage; this API cannot deduplicate two
 independently created purchases. Merchant fulfillment requires its own durable
 order handling; the facilitator prevents duplicate admission of payment.
 
+**For how long.** The facilitator keeps a purchase's binding and its receipt
+until the rows expire: 90 days after the authorization's `validBefore` (see
+"Expiry"). Once DynamoDB deletes them, usually within days of expiry, a resume
+or a lookup finds no receipt; the authorization itself is long dead and is
+refused by verification, and a new signature for the same capability or
+Idempotency-Key is a new payment. Until the deletion the rows still answer as
+before. Finish or abandon a purchase within that window, and keep fulfillment
+records of your own beyond it.
+
 `GET /receipts/{receiptId}` with `Authorization: Bearer <accessToken>` returns the
 latest receipt and performs read-only chain reconciliation. Missing or incorrect
 capabilities get 404. Receipt IDs and tokens never appear in a public listing.
@@ -89,7 +99,12 @@ Canonical JSON sorts ASCII object keys, uses compact JSON strings without ASCII
 escaping, preserves array order, and accepts only null, booleans, strings, and
 integers from zero through the JavaScript safe-integer maximum. Floats and
 non-ASCII keys are rejected. This is a constrained canonical profile, not a claim
-to implement arbitrary JCS. `paymentRequestHash` uses domain
+to implement arbitrary JCS. A request the rail admits whose terms cannot be
+written this way (free-form `extra` or `outputSchema` may carry a float) gets no
+receipt and runs as before, unless its authorization was already admitted under
+another request: then `/settle` answers `409 receipt_request_conflict` and
+`/verify` `isValid: false` with that admission's reason, and nothing is sent or
+simulated (since 2.51.0). `paymentRequestHash` uses domain
 `uvd-x402-payment-v1` and the complete normalized internal verify request.
 `authorizationId` binds network, asset, payer and EIP-3009 nonce, or Hedera network
 and native transaction ID. It does not expose reusable signed bytes.
@@ -128,7 +143,8 @@ because the helper does not cover unrelated infrastructure changes.
 
 Receipt rows and aliases use a new `receipt:*` namespace in the existing
 idempotency table. A DynamoDB transaction conditionally reserves the record,
-authorization, purchase capability and optional scoped Idempotency-Key together.
+authorization, purchase capability and optional Idempotency-Key together (see
+"Idempotency-Key scope").
 Caller-supplied Idempotency-Key values beginning with `receipt:` are rejected
 across all networks, preventing legacy cache writes from replacing receipt rows.
 Signature verification happens before admission. Revision updates use CAS.
@@ -146,7 +162,7 @@ signed payment alone is not a purchase binding:
 
 | Resend | `/settle` | `/verify` |
 | --- | --- | --- |
-| Same capability or same Idempotency-Key | Original answer replayed | Stored verdict and receipt |
+| Same capability or same Idempotency-Key (until the rows expire, 90 days after `validBefore`) | Original answer replayed | Stored verdict and receipt |
 | No binding, payment `confirmed` | `409 authorization_already_settled` with the receipt | `isValid: false`, `invalidReason: authorization_already_settled` |
 | No binding, payment `pending` or `unknown` | `409 authorization_in_flight` with the receipt; a resend without the binding learns the final outcome by resending later | `isValid: false`, `invalidReason: authorization_in_flight` |
 | No binding, payment `rejected` | Original rejection replayed | Stored rejection |
@@ -157,24 +173,76 @@ These 409s never carry `success: true`, a top-level `transaction` or
 `Idempotent-Replayed`; the receipt inside proves the payment to whoever holds
 the payment itself. A receipt made under a purchase context is never returned
 without that context. `/verify` answers from the stored receipt and does not
-simulate the consumed authorization again. If receipt storage fails while the
-binding is being resolved, both answer `503 receipt_store_unavailable`, never a
-verdict. Recovery by reconciliation and rebroadcast of saved bytes is unchanged
-for every resend.
+simulate the consumed authorization again. If receipt storage fails, while the
+authorization or the binding is being read, both answer
+`503 receipt_store_unavailable` with `Retry-After`, never a verdict (`/verify`
+since 2.51.0; before, it fell back to simulation when the authorization could
+not be read). Recovery by reconciliation and rebroadcast of saved bytes is
+unchanged for every resend.
+
+**Idempotency-Key scope (since 2.51.0).** A key binds the request that admitted
+a payment (the replays above) and refuses any other: a new signature from the
+same payer under a key it already used is `409 receipt_request_conflict` and
+nothing is sent, on any network, token or `payTo` of the rail, until the rows
+expire; this refusal compares the key trimmed, the replay binding compares it
+as sent. A payment that settles in the answer to a request carrying a key it
+was admitted with (the first one, or a resend with that key) is also filed in
+the 24-hour Idempotency-Key cache that `/settle` keeps for every network, as
+that path files what it settles, unless the key already has a live row there,
+which is never replaced. That cache is read first, so for that day any other
+body under the key, from any payer and on any network, is
+`409 idempotency_key_conflict`, the same payer included. Filing is best effort,
+and a payment confirmed by a lookup or by a resend without its key is not
+filed. Use a fresh key per purchase.
 Requests that `/settle` routes to their own settlement paths never enter
 admission, even when their inner requirements say `exact`: the `upto`,
 `escrow`/`commerce` and `fhe-transfer` schemes and the x402r `refund` extension.
-There is **no TTL on these rows**: legacy cache expiry cannot admit another
-payment. Existing legacy cache hits are replayed before checking a consumed
-nonce, preserving their original success/conflict semantics. They are not
-fabricated into portable receipts, and their previous retention policy remains.
+**Expiry (since 2.51.0).** Every receipt row, the record and each of its
+aliases, carries the table's TTL attribute `expires_at`: 90 days after the
+later of the authorization's `validBefore` and the write. The rows therefore
+always outlive the authorization they protect: until `validBefore` they are
+what stops it being admitted twice, and after it the authorization can no
+longer move funds (an EIP-3009 transfer past `validBefore` reverts). The 90
+days that follow keep the purchase binding a client resumes or retries with
+(`X-UVD-Purchase`, `Idempotency-Key`) and the private lookup, the retention of
+the transaction index and of DX402 evidence; a test keeps it at 30 days or
+more. Native Hedera keeps no `validBefore` here (its transactions are valid for
+180 s at most) and expires 90 days after the write. The record row is rewritten
+at every revision, so it never expires before its aliases; an expired alias
+whose record DynamoDB already swept reads as no admission. Rows written before
+2.51.0 carry no `expires_at` and stay until removed by hand. An admission from
+before 2.51.0 that is revised afterwards (a resend that reconciles it, the
+operator command) gets an expiry on its record only: 90 days later its old
+aliases point at nothing, and a `/settle` or `/verify` that reaches them
+answers `503 receipt_store_unavailable`, failing closed, until they are removed
+by hand. An expired alias that DynamoDB has not swept yet does not block a new
+admission: the reservation overwrites it. Existing legacy
+cache hits are replayed before checking a consumed nonce, preserving their
+original success/conflict semantics. They are not fabricated into portable
+receipts, and their previous retention policy remains.
 
-EVM networks (Arc, Base) save the exact signed transaction and hash before
+EVM networks save the exact signed transaction and hash before
 broadcast. A POST retry can rebroadcast only those bytes under the writer lease,
 while the authorization is valid; it never signs a replacement or changes the
 nonce. An admission prepares one transaction: if the node refuses it on nonce
 grounds, no second transaction is signed for that admission, the receipt stays
-`unknown`, and later retries reconcile or rebroadcast the saved one. Hedera links the
+`unknown`, and later retries reconcile or rebroadcast the saved one. Reconciliation
+refuses an EVM admission (`rejected`, `settlement_failed_on_chain`) only once its
+authorization can no longer move the payer's funds: the saved transaction
+reverted, and at the latest block the node serves (not behind the reverted
+one), stamped at or past `validBefore`, the token reports the authorization
+unused (`authorizationState`, read at that block). A revert alone is no
+refusal: another transaction may have executed the same authorization first,
+and a mined transaction publishes the signed authorization, which can be
+executed while blocks are stamped before `validBefore`. Until then, or while
+the token cannot be read, the receipt stays as it was. If the token reports the
+authorization used (executed by another transaction, which pays the same
+`payTo`, or cancelled by the payer), the receipt stays `unknown` with
+`diagnosticCode: authorization_used_elsewhere` and `retry.action: none`, its
+saved bytes are dropped, and a resend with its binding is answered `502` with
+`retryable: false`; never sign a replacement (all since 2.51.0). Records
+written before 2.51.0 do not keep the authorization's nonce and are judged by
+neither. Hedera links the
 native ID before its existing store can persist co-signed bytes and recover them.
 Terminal receipt updates remove private EVM signed bytes. Native byte retention
 continues under the existing Hedera store policy.
@@ -212,11 +280,21 @@ flight. Never sign a replacement for a released admission.
 
 Failures before admission say the same: `receipt_store_unavailable`,
 `receipt_signing_unavailable` and `receipt_reservation_uncertain` are `503` with
-`Retry-After`, `retryable: true` and `safeToRetry: true`. A reservation whose
-store write could not be confirmed is never run; if it landed anyway it is
-released as above. Admission and re-admission writes carry a fresh idempotency
-token each, so a write the store client resends after losing its answer gets
-its original success back.
+`Retry-After`, `retryable: true` and `safeToRetry: true`. A reservation or
+re-admission whose store write could not be confirmed is never run, and it is
+closed as above whether it landed or not: the close writes the record if there
+is none yet (since 2.51.0), so a write that lands after it finds the record
+taken and writes nothing. Admission and re-admission writes carry a fresh
+idempotency token each, so a write the store client resends after losing its
+answer gets its original success back. When the store that refused the bytes
+also refuses the release, nothing was sent and the answer is the same `503
+receipt_store_unavailable` with `safeToRetry: true` (since 2.51.0; before, the
+provider's own `400`), with `receiptWarning: receipt_persistence_unavailable`
+and the receipt as stored: `unknown`, and resends of it are answered as an
+admission in flight until the operator command below releases it (after a
+store outage, run its read-only pass); or `pending` with the transaction, if a
+write of the bytes that looked failed did land, and then a resend broadcasts
+those same bytes.
 
 ### Failures after the send
 
@@ -265,17 +343,101 @@ released authorization that has expired simply fails verification when resent.
 Known limits: a process that dies between admission and send leaves its
 admission `unknown` until the operator command closes it. Confirmed receipts
 reflect the provider's confirmation policy and are not a continuous reorg
-monitor. Receipt records have no automatic archival job yet. Key rotation
+monitor. Receipt rows expire by TTL (see "Expiry" above); rows written before
+2.51.0 have no expiry and are not archived. Key rotation
 requires retaining the previous public keys externally. An exact request
 conflicting with an existing purchase is refused with 409, without exposing
 that purchase's private receipt.
+
+## EVM coverage
+
+Since 2.51.0 the EVM side of the rail is one matrix, read in one place
+(`receipts::evm_exact_tokens`) for what `GET /receipts` announces, what is
+admitted and how a receipt is normalized:
+
+- **Networks**: every EVM network for which production publishes an `exact`
+  entry in `/supported`, as `config/supported_tokens.json` declares it
+  (`exactServed`). Ethereum Sepolia has a USDC deployment but no RPC in
+  production, so no `exact` entry, and stays out; so do the EVM networks the
+  facilitator does not serve at all. Read the live list with
+  `curl -s https://facilitator.ultravioletadao.xyz/receipts | jq .networks`.
+- **Tokens**: the ones `/supported` lists for that network's `exact` kind
+  (ERC-3009 deployments only). BSC's USDC has no ERC-3009, so on BSC only AUSD
+  is admitted.
+- **Admission**: a plain `exact` request whose payment payload and terms name
+  the same network, one of the matrix's, in one of that network's tokens.
+  Anything else runs as before, without a receipt; carrying `X-UVD-Purchase`, a
+  `/settle` of it answers `400 receipt_request_not_supported`. The
+  requests that belong to other settlement paths stay out on every network.
+- **Normalization**: `network` in CAIP-2, `asset` and `payTo` lowercase,
+  `decimals` from the token (every EVM receipt carries them).
+
+Every network that joined in 2.51.0 changes for its callers exactly as Base did
+in 2.40.0: the table in "Base" below reads the same with the release before
+2.51.0 in place of 2.39 and 2.51.0 in place of 2.40.0.
+On Arc and Base nothing changes for a payment the facilitator can settle. A
+request in a token that is not one of the network's `exact` tokens, or whose
+payload and terms name different networks, was refused by verification before
+and still is, now without a `rejected` receipt. `networks` lists every entry it
+listed before; their order follows the network list instead of the release
+that added them.
+
+What the rail costs on each network it covers, as on Arc and Base: a `/settle`
+verifies once before admission and the provider verifies again, and admission
+and each revision are writes to the receipt store; a `/verify` reads the
+authorization's row. Receipt rows expire 90 days after the authorization's
+`validBefore` (see "Expiry"). With the store unreachable an `exact` settle on
+any of these networks answers `503 receipt_store_unavailable` and sends nothing,
+where before 2.51.0 only Arc, Base and Hedera did. Two alarms on the
+facilitator's SNS topic watch the store (`alerts-receipts-store.tf`), both on
+DynamoDB's own metrics: `SystemErrors` and `ThrottledRequests` on the table
+in two five-minute periods running, and a p99 latency above one second for
+fifteen minutes. The 503s themselves reach the load balancer's 5xx alarm,
+already on the same topic, and it is the only one that sees a request refused
+for access (DynamoDB counts those only in its account-wide `UserErrors`, not per
+table) or one that never reached DynamoDB. The facilitator's own count of store
+requests that
+failed (log line `receipt_store_failure`, with `op` and `kind`) is a metric to
+read during an incident, not a page: it is counted from log lines, and the
+facilitator logs text taken from requests, so one request could write the
+token.
+
+Joining the matrix takes no receipts code: an EVM network with an ERC-3009
+token and `exactServed` in the catalog is announced and admitted. **Leaving it
+is not a configuration change.** A resend of an authorization whose network or
+token is no longer admitted skips its stored receipt and runs as an ordinary
+settle; if the first one mined, that answer names no receipt and a buyer can
+end up signing again. So the pairs the rail admits are written down in a test
+(`every_network_and_token_on_the_rail_stays_on_it`) that must equal the matrix
+both ways: a pair that joins is added there, and removing one means editing that
+test on purpose and deciding what happens to the receipts already stored.
+
+The same holds for what the test cannot see:
+
+- **Rolling back to a release before 2.51.0** takes 23 networks off the rail at
+  once, and that release reads none of their receipts. Their payments are then
+  resent down the ordinary path for as long as a client resumes them, not only
+  until each authorization's `validBefore`. One settled under an
+  Idempotency-Key in the previous 24 hours is answered from the Idempotency-Key
+  cache (2.51.0 files it there), as is another body under that key. Any other
+  resend of a settled payment fails on its consumed nonce, an answer that
+  invites a new signature, and an admission still in flight can have its
+  authorization sent a second time (the token executes it once). That release
+  also rewrites the receipt records it revises without `expires_at`. Treat a
+  rollback below 2.51.0 as a change that moves money, not a routine
+  operation; prefer a forward fix.
+- Changing a token's address or a network's chain id in `src/network.rs`
+  changes what the rail admits and the `authorizationId` it looks receipts up
+  by.
+- Without `IDEMPOTENCY_TABLE_NAME` there is no receipt service at all, on every
+  network.
 
 ## Base
 
 Since 2.40.0 plain `exact` payments on Base (`base` / `eip155:8453`, USDC and
 EURC, x402 v1 and v2) are admitted through receipts. Base Sepolia and the other
-EVM networks are unchanged; so are the Base requests that belong to other
-settlement paths (see above), which carry no `receipt`.
+EVM networks stayed unchanged until 2.51.0 (see "EVM coverage"); the Base
+requests that belong to other settlement paths (see above) carry no `receipt`.
 
 What a Base `exact` caller observes compared with 2.39:
 
@@ -283,11 +445,11 @@ What a Base `exact` caller observes compared with 2.39:
 | --- | --- | --- |
 | Any verify/settle response | No `receipt` | Additive `receipt`, `Cache-Control: no-store`; all previous fields unchanged |
 | Request carrying `X-UVD-Purchase` | `/settle` answers `400 receipt_request_not_supported`; `/verify` ignores the header | Admitted; its receipt is private to that capability (`GET /receipts/{receiptId}`) |
-| Same authorization after it settled, with the Idempotency-Key or `X-UVD-Purchase` that admitted it | With the key, the cached 200 with `Idempotent-Replayed: true` for 24 hours; after that it runs again and fails on the consumed nonce | Original 200 replayed with `Idempotent-Replayed: true`; receipt rows do not expire |
+| Same authorization after it settled, with the Idempotency-Key or `X-UVD-Purchase` that admitted it | With the key, the cached 200 with `Idempotent-Replayed: true` for 24 hours; after that it runs again and fails on the consumed nonce | Original 200 replayed with `Idempotent-Replayed: true`; receipt rows did not expire until 2.51.0, and since then expire 90 days after the authorization's `validBefore` |
 | Same authorization after it settled, without that binding | Runs again; fails on the consumed nonce | `409 authorization_already_settled`, with the receipt when the payment carried no `X-UVD-Purchase`; a payment admitted with `X-UVD-Purchase` answers `409 receipt_request_conflict` without it. Verify `isValid: false`, `authorization_already_settled` |
 | Same authorization while its settlement runs | Second attempt runs | `202 settlement_in_progress` to the admitting binding. Without it, `409 authorization_in_flight`, with the receipt when the payment carried no `X-UVD-Purchase`; a payment admitted with `X-UVD-Purchase` answers `409 receipt_request_conflict` without it |
-| New signature, same `Idempotency-Key` | Runs, unless an earlier attempt succeeded in the last 24 hours (then `409 idempotency_key_conflict`) | `409 receipt_request_conflict` once the first one was admitted |
-| New signature, same `X-UVD-Purchase` | `400 receipt_request_not_supported` | `409 receipt_request_conflict` once the first one was admitted |
+| New signature, same `Idempotency-Key` | Runs, unless an earlier attempt succeeded in the last 24 hours (then `409 idempotency_key_conflict`) | `409 receipt_request_conflict` once the first one was admitted, until its rows expire; since 2.51.0 on any network, token or `payTo` for the same payer, and for 24 hours after the first one settled under that key `409 idempotency_key_conflict` from any payer, the same payer included (see "Idempotency-Key scope") |
+| New signature, same `X-UVD-Purchase` | `400 receipt_request_not_supported` | `409 receipt_request_conflict` once the first one was admitted, until its rows expire (since 2.51.0) |
 | New signature without key or purchase context | New payment | New payment (unchanged) |
 | Settlement ends before anything is sent (writer lease moved, a read or gas estimate failed, signing or storing the bytes failed) | That failure's own answer | `503` with `Retry-After` and `safeToRetry: true`; receipt `rejected` with `refusalReason: reservation_abandoned`; the same request is admitted again under the same receipt |
 | The node refuses the transaction on nonce grounds | Up to two more attempts, each with a new nonce and a new signed transaction | No second transaction. A failure after the send: `502 upstream_nonce_or_mempool` with `retryable: false`, the stored `transaction` and its `paymentId`, no `Retry-After`, and the receipt `unknown`; the purchase's resends get the same answer and reconcile or rebroadcast it (see below) |
@@ -331,9 +493,23 @@ bytes, the send latch or a named transaction; an EVM test drives the real send
 path under an admission (lease lost: nothing sent or latched; sent: bytes stored
 first, then latched). Explicit local DynamoDB tests exercise transaction/CAS
 behavior, including readmission and a write resent with its token, using two
-store clients. Base runs through the same admission as Arc (concurrency, EVM
-address normalization, requests that belong to other settlement paths,
-DynamoDB), and a test fails if Base leaves `GET /receipts` or admission. EVM
+store clients, and that every row they write carries `expires_at`. Offline
+tests check that every row of a reservation, a readmission and a revision
+carries it, 90 days past the later of `validBefore` and the write and never
+under 30, that the Terraform table expires on that attribute and the store's
+metric counts the line the store writes, that every failed request writes that
+line, and how an alias whose record is gone reads; `terraform test` pins the TTL
+and the alarms, which read DynamoDB's metrics only. Every network and token of the EVM matrix runs through two
+replicas racing one purchase over a shared store (every copy reaches the
+reservation, so only its atomicity picks the one that sends), a lost response,
+a restart with an unknown outcome and the storage outages: one send, the same
+receipt on every resend, nothing broadcast without stored bytes. The replays run on every
+network of it, and so does the exclusion of the requests that belong to other
+settlement paths. A test checks the matrix against the tokens
+`config/supported_tokens.json` presents and admits every one of them in v1 and
+v2 with its decimals; another fails if anything outside it (Ethereum Sepolia,
+Sei, XDC, BSC's USDC, a body that names two networks, Solana) is announced or
+admitted. A test still fails if Base leaves `GET /receipts` or admission. EVM
 tests drive a nonce refusal under an admission: one broadcast, no second nonce,
 and the signer's next settlement takes the node's nonce for a taken slot and for
 a node behind the signer; a node that already holds the bytes comes out

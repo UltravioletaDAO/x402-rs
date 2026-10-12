@@ -85,7 +85,48 @@ Register a new resource in the discovery registry.
 }
 ```
 
-**Response:** `201 Created` or `400 Bad Request`
+**Response:** `201 Created`, `400 Bad Request`, or `409 Conflict` when the URL is already in the
+catalog from any source (listed, or waiting for its first verification). The URL is stored and
+compared in its canonical spelling (lowercase host, no trailing dot, no default port). There is no
+public route to update or remove a listing; the operator does that.
+
+**Ownership.** Registration takes the URL and its description from anyone and makes no outbound
+fetch; so does a settlement that asks to be discoverable. Once such a listing verifies alive, the
+health prober reads `/.well-known/x402` on the URL's host and publishes the verdict as
+`health.ownership` on the listing in `GET /discovery/resources`:
+
+- `origin-attested`: the file has an entry for the URL, in the request body's format, declaring
+  every `network` + `payTo` the listing's `accepts` declares, the same `description`, the same
+  `category`, `provider` and `tags` wherever the listing names them, and every key of the
+  `extensions` the listing registered with the same value -- all but the input's `type` and
+  `method`, which the probe's own 402 already answered, and what was adopted from that 402
+  (`extensionsAdopted`). An entry that only lists the URL vouches for nothing: the URL is not what
+  an impostor fakes.
+- `unattested`: no such file (404, 410...) or entry, a JSON document that lists no resources (an
+  emptied file, `{}`, takes the word back), an entry that says something else, a file served from
+  another host after a redirect, one over 512 KB, or a URL in a non-plain spelling
+  (`https://host./path`). The entry's `url` is matched exactly as written, apart from the host's
+  case, a trailing dot and the default port.
+- `unknown`: the file could not be read -- network error, 401/403, 429, 5xx, or a body that is not
+  JSON, which is what a WAF or a CDN answers a bot -- and no fresh read decided it. A verdict the
+  origin gave stands, through failed reads, for the observed-terms freshness window
+  (`observedTerms.freshnessWindowSeconds`) after the read that reached it; past that it is
+  `unknown`.
+
+The verdict belongs to the listing it judged (its content as registered, without what was adopted
+from its 402): the same URL registered again with other content does not carry it.
+
+The file is never read inside a probe. A probe that verifies such a listing takes the verdict from
+the origin's last read while it is fresh; otherwise the listing waits on its origin, and a later
+tick reads the file as one of the requests it allows itself per host and per tick (ahead of that
+host's probes), not while the host is backing the prober off. A 429 or 503 to the file, with its
+`Retry-After`, holds the host off like one to a probe. Normally one read per origin per
+`DISCOVERY_ORIGIN_PROOF_CACHE_SECS` (6 h); a failed read is reused for at most
+`DISCOVERY_ORIGIN_PROOF_RETRY_SECS` (15 min, never longer than the cache window), so the next
+verified probe after that asks again.
+`DISCOVERY_REQUIRE_ORIGIN_PROOF` (default off, phase 2) stops listing such a resource unless it is
+`origin-attested`. All three are published by `GET /discovery/config` (`ownership`), as the
+values in force.
 
 ### GET /supported
 
@@ -232,7 +273,7 @@ Resources must pass validation before registration:
 1. **URL**: Must be valid HTTPS (or HTTP for localhost)
 2. **Type**: Must be one of: `http`, `mcp`, `a2a`, `facilitator`
 3. **Accepts**: Must have at least one payment method (except `facilitator` type)
-4. **Duplicates**: Cannot register the same URL twice (use update instead)
+4. **Duplicates**: Cannot register the same URL twice (`409`); there is no public update route
 
 ## Example Use Cases
 

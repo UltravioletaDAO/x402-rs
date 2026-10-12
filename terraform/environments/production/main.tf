@@ -749,6 +749,29 @@ resource "aws_iam_role_policy" "secrets_access" {
           "secretsmanager:GetSecretValue"
         ]
         Resource = local.all_secret_arns
+      },
+      # BAZAAR_ADMIN_TOKEN: an SSM SecureString on its own KMS key (secrets.tf).
+      {
+        Effect   = "Allow"
+        Action   = ["ssm:GetParameters"]
+        Resource = local.bazaar_admin_token_parameter_arn
+      },
+      # The key by its alias, not by aws_kms_key's ARN: this policy is in the image
+      # deploy's -target list, and a reference would drag the key into every deploy
+      # as a dependency the CI user cannot create or update -- the way
+      # aws_ecs_cluster.main broke #115's deploy. Only through SSM.
+      {
+        Effect   = "Allow"
+        Action   = ["kms:Decrypt"]
+        Resource = "*"
+        Condition = {
+          StringEquals = {
+            "kms:ViaService" = "ssm.${var.aws_region}.amazonaws.com"
+          }
+          "ForAnyValue:StringEquals" = {
+            "kms:ResourceAliases" = local.bazaar_admin_token_kms_alias
+          }
+        }
       }
     ]
   })

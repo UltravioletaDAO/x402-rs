@@ -1177,6 +1177,36 @@ pub enum VerifiedBy {
     McpHandshake,
 }
 
+/// Whether a listing's own origin vouches for what the listing says.
+/// Response-facing as `health.ownership`, on listings from a route that takes a
+/// URL from anyone (`POST /discovery/register`, a discoverable settlement).
+///
+/// Those routes take the URL and its description from whoever calls them. The
+/// probe ties an HTTP listing's payTo to the live 402, but nothing tied the
+/// listing to its origin, so a stranger could list somebody else's endpoint
+/// with its real payTo and a description and category of their own. The
+/// origin's word is an entry for the URL in `/.well-known/x402` on the
+/// listing's own host, read by the prober ([`crate::discovery_health`]), never
+/// by the register request.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Ownership {
+    /// The origin's `/.well-known/x402` has an entry for this URL declaring the
+    /// listing's recipients and description, the category, provider and tags
+    /// the listing names, and the `extensions` it registered past what the
+    /// probe verified on its own.
+    OriginAttested,
+    /// No such file, a JSON document from the origin that lists no resources
+    /// (an emptied file takes its word back), no entry for this URL, or an
+    /// entry that declares something else.
+    Unattested,
+    /// The file could not be read (network error, 401/403, 429, 5xx, or a 2xx
+    /// that is not JSON at all, such as a CDN's challenge page), and no read
+    /// within `observedTerms.freshnessWindowSeconds` of `GET /discovery/config`
+    /// decided it.
+    Unknown,
+}
+
 /// Response-facing health snapshot for a resource. Set on list responses from
 /// the health overlay; never persisted onto the resource in S3.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1215,6 +1245,61 @@ pub struct HealthState {
     /// How `verifiedAt` was earned; present exactly when it is.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub verified_by: Option<VerifiedBy>,
+    /// Whether the listing's own origin vouches for it ([`Ownership`]). Only a
+    /// listing from an open route (self-registered, or a discoverable
+    /// settlement) is asked, once it has verified alive; absent on every other
+    /// listing and on one not checked yet.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ownership: Option<Ownership>,
+    /// The listing `ownership` was reached on
+    /// ([`DiscoveryResource::registered_fingerprint`]). Never published: it is
+    /// what [`Self::ownership_of`] checks the verdict against.
+    #[serde(skip)]
+    pub ownership_basis: Option<String>,
+    /// When the read that reached `ownership` was made, for a verdict the
+    /// origin gave. Never published either: [`Self::ownership_of`] reads it.
+    #[serde(skip)]
+    pub ownership_read_at: Option<u64>,
+}
+
+impl HealthState {
+    /// The origin's verdict on `listing`: the one the prober reached on this
+    /// very listing -- this URL with the content it judged
+    /// ([`DiscoveryResource::registered_fingerprint`]) -- and `None` for any
+    /// other. The health overlay is keyed by URL, so a listing deleted and
+    /// registered again by somebody else would otherwise wear the verdict on
+    /// the old one until the next probe (refutation of #122, P3-7).
+    ///
+    /// A verdict the origin gave stands for as long as a verification does
+    /// (the observed-terms freshness window) after the read that reached it;
+    /// past that, with no read since, it is `Unknown` (refutation of #122,
+    /// P3-3).
+    pub fn ownership_of(&self, listing: &DiscoveryResource) -> Option<Ownership> {
+        let ownership = self.ownership?;
+        let basis = self.ownership_basis.as_deref()?;
+        if basis != listing.registered_fingerprint() {
+            return None;
+        }
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let window = crate::discovery_terms::freshness_window_secs();
+        let stale = self
+            .ownership_read_at
+            .is_some_and(|at| now.saturating_sub(at) >= window);
+        Some(if stale { Ownership::Unknown } else { ownership })
+    }
+
+    /// This state as `listing` publishes it: the ownership verdict only when it
+    /// is this listing's ([`Self::ownership_of`]).
+    pub fn for_listing(&self, listing: &DiscoveryResource) -> HealthState {
+        let mut state = self.clone();
+        if state.ownership.is_some() {
+            state.ownership = self.ownership_of(listing);
+        }
+        state
+    }
 }
 
 /// Curated tier of a resource (WS-C). Orders the listing:
@@ -1353,6 +1438,23 @@ pub struct DiscoveryResource {
         deserialize_with = "crate::discovery_price::deserialize_tolerant_extensions"
     )]
     pub extensions: Option<serde_json::Value>,
+
+    /// Where the parts of `extensions` listed in `extensions_adopted` came
+    /// from: `origin_response`, the listing's own 402, read by the prober and
+    /// adopted into a listing registered without saying what to send
+    /// ([`DiscoveryResource::with_offered_bazaar`]). Everything else in
+    /// `extensions` is the seller's registration. Absent when nothing was
+    /// adopted. Persisted, and never taken from a caller
+    /// ([`DiscoveryResource::strip_response_only`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub extensions_provenance: Option<crate::discovery_terms::TermsProvenance>,
+
+    /// The parts of `extensions` an adoption filled in, as JSON Pointers
+    /// (RFC 6901), e.g. `/bazaar/info/input`. A newer 402 replaces exactly
+    /// these and never a key the seller registered. Set and cleared together
+    /// with `extensions_provenance`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub extensions_adopted: Option<Vec<String>>,
 
     // ========== Meta-Bazaar Source Tracking ==========
     /// How this resource was discovered/registered
@@ -1503,6 +1605,90 @@ pub struct DiscoveryResource {
     pub usage: Option<crate::discovery_usage::ListingUsage>,
 }
 
+/// Whether an `extensions` blob says what to send
+/// ([`DiscoveryResource::has_input_schema`]).
+fn declares_input(extensions: Option<&serde_json::Value>) -> bool {
+    let Some(bazaar) = extensions.and_then(|e| e.get("bazaar")) else {
+        return false;
+    };
+    let declared = |v: Option<&serde_json::Value>| {
+        v.and_then(serde_json::Value::as_object)
+            .is_some_and(|o| !o.is_empty())
+    };
+    declared(bazaar.get("info").and_then(|i| i.get("input")))
+        || declared(
+            bazaar
+                .get("schema")
+                .and_then(|s| s.get("properties"))
+                .and_then(|p| p.get("input")),
+        )
+}
+
+/// `path` as a JSON Pointer (RFC 6901).
+fn json_pointer(path: &[String]) -> String {
+    path.iter()
+        .map(|key| format!("/{}", key.replace('~', "~0").replace('/', "~1")))
+        .collect()
+}
+
+/// Remove the key `pointer` names from `map`, if it is there.
+fn remove_pointer(map: &mut serde_json::Map<String, serde_json::Value>, pointer: &str) {
+    let mut keys: Vec<String> = pointer
+        .split('/')
+        .skip(1)
+        .map(|key| key.replace("~1", "/").replace("~0", "~"))
+        .collect();
+    let Some(last) = keys.pop() else {
+        return;
+    };
+    let mut parent = map;
+    for key in &keys {
+        match parent.get_mut(key) {
+            Some(serde_json::Value::Object(child)) => parent = child,
+            _ => return,
+        }
+    }
+    parent.remove(&last);
+}
+
+/// The objects of a `bazaar` declaration that only hold other declarations,
+/// and so are completed key by key ([`fill_gaps`]).
+const DECLARATION_CONTAINERS: [&str; 3] = ["info", "schema", "properties"];
+
+/// Copy into `target` every key of `source` it does not have, and push the
+/// path of each key copied -- `at` is where `target` sits -- onto `filled`. A
+/// key `target` already has is never replaced, and is descended into only when
+/// it is one of the [`DECLARATION_CONTAINERS`]: anything else the seller wrote
+/// -- its `output`, an example -- is kept whole, not completed with someone
+/// else's.
+fn fill_gaps(
+    target: &mut serde_json::Map<String, serde_json::Value>,
+    source: &serde_json::Map<String, serde_json::Value>,
+    at: &mut Vec<String>,
+    filled: &mut Vec<String>,
+) {
+    for (key, offered) in source {
+        match target.get_mut(key) {
+            None => {
+                target.insert(key.clone(), offered.clone());
+                at.push(key.clone());
+                filled.push(json_pointer(at));
+                at.pop();
+            }
+            Some(serde_json::Value::Object(held))
+                if DECLARATION_CONTAINERS.contains(&key.as_str()) =>
+            {
+                if let Some(offered) = offered.as_object() {
+                    at.push(key.clone());
+                    fill_gaps(held, offered, at, filled);
+                    at.pop();
+                }
+            }
+            Some(_) => {}
+        }
+    }
+}
+
 impl DiscoveryResource {
     /// Create a new discovery resource (defaults to SelfRegistered source)
     pub fn new(
@@ -1557,6 +1743,8 @@ impl DiscoveryResource {
             has_input_schema: None,
             upstream: None,
             upstream_source: None,
+            extensions_provenance: None,
+            extensions_adopted: None,
             usage: None,
         }
     }
@@ -1622,6 +1810,8 @@ impl DiscoveryResource {
             has_input_schema: None,
             upstream: None,
             upstream_source: None,
+            extensions_provenance: None,
+            extensions_adopted: None,
             usage: None,
         }
     }
@@ -1680,6 +1870,8 @@ impl DiscoveryResource {
             has_input_schema: None,
             upstream: None,
             upstream_source: None,
+            extensions_provenance: None,
+            extensions_adopted: None,
             usage: None,
         }
     }
@@ -1739,6 +1931,19 @@ impl DiscoveryResource {
     /// The hash detects change. It does not prove origin and it does not prove
     /// currency; a stale document hashes as confidently as a fresh one.
     pub fn content_fingerprint(&self) -> String {
+        self.fingerprint_with(self.extensions.as_ref())
+    }
+
+    /// [`Self::content_fingerprint`] of the listing as its seller registered
+    /// it: `extensions` without what an adoption filled in
+    /// ([`Self::registered_extensions`]). What the origin proof judges, and so
+    /// what its verdict is bound to ([`HealthState::ownership_of`]): an
+    /// adoption leaves it where it was.
+    pub fn registered_fingerprint(&self) -> String {
+        self.fingerprint_with(self.registered_extensions().as_ref())
+    }
+
+    fn fingerprint_with(&self, extensions: Option<&serde_json::Value>) -> String {
         use sha2::{Digest, Sha256};
         // `serde_json::Value` maps are BTreeMaps in this build (no
         // `preserve_order`), so a nested `extra` or `extensions` blob serializes
@@ -1761,7 +1966,7 @@ impl DiscoveryResource {
                 })
             }).collect::<Vec<_>>(),
             "metadata": self.metadata,
-            "extensions": self.extensions,
+            "extensions": extensions,
         });
         let bytes = serde_json::to_vec(&canonical).unwrap_or_default();
         hex::encode(Sha256::digest(bytes))
@@ -1789,6 +1994,10 @@ impl DiscoveryResource {
         self.upstream = None;
         self.upstream_source = None;
         self.usage = None;
+        // Not response-only, but just as much ours: only this registry's prober
+        // says a declaration came from the origin, never whoever registers it.
+        self.extensions_provenance = None;
+        self.extensions_adopted = None;
     }
 
     /// Whether the listing says what to send: the `bazaar` extension's
@@ -1798,20 +2007,81 @@ impl DiscoveryResource {
     /// behalf. A listing without it can still be paid; it cannot be used
     /// without guessing the request.
     pub fn has_input_schema(&self) -> bool {
-        let Some(bazaar) = self.extensions.as_ref().and_then(|e| e.get("bazaar")) else {
-            return false;
+        declares_input(self.extensions.as_ref())
+    }
+
+    /// What the seller registered in `extensions`: the blob without the parts
+    /// an adoption filled in (`extensions_adopted`). `None` when that is
+    /// nothing. An adoption recorded without its parts is all kept: nothing
+    /// tells the seller's keys apart from the 402's.
+    pub fn registered_extensions(&self) -> Option<serde_json::Value> {
+        let adopted = self.extensions_provenance
+            == Some(crate::discovery_terms::TermsProvenance::OriginResponse);
+        let (Some(serde_json::Value::Object(map)), true, Some(parts)) =
+            (&self.extensions, adopted, &self.extensions_adopted)
+        else {
+            return self.extensions.clone();
         };
-        let declared = |v: Option<&serde_json::Value>| {
-            v.and_then(serde_json::Value::as_object)
-                .is_some_and(|o| !o.is_empty())
+        let mut map = map.clone();
+        for pointer in parts {
+            remove_pointer(&mut map, pointer);
+        }
+        (!map.is_empty()).then_some(serde_json::Value::Object(map))
+    }
+
+    /// This listing's `extensions` with `offered` -- the `bazaar` extension its
+    /// own 402 declares -- filled into what the seller left out, and the parts
+    /// filled in as JSON Pointers; `None` when there is nothing to adopt
+    /// (X4-BAZAAR-ADOPTA).
+    ///
+    /// Only for a listing whose seller declared no input, and only into gaps: a
+    /// key the seller registered is never replaced or removed, at any depth, so
+    /// this can complete a declaration but never rewrite one. What an earlier
+    /// adoption filled in (`extensions_adopted`) was never the seller's, and is
+    /// taken whole from the newer 402 -- input, output, examples -- never as a
+    /// blend of two. `None` unless the result declares an input, fits the
+    /// bounds of a registered `extensions`
+    /// ([`crate::discovery_price::sanitize_extensions`]) and differs from what
+    /// the listing already carries.
+    pub fn with_offered_bazaar(
+        &self,
+        offered: &serde_json::Value,
+    ) -> Option<(serde_json::Value, Vec<String>)> {
+        // An adoption recorded without its parts counts whole as registered,
+        // input included, and so is never adopted over.
+        let registered = self.registered_extensions();
+        if declares_input(registered.as_ref()) {
+            return None;
+        }
+        let offered = offered.as_object()?;
+        let mut extensions = match registered {
+            None => serde_json::Map::new(),
+            Some(serde_json::Value::Object(map)) => map,
+            Some(_) => return None,
         };
-        declared(bazaar.get("info").and_then(|i| i.get("input")))
-            || declared(
-                bazaar
-                    .get("schema")
-                    .and_then(|s| s.get("properties"))
-                    .and_then(|p| p.get("input")),
-            )
+        let mut filled = Vec::new();
+        match extensions.get_mut("bazaar") {
+            None => {
+                extensions.insert(
+                    "bazaar".to_string(),
+                    serde_json::Value::Object(offered.clone()),
+                );
+                filled.push(json_pointer(&["bazaar".to_string()]));
+            }
+            Some(registered) => fill_gaps(
+                registered.as_object_mut()?,
+                offered,
+                &mut vec!["bazaar".to_string()],
+                &mut filled,
+            ),
+        }
+        let adopted = serde_json::Value::Object(extensions);
+        if !declares_input(Some(&adopted)) {
+            return None;
+        }
+        let adopted = crate::discovery_price::sanitize_extensions(Some(adopted))?;
+        // The same declaration again: nothing to write, on every probe.
+        (self.extensions.as_ref() != Some(&adopted)).then_some((adopted, filled))
     }
 
     /// Fill this record's missing descriptive fields from another copy of the
@@ -2089,6 +2359,26 @@ impl DiscoveryFilters {
 mod tests {
     use super::*;
     use crate::caip2::Caip2NetworkId;
+
+    /// An adopted part is named by a JSON Pointer and removed by the same one,
+    /// whatever its keys hold: `/` and `~` are escaped, never path separators.
+    #[test]
+    fn an_adopted_part_is_removed_by_its_own_pointer_and_nothing_else() {
+        let path = ["bazaar".to_string(), "a/b~c".to_string()];
+        let pointer = json_pointer(&path);
+        assert_eq!(pointer, "/bazaar/a~1b~0c");
+        let mut map = serde_json::json!({
+            "bazaar": { "a/b~c": 1, "a": { "b~c": 2 }, "kept": 3 }
+        })
+        .as_object()
+        .unwrap()
+        .clone();
+        remove_pointer(&mut map, &pointer);
+        assert_eq!(
+            serde_json::Value::Object(map),
+            serde_json::json!({ "bazaar": { "a": { "b~c": 2 }, "kept": 3 } })
+        );
+    }
 
     #[test]
     fn test_resource_info_creation() {

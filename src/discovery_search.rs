@@ -2133,11 +2133,13 @@ pub fn within_price(r: &DiscoveryResource, limit: &UsdLimit) -> bool {
     })
 }
 
-/// The method the listing declares, read exactly as the health prober reads it
-/// ([`crate::discovery_health::declared_request`]): `info.input.method` of the
-/// `bazaar` extension, else the method its JSON Schema input names, else POST
-/// when it declares a body. One reading for the filter and the prober, so
-/// `method=POST` finds the listings the prober sends a POST.
+/// The method the listing declares, read exactly as the health prober reads a
+/// declaration ([`crate::discovery_health::declared_request`]):
+/// `info.input.method` of the `bazaar` extension, else the method its JSON
+/// Schema input names, else POST when it declares a body. So `method=POST`
+/// finds the listings that declare a POST: the seller's own declaration, which
+/// the prober sends exactly, or one adopted from the listing's 402, which is
+/// where the prober starts ([`crate::discovery_health::listing_probe_request`]).
 pub fn declared_method(r: &DiscoveryResource) -> Option<String> {
     use crate::discovery_health::{declared_request, ProbeRequest};
     match declared_request(r.extensions.as_ref()) {

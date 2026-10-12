@@ -422,6 +422,15 @@ impl RevalidationQueue {
         );
     }
 
+    /// Whether `url`'s host is held off at `now` ([`Self::note_refusal`]).
+    pub async fn holds(&self, url: &str, now: u64) -> bool {
+        self.hosts
+            .read()
+            .await
+            .get(&host_of(url))
+            .is_some_and(|state| state.hold_until > now)
+    }
+
     /// Record that an origin answered normally, clearing its backoff.
     pub async fn note_success(&self, url: &str) {
         let mut hosts = self.hosts.write().await;

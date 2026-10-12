@@ -20,9 +20,14 @@ Run:  python3 -m unittest discover -s tests/scripts -p 'test_ci_*.py'
 from __future__ import annotations
 
 import fnmatch
+import json
+import os
 import re
 import shlex
+import shutil
+import subprocess
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -36,6 +41,7 @@ CI = ci_paths_selftest.load_workflows()["ci.yaml"]
 DEPLOY = CI["jobs"]["deploy"]
 STEPS = DEPLOY["steps"]
 
+HEAD_GUARD = "Refuse anything but the head of main"
 ECS_APPLY = "Terraform apply (roll ECS to the new image)"
 LAMBDA = "Deploy balances Lambda"
 OBSERVABILITY = "Deploy observability"
@@ -50,6 +56,34 @@ EVENT_BEFORE = re.compile(r"\$\{\{[^}]*\bgithub\.event\.before\b[^}]*\}\}")
 
 # The compare API lists at most this many files; a list that long may be cut short.
 COMPARE_FILE_CAP = 300
+
+# `github.event_name == '<event>'` inside the deploy job's if:, however it is spaced.
+DEPLOY_IF_EVENT = re.compile(r"github\.event_name\s*==\s*'([A-Za-z_]+)'")
+
+# What releasing looks like in a `run:` (continuation lines joined first) -- terraform
+# apply with or without flags in between, an image push, a direct write to the ECS
+# service or the Lambda, or one of the repo's own deploy scripts, which do all of it.
+SHIPS = re.compile(
+    r"\bterraform\b[^\n]*\bapply\b"
+    r"|\bdocker\b[^\n]*\bpush\b|--push\b"
+    r"|\baws\b[^\n]*\becs\b[^\n]*\b(update-service|register-task-definition|create-service|run-task)\b"
+    r"|\baws\b[^\n]*\blambda\b[^\n]*\b(update-function-code|update-function-configuration|publish-version)\b"
+    r"|\bscripts/(deploy[\w.-]*|build-and-push|fast-build)\.sh\b")
+# Third-party actions that apply or deploy.
+SHIPPING_ACTIONS = ("terraform-apply", "ecs-deploy")
+# `secrets.AWS_X` and `secrets['AWS_X']`.
+AWS_SECRET = re.compile(r"secrets\s*(\.\s*|\[\s*['\"])\s*AWS_")
+
+
+def joined(run: str) -> str:
+    """A `run:` with its backslash-continued lines joined, as bash reads them."""
+    return re.sub(r"\\\n\s*", " ", run)
+
+
+def render(expr: str, ref: str, event: str) -> str:
+    """A concurrency key with `github.ref` and `github.event_name` filled in."""
+    expr = re.sub(r"\$\{\{\s*github\.ref\s*\}\}", ref, expr)
+    return re.sub(r"\$\{\{\s*github\.event_name\s*\}\}", event, expr)
 
 
 def step(prefix: str) -> dict:
@@ -168,6 +202,68 @@ class NoApplySkipsOnOnePushDiff(unittest.TestCase):
         self.assertIn("GH_TOKEN", step(LAMBDA).get("env") or {})
 
 
+class AnOldReleaseNeverShips(unittest.TestCase):
+    """A re-run runs on the commit its run was started at, so re-running an old
+    release deployed that old commit: a rollback with a green run to show for it
+    (refutation of #122, P3-10). The deploy job's first step refuses any commit
+    that is not main's head, before anything is built or applied."""
+
+    SHA = "1111111111111111111111111111111111111111"
+    OLDER = "2222222222222222222222222222222222222222"
+    REPO = "owner/repo"
+
+    def test_the_guard_is_the_first_step_and_always_runs(self):
+        first = STEPS[0]
+        self.assertEqual(first.get("name"), HEAD_GUARD,
+                         "the guard must run before the checkout, the image build and every apply")
+        self.assertNotIn("if", first, "a condition can skip the guard")
+        env = {k: " ".join(str(v).split()) for k, v in (first.get("env") or {}).items()}
+        self.assertEqual(env.get("RELEASE_SHA"), "${{ github.sha }}")
+        self.assertEqual(env.get("REPO"), "${{ github.repository }}")
+        self.assertIn("GH_TOKEN", env)
+
+    def run_guard(self, gh_body: str, release_sha: str = SHA) -> subprocess.CompletedProcess:
+        """The guard's `run:`, as the runner's bash runs it, with a stand-in `gh`
+        that answers only the question the guard must ask."""
+        if os.name != "posix" or shutil.which("bash") is None:
+            self.skipTest("needs a POSIX bash, as the runner has")
+        with tempfile.TemporaryDirectory() as tmp:
+            gh = Path(tmp) / "gh"
+            gh.write_text(
+                "#!/bin/sh\n"
+                f'[ "$*" = "api repos/{self.REPO}/git/ref/heads/main --jq .object.sha" ] || exit 2\n'
+                + gh_body,
+                encoding="utf-8",
+            )
+            gh.chmod(0o755)
+            env = {
+                "PATH": f"{tmp}{os.pathsep}{os.environ.get('PATH', '')}",
+                "GH_TOKEN": "not-a-token",
+                "RELEASE_SHA": release_sha,
+                "REPO": self.REPO,
+            }
+            return subprocess.run(
+                ["bash", "--noprofile", "--norc", "-eo", "pipefail", "-c", str(STEPS[0]["run"])],
+                env=env, capture_output=True, text=True, check=False)
+
+    def test_mains_head_ships(self):
+        done = self.run_guard(f"echo {self.SHA}\n")
+        self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
+
+    def test_an_older_commit_does_not(self):
+        done = self.run_guard(f"echo {self.OLDER}\n")
+        self.assertNotEqual(done.returncode, 0, "an old release shipped its old commit")
+        self.assertIn("::error", done.stdout)
+
+    def test_a_head_that_cannot_be_read_does_not(self):
+        for body in ("exit 1\n", "true\n"):
+            for release in (self.SHA, ""):
+                with self.subTest(gh=body.strip(), release_sha=release):
+                    done = self.run_guard(body, release)
+                    self.assertNotEqual(done.returncode, 0,
+                                        "a release shipped without knowing main's head")
+
+
 class TheTestJobRunsTheseGuards(unittest.TestCase):
     """A guard nobody runs guards nothing. The test job does not discover all of
     tests/scripts: it runs chosen patterns, and these files must match one."""
@@ -208,8 +304,106 @@ class TheScriptMatchesTheWorkflow(unittest.TestCase):
         self.assertIn(ci_last_green_deploy.WORKFLOW_FILE, ci_paths_selftest.load_workflows())
         on = CI.get("on", CI.get(True))
         self.assertIn(ci_last_green_deploy.BRANCH, on["push"]["branches"])
-        for event in ci_last_green_deploy.DEPLOY_EVENTS:
-            self.assertIn(f"github.event_name == '{event}'", " ".join(DEPLOY["if"].split()))
+        # Every event the job deploys on is one whose runs the script reads; a push stays
+        # in the script for the deploys before X402-CI-GATES.
+        events = DEPLOY_IF_EVENT.findall(str(DEPLOY["if"]))
+        self.assertTrue(events, "the deploy job's if: no longer names an event")
+        for event in events:
+            self.assertIn(event, ci_last_green_deploy.DEPLOY_EVENTS)
+
+
+class AMergeNeverDeploys(unittest.TestCase):
+    """Only a manual "Run workflow" on main deploys (owner's rule, 2026-09-27: one
+    release a day, started by hand). Before X402-CI-GATES the deploy job also ran on every
+    push to main that touched a build input, so each merge shipped on its own."""
+
+    def test_the_deploy_runs_only_on_a_manual_run_on_main(self):
+        cond = str(DEPLOY.get("if", ""))
+        # One conjunct pinning the event, and no || that could reopen another one:
+        # `a && b || c` runs on c alone.
+        self.assertNotIn("||", cond, f"an || in the deploy job's if: can reopen a push: {cond}")
+        parts = conjuncts(cond)
+        self.assertIn("github.event_name == 'workflow_dispatch'", parts, cond)
+        self.assertIn("github.ref == 'refs/heads/main'", parts, cond)
+        self.assertEqual(DEPLOY_IF_EVENT.findall(cond), ["workflow_dispatch"], cond)
+        self.assertNotIn("push", cond, cond)
+        self.assertNotIn("always()", cond, cond)
+
+    def test_push_and_pull_request_still_build_test_and_plan(self):
+        on = CI.get("on", CI.get(True))
+        for event in ("push", "pull_request", "workflow_dispatch"):
+            self.assertIn(event, on, f"ci.yaml no longer runs on {event}")
+        self.assertEqual(on["push"]["branches"], ["main"])
+        for name in ("test", "plan"):
+            with self.subTest(job=name):
+                self.assertNotIn("github.event_name", str(CI["jobs"][name].get("if", "")),
+                                 f"the {name} job must keep running on push and pull_request")
+        self.assertNotIn("if", CI["jobs"]["test"])
+
+    def test_no_other_job_ships(self):
+        # Moving the apply or the image push into a job that runs on push -- in this
+        # workflow or a new one -- would ship a merge again with the deploy job's if:
+        # untouched.
+        for wf_name, wf in ci_paths_selftest.load_workflows().items():
+            for name, job in (wf.get("jobs") or {}).items():
+                if (wf_name, name) == ("ci.yaml", "deploy"):
+                    continue
+                with self.subTest(workflow=wf_name, job=name):
+                    self.assertNotIn("uses", job, "a reusable-workflow call can ship anything; only "
+                                     "the deploy job may release")
+                for s in job.get("steps", []):
+                    with self.subTest(workflow=wf_name, job=name, step=s.get("name", s.get("uses"))):
+                        run, uses = joined(str(s.get("run", ""))), str(s.get("uses", ""))
+                        self.assertIsNone(SHIPS.search(run), "only the deploy job applies, pushes an "
+                                          "image or touches the ECS service or the Lambda")
+                        self.assertFalse(any(a in uses for a in SHIPPING_ACTIONS),
+                                         "only the deploy job applies or rolls the service")
+                        if uses.startswith("docker/build-push-action"):
+                            self.assertNotIn(str((s.get("with") or {}).get("push", "false")).lower(),
+                                             ("true", "${{ true }}"), "only the deploy job pushes an image")
+
+    def test_only_the_drift_gate_and_the_deploy_hold_aws_credentials(self):
+        # The second wall behind the one above: a job without the keys cannot ship.
+        # preflight only asks whether the secrets exist. A workflow-level env: or
+        # defaults: would hand the keys to every job, so it counts too.
+        allowed = {("ci.yaml", "preflight"), ("ci.yaml", "plan"), ("ci.yaml", "deploy")}
+        for wf_name, wf in ci_paths_selftest.load_workflows().items():
+            with self.subTest(workflow=wf_name, where="outside the jobs"):
+                outside = {str(k): v for k, v in wf.items() if k != "jobs"}
+                self.assertIsNone(AWS_SECRET.search(json.dumps(outside, default=str)))
+            for name, job in (wf.get("jobs") or {}).items():
+                if (wf_name, name) in allowed:
+                    continue
+                with self.subTest(workflow=wf_name, job=name):
+                    self.assertIsNone(AWS_SECRET.search(json.dumps(job, default=str)))
+
+    def test_the_drift_gate_only_reads_aws(self):
+        # plan holds the AWS keys and runs on every push and pull request: whatever it
+        # runs must only read. Its two AWS calls -- metadata only, never a secret's value
+        # -- and its one script, nothing else.
+        for s in CI["jobs"]["plan"]["steps"]:
+            for line in joined(str(s.get("run", ""))).splitlines():
+                if line.strip().startswith("#"):
+                    continue
+                with self.subTest(step=s.get("name"), line=line.strip()[:80]):
+                    if re.search(r"\baws\s", line):
+                        self.assertRegex(line, r"\baws (s3api get-bucket-versioning|ssm describe-parameters)\b")
+                    for path in re.findall(r"\bscripts/[\w./-]+", line):
+                        self.assertEqual(path, "scripts/drift_gate_iam.py")
+
+    def test_a_merge_cannot_cancel_a_queued_release(self):
+        # GitHub keeps one PENDING run per concurrency group and cancels it when a newer
+        # one joins. Sharing a group with pushes, a release waiting in the queue was
+        # cancelled by the next merge, and that push does not deploy.
+        for where, conc in (("workflow", CI.get("concurrency")),
+                            ("plan job", CI["jobs"]["plan"].get("concurrency"))):
+            group = str((conc or {}).get("group", ""))
+            with self.subTest(where=where):
+                self.assertNotEqual(render(group, "refs/heads/main", "push"),
+                                    render(group, "refs/heads/main", "workflow_dispatch"), group)
+        # A RUNNING release is never cut between terraform apply and the rollout wait.
+        self.assertEqual(" ".join(str(CI["concurrency"]["cancel-in-progress"]).split()),
+                         "${{ github.event_name == 'pull_request' }}")
 
 
 if __name__ == "__main__":

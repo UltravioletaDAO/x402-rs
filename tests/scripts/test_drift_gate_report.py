@@ -134,6 +134,10 @@ class StepHarness(unittest.TestCase):
                               capture_output=True, text=True, timeout=120)
         return proc, self.summary.read_text(encoding="utf-8")
 
+    def uncovered(self) -> list:
+        """The addresses the report step wrote to uncovered.addrs, the set it fails on."""
+        return [a for a in (self.work / "uncovered.addrs").read_text(encoding="utf-8").split("\n") if a]
+
 
 class ReportStep(StepHarness):
     def test_fixture_addresses_are_not_deploy_targets(self):
@@ -151,6 +155,8 @@ class ReportStep(StepHarness):
             targeted=[updated("aws_ecs_service.facilitator", "network_configuration")])
         out = proc.stdout
         self.assertEqual(proc.returncode, 1, out + proc.stderr)
+        # The resource deleted from the configuration is in the set the gate goes red on.
+        self.assertEqual(self.uncovered(), ["aws_cloudwatch_dashboard.near_operations", "aws_vpc_endpoint.s3"])
         self.assertIn("::error title=Unapplied infrastructure::aws_cloudwatch_dashboard.near_operations (delete)", out)
         self.assertIn("::error title=Unapplied infrastructure::aws_vpc_endpoint.s3 (update)", out)
         listed = out.split("Drift the pipeline will never apply:\n", 1)[1].split("\n")
@@ -169,6 +175,7 @@ class ReportStep(StepHarness):
             REPORT_STEP,
             full=[deleted("aws_ecr_repository.grafana"), deleted("aws_ecr_repository.prometheus")])
         self.assertEqual(proc.returncode, 1, proc.stdout + proc.stderr)
+        self.assertEqual(self.uncovered(), ["aws_ecr_repository.grafana", "aws_ecr_repository.prometheus"])
         self.assertNotIn("No unapplied infrastructure.", proc.stdout)
         self.assertIn("delete aws_ecr_repository.grafana\ndelete aws_ecr_repository.prometheus", proc.stdout)
         self.assertEqual(summary.count("(removed from the configuration)"), 2)
@@ -177,6 +184,7 @@ class ReportStep(StepHarness):
         gone = deleted("aws_cloudwatch_metric_alarm.gone")
         proc, summary = self.run_step(REPORT_STEP, full=[gone], targeted=[gone])
         self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        self.assertEqual(self.uncovered(), [])
         self.assertIn("No unapplied infrastructure.", proc.stdout)
         self.assertIn("| `delete` | `aws_cloudwatch_metric_alarm.gone` | (removed from the configuration) | (whole resource) |",
                       summary)

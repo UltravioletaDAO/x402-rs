@@ -91,6 +91,69 @@ data "aws_secretsmanager_secret" "erc8004_admin_token" {
   name = "facilitator-erc8004-admin-token"
 }
 
+# Bearer token for the Bazaar curation routes (src/handlers.rs,
+# discovery_admin_routes): DELETE /discovery/resources, POST
+# /discovery/admin/suppress and /release, GET /discovery/admin/pending, POST
+# /discovery/refresh. Until 2.51.0 nothing put it in the container -- no secret,
+# no environment entry -- so in production every one of those routes answered
+# 404 (fail closed, admin_auth in src/handlers.rs).
+#
+# An SSM Parameter Store SecureString, /facilitator/bazaar-admin-token, encrypted
+# with a KMS key of its own (owner's decision 230). On the default aws/ssm key a
+# SecureString is readable by any principal with ssm:GetParameter -- ReadOnlyAccess,
+# and so the CI user -- because that key lets every principal of the account
+# decrypt through SSM. On this key ssm:GetParameter alone reads only ciphertext:
+# decrypting also takes kms:Decrypt on THIS key, which the execution role is granted
+# (aws_iam_role_policy.secrets_access) and the CI user is explicitly denied
+# (aws_iam_policy.cicd_infra, DenyBazaarTokenDecrypt). Its own credential, not the
+# ERC-8004 or DX402 token (above): leaking it hides or deletes a catalog listing,
+# and nothing else.
+#
+# Terraform creates the key and its alias and never touches the parameter: the ARN
+# is composed (local.bazaar_admin_token_parameter_arn), so neither the value nor its
+# ciphertext reaches the state, and the plan does not need the parameter to exist.
+# The drift gate's "Bazaar admin token parameter is in place" step reads its
+# metadata (never the value) and goes red while it is missing or on another key.
+#
+# BEFORE the merge that ships this, with a human's credentials, on Terraform 1.9.8,
+# from WSL -- the CI user can create neither the key nor these policies:
+#   terraform apply -target=aws_kms_alias.bazaar_admin_token \
+#     -target=aws_iam_policy.cicd_infra -target=aws_iam_role_policy.secrets_access
+# then the value, from a file only you can read, never on screen or in argv:
+#   umask 077; openssl rand -hex 32 | tr -d '\n' > /dev/shm/bazaar-admin-token
+#   aws ssm put-parameter --name /facilitator/bazaar-admin-token --type SecureString \
+#     --key-id alias/facilitator-bazaar-admin-token \
+#     --value file:///dev/shm/bazaar-admin-token --region us-east-2 \
+#     --query Version --output text
+#   shred -u /dev/shm/bazaar-admin-token
+#
+# Read it without printing it:
+#   BAZAAR_ADMIN_TOKEN=$(aws ssm get-parameter --name /facilitator/bazaar-admin-token \
+#     --with-decryption --region us-east-2 --query Parameter.Value --output text)
+# Rotate with the same put-parameter plus --overwrite, then a deploy -- a task
+# reads it when it starts.
+resource "aws_kms_key" "bazaar_admin_token" {
+  description             = "Encrypts the SSM parameter /facilitator/bazaar-admin-token (BAZAAR_ADMIN_TOKEN)"
+  enable_key_rotation     = true
+  rotation_period_in_days = 365
+  deletion_window_in_days = 30
+
+  tags = {
+    Name = "facilitator-bazaar-admin-token"
+  }
+}
+
+resource "aws_kms_alias" "bazaar_admin_token" {
+  name          = local.bazaar_admin_token_kms_alias
+  target_key_id = aws_kms_key.bazaar_admin_token.key_id
+}
+
+locals {
+  bazaar_admin_token_parameter     = "/facilitator/bazaar-admin-token"
+  bazaar_admin_token_parameter_arn = "arn:aws:ssm:${var.aws_region}:${data.aws_caller_identity.current.account_id}:parameter${local.bazaar_admin_token_parameter}"
+  bazaar_admin_token_kms_alias     = "alias/facilitator-bazaar-admin-token"
+}
+
 # DX402 receipt signing key.
 #
 # The facilitator signs an EIP-712 EvidenceReceipt with this so a third party can
@@ -464,6 +527,11 @@ locals {
     {
       name      = "ERC8004_ADMIN_TOKEN"
       valueFrom = "${data.aws_secretsmanager_secret.erc8004_admin_token.arn}:token::"
+    },
+    {
+      # An SSM SecureString on its own KMS key (above), not Secrets Manager.
+      name      = "BAZAAR_ADMIN_TOKEN"
+      valueFrom = local.bazaar_admin_token_parameter_arn
     },
     ], var.enable_dx402 ? [
     {

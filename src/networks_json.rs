@@ -73,9 +73,10 @@ pub struct NetworkMeta {
     #[cfg_attr(not(test), allow(dead_code))]
     pub tokens: Vec<String>,
     /// `false` where production publishes no `exact` entry for the network;
-    /// `tokens` is then empty, and the entry's `_note` says why.
+    /// `tokens` is then empty, and the entry's `_note` says why. The receipt
+    /// rail reads it too (`receipts::evm_exact_tokens`): it announces and
+    /// admits `exact` only where this is `true`.
     #[serde(default = "served")]
-    #[cfg_attr(not(test), allow(dead_code))]
     pub exact_served: bool,
     #[cfg_attr(not(test), allow(dead_code))]
     pub chain_id: Option<u64>,

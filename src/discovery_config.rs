@@ -25,27 +25,71 @@
 
 use serde_json::json;
 
+/// The values already warned about, by variable: a value read on every tick
+/// or every probe costs one log line per process, not one per read. A
+/// different value of the same variable is warned about again.
+static WARNED_VALUES: std::sync::Mutex<std::collections::BTreeSet<(&'static str, String)>> =
+    std::sync::Mutex::new(std::collections::BTreeSet::new());
+
+/// Read a `u64` from the environment, or fall back. A value that is set but is
+/// not one -- or is zero where `refuse_zero` -- is the default plus a warning,
+/// never a failure: a typo must not take the task down, and it must not pass
+/// for the default unseen either.
+fn parsed(name: &'static str, default: u64, refuse_zero: bool) -> u64 {
+    let Ok(raw) = std::env::var(name) else {
+        return default;
+    };
+    match raw.parse::<u64>() {
+        Ok(n) if n > 0 || !refuse_zero => n,
+        _ => {
+            let first = WARNED_VALUES
+                .lock()
+                .map(|mut warned| warned.insert((name, raw.clone())))
+                .unwrap_or(true);
+            if first {
+                tracing::warn!(var = name, value = %raw, default, "not a usable number; using the default");
+            }
+            default
+        }
+    }
+}
+
 /// Read a `u64` from the environment, or fall back.
-fn num(name: &str, default: u64) -> u64 {
-    std::env::var(name)
-        .ok()
-        .and_then(|v| v.parse::<u64>().ok())
-        .unwrap_or(default)
+fn num(name: &'static str, default: u64) -> u64 {
+    parsed(name, default, false)
 }
 
 /// The same, refusing zero — for parameters where zero means "never" and that
 /// would be a footgun rather than a setting.
-fn positive(name: &str, default: u64) -> u64 {
-    std::env::var(name)
-        .ok()
-        .and_then(|v| v.parse::<u64>().ok())
-        .filter(|n| *n > 0)
-        .unwrap_or(default)
+fn positive(name: &'static str, default: u64) -> u64 {
+    parsed(name, default, true)
 }
 
 fn flag(name: &str, default: bool) -> bool {
     match std::env::var(name) {
         Ok(v) => !(v.eq_ignore_ascii_case("false") || v == "0"),
+        Err(_) => default,
+    }
+}
+
+/// A switch that only `true`/`1` or `false`/`0` move. Anything else is the
+/// default plus a warning, never the opposite of what was meant: [`flag`]
+/// reads `"flase"` as ON, which is fine for a kill-switch that defaults ON and
+/// wrong for one that hides listings when it flips.
+///
+/// The warning goes out once per process (`warned`): the value is read on
+/// every listing of every request, and one log line per read would bury
+/// CloudWatch under a typo.
+fn strict_flag(name: &str, default: bool, warned: &std::sync::atomic::AtomicBool) -> bool {
+    match std::env::var(name) {
+        Ok(v) if v.eq_ignore_ascii_case("true") || v == "1" => true,
+        Ok(v) if v.eq_ignore_ascii_case("false") || v == "0" => false,
+        Ok(v) => {
+            if !warned.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                tracing::warn!(var = name, value = %v, default, "not true/false/1/0; using the default");
+            }
+            default
+        }
         Err(_) => default,
     }
 }
@@ -251,6 +295,40 @@ pub fn terms_max_records() -> usize {
 }
 
 // ============================================================================
+// Origin proof of ownership (self-registered listings)
+// ============================================================================
+
+/// Whether a listing from a route that takes a URL from anyone (a
+/// self-registration, a discoverable settlement) is exposed only when its own
+/// origin vouches for it (`health.ownership` = `origin-attested`). Default OFF:
+/// phase 1 publishes the verdict and hides nothing, so the listings whose
+/// origins publish no matching `/.well-known/x402` yet are seen before anybody
+/// is hidden for it.
+pub fn require_origin_proof() -> bool {
+    static WARNED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    strict_flag("DISCOVERY_REQUIRE_ORIGIN_PROOF", false, &WARNED)
+}
+
+/// Seconds one origin's `/.well-known/x402` answer is reused before the prober
+/// reads it again. One read per origin per window, outside the probe budget:
+/// six hours is ~4 extra requests a day per origin. Never under five minutes,
+/// which would read the file on every probe.
+pub fn origin_proof_cache_secs() -> u64 {
+    positive("DISCOVERY_ORIGIN_PROOF_CACHE_SECS", 6 * 3600).max(300)
+}
+
+/// Seconds a read that did not complete (network error, 429, 5xx) is kept
+/// before the origin is asked again: shorter than the window, because it says
+/// nothing about ownership. At least a minute, and never longer than
+/// [`origin_proof_cache_secs`] -- this is the value in force, and the one
+/// `GET /discovery/config` publishes.
+pub fn origin_proof_retry_secs() -> u64 {
+    positive("DISCOVERY_ORIGIN_PROOF_RETRY_SECS", 15 * 60)
+        .max(60)
+        .min(origin_proof_cache_secs())
+}
+
+// ============================================================================
 // The published view
 // ============================================================================
 
@@ -296,6 +374,12 @@ pub fn effective() -> serde_json::Value {
             "overlayPersistSeconds": terms_persist_secs(),
             "maxRecords": terms_max_records(),
         },
+        "ownership": {
+            "requireOriginProof": require_origin_proof(),
+            "cacheSeconds": origin_proof_cache_secs(),
+            "retrySeconds": origin_proof_retry_secs(),
+            "maxFileBytes": crate::discovery_health::WELL_KNOWN_MAX_BYTES,
+        },
         // The `/bazaar` page reads its `q` cap here instead of typing one.
         "search": {
             "maxQueryChars": crate::discovery_search::MAX_QUERY_CHARS,
@@ -315,6 +399,7 @@ mod tests {
             "healthProber",
             "revalidation",
             "observedTerms",
+            "ownership",
             "search",
         ] {
             assert!(
@@ -379,6 +464,143 @@ mod tests {
         let published = effective();
         assert_eq!(published["catalog"]["maxPerHost"], 100);
         assert_eq!(published["catalog"]["maxHostSharePercent"], 5);
+    }
+
+    /// Puts a variable back as it was when dropped, so a failing assert inside
+    /// cannot leave it set for every test after it on the same thread.
+    struct EnvRestore(&'static str, Option<String>);
+
+    impl EnvRestore {
+        fn new(name: &'static str) -> Self {
+            Self(name, std::env::var(name).ok())
+        }
+    }
+
+    impl Drop for EnvRestore {
+        fn drop(&mut self) {
+            match &self.1 {
+                Some(v) => std::env::set_var(self.0, v),
+                None => std::env::remove_var(self.0),
+            }
+        }
+    }
+
+    #[test]
+    fn the_origin_proof_windows_have_floors() {
+        let _cache = EnvRestore::new("DISCOVERY_ORIGIN_PROOF_CACHE_SECS");
+        let _retry = EnvRestore::new("DISCOVERY_ORIGIN_PROOF_RETRY_SECS");
+        std::env::remove_var("DISCOVERY_ORIGIN_PROOF_CACHE_SECS");
+        std::env::remove_var("DISCOVERY_ORIGIN_PROOF_RETRY_SECS");
+        assert_eq!(origin_proof_cache_secs(), 6 * 3600);
+        assert_eq!(origin_proof_retry_secs(), 15 * 60);
+        assert_eq!(effective()["ownership"]["retrySeconds"], 15 * 60);
+        std::env::set_var("DISCOVERY_ORIGIN_PROOF_CACHE_SECS", "1");
+        std::env::set_var("DISCOVERY_ORIGIN_PROOF_RETRY_SECS", "1");
+        assert_eq!(
+            origin_proof_cache_secs(),
+            300,
+            "a window of 1 s reads the file on every probe"
+        );
+        assert_eq!(origin_proof_retry_secs(), 60);
+    }
+
+    /// What `f` logs, as plain text.
+    fn logged(f: impl FnOnce()) -> String {
+        #[derive(Clone, Default)]
+        struct Buffer(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+        impl std::io::Write for Buffer {
+            fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+                self.0.lock().unwrap().extend_from_slice(bytes);
+                Ok(bytes.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for Buffer {
+            type Writer = Buffer;
+            fn make_writer(&'a self) -> Self::Writer {
+                self.clone()
+            }
+        }
+        let buffer = Buffer::default();
+        let subscriber = tracing_subscriber::fmt()
+            .with_writer(buffer.clone())
+            .with_ansi(false)
+            .finish();
+        tracing::subscriber::with_default(subscriber, f);
+        let bytes = buffer.0.lock().unwrap().clone();
+        String::from_utf8(bytes).unwrap()
+    }
+
+    /// The retry window published is the one in force: a failed read is never
+    /// kept longer than an answer, so past the cache window the retry is the
+    /// cache window, and `GET /discovery/config` says that and not the value
+    /// set (refutation of #122, P3-5).
+    #[test]
+    fn the_published_retry_window_is_the_one_in_force() {
+        let _cache = EnvRestore::new("DISCOVERY_ORIGIN_PROOF_CACHE_SECS");
+        let _retry = EnvRestore::new("DISCOVERY_ORIGIN_PROOF_RETRY_SECS");
+        std::env::set_var("DISCOVERY_ORIGIN_PROOF_CACHE_SECS", "300");
+        std::env::set_var("DISCOVERY_ORIGIN_PROOF_RETRY_SECS", "900");
+        assert_eq!(origin_proof_retry_secs(), 300);
+        assert_eq!(effective()["ownership"]["retrySeconds"], 300);
+        assert_eq!(effective()["ownership"]["cacheSeconds"], 300);
+    }
+
+    /// A value that is set and cannot be used is the default, and says so:
+    /// once per value, not once per read (the owner's configuration rule 4).
+    #[test]
+    fn a_value_that_cannot_be_used_is_the_default_and_says_so() {
+        let var = "DISCOVERY_ORIGIN_PROOF_RETRY_SECS";
+        let _cache = EnvRestore::new("DISCOVERY_ORIGIN_PROOF_CACHE_SECS");
+        let _retry = EnvRestore::new(var);
+        std::env::remove_var("DISCOVERY_ORIGIN_PROOF_CACHE_SECS");
+        for value in ["15 min (typo, P3-5)", "0"] {
+            std::env::set_var(var, value);
+            let log = logged(|| assert_eq!(origin_proof_retry_secs(), 15 * 60, "{value:?}"));
+            assert!(
+                log.contains(var) && log.contains("WARN"),
+                "{value:?}: {log:?}"
+            );
+            let again = logged(|| assert_eq!(origin_proof_retry_secs(), 15 * 60));
+            assert_eq!(again, "", "{value:?}: warned on every read");
+        }
+        // A number is a number: no warning, whatever it resolves to.
+        std::env::set_var(var, "1200");
+        let log = logged(|| assert_eq!(origin_proof_retry_secs(), 1200));
+        assert_eq!(log, "");
+        // Zero is a value for a parameter that takes it.
+        let persist = "DISCOVERY_HEALTH_PERSIST_SECS";
+        let _persist = EnvRestore::new(persist);
+        std::env::set_var(persist, "0");
+        let log = logged(|| assert_eq!(health_persist_secs(), 0));
+        assert_eq!(log, "");
+    }
+
+    /// Phase 1 of the origin proof hides nothing, and a typo can never turn
+    /// phase 2 on: only `true`/`1` do, anything else is the default.
+    #[test]
+    fn the_origin_proof_is_off_by_default_and_a_typo_cannot_turn_it_on() {
+        let var = "DISCOVERY_REQUIRE_ORIGIN_PROOF";
+        let _restore = EnvRestore::new(var);
+        std::env::remove_var(var);
+        assert!(!require_origin_proof());
+        for (value, want) in [
+            ("true", true),
+            ("TRUE", true),
+            ("1", true),
+            ("false", false),
+            ("0", false),
+            ("flase", false),
+            ("yes", false),
+            ("", false),
+        ] {
+            std::env::set_var(var, value);
+            assert_eq!(require_origin_proof(), want, "{value:?}");
+        }
+        std::env::set_var(var, "true");
+        assert_eq!(effective()["ownership"]["requireOriginProof"], true);
     }
 
     /// The `q` cap is defined once (`MAX_QUERY_CHARS`, which the handler

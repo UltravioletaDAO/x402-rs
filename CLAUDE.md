@@ -26,7 +26,7 @@ This repository maintains a strict file organization structure. The root directo
 - `examples/` - Workspace example crates (x402-axum-example, x402-reqwest-example)
 - `abi/`, `contracts/` - Solidity ABIs and contract sources
 - `docker/`, `grafana/`, `conductor/` - Container and observability assets
-- `.github/` - CI/CD (`workflows/ci.yaml` - push to main deploys to production)
+- `.github/` - CI/CD (`workflows/ci.yaml` - push/PR build and test; only a manual "Run workflow" on main deploys to production)
 - `.unused/` - **IGNORED** (contains secrets, never commit!)
 
 ## Project Overview
@@ -230,6 +230,7 @@ python scripts/compare_usdc_contracts.py
 
 **Subsystems not covered above** (all declared in `src/main.rs`; read the module before assuming a feature is missing):
 - `discovery*.rs` (8 files) - Bazaar catalog: crawler, aggregator, curation, health, attestation, security, store
+  - **A snapshot of a replica's cache is published conditional on the version that cache was READ at** (`DiscoveryRegistry::publish_snapshot`), never on a HEAD taken before the PUT: the other replica writes altas and deletes straight to S3, and a stale cache passes a fresh HEAD and erases them (X402-BAZAAR-REPLICAS, 2.51.0). `save_all` is that HEAD-then-PUT; no cache snapshot may use it.
 - `erc8004/` - Trustless Agents: `/register`, `/identity`, `/reputation`, `/feedback` (EVM + Solana)
 - `escrow.rs`, `payment_operator/`, `upto/` - x402r escrow, PaymentOperator, Permit2 `upto` scheme
 - `events.rs`, `transaction_store{,.rs}` - SSE stream + DynamoDB index behind `/events`, `/transactions`, `/api/stats`
@@ -335,6 +336,7 @@ Golden source is `terraform/environments/production/secrets.tf`. The naming is N
 - `facilitator-algorand-mnemonic-mainnet` / `facilitator-algorand-mnemonic-testnet` - Algorand 25-word mnemonic
 - `facilitator-rpc-mainnet` - premium mainnet RPC URLs, one JSON key per network: `base`, `avalanche`, `polygon`, `optimism`, `celo`, `hyperevm`, `ethereum`, `arbitrum`, `unichain`, `arc` (mapped only while `arc_mainnet_enabled`, `arc.tf`; Arc testnet and the balances Lambda stay on the public endpoints), `solana`, `near` (there is NO `sui` key - Sui/BSC/Scroll/SKALE/Monad/Fogo/Robinhood use free public endpoints declared inline in main.tf)
 - `facilitator-rpc-testnet` - JSON keys: `solana-devnet`, `arbitrum-sepolia`, `near` (no `sui-testnet`)
+- `BAZAAR_ADMIN_TOKEN` is NOT in Secrets Manager (owner's decision 230): it is the SSM Parameter Store SecureString `/facilitator/bazaar-admin-token`, encrypted with its own KMS key (`aws_kms_key.bazaar_admin_token`, `alias/facilitator-bazaar-admin-token`, rotated yearly). On the default `aws/ssm` key any principal with `ssm:GetParameter` decrypts -- the CI user included; on this key decrypting also takes `kms:Decrypt` on it, granted to the execution role (by the alias, through SSM only) and explicitly denied to the CI user (`cicd_infra`, `DenyBazaarTokenDecrypt`). Terraform composes the parameter's ARN and never reads it, so no value or ciphertext reaches the state; the value is put by hand from a file (`secrets.tf` has the commands) and the drift gate's "Bazaar admin token parameter is in place" step checks its metadata
 
 **Legacy secrets** (deprecated, kept for backward compatibility):
 - `facilitator-evm-private-key` - Generic EVM wallet (not recommended)
@@ -399,7 +401,7 @@ Golden source is `terraform/environments/production/secrets.tf`. The naming is N
 
 Infrastructure managed with Terraform in `terraform/environments/production/`.
 
-**The deploy is automated.** Pushing to `main` runs `.github/workflows/ci.yaml`, which tests, builds the image, pushes it to ECR and `terraform apply -auto-approve`s it onto ECS (targeted at the task definition + service), then waits for the rollout and checks `/health`. The commands below are the manual fallback - do not run them in parallel with a CI deploy of the same commit.
+**The deploy is a manual "Run workflow" on `main`** (`gh workflow run ci.yaml --ref main`): `.github/workflows/ci.yaml` then tests, builds the image, pushes it to ECR and `terraform apply -auto-approve`s it onto ECS (targeted at the task definition + service), then waits for the rollout and checks `/health`. **A merge never deploys by itself** (owner's rule 2026-09-27, one release a day; in the deploy job's `if:` since X402-CI-GATES, held by `tests/scripts/test_ci_deploy_job.py`): a push to `main` only builds, tests and runs the drift gate. Never re-run an OLD release run: it would cancel a newer queued release, and its own old commit is refused by the deploy job's first step (only `main`'s head ships), so nothing deploys; start a new one. The commands below are the manual fallback - do not run them in parallel with a CI deploy of the same commit.
 
 ```bash
 # Initialize Terraform backend (once)
@@ -590,7 +592,7 @@ every n seconds*, not n per second.
 ### Missing branding after deployment
 - Verify `static/index.html` is >200KB (~225KB today, not the small upstream version): compare `ls -la static/index.html` against `curl -s https://facilitator.ultravioletadao.xyz/ | wc -c`
 - Verify `src/handlers.rs::get_root()` still uses `include_str!()` (`get_index()` is only an alias)
-- Rebuild and redeploy: push to `main` (CI builds + deploys). For local iteration use `./scripts/fast-build.sh <version> --push`; for a hand-shipped release image use `./scripts/build-and-push.sh <version>`, which passes `--build-arg FACILITATOR_VERSION`.
+- Rebuild and redeploy: a manual "Run workflow" on `main` (CI builds + deploys; a push alone does not). For local iteration use `./scripts/fast-build.sh <version> --push`; for a hand-shipped release image use `./scripts/build-and-push.sh <version>`, which passes `--build-arg FACILITATOR_VERSION`.
 
 ### Payment verification failures
 - Check facilitator wallet gas: `python scripts/check_config.py` - **partial**: it covers only Base/Avalanche/Polygon/Optimism and reads the *deprecated* `facilitator-evm-private-key` secret, not `-mainnet`, so it can validate the wrong wallet. Check the other chains' balances directly.
@@ -705,7 +707,7 @@ The following networks exist as enum entries in `src/network.rs` but are **NOT s
 - `GET /.well-known/mcp/server-card.json` - MCP server card. `serverInfo.version` is NOT in the static file; it is stamped from `FACILITATOR_VERSION` when served.
 - `GET /docs` - Interactive Swagger UI (OpenAPI documentation)
 - `GET /api-docs/openapi.json` - Raw OpenAPI 3.0 JSON spec (version resolved at runtime from `VERSION`, see below)
-- Discovery (Bazaar) API: `POST /discovery/register`, `GET /discovery/resources`, `GET /discovery/stats`, `GET /discovery/attestation/{hash}`; admin: `DELETE /discovery/resources`, `POST /discovery/admin/suppress`, `POST /discovery/admin/release`
+- Discovery (Bazaar) API: `POST /discovery/register`, `GET /discovery/resources`, `GET /discovery/stats`, `GET /discovery/attestation/{hash}`; admin: `DELETE /discovery/resources`, `POST /discovery/admin/suppress`, `POST /discovery/admin/release`. `POST /discovery/register` takes a URL from anyone and makes no outbound fetch (nor does a discoverable settlement); the prober then reads `/.well-known/x402` at the root of the listing's own origin (never inside a probe: a verified listing waits on its origin and a later tick reads the file in a request slot of its own on the host, `discovery_health::read_wanted_origin`; normally once per origin per `DISCOVERY_ORIGIN_PROOF_CACHE_SECS`, sooner after a failed read; it keeps only the entries of catalog URLs on that origin, so a huge file costs the catalog's share of it) and publishes `health.ownership` (`origin-attested` | `unattested` | `unknown`) on listings from those two routes (`discovery_health::needs_origin_proof`). Attested means an entry for the URL that declares the listing's recipients and description, the category/provider/tags it names, and every key of the `extensions` it registered (minus the input's `type`/`method`, which the probe verified, and the parts adopted from its 402, `extensionsAdopted`) -- a bare URL attests nothing, because the URL is not what an impostor fakes. `POST /discovery/register` keys and stores the URL in its canonical spelling (`discovery_security::canonical_url`). `DISCOVERY_REQUIRE_ORIGIN_PROOF` (default off, phase 2) stops listing the unattested ones; the switches are in `src/discovery_config.rs` and `GET /discovery/config`. The verdict lives in the health overlay, never on the resource: `strip_response_only` removes any `health` a registrant sends.
 - Asset endpoints: `/logo.png`, `/favicon.ico`, `/avalanche.png`, etc.
 
 ### DX402 durable-evidence
@@ -1021,7 +1023,7 @@ This complete checklist covers:
 11b. **UPDATE `src/openapi.rs`** - it hardcodes network lists in prose (`:31`, `:34`, `:57`, `:523`, `:527`, `:959`, `:1018`). A new network is invisible in `/docs` until these are edited.
 12. **UPDATE README.md** - Update the network count and add the new network to the tables
 13. **VERIFY STABLECOIN MATRIX** - Run `python scripts/stablecoin_matrix.py` and update README stablecoin tables
-14. **UPDATE `config/supported_tokens.json`** - Add the new network with chainId, displayName, icon, tokens, explorer + explorerPaths, and facilitatorWallet (this is what `/networks.json` and every page's icon and explorer link read). Copy wallet address from `lambda/balances/handler.py` — NEVER type from memory.
+14. **UPDATE `config/supported_tokens.json`** - Add the new network with chainId, displayName, icon, tokens, explorer + explorerPaths, and facilitatorWallet (this is what `/networks.json` and every page's icon and explorer link read). Copy wallet address from `lambda/balances/handler.py` — NEVER type from memory. Its `exactServed` (default `true`) also puts an EVM network with an ERC-3009 token on the facilitator receipt rail (`receipts::evm_exact_tokens`, `GET /receipts`): admission, announcement and normalization follow it; add the new pairs to `every_network_and_token_on_the_rail_stays_on_it`. Taking a network or token OFF the rail is a money change, not a config edit: resends of its stored receipts would run as ordinary settles (`docs/facilitator-receipts.md`, "EVM coverage").
 15. **UPDATE `lambda/balances/handler.py`** - Add the new network to `get_network_configs()` with RPC and wallet address.
 
 **CRITICAL**: Always update these files when adding a new network OR stablecoin:
@@ -1045,7 +1047,7 @@ This complete checklist covers:
 
 ### Important Notes
 
-- **NEVER compile or deploy the facilitator on your own initiative** - make the code change, tell the user, wait for them to build/deploy. But know what shipping means here: **pushing to `main` deploys to production.** `.github/workflows/ci.yaml` tests, builds the image, pushes it to ECR and `terraform apply -auto-approve`s it onto ECS, then waits for the rollout. The gate is armed today (the AWS repo secrets exist, so `preflight` emits `deploy=true`); only a red `test` job blocks it. A merge is a release; a `git push` is not a save. A failed deploy leaves `main` ahead of production - compare `curl -s https://facilitator.ultravioletadao.xyz/version` with `git log -1` before assuming your commit is live.
+- **NEVER compile or deploy the facilitator on your own initiative** - make the code change, tell the user, wait for them to build/deploy. But know what shipping means here: **a manual "Run workflow" on `main` deploys to production, and nothing else does.** `.github/workflows/ci.yaml` then tests, builds the image, pushes it to ECR and `terraform apply -auto-approve`s it onto ECS, then waits for the rollout. The gate is armed today (the AWS repo secrets exist, so `preflight` emits `deploy=true`); only a red `test` job blocks it. Since X402-CI-GATES a merge is NOT a release (before, every push to `main` touching a build input shipped on its own): `main` sits ahead of production until somebody starts the deploy, and that run ships everything merged since the last one. A failed or not-yet-started deploy leaves `main` ahead of production - compare `curl -s https://facilitator.ultravioletadao.xyz/version` with `git log -1` before assuming your commit is live.
 - **Never add emojis to Rust code** - they do NOT break compilation (Rust source is UTF-8), but they corrupt CloudWatch log output and terminal rendering. Use `[OK]`/`[FAIL]`/`[WARN]`. Same rule as Common Pitfalls #6.
 - **Rust Edition**: edition 2021 (`Cargo.toml:5`). The real toolchain floor is **Rust >= 1.91** (highest `rust-version` among locked deps, e.g. aws-smithy-* 1.91.1), NOT 1.82. Edition 2024 needs only 1.85, so MSRV no longer blocks the migration - only syntax/lint churn does.
   - See v0.9.1 merge for details (commit 75b37e6)

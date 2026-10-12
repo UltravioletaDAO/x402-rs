@@ -741,7 +741,7 @@ hash. `fhe-transfer` settles on the FHE facilitator's side: its `502` carries
 `retryable: false` unless the request provably never reached it or it answered
 with a `4xx`.
 
-On the receipt rail (Arc and native Hedera), a failure answered after the send
+On the receipt rail (the networks `GET /receipts` lists), a failure answered after the send
 latched or its bytes were prepared carries `retryable: false`, no
 `Retry-After`, and the prepared `transaction` with its `paymentId`; so does
 `502 receipt_response_unreadable`, with the receipt. The `503` answers with
@@ -2340,7 +2340,11 @@ the observed-terms freshness window, and the resource is not quarantined. The 40
 handshake answer, has to be the listing's own answer to that request (not one another host gave
 after a redirect, nor one a 301/302/303 reached by turning the request into a GET); the 402 has
 to offer at least one payment option we can read. `health.verifiedAt` says when and `health.verifiedBy` how (`x402_challenge` |
-`mcp_handshake`). A handshake shows the MCP server is up and reads no payment terms, so an MCP
+`mcp_handshake`). A listing that came in on a route taking a URL from anyone (`POST
+/discovery/register`, or a settlement asking to be discoverable) also carries `health.ownership`
+(`origin-attested` | `unattested` | `unknown`): whether its own origin's `/.well-known/x402`
+declares the same terms for its URL (see `POST /discovery/register`). It narrows nothing unless
+the operator turns on `DISCOVERY_REQUIRE_ORIGIN_PROOF` (`GET /discovery/config` `ownership`). A handshake shows the MCP server is up and reads no payment terms, so an MCP
 listing on a curated product's host -- whatever the scheme or path of its URL -- is listed only
 when every option it declares pays one of that product's own recipients. Auth-gated,
 degraded, quarantined, unprobeable and never-probed resources are not listed, and no parameter
@@ -2640,8 +2644,12 @@ on a listing whose URL is a template (`{id}`), which no paid URL equals.
 
 **`hasInputSchema`** is `true` when `extensions.bazaar` declares the input (`info.input`, or an
 `input` property in `schema`); the declaration itself stays in `extensions.bazaar`, with the input
-and the output apart. `kind`, `categories`, `categorySource`, `hasInputSchema`, `upstream`,
-`upstreamSource` and `usage` are response-only, like `health` and `curation`.
+and the output apart. A self-registered listing that declares no input, whose own 402 declares one
+in its `extensions.bazaar`, takes it from there -- only into what its registration left out -- and
+reports **`extensionsProvenance: origin_response`**, with the parts it filled in as JSON Pointers in
+**`extensionsAdopted`** (everything else in `extensions` is the registration). `kind`, `categories`, `categorySource`,
+`hasInputSchema`, `upstream`, `upstreamSource` and `usage` are response-only, like `health` and
+`curation`.
 
 **Unknown parameters are rejected with a 400**, listing the ones supported. A parameter the
 server accepted and ignored would be indistinguishable from a filter that matched everything,
@@ -2770,8 +2778,12 @@ for it, and a first-hand listing never; and `scanPastCap` -- the `sources` read 
 `maxItemsPerSource`, `pagesPerCycle` pages of `pageSize` a cycle, resuming where the last cycle
 stopped, keeping only copies of listings already held, so nothing new enters that way),
 `healthProber` (the probe budget -- `budgetPerTick` is
-`maxRps * tickSeconds` and is the number the revalidation queue spends from, never adds to),
-`revalidation`, `observedTerms`, `search` (`maxQueryChars`, the longest `q` that
+`maxRps * tickSeconds` and is the number the revalidation queue spends from, never adds to; a
+read of an origin's `/.well-known/x402` is one request of it, and of its host's),
+`revalidation`, `observedTerms`, `ownership` (the origin proof of listings from open routes:
+`requireOriginProof`, off unless phase 2 is on, `cacheSeconds` and `retrySeconds` between reads
+of one origin's `/.well-known/x402` -- `retrySeconds` never above `cacheSeconds`, and both the
+values in force -- and `maxFileBytes` read of it), `search` (`maxQueryChars`, the longest `q` that
 `GET /discovery/resources` accepts, which the `/bazaar` page reads instead of typing it), and
 `runtime` (whether this replica owns the periodic jobs, the queue depth, and the catalog size
 right now).
@@ -2987,8 +2999,8 @@ async fn path_bazaar_attestation() {}
 Registers a paid resource in the Bazaar catalog so clients can discover it via
 `GET /discovery/resources`.
 
-**Rate limited** to roughly 5 requests per minute per IP: registration triggers DNS lookups and
-outbound fetches against caller-supplied URLs.
+**Rate limited** to roughly 5 requests per minute per IP. Registration itself fetches nothing:
+the health prober reads the URL afterwards, in the background.
 
 **Request body:**
 ```json
@@ -3031,12 +3043,18 @@ outbound fetches against caller-supplied URLs.
   listing resells or wraps (`exa`, `tavily`, `firecrawl`...; an id or name of the closed list in
   `GET /discovery/resources`, any case). Each is stored as declared; a listing that declares no
   `category` has one inferred from what it says about itself.
-- `extensions` (optional): resource-level x402 extensions, stored verbatim. `extensions.bazaar` is
+- `extensions` (optional): resource-level x402 extensions, stored as registered (within a size
+  and depth bound). `extensions.bazaar` is
   where you declare what to send and what comes back -- `info.input` / `info.output`, and
   optionally a JSON Schema in `schema` -- exactly as the x402 bazaar extension publishes it in a
   402. A listing that declares its input reports `hasInputSchema: true`, and the health prober
   calls it with the method it declares (with `{}`, and with your example body only when `{}` is
-  refused with a 400 or 422) instead of a bare GET.
+  refused with a 400 or 422) instead of a bare GET. Register no input and the prober takes the
+  one your own 402 declares in `extensions.bazaar` (`extensionsProvenance: origin_response`, the
+  parts it filled in listed in `extensionsAdopted`), unless that 402's `resource.url` names
+  another resource (another host or path); what you register is never replaced or removed. A
+  method taken that way is where the prober starts, not one it is held to: it keeps the one-retry
+  fallback of a listing that declares none.
 
 **Schemes you cannot settle here are still registrable.** `scheme` is stored as published, so a
 listing for a scheme this facilitator does not implement is catalogued under its own name rather
@@ -3050,6 +3068,33 @@ metadata IP; or an empty `accepts` array on a non-`facilitator` type.
 
 An unreadable amount is a `400`. It is never accepted and stored as zero, which would publish
 your endpoint as free.
+
+**Ownership.** Registration takes the URL and the description from anyone, so the listing reports
+whether its own origin vouches for what it says. `health.ownership` is `origin-attested` when
+`/.well-known/x402` on the URL's host has an entry for the URL, in the same format as the request
+body above, that declares every `payTo` your `accepts` declare (with its network), the same
+`description`, and the same `category`, `provider` and `tags` wherever your `metadata` names
+them; `unattested` when there is no such file or entry, a JSON document that lists no resources
+(emptying the file to `{}` takes your word back), or an entry that says something else -- an
+entry that only lists the URL vouches for nothing -- and `unknown` when the file could not be
+read, including a 401/403 or a body that is not JSON (what a WAF or a CDN answers a bot). An
+`unknown` read leaves an earlier verdict on the same listing standing for
+`observedTerms.freshnessWindowSeconds` of `GET /discovery/config`, and no longer. The verdict is
+about the listing it judged: the same URL registered again with other content does not carry
+it. The entry's `url` is matched exactly as written, apart from the host's case, a trailing dot
+and the default port, and your listing's URL has to be in its plain spelling
+(`https://host./path` is never attested). The health prober reads that file at the root of your
+URL's origin, never during this request and never inside a probe: once your listing verifies
+alive, on a later tick, as one request of the few it makes to your host per tick, and not while
+your host has asked it to back off (a 429 or 503 to the file, with its `Retry-After`, counts like
+one to a probe). That is normally once per origin per `ownership.cacheSeconds`, sooner after a
+read that failed (`ownership.retrySeconds`), and at most `ownership.maxFileBytes` of it. A file
+served from another host after a redirect counts as none. With `DISCOVERY_REQUIRE_ORIGIN_PROOF`
+on, a self-registered listing that is not `origin-attested` is not listed.
+
+**409:** the URL is already in the catalog, from any source, listed or still waiting for its
+first verification. There is no public route to update or remove a listing; the operator does
+that.
 "#,
     request_body(content = Object, description = "Resource registration request"),
     responses(

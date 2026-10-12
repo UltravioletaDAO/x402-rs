@@ -61,6 +61,8 @@ struct NodeState {
     calls: HashMap<(Address, [u8; 4]), CallAnswer>,
     /// Every `eth_call` answered, as `(to, selector)`.
     reads: Vec<(Address, [u8; 4])>,
+    /// Every `eth_call` answered, whole: `(to, calldata, block)`.
+    call_log: Vec<(Address, Vec<u8>, Value)>,
     /// Every `eth_getCode` answered, in order.
     code_reads: Vec<Address>,
     code: HashMap<Address, Vec<u8>>,
@@ -168,6 +170,11 @@ impl MockNode {
         self.state.lock().unwrap().reads.clone()
     }
 
+    /// Every contract read answered, as `(to, calldata, block)`, in order.
+    pub(crate) fn call_log(&self) -> Vec<(Address, Vec<u8>, Value)> {
+        self.state.lock().unwrap().call_log.clone()
+    }
+
     /// Every address whose code was read, in order.
     pub(crate) fn code_reads(&self) -> Vec<Address> {
         self.state.lock().unwrap().code_reads.clone()
@@ -178,6 +185,7 @@ impl MockNode {
         let mut state = self.state.lock().unwrap();
         state.sent.clear();
         state.reads.clear();
+        state.call_log.clear();
         state.code_reads.clear();
     }
 }
@@ -403,6 +411,11 @@ fn answer(state: &Mutex<NodeState>, req: &Value) -> Value {
             let mut selector = [0u8; 4];
             selector.copy_from_slice(&input[..4]);
             state.reads.push((to, selector));
+            state.call_log.push((
+                to,
+                input.clone(),
+                params.get(1).cloned().unwrap_or(Value::Null),
+            ));
             let sequenced = state
                 .call_sequences
                 .get_mut(&(to, selector))

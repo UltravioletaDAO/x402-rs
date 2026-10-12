@@ -541,13 +541,29 @@ mod requests {
             r##"{"__type":"com.amazonaws.dynamodb.v20120810#ConditionalCheckFailedException","message":"The conditional request failed"}"##,
         );
         assert_eq!(store.save(&record, 1).await, Ok(false));
+        assert_eq!(store.release(&record, &[1]).await, Ok(false));
         answers(StatusCode::OK, "{}");
         assert_eq!(store.save(&record, 1).await, Ok(true));
+        assert_eq!(store.release(&record, &[1]).await, Ok(true));
         answers(
             StatusCode::BAD_REQUEST,
             r##"{"__type":"com.amazonaws.dynamodb.v20120810#ValidationException","message":"rejected"}"##,
         );
         assert!(store.save(&record, 1).await.is_err());
+    }
+
+    /// A `validBefore` no clock reaches (one written in milliseconds, or the
+    /// largest number there is) saturates instead of wrapping: the rows never
+    /// expire, the safe way to be wrong.
+    #[test]
+    fn an_expiry_past_any_clock_saturates_and_never_wraps() {
+        let mut record = crate::receipts::tests::fixture_record();
+        for valid_before in [u64::MAX, u64::MAX - RECEIPT_RETENTION_SECS + 1] {
+            record.authorization_expires_at = valid_before;
+            assert_eq!(expires_at(&record, super::super::now()), u64::MAX);
+        }
+        record.authorization_expires_at = 0;
+        assert_eq!(expires_at(&record, u64::MAX), u64::MAX);
     }
 
     /// Closing an admission never run takes its record where the record is

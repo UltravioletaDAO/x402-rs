@@ -543,6 +543,9 @@ pub fn document_api(api: &mut utoipa::openapi::OpenApi) {
             .or_insert_with(|| json!([]));
         params.as_array_mut().unwrap().push(json!({"name":"X-UVD-Purchase","in":"header","required":false,"schema":{"type":"string"},"description":"Private purchase context; never log its accessToken or signed authorization."}));
         operation["responses"]["200"]["content"]["application/json"]["schema"] = json!({"type":"object","properties":{"receipt":{"$ref":"#/components/schemas/FacilitatorReceipt"}},"additionalProperties":true});
+        if path == "/verify" {
+            operation["responses"]["503"] = json!({"description":"On the receipt rail, `receipt_store_unavailable` with `Retry-After` and `safeToRetry: true`: receipt storage did not answer, so no verdict is given. Resend the same request; never sign a replacement."});
+        }
         if path == "/settle" {
             operation["responses"]["202"] = json!({"description":"Reserved payment remains pending or unknown. Returned to the X-UVD-Purchase or Idempotency-Key that admitted it. Poll the private receipt or retry exactly the same request; no new payment is admitted."});
             operation["responses"]["409"] = json!({"description":"Purchase, authorization or idempotency key conflicts with the original request, or the authorization was already admitted and this request lacks the X-UVD-Purchase or Idempotency-Key that admitted it: `authorization_already_settled` or `authorization_in_flight`, with the receipt when the payment has no purchase context. No replacement payment is admitted and no success is repeated."});
@@ -893,10 +896,9 @@ pub async fn verify<F: Future<Output = Response>>(
         Err(_) => {
             return match unnormalized_admission(&service, &request).await {
                 // Admitted under another request: never valid again, and never
-                // simulated again, as below.
-                Ok(Some(existing))
-                    if !is_abandoned(&existing) && existing.receipt.status != "rejected" =>
-                {
+                // simulated again, as below. A rejected one, a released
+                // admission included, is verified as before.
+                Ok(Some(existing)) if existing.receipt.status != "rejected" => {
                     let body = json!({"isValid":false,"invalidReason":admitted_reason(&existing),"payer":existing.receipt.payer});
                     (StatusCode::OK, Json(body)).into_response()
                 }
@@ -1039,6 +1041,17 @@ async fn bound(service: &Service, existing: &Record, headers: &HeaderMap) -> Res
     if !existing.token_hash.is_empty() {
         return Ok(true);
     }
+    admitted_with_key(service, existing, headers).await
+}
+
+/// Whether the request's Idempotency-Key is one `existing` was admitted with:
+/// its binding alias names that admission. A purchase capability binds a
+/// resend whatever key it carries, so this is what a key alone proves.
+async fn admitted_with_key(
+    service: &Service,
+    existing: &Record,
+    headers: &HeaderMap,
+) -> Result<bool> {
     let Some(key) = idempotency_alias(existing, headers) else {
         return Ok(false);
     };
@@ -1082,8 +1095,13 @@ where
     }
     match bound(service, &existing, headers).await {
         Ok(true) => {
-            // Settled while its first answer was out, or reconciled just now.
-            remember_settled(headers, raw, &existing).await;
+            // Settled while its first answer was out, or reconciled just now:
+            // filed under the request's key only if that key admitted it.
+            if existing.receipt.status == "confirmed"
+                && admitted_with_key(service, &existing, headers).await == Ok(true)
+            {
+                remember_settled(headers, raw, &existing).await;
+            }
             response(&existing, true)
         }
         Ok(false) => {
@@ -1206,7 +1224,10 @@ async fn legacy_replay(headers: &HeaderMap, raw: &Bytes) -> Option<Response> {
 /// settles. Under an admission the handler keeps out of that cache, so without
 /// this row a second signature under the same key would find nothing there: on
 /// a path off the rail, from another payer, or on a release before 2.51.0 after
-/// a rollback. Best effort: the receipt is the record, this row is a fence.
+/// a rollback. The caller vouches that the request's key is one the admission
+/// was made with. A live row for another body is never replaced, as
+/// `post_settle` never replaces one either: it refuses before settling. Best
+/// effort: the receipt is the record, this row is a fence.
 async fn remember_settled(headers: &HeaderMap, raw: &Bytes, record: &Record) {
     if record.receipt.operation != "settle" || record.receipt.status != "confirmed" {
         return;
@@ -1214,6 +1235,19 @@ async fn remember_settled(headers: &HeaderMap, raw: &Bytes, record: &Record) {
     let Some((key, request_hash)) = legacy_entry(headers, raw) else {
         return;
     };
+    let within = std::time::Duration::from_secs(5);
+    match tokio::time::timeout(within, legacy_get(key.clone())).await {
+        Ok(Ok(None)) => {}
+        // Filed already, by this payment or by whatever else holds the key.
+        Ok(Ok(Some(_))) => return,
+        _ => {
+            tracing::warn!(
+                receipt_id = %record.receipt.receipt_id,
+                "settled admission not filed under its Idempotency-Key: the cache did not answer"
+            );
+            return;
+        }
+    }
     let settled =
         serde_json::from_value::<crate::types::SettleResponse>(record.response.clone()).ok();
     let Some(response_json) = settled
@@ -1232,12 +1266,17 @@ async fn remember_settled(headers: &HeaderMap, raw: &Bytes, record: &Record) {
         response_json,
         expires_at: now() + crate::idempotency_store::IDEMPOTENCY_TTL_SECONDS,
     };
-    if let Err(error) = legacy_put(row).await {
-        tracing::warn!(
+    match tokio::time::timeout(within, legacy_put(row)).await {
+        Ok(Ok(())) => {}
+        Ok(Err(error)) => tracing::warn!(
             receipt_id = %record.receipt.receipt_id,
             %error,
             "settled admission not filed under its Idempotency-Key"
-        );
+        ),
+        Err(_) => tracing::warn!(
+            receipt_id = %record.receipt.receipt_id,
+            "settled admission not filed under its Idempotency-Key: the write timed out"
+        ),
     }
 }
 
@@ -1361,6 +1400,7 @@ where
     let latched = admission.latched();
     let mut record = admission.record.lock().await;
     let answer = finish(&service, &mut record, result, true, unsent, latched).await;
+    // This request's key made the admission (`aliases`, `readmit`).
     remember_settled(headers, raw, &record).await;
     answer
 }
@@ -1660,40 +1700,69 @@ where
     .await;
 }
 
-/// How long past `validBefore` an authorization is given before the chain is
-/// trusted to have passed it too: block timestamps and this clock can differ.
-const EXPIRY_MARGIN_SECS: u64 = 60;
+/// `diagnosticCode` of an EVM admission whose own transaction reverted while
+/// its authorization was used: executed by another transaction, which pays the
+/// same `payTo`, or cancelled by the payer. The receipt stays `unknown`; never
+/// sign a replacement.
+pub const AUTHORIZATION_USED_ELSEWHERE: &str = "authorization_used_elsewhere";
 
-/// Whether the authorization behind a reverted transaction can no longer move
-/// the payer's funds, which is what refusing the admission states. The revert
-/// alone does not say so: another transaction may have executed the same
+/// What the chain says about the authorization behind a reverted transaction.
+#[derive(Debug, PartialEq)]
+enum Spent {
+    /// Unused, and no block can execute it any more: the payer's funds never
+    /// moved under it and never will. The only state that refuses the payment.
+    Never,
+    /// Used, by another transaction or a cancellation.
+    Used,
+    /// No verdict: unread, no key kept, or unused but still executable.
+    Unknown,
+}
+
+/// The authorization behind a reverted transaction, read at one block of the
+/// chain: the latest the node serves, if it is not behind the reverted one.
+/// The revert alone refuses nothing: another transaction may have executed the
 /// authorization first, and a mined transaction publishes the signed
-/// authorization, which anyone can still execute until `validBefore`. So:
-/// `validBefore` has passed and the token reports the authorization unused
-/// (`authorizationState`). Anything unread is no verdict.
-async fn authorization_dead<P: alloy::providers::Provider>(provider: &P, record: &Record) -> bool {
+/// authorization, which anyone can execute while blocks are stamped before its
+/// `validBefore`. So it is `Never` only when that block is stamped at or past
+/// `validBefore` (the chain's clock, not this one) and the token reports the
+/// authorization unused there (`authorizationState`).
+async fn authorization_spent<P: alloy::providers::Provider>(
+    provider: &P,
+    record: &Record,
+    reverted_in: Option<u64>,
+) -> Spent {
     let Some(authorization) = &record.evm_authorization else {
-        return false;
+        return Spent::Unknown;
     };
-    if now()
-        < record
-            .authorization_expires_at
-            .saturating_add(EXPIRY_MARGIN_SECS)
-    {
-        return false;
-    }
     let Ok(token) = record.receipt.asset.parse::<alloy::primitives::Address>() else {
-        return false;
+        return Spent::Unknown;
     };
     let token = crate::chain::evm::USDC::new(token, provider);
-    let used = tokio::time::timeout(std::time::Duration::from_secs(5), async {
-        token
+    let read = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        let block = provider
+            .get_block_by_number(alloy::eips::BlockNumberOrTag::Latest)
+            .await
+            .ok()??;
+        let (number, stamped) = (block.header.number, block.header.timestamp);
+        let used = token
             .authorizationState(authorization.from, authorization.nonce)
             .call()
+            .block(alloy::eips::BlockId::number(number))
             .await
+            .ok()?;
+        Some((number, stamped, used))
     })
     .await;
-    matches!(used, Ok(Ok(false)))
+    match read {
+        Ok(Some((_, _, true))) => Spent::Used,
+        Ok(Some((number, stamped, false)))
+            if stamped >= record.authorization_expires_at
+                && reverted_in.is_some_and(|reverted| number >= reverted) =>
+        {
+            Spent::Never
+        }
+        _ => Spent::Unknown,
+    }
 }
 
 async fn reconcile<A: HasProviderMap>(service: &Service, facilitator: &A, record: &mut Record)
@@ -1709,7 +1778,11 @@ where
     let Some(network) = Network::from_caip2(&record.receipt.network) else {
         return;
     };
-    let outcome: Option<(bool, String)> = match facilitator.provider_map().by_network(network) {
+    // `Some(true)` settled, `Some(false)` refused, `None` used elsewhere.
+    let outcome: Option<(Option<bool>, String)> = match facilitator
+        .provider_map()
+        .by_network(network)
+    {
         Some(NetworkProvider::Evm(provider)) => {
             use crate::chain::evm::MetaEvmProvider;
             use alloy::providers::Provider;
@@ -1727,10 +1800,19 @@ where
             .await
             {
                 Ok(Ok(Some(receipt))) if receipt.block_hash.is_some() => {
-                    let success = receipt.status();
-                    // A revert alone is no refusal (`authorization_dead`).
-                    (success || authorization_dead(provider.inner(), record).await)
-                        .then(|| (success, tx.to_string()))
+                    let verdict = if receipt.status() {
+                        Some(Some(true))
+                    } else {
+                        // A revert alone is no refusal (`authorization_spent`).
+                        match authorization_spent(provider.inner(), record, receipt.block_number)
+                            .await
+                        {
+                            Spent::Never => Some(Some(false)),
+                            Spent::Used => Some(None),
+                            Spent::Unknown => None,
+                        }
+                    };
+                    verdict.map(|verdict| (verdict, tx.to_string()))
                 }
                 _ => None,
             }
@@ -1743,11 +1825,29 @@ where
             provider
                 .receipt_evidence(id)
                 .await
-                .map(|success| (success, id.to_owned()))
+                .map(|success| (Some(success), id.to_owned()))
         }
         _ => None,
     };
-    if let Some((success, tx)) = outcome {
+    if let Some((None, _)) = outcome {
+        // Funds may have moved, under a transaction this admission does not
+        // name: no verdict to sign, but nothing left to resend or poll for.
+        if record.receipt.diagnostic_code.as_deref() == Some(AUTHORIZATION_USED_ELSEWHERE) {
+            return;
+        }
+        let mut updated = record.clone();
+        updated.receipt.status = "unknown".into();
+        updated.receipt.diagnostic_code = Some(AUTHORIZATION_USED_ELSEWHERE.into());
+        updated.receipt.retry = json!({"action":"none"});
+        if let Some(prepared) = updated.prepared.as_mut().and_then(Value::as_object_mut) {
+            prepared.remove("signedTransaction");
+        }
+        if service.save(&mut updated).await.is_ok() {
+            *record = updated;
+        }
+        return;
+    }
+    if let Some((Some(success), tx)) = outcome {
         let mut updated = record.clone();
         updated.receipt.status = if success { "confirmed" } else { "rejected" }.into();
         updated.receipt.refusal_reason = (!success).then(|| "settlement_failed_on_chain".into());

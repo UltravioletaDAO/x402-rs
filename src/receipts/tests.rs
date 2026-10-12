@@ -3361,12 +3361,25 @@ fn refutador_x_a_long_lived_authorization_outlives_its_rows_never() {
     }
 }
 
+/// What reconciliation makes of a reverted transaction.
+#[derive(Debug, PartialEq)]
+enum AfterRevert {
+    /// `rejected`, `settlement_failed_on_chain`.
+    Refused,
+    /// `unknown`, `authorization_used_elsewhere`, nothing left to resend.
+    UsedElsewhere,
+    /// As it was.
+    Unchanged,
+}
+
 /// A reverted transaction is no refusal while the authorization behind it may
-/// have moved the funds, or still can. The receipt stays as it was when the
-/// token reports the authorization used, when the token cannot be read, and
-/// before `validBefore` has passed (a mined transaction publishes the signed
-/// authorization). A record written without the authorization's key is never
-/// refused. Only an unused authorization past `validBefore` is `rejected`.
+/// have moved the funds, or still can. Read at the chain's latest block: used
+/// there, it was executed by another transaction or cancelled, and the
+/// receipt says so without refusing; unused but stamped before `validBefore`
+/// (by the chain's clock, whatever this one says), it can still execute; and
+/// unread, or with no key kept, is no verdict. Only an unused authorization at
+/// a block stamped past `validBefore` is `rejected`. The read names the signed
+/// authorization, at that block.
 #[tokio::test]
 async fn a_revert_is_refused_only_once_the_authorization_can_never_move_the_funds() {
     use crate::payment_operator::test_rpc::{self, CallAnswer, MockNode, Providers};
@@ -3384,28 +3397,46 @@ async fn a_revert_is_refused_only_once_the_authorization_can_never_move_the_fund
         word[31] = used.into();
         Some(CallAnswer::Return(word))
     };
-    let expired = now() - 2 * EXPIRY_MARGIN_SECS;
-    // (case, what the token answers, validBefore, the record keeps the key, refused)
+    // The stamp of every block the mock node serves (`test_rpc::block_json`),
+    // long before this clock: only the chain's says whether it has passed.
+    const CHAIN_NOW: u64 = 0x68c0_0000;
+    assert!(now() > CHAIN_NOW + 600);
+    let (passed, ahead) = (CHAIN_NOW - 120, CHAIN_NOW + 600);
+    use AfterRevert::*;
+    // (case, what the token answers, validBefore, the record keeps the key, outcome)
     let cases = [
-        ("used on chain", state(true), expired, true, false),
-        ("unreadable", None, expired, true, false),
+        ("used on chain", state(true), passed, true, UsedElsewhere),
         (
-            "unused, still valid",
-            state(false),
-            now() + 600,
+            "used while still valid",
+            state(true),
+            ahead,
             true,
-            false,
+            UsedElsewhere,
         ),
-        ("unused, no key kept", state(false), expired, false, false),
+        ("unreadable", None, passed, true, Unchanged),
+        (
+            "unused, still valid on chain",
+            state(false),
+            ahead,
+            true,
+            Unchanged,
+        ),
+        (
+            "unused, no key kept",
+            state(false),
+            passed,
+            false,
+            Unchanged,
+        ),
         (
             "unused, past validBefore",
             state(false),
-            expired,
+            passed,
             true,
-            true,
+            Refused,
         ),
     ];
-    for (case, answer, valid_before, kept, refused) in cases {
+    for (case, answer, valid_before, kept, outcome) in cases {
         match answer {
             Some(answer) => {
                 node.fail_reads(false);
@@ -3415,15 +3446,19 @@ async fn a_revert_is_refused_only_once_the_authorization_can_never_move_the_fund
         }
         let service = service_fixture();
         let mut record = fixture_record_on("base", BASE_USDC);
-        record.prepared = Some(json!({"transactionHash": prepared_hash()}));
+        record.prepared = Some(
+            json!({"transactionHash": prepared_hash(), "signedTransaction": STANDARD.encode([1, 2, 3])}),
+        );
         record.receipt.settlement = Some(
             json!({"id": prepared_hash(), "idType": "evm-transaction-hash", "paymentId": null}),
         );
-        record.receipt.status = "unknown".into();
+        record.receipt.status = "pending".into();
+        record.receipt.diagnostic_code = Some("transaction_prepared".into());
         record.authorization_expires_at = valid_before;
         if !kept {
             record.evm_authorization = None;
         }
+        let before = record.clone();
         assert!(service
             .store
             .reserve(&record, &[], "reserve")
@@ -3437,16 +3472,67 @@ async fn a_revert_is_refused_only_once_the_authorization_can_never_move_the_fund
             .unwrap()
             .unwrap();
         for seen in [&record, &stored] {
-            assert_eq!(seen.receipt.status == "rejected", refused, "{case}");
-        }
-        if refused {
-            assert_eq!(
-                record.receipt.refusal_reason.as_deref(),
-                Some("settlement_failed_on_chain")
-            );
+            let receipt = &seen.receipt;
+            let signed = seen.prepared.as_ref().unwrap().get("signedTransaction");
+            match outcome {
+                Refused => {
+                    assert_eq!(receipt.status, "rejected", "{case}");
+                    assert_eq!(
+                        receipt.refusal_reason.as_deref(),
+                        Some("settlement_failed_on_chain")
+                    );
+                }
+                UsedElsewhere => {
+                    assert_eq!(receipt.status, "unknown", "{case}");
+                    assert_eq!(receipt.refusal_reason, None, "{case}");
+                    assert_eq!(
+                        receipt.diagnostic_code.as_deref(),
+                        Some(AUTHORIZATION_USED_ELSEWHERE),
+                        "{case}"
+                    );
+                    assert_eq!(receipt.retry, json!({"action":"none"}), "{case}");
+                    assert!(signed.is_none(), "{case}: dead bytes kept for a resend");
+                }
+                Unchanged => {
+                    assert_eq!(receipt.status, "pending", "{case}");
+                    assert_eq!(receipt.revision, before.receipt.revision, "{case}");
+                    assert!(signed.is_some(), "{case}");
+                }
+            }
         }
     }
-    assert!(node.reads().contains(&(token, selector)));
+    // Every read named the signed authorization, at the block it judged by.
+    let signed = crate::chain::evm::USDC::authorizationStateCall {
+        authorizer: "0x1111111111111111111111111111111111111111"
+            .parse()
+            .unwrap(),
+        nonce: alloy::primitives::B256::repeat_byte(1),
+    }
+    .abi_encode();
+    let reads: Vec<_> = node
+        .call_log()
+        .into_iter()
+        .filter(|(to, input, _)| *to == token && input.starts_with(&selector))
+        .collect();
+    assert!(!reads.is_empty());
+    for (_, input, block) in reads {
+        assert_eq!(input, signed);
+        assert_eq!(block, json!("0x100"));
+    }
+    // A node whose latest block is behind the reverted transaction's (0x100),
+    // or a revert that names no block, gives no verdict.
+    use crate::chain::evm::MetaEvmProvider;
+    node.fail_reads(false);
+    node.on_call(token, selector, state(false).unwrap());
+    let provider = test_rpc::evm(&providers, Network::Base).inner();
+    let mut record = fixture_record_on("base", BASE_USDC);
+    record.authorization_expires_at = passed;
+    for reverted_in in [Some(0x101), None] {
+        let spent = authorization_spent(provider, &record, reverted_in).await;
+        assert_eq!(spent, Spent::Unknown, "{reverted_in:?}");
+    }
+    let spent = authorization_spent(provider, &record, Some(0x100)).await;
+    assert_eq!(spent, Spent::Never);
     // A record written before the key was kept still reads.
     let mut old = serde_json::to_value(fixture_record_on("base", BASE_USDC)).unwrap();
     old.as_object_mut().unwrap().remove("evm_authorization");
@@ -3528,6 +3614,188 @@ async fn a_payment_confirmed_on_a_resend_is_filed_under_its_key() {
             }),
         )
         .await;
+}
+
+/// A purchase capability binds a resend whatever Idempotency-Key it carries,
+/// so a resend files nothing under a key that did not admit the payment: not
+/// over another payment's row, not under a key nobody used. A key that did
+/// admit it is not filed over a row another payment wrote meanwhile either.
+#[tokio::test]
+async fn a_resend_files_only_a_key_that_admitted_its_payment() {
+    let row = |key: &str, hash: &str| IdempotencyRecord {
+        idempotency_key: key.into(),
+        request_hash: hash.into(),
+        response_json: "{}".into(),
+        expires_at: now() + 3600,
+    };
+    let cache = Arc::new(LegacyCache::default());
+    cache
+        .0
+        .lock()
+        .unwrap()
+        .insert("another-order".into(), row("another-order", "another-body"));
+    let body = body_on("base", BASE_USDC, 9);
+    TEST_SERVICE
+        .scope(
+            service_fixture(),
+            TEST_LEGACY.scope(cache.clone(), async {
+                let paid = settle(
+                    &MockFacilitator { invalid: false },
+                    &headers(),
+                    &body,
+                    async { settled_on(Network::Base) },
+                )
+                .await;
+                assert_eq!(paid.status(), StatusCode::OK);
+                for key in ["another-order", "nobodys-order"] {
+                    let mut h = headers();
+                    h.insert("idempotency-key", HeaderValue::from_static(key));
+                    let replay = settle_again(&h, &body).await;
+                    assert_eq!(replay.status(), StatusCode::OK, "{key}");
+                }
+                // Another purchase, admitted under a key whose row another
+                // payment writes while this one settles.
+                let mut h = purchase("cd");
+                h.insert("idempotency-key", HeaderValue::from_static("raced-order"));
+                let paid = settle(
+                    &MockFacilitator { invalid: false },
+                    &h,
+                    &body_on("base", BASE_USDC, 10),
+                    async {
+                        cache
+                            .0
+                            .lock()
+                            .unwrap()
+                            .insert("raced-order".into(), row("raced-order", "raced-body"));
+                        settled_on(Network::Base)
+                    },
+                )
+                .await;
+                assert_eq!(paid.status(), StatusCode::OK);
+            }),
+        )
+        .await;
+    let rows = cache.0.lock().unwrap().clone();
+    assert_eq!(rows["another-order"].request_hash, "another-body");
+    assert!(!rows.contains_key("nobodys-order"));
+    assert_eq!(rows["raced-order"].request_hash, "raced-body");
+}
+
+/// A facilitator whose verdict names the authorization's signer as payer.
+struct SignerIsPayer;
+
+impl ProviderMap for SignerIsPayer {
+    type Value = NetworkProvider;
+    fn by_network<N: std::borrow::Borrow<Network>>(&self, _: N) -> Option<&Self::Value> {
+        None
+    }
+    fn values(&self) -> impl Iterator<Item = &Self::Value> + Send {
+        std::iter::empty()
+    }
+}
+
+impl HasProviderMap for SignerIsPayer {
+    type Map = Self;
+    fn provider_map(&self) -> &Self {
+        self
+    }
+}
+
+impl Facilitator for SignerIsPayer {
+    type Error = StatusCode;
+    async fn verify(
+        &self,
+        request: &VerifyRequest,
+    ) -> std::result::Result<VerifyResponse, Self::Error> {
+        let ExactPaymentPayload::Evm(evm) = &request.payment_payload.payload else {
+            unreachable!("EVM fixtures only")
+        };
+        Ok(VerifyResponse::valid(MixedAddress::Evm(
+            evm.authorization.from,
+        )))
+    }
+    async fn settle(&self, _: &SettleRequest) -> std::result::Result<SettleResponse, Self::Error> {
+        panic!("use the guarded closure")
+    }
+    async fn supported(&self) -> std::result::Result<SupportedPaymentKindsResponse, Self::Error> {
+        unreachable!()
+    }
+}
+
+/// An Idempotency-Key is the payer's own: one payer's payment in flight under
+/// a key does not refuse another payer's signature under the same key, while
+/// the first payer's next signature under it is refused.
+#[tokio::test]
+async fn a_key_in_flight_for_one_payer_never_blocks_another() {
+    let theirs = edited(&body_on("ethereum", AUSD, 2), |v| {
+        v["paymentPayload"]["payload"]["authorization"]["from"] =
+            json!("0x4444444444444444444444444444444444444444");
+    });
+    let sends = AtomicUsize::new(0);
+    TEST_SERVICE
+        .scope(service_fixture(), async {
+            let lost = settle(
+                &SignerIsPayer,
+                &keyed("order-42"),
+                &body_on("base", BASE_USDC, 1),
+                async {
+                    prepared_evm(prepared_hash(), vec![1, 2, 3]).await.unwrap();
+                    sending();
+                    (
+                        StatusCode::GATEWAY_TIMEOUT,
+                        Json(json!({"error":"upstream_timeout"})),
+                    )
+                        .into_response()
+                },
+            )
+            .await;
+            assert_eq!(value(lost).await["retryable"], false);
+            let other = settle(&SignerIsPayer, &keyed("order-42"), &theirs, async {
+                sends.fetch_add(1, Ordering::SeqCst);
+                settled_on(Network::Ethereum)
+            })
+            .await;
+            assert_eq!(other.status(), StatusCode::OK);
+            let mine = settle(
+                &SignerIsPayer,
+                &keyed("order-42"),
+                &body_on("ethereum", AUSD, 3),
+                async { panic!("a second signature under the payer's key was sent") },
+            )
+            .await;
+            assert_eq!(mine.status(), StatusCode::CONFLICT);
+        })
+        .await;
+    assert_eq!(sends.load(Ordering::SeqCst), 1);
+}
+
+/// What reconciliation reads `authorizationState` with is the signed
+/// authorization: its signer and its nonce, on every network and token.
+#[test]
+fn the_authorization_kept_for_reconciliation_is_the_signed_one() {
+    for case in evm_matrix() {
+        let body = edited(&case.v1(0x5a), |v| {
+            v["paymentPayload"]["payload"]["authorization"]["from"] =
+                json!("0x4444444444444444444444444444444444444444");
+        });
+        let record = initial(
+            &parse_request(&HeaderMap::new(), &body).unwrap(),
+            None,
+            "settle",
+        )
+        .unwrap();
+        assert_eq!(
+            record.evm_authorization,
+            Some(EvmAuthorization {
+                from: "0x4444444444444444444444444444444444444444"
+                    .parse()
+                    .unwrap(),
+                nonce: alloy::primitives::B256::repeat_byte(0x5a),
+            }),
+            "{}",
+            case.caip2()
+        );
+    }
 }
 
 /// A write held back in the test's hand, as one whose answer was lost and that

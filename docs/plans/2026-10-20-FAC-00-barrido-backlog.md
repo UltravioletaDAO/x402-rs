@@ -9,7 +9,8 @@ status: active
 
 # FAC-00 — barrido verificado del backlog del facilitador (2026-10-20)
 
-> Medido contra `origin/main` = `235cdcd0` (2.51.0), no contra un árbol local.
+> Medido contra `origin/main` = `235cdcd0` (2.51.0), no contra un árbol local, y
+> actualizado sobre `a0371af3` (#125, que cerró una de las filas de abajo).
 > Cada fila cerrada cita su evidencia (`archivo:línea` de ese commit, o el SHA que la
 > resolvió). Cada ficha trae el comando que hoy está rojo y mañana verde. Lo que no
 > se pudo citar está en «Para investigar», no en las fichas.
@@ -21,7 +22,7 @@ status: active
 |---|---|---|
 | R1 | «Lo primero que se lee: el `CLAUDE.md` y el `AGENTS.md`» | **No existe `AGENTS.md`** en `origin/main` (`git ls-tree origin/main AGENTS.md` vacío). Manda solo `CLAUDE.md`. |
 | R2 | «No cierres issues de GitHub: hay otra sesión cerrándolos» | **El repo tiene los issues deshabilitados** (`gh issue list` → *the repository has disabled issues*). No hay issues que cerrar ni que pisar; el backlog vive solo en `docs/` y en el código. |
-| R3 | «Antes del push: `cargo fmt --check` y `cargo clippy --all-targets -- -D warnings`» | **Los dos ya están rojos en `origin/main`, antes de este PR**: `cargo fmt --check` da 45 hunks en 14 archivos (`src/caip2.rs`, `src/chain/evm.rs`, `src/chain/solana.rs`, `src/chain/hedera/*`, `src/facilitator_local.rs`, `src/handlers.rs`, `src/network.rs`, `src/main.rs`, `src/lib.rs`, `src/openapi.rs`, `src/types.rs`, `src/chain/mod.rs`); `cargo clippy --all-targets -- -D warnings` falla con **133 errores** (27 «the borrowed expression implements the required traits», 26 «held across an await point», imports y variables sin usar, uso de una función `deprecated`, …). Ningún gate de CI los corre: `ci.yaml:203-209` solo hace `cargo build` y `cargo test`. Ver fila N4 y ficha F6. |
+| R3 | «Antes del push: `cargo fmt --check` y `cargo clippy --all-targets -- -D warnings`» | **Los dos ya están rojos en `origin/main`, antes de este PR**: `cargo fmt --check` da 84 bloques `Diff in` (`cargo fmt --check | grep -c '^Diff in'`; 45 posiciones distintas, porque los módulos que comparten `src/lib.rs` y `src/main.rs` salen dos veces) en 14 archivos (`src/caip2.rs`, `src/chain/evm.rs`, `src/chain/solana.rs`, `src/chain/hedera/*`, `src/facilitator_local.rs`, `src/handlers.rs`, `src/network.rs`, `src/main.rs`, `src/lib.rs`, `src/openapi.rs`, `src/types.rs`, `src/chain/mod.rs`); `cargo clippy --all-targets -- -D warnings` no compila: **71 errores en `lib` y 130 en `lib test`** (líneas `could not compile`; entre ellos 27 «the borrowed expression implements the required traits», 26 «held across an await point», imports y variables sin usar, uso de una función `deprecated`, …). Ningún gate de CI los corre: `ci.yaml:203-209` solo hace `cargo build` y `cargo test`. Ver fila N4 y ficha F6. |
 | R4 | `FAC-01` (índice de owner) «ya despachada» | Confirmado: PR abierto [#123](https://github.com/UltravioletaDAO/x402-rs/pull/123). El arreglo lo pide el propio código en `src/handlers.rs:9860`, `:10498` y `:14041`. No se duplica acá. |
 | R5 | `src/discovery.rs:690` dice «deliberate» | Confirmado, textual: `// deliberate: going over the cap is a capacity problem with a known answer`. **Ninguna fila del backlog lo trata como bug**: nada que cerrar. |
 | R6 | Los 4.265 × `429` son el rate limiter | **Ninguna fila del backlog los trata como incidente** (`git grep -w 429` en los archivos de backlog solo aparece en `backlog-idempotency-dynamodb.md` y `backlog-rpc-failover.md`, por otros motivos). Nada que cerrar. |
@@ -35,7 +36,7 @@ No hay un único archivo. Las fuentes, todas en `origin/main`:
 |---|---|---|
 | `docs/TODO.md` | 9 ítems numerados (P0/P1/P2), generado de un brainstorming del 2026-01-19 | 2026-09-16 (`67b45686`, solo agregó el #9) |
 | `docs/handoffs/2026-08-31-cierre-de-sesion-y-backlog.md` §«BACKLOG DEL FACILITADOR» | 3 P0 + 5 P1 + 4 P2 de infra | 2026-09-15 |
-| `docs/plans/backlog-*.md` (8 archivos) | un ítem por archivo, o una tabla | 2026-07-30 … 2026-09-29 |
+| `docs/plans/backlog-*.md` (8 archivos) | un ítem por archivo, o una tabla | 2026-07-30 … 2026-10-20 (`a0371af3`, #125, en `backlog-batch-settlement-recheck.md`) |
 | `docs/plans/dx402/04-BACKLOG-MONETIZACION.md` | su propio encabezado (línea 3) dice que se conserva «por el razonamiento, no como estado» | 2026-09-03 |
 | `TODO`/`FIXME` en el código | 12 en `src/`, 3 en `crates/x402-compliance` | — |
 | Issues de GitHub | **deshabilitados** (R2) | — |
@@ -47,7 +48,7 @@ general, vencido (el frontmatter nunca se actualiza al cerrar).
 
 ### El conteo real
 
-**Ningún documento declara un total.** Contando las filas P0/P1 abiertas de las fuentes
+**Ningún documento declara un total.** Contando, en `235cdcd0`, las filas P0/P1 abiertas de las fuentes
 de arriba:
 
 | Fuente | P0 | P1 |
@@ -59,13 +60,13 @@ de arriba:
 | `backlog-nonce-ratchet.md` (`priority/p1`) | — | 1 |
 | **Total** | **6** | **13** |
 
-**19 filas P0/P1 abiertas** (18 distintas: `backlog-nonce-ratchet.md` y el P1 #5 del
+**19 filas P0/P1 abiertas** en `235cdcd0` (18 distintas: `backlog-nonce-ratchet.md` y el P1 #5 del
 handoff son el mismo trabajo). Los otros `backlog-*.md` no tienen prioridad P0/P1
 (`backlog-dx402-middleware-402-test.md` es P2; `fhe-gateway-timeout`, `onchain-backfill`,
 `publish-failures` y `rpc-failover` no declaran ninguna) y se barren igual en §3.
 
-**Resultado: se cierran 6 de las 19 (5 distintas) con evidencia, más 3 filas sin
-prioridad. Quedan 13 abiertas. Se agregan 7 filas nuevas.**
+**Resultado: se cierran 7 de las 19 (6 distintas) con evidencia: 6 en este barrido y
+1 por #125. También se cierran 3 filas sin prioridad. Quedan 12 abiertas. Se agregan 7 filas nuevas.**
 
 ## 2. Barrido de las filas P0/P1
 
@@ -78,6 +79,7 @@ prioridad. Quedan 13 abiertas. Se agregan 7 filas nuevas.**
 | Handoff 08-31, **P1 #5** y `backlog-nonce-ratchet.md` | «Que el hueco sane bajo tráfico: `NONCE_TRUST_CHAIN_AFTER` se reinicia con cada asignación» | `16042013` (2026-09-10): `NONCE_TRUST_CHAIN_AFTER_DRIFT` = 300s (`src/chain/evm.rs:3195`) y la rama de `resync_target` que abandona la marca alta cuando la cadena reporta menos **de forma sostenida**, haya o no tráfico (`src/chain/evm.rs:3218-3224`). Tests: `sustained_drift_gives_up_the_high_water_mark` (`:4058`), `drift_below_the_threshold_still_protects_in_flight_transactions` (`:4045`). |
 | Handoff 08-31, **P1 #7** | «Token de servicios propios para el rate limiting» | `fa76e745` (2.43.0) + `b206eac5`: `X-UVD-Stack-Key` salta los presupuestos por IP (`src/rate_policy.rs:31`, header en `:564`), digests desde Secrets Manager. |
 | `backlog-idempotency-dynamodb.md`, **P1 FAC-IDEMP-001** | «El cache de `Idempotency-Key` se implementa sobre DynamoDB» | Su propio estado ya lo dice: decisión del dueño 2026-09-17 y almacén en producción. Código: `src/idempotency_store.rs:17-28`. Ojo: la fila cita la tabla en `main.tf:759`; hoy está en `terraform/environments/production/main.tf:925` (la línea se corrió, el recurso es el mismo). Lo que se construya encima se mide contra ese documento, que queda como referencia de costo. |
+| `backlog-batch-settlement-recheck.md`, **P1 fila 1** | «Decidir si `docs/plans/batch-settlement/` entra a git» | Cerrada por `a0371af3` ([#125](https://github.com/UltravioletaDAO/x402-rs/pull/125)), decisión de c0der: **no entra a este repo**, y va al archivo privado del operador. Queda escrito en `docs/plans/backlog-batch-settlement-recheck.md:16`. `git ls-tree -r origin/main docs/plans/batch-settlement/` → 0 entradas. |
 
 ### 2.2 Abiertas, y qué las mantiene vivas
 
@@ -91,7 +93,6 @@ prioridad. Quedan 13 abiertas. Se agregan 7 filas nuevas.**
 | `docs/TODO.md` **#6** Agent Card | **Parcial**: existe una A2A agent card en `GET /.well-known/agent-card.json` (`src/handlers.rs:373`, `:872`) y el manifiesto `uvd-stack.json` (`src/interop.rs`). No hay skills OASF ni el vínculo bidireccional con un NFT AGID que pedía la fila. | Falta decidir si lo que falta se sigue queriendo. |
 | `docs/TODO.md` **#2** AGID payment identity | **Parcial**: la infraestructura ERC-8004 existe (`src/erc8004/`, `/register`, `/reputation`), pero nada registra al facilitador o a gateways como AGID con reputación por settles (`git grep -i agid origin/main -- src` vacío). | Producto, sin dueño. |
 | `docs/TODO.md` **#1** Superfluid, **#3** x402cloud, **#4** Voice2Earn, **#5** IRC bounty bot | Nada en el código: `git grep -i superfluid` vacío; `crates/` solo tiene `x402-axum`, `x402-reqwest`, `x402-compliance`; `examples/` no tiene bot de IRC; ninguna referencia a Voice2Earn/v2e en `src/`. | Nada más que el propio documento: son ideas de un brainstorming del 2026-01-19 marcadas «P0 — This Week» hace nueve meses. **No se cierran porque no están resueltas; se le pregunta al dueño si se retiran o se bajan a P2** (ver Preguntas). |
-| `backlog-batch-settlement-recheck.md` **P1 fila 1** «¿`docs/plans/batch-settlement/` entra a git?» | El directorio **no está** en `origin/main` (`git ls-tree -r origin/main docs/plans/batch-settlement/` vacío). | Decisión del dueño sobre archivos que viven solo en su máquina: **no verificable sin acceso a esa máquina**. |
 | `backlog-batch-settlement-recheck.md` **P1 fila 2** «Fila propia en `docs/dev-tools/facilitators.md` de `x402-foundation/x402`» | Medido el 2026-10-20 con `gh api repos/x402-foundation/x402/contents/docs/dev-tools/facilitators.md`: 15 facilitadores listados, **ninguno es Ultravioleta**. | Acción externa (PR a otro repo): del dueño. |
 
 ## 3. Filas sin prioridad P0/P1 y `TODO` del código
@@ -136,6 +137,7 @@ prioridad. Quedan 13 abiertas. Se agregan 7 filas nuevas.**
 - **`src/chain/algorand.rs:683`**: un pago sin `lease` se acepta y la protección de replay queda solo en el seguimiento de `group_id`. **NONCES/REPLAY.** Hace falta medir qué clientes mandan `lease` hoy.
 - **`src/chain/algorand.rs:857`**: la simulación previa al broadcast está apagada por un problema de encoding msgpack. Sin medición de cuántos broadcasts fallan por algo que la simulación habría atajado.
 - **`src/chain/solana.rs:775`**: transacciones v0 con Address Lookup Tables se rechazan aunque sean legítimas (falla del lado seguro). Sin datos de cuántas.
+- **`src/zama.rs:379` y `:390`** (`on_hands_every_document_back_untouched`, `off_leaves_an_unrelated_document_alone`): comparan con `std::ptr::eq` dos usos de un `const DOC: &str`. Rust no garantiza que una constante tenga una sola dirección, porque cada uso se inlinea. En esta máquina (rustc/cargo 1.97.1) los dos tests **fallan** en `cargo test --locked -p x402-rs --features $F -- --test-threads=1` (1862 passed, 2 failed). El mismo paso de CI (`Build & test` del push a `235cdcd0`) salió verde. Hace falta saber con qué toolchain corrió CI para decidir si es un test frágil (cambiarlo a `static`) o una diferencia de entorno.
 - Si los SDK del stack tratan el `502 settlement_unconfirmed` (P0 #3) como «buscá este hash» o como «falló»: no verificable desde este repo.
 - Frecuencia real del FAIL-OPEN de N1: el log «ALLOWING transaction temporarily» no estaba en el resumen de 24 h que trajo el encargo. **El defecto de qué cuentas se miran (N1) es independiente de esa frecuencia** y está probado por el código.
 
@@ -178,9 +180,9 @@ prioridad. Quedan 13 abiertas. Se agregan 7 filas nuevas.**
 ### F4 — EIP-6492: resucitar o retirar (P1, S si se retira / M si se resucita)
 
 1. **Síntoma:** un payer con una wallet contrafactual recibe `invalid_signature_length` en todas las redes.
-2. **Causa:** `src/chain/evm.rs:2745-2753` (regla de 65 bytes) corre en `assert_valid_payment` antes de `SignedMessage::extract` (`:1686` → `:1688`, `:1849` → `:1851`); la rama `StructuredSignature::EIP6492` (`:1692`, `:1854`) no se alcanza.
+2. **Causa:** `src/chain/evm.rs:2745-2753` (regla de 65 bytes) corre en `assert_valid_payment` antes de `SignedMessage::extract` (`:1686` → `:1688`, `:1849` → `:1851`); la rama `StructuredSignature::EIP6492` (`:1692`, `:1854`) no se alcanza. Antes de esa regla corre la guarda de Arc, `assert_signature_scheme_supported` (`:151-176`, llamada en `:2742`). Rechaza un sobre 6492 con un mensaje propio en toda red sin validador (`has_eip6492_validator`, `:121`). `:136-147` explica por qué se movió delante de la regla de 65 bytes: es la única parte de 6492 que hoy se alcanza. Resucitar o retirar tiene que conservarla, o reemplazarla a sabiendas.
 3. **Qué se cambia:** `src/chain/evm.rs` (mover la regla al brazo `EIP1271`, o borrar la rama) y la documentación pública que la anuncia.
-4. **Comando:** si se resucita, escribir `a_6492_envelope_reaches_the_validator_on_a_chain_with_one` (hoy rojo: `invalid_signature_length`); si se retira, `the_6492_branch_is_gone` debería fallar mientras `StructuredSignature::EIP6492` exista.
+4. **Comando:** si se resucita, escribir `a_6492_envelope_reaches_the_validator_on_a_chain_with_one` (hoy rojo: `invalid_signature_length`); si se retira, `the_6492_branch_is_gone` debería fallar mientras `StructuredSignature::EIP6492` exista. En los dos casos tiene que seguir verde `no_double_spaces_in_the_eip6492_refusal`, que fija el texto de la guarda de Arc.
    `cargo test --locked -p x402-rs --features $F 6492 -- --test-threads=1`
 5. **Riesgo: FIRMAS.** Al dueño. Es la decisión de producto que ya pide `docs/TODO.md` #9.
 6. **Tamaño S/M · Prioridad P1.**
@@ -198,8 +200,8 @@ prioridad. Quedan 13 abiertas. Se agregan 7 filas nuevas.**
 ### F6 — `cargo fmt` en `main` (P2, S)
 
 1. **Síntoma:** `cargo fmt --check` falla en `main` limpio, así que todo PR hereda un rojo que no causó.
-2. **Causa:** 45 hunks en los 14 archivos listados en R3 (p. ej. `src/caip2.rs:126`, `src/chain/evm.rs:48`, `src/handlers.rs:118`). Con el toolchain `stable` sin fijar (`rust-toolchain.toml`) no está claro si son de un commit sin formatear o de un rustfmt más nuevo (aquí: rustfmt 1.9.0, cargo 1.97.1).
-3. **Qué se cambia:** solo formato, `cargo fmt --all`. Los 133 errores de clippy son otra ficha (M) y no se mezclan.
+2. **Causa:** 84 bloques `Diff in` (45 posiciones distintas) en los 14 archivos listados en R3 (p. ej. `src/caip2.rs:126`, `src/chain/evm.rs:48`, `src/handlers.rs:118`). Con el toolchain `stable` sin fijar (`rust-toolchain.toml`) no está claro si son de un commit sin formatear o de un rustfmt más nuevo (aquí: rustfmt 1.9.0, cargo 1.97.1).
+3. **Qué se cambia:** solo formato, `cargo fmt --all`. Los errores de clippy (71 `lib`, 130 `lib test`) son otra ficha (M) y no se mezclan.
 4. **Comando:** `cargo fmt --check` (hoy exit 1, mañana 0) y `cargo test --locked -p x402-rs --features $F -- --test-threads=1` igual de verde que antes.
 5. **Riesgo:** es mecánico, pero **TOCA TEXTUALMENTE `src/chain/evm.rs` Y `src/facilitator_local.rs` (FIRMAS Y `/SETTLE`)**. El dueño confirma que un diff solo de whitespace en esos archivos se puede revisar como tal. Agregar el gate a CI es `.github/workflows/`: del dueño.
 6. **Tamaño S · Prioridad P2.**
@@ -230,4 +232,3 @@ prioridad. Quedan 13 abiertas. Se agregan 7 filas nuevas.**
 2. F1: ¿el screening de Solana pasa a fail-closed y con qué código de error? ¿Se despacha ya, o espera a medir cuántos pagos v0 entran hoy por el fail-open?
 3. N5: ¿alarmas de testnet de baja severidad (sin page) para polygon-amoy y hyperevm-testnet, o se acepta que una testnet caída se vea solo en `/health/ready`?
 4. N4/F6: ¿se fija la versión del toolchain y se agrega `fmt`/`clippy` a CI (`.github/workflows/`, fuera del alcance de una sesión automática)?
-5. `backlog-batch-settlement-recheck.md` fila 1: el directorio sigue fuera de git: ¿entra?

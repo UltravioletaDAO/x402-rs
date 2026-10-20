@@ -1,10 +1,14 @@
 # Backlog — publicar las operaciones que FALLAN
 
-> **Barrido FAC-00 (2026-10-20):** **cerrado; el estado de abajo estaba vencido.** Implementado en `8c8da633` (2026-07-30): `X402_EVENTS_PUBLISH_FAILURES` (`src/events.rs:36`, lectura en `:207`, default off). Detalle y evidencia: `docs/plans/2026-10-20-FAC-00-barrido-backlog.md`.
-
-**Estado:** no implementado. No existe palanca de configuración.
-**Por qué importa:** sin esto, `/stats` y `/events/live` muestran un riel que
-**siempre** se ve sano.
+**Estado (2026-10-20, barrido FAC-00): cerrado.** Implementado en `8c8da633`
+(2026-07-30): `X402_EVENTS_PUBLISH_FAILURES` (`src/events.rs:36`, lectura en
+`:207`; apagado por defecto porque amplía lo que difunde un stream público).
+Prendido, publica los `Err` de `/verify` y `/settle` en el stream y en el store
+(`src/handlers.rs:1517`; tests en `:23484-23540`). Lo de abajo es el razonamiento
+de antes de implementarlo, no el estado. Evidencia:
+`docs/plans/2026-10-20-FAC-00-barrido-backlog.md`.
+**Por qué importaba:** sin esto, `/stats` y `/events/live` mostraban un riel que
+**siempre** se veía sano.
 
 ---
 

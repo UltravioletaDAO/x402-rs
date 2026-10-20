@@ -3,7 +3,6 @@ date: 2026-09-01
 tags:
   - type/backlog
   - domain/evm
-  - priority/p1
 status: closed
 urgency: 6/10
 ---

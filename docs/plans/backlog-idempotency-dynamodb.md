@@ -1,5 +1,7 @@
 # Backlog — cache de `Idempotency-Key` de `/settle` sobre DynamoDB (FAC-IDEMP-001)
 
+> **Barrido FAC-00 (2026-10-20):** la fila P1 se **cierra**: decisión tomada y almacén en producción (`src/idempotency_store.rs:17-28`). El recurso de Terraform citado abajo como `main.tf:759` hoy está en `terraform/environments/production/main.tf:925`. El documento queda como referencia de costo. Detalle y evidencia: `docs/plans/2026-10-20-FAC-00-barrido-backlog.md`.
+
 **Estado:** decisión de almacén tomada (DynamoDB) y registrada acá. El cache ya corre sobre
 DynamoDB con TTL, y la misma tabla guarda las reservas de receipts, que no vencen.
 **Por qué existe este documento:** el dueño aprobó DynamoDB el 2026-09-17 y preguntó cuánto

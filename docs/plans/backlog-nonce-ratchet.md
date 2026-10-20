@@ -4,11 +4,13 @@ tags:
   - type/backlog
   - domain/evm
   - priority/p1
-status: ready-to-build
+status: closed
 urgency: 6/10
 ---
 
 # El contador de nonce se adelanta y no sabe volver
+
+> **Barrido FAC-00 (2026-10-20):** **cerrado** por `16042013` (2026-09-10): `NONCE_TRUST_CHAIN_AFTER_DRIFT` (`src/chain/evm.rs:3195`) y la rama de deriva sostenida de `resync_target` (`src/chain/evm.rs:3218-3224`), con el test `sustained_drift_gives_up_the_high_water_mark`. Detalle y evidencia: `docs/plans/2026-10-20-FAC-00-barrido-backlog.md`.
 
 **En una frase:** el contador de transacciones del facilitador se adelanta y no
 sabe volver, así que los pagos con escrow en una red se traban hasta que alguien

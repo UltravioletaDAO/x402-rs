@@ -60,6 +60,8 @@ y nunca llega a AWS. El gate de `plan` (commit `9d2af8c0`) existe para eso.
 
 ## BACKLOG DEL FACILITADOR
 
+> **Barrido FAC-00 (2026-10-20):** cerrados P0 #1, P1 #4, P1 #5 y P1 #7; P0 #2 y P0 #3 siguen abiertos (mitigados); P1 #6 y P1 #8 siguen abiertos. Detalle y evidencia: `docs/plans/2026-10-20-FAC-00-barrido-backlog.md`.
+
 ### P0 — lo más caro que sigue abierto
 
 | # | Qué | Dónde |

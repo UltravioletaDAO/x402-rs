@@ -3,6 +3,8 @@
 > Auto-generated from control-plane brainstorming backlog on 2026-01-19.
 > Sources: from_superfluid_x402_partnership, from_x402cloud, session_voice2earn_ecosystem, from_erc8004, session_meritstream
 
+> **Barrido FAC-00 (2026-10-20):** ningún ítem de este archivo está resuelto; #2 y #6 están cubiertos en parte por código existente, #9 sigue abierto, y #1, #3, #4 y #5 no tienen código desde 2026-01 (queda la pregunta de retirarlos). Detalle y evidencia: `docs/plans/2026-10-20-FAC-00-barrido-backlog.md`.
+
 ---
 
 ## Context

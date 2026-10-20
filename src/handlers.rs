@@ -10259,12 +10259,23 @@ fn owner_index_verdict(
     confirmed.into_iter().min()
 }
 
+/// The most candidates one owner-index answer re-reads: as many `ownerOf` as
+/// one request may scan. An owner holding more than this can never be proven
+/// by the index, so its lookup is refused before any walk (see
+/// [`owner_index_rebuild`]).
+const OWNER_INDEX_MAX_PROBES: u64 = OWNER_SCAN_MAX_BATCHES * OWNER_SCAN_BATCH;
+
 /// Answer an owner lookup from the owner index, verified against the chain.
 ///
 /// `Ok(None)` is "the index cannot prove an answer" -- never "owns nothing";
 /// the caller falls back to the scan. Costs nothing when the index holds too
 /// few candidates to add up to the balance, and one Multicall3 round trip per
 /// [`OWNER_SCAN_BATCH`] candidates otherwise.
+///
+/// Re-reads at most [`OWNER_INDEX_MAX_PROBES`] candidates, the lowest ones.
+/// Any subset is sound: the verdict needs the confirmed agents to equal the
+/// whole `balanceOf`, which no subset missing an owned agent can reach. The
+/// stale ones it re-reads leave the index, so the next answer probes fewer.
 async fn owner_index_answer(
     provider: &crate::chain::evm::InnerProvider,
     network: crate::network::Network,
@@ -10272,11 +10283,9 @@ async fn owner_index_answer(
     target: alloy::primitives::Address,
     known_balance: alloy::primitives::U256,
 ) -> Result<Option<u64>, String> {
-    let candidates = owner_index_candidates(network, registry, target);
+    let mut candidates = owner_index_candidates(network, registry, target);
+    candidates.truncate(OWNER_INDEX_MAX_PROBES as usize);
     if candidates.is_empty() || alloy::primitives::U256::from(candidates.len()) < known_balance {
-        return Ok(None);
-    }
-    if candidates.len() as u64 > OWNER_SCAN_WAVE as u64 * OWNER_SCAN_BATCH {
         return Ok(None);
     }
     let mut probes = Vec::with_capacity(candidates.len());
@@ -10352,6 +10361,14 @@ async fn owner_index_rebuild(
     known_balance: alloy::primitives::U256,
     mut bound: u64,
 ) -> Result<Option<u64>, String> {
+    // More agents than one answer may re-read: no walk can end in a verdict,
+    // so refuse now, as `main` did, without the RPC budget or the walk lock.
+    if known_balance > alloy::primitives::U256::from(OWNER_INDEX_MAX_PROBES) {
+        return Err(format!(
+            "owner holds {known_balance} agents on {network}; the owner index proves at most \
+             {OWNER_INDEX_MAX_PROBES} per lookup"
+        ));
+    }
     let walk = OWNER_INDEX_WALK
         .entry((network, registry))
         .or_default()
@@ -15397,6 +15414,133 @@ mod owner_index_tests {
                 "the index and the scan disagree for {who}"
             );
         }
+    }
+
+    /// REFUTACION-c0der FAC-01, P2-1. An owner holding more agents than one
+    /// wave walks (`OWNER_SCAN_WAVE * OWNER_SCAN_BATCH`) used to be refused by
+    /// the index for good, so past the cap every attempt paid a whole walk and
+    /// still answered 503. The index must prove it like any other owner.
+    #[tokio::test]
+    async fn refuter_r1_big_holder_past_cap() {
+        let registry = Address::repeat_byte(0xB1);
+        let rpc = SimRpc::new(past_the_cap());
+        let provider = provider(rpc.clone());
+        let whale = Address::repeat_byte(0x99);
+        let held = OWNER_SCAN_WAVE as u64 * OWNER_SCAN_BATCH + 1;
+        for id in 1..=held {
+            rpc.transfer(id, whale);
+        }
+        let attempts = requests_to_cover(rpc.max_id()) * 3;
+        let (status, body) =
+            owner_lookup_until_verdict(&rpc, &provider, registry, whale, attempts).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["agentId"].as_u64(), Some(1));
+    }
+
+    /// The one owner the index can never prove -- more agents than one answer
+    /// may re-read -- is refused before the walk, as `main` refused every
+    /// lookup past the cap: no `ownerOf` paid, no walk lock taken.
+    #[tokio::test]
+    async fn a_holder_past_what_the_index_can_prove_is_refused_without_a_walk() {
+        let registry = Address::repeat_byte(0xB2);
+        let rpc = SimRpc::new(past_the_cap());
+        let provider = provider(rpc.clone());
+        let whale = Address::repeat_byte(0x98);
+        for id in 1..=OWNER_INDEX_MAX_PROBES + 1 {
+            rpc.transfer(id, whale);
+        }
+        store_registry_bound(crate::network::Network::Base, registry, rpc.max_id());
+
+        let before = rpc.calls();
+        let (status, body) = owner_lookup(&rpc, &provider, registry, whale).await;
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{body}");
+        assert!(
+            body.to_string().contains("proves at most"),
+            "the refusal must say why: {body}"
+        );
+        assert_eq!(rpc.calls() - before, 0, "the refusal must not walk: {body}");
+        assert!(
+            !OWNER_INDEX_WALK.contains_key(&(crate::network::Network::Base, registry)),
+            "the refusal must not take the walk lock"
+        );
+    }
+
+    /// The edge of [`OWNER_INDEX_MAX_PROBES`]: an owner holding exactly that
+    /// many agents is still provable, so it gets its verdict, not the refusal.
+    #[tokio::test]
+    async fn a_holder_of_exactly_what_the_index_can_prove_gets_a_verdict() {
+        let registry = Address::repeat_byte(0xB3);
+        let rpc = SimRpc::new(past_the_cap());
+        let provider = provider(rpc.clone());
+        let whale = Address::repeat_byte(0x97);
+        for id in 1..=OWNER_INDEX_MAX_PROBES {
+            rpc.transfer(id, whale);
+        }
+        let attempts = requests_to_cover(rpc.max_id()) * 3;
+        let (status, body) =
+            owner_lookup_until_verdict(&rpc, &provider, registry, whale, attempts).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["agentId"].as_u64(), Some(1));
+    }
+
+    /// REFUTACION-c0der FAC-01, P3-2 (M7, M9). Below the cap the scan feeds the
+    /// index, and the index is asked before the scan: the second lookup of the
+    /// same owner costs one `ownerOf` round trip, not a rescan.
+    #[tokio::test]
+    async fn below_the_cap_a_second_lookup_is_answered_by_the_index_not_a_scan() {
+        let registry = Address::repeat_byte(0xA4);
+        let rpc = SimRpc::new(5 * OWNER_SCAN_BATCH + 3);
+        let provider = provider(rpc.clone());
+        let owner = Address::repeat_byte(0x53);
+        // Two agents, both past the first wave: the scan pays more than one
+        // round trip to find them.
+        rpc.transfer(9_000, owner);
+        rpc.transfer(10_002, owner);
+
+        let before = rpc.calls();
+        let (status, body) = owner_lookup(&rpc, &provider, registry, owner).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["agentId"].as_u64(), Some(9_000));
+        assert!(
+            rpc.calls() - before > 1,
+            "the first lookup must be a scan for this test to mean anything"
+        );
+
+        forget_lookup_cache(registry);
+        let before = rpc.calls();
+        let (status, body) = owner_lookup(&rpc, &provider, registry, owner).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["agentId"].as_u64(), Some(9_000));
+        assert_eq!(
+            rpc.calls() - before,
+            1,
+            "the second lookup must be the index (one ownerOf round trip), not a rescan"
+        );
+    }
+
+    /// For the `/register` tests: one owner lookup of `target` on Base's
+    /// `registry`, past the scan cap, against a registry where `owned` holds.
+    /// Returns the answer and the `eth_call`s it cost. Whatever the index of
+    /// `(Base, registry)` already knows is what answers it.
+    pub(super) async fn lookup_past_the_cap_costs(
+        registry: Address,
+        owned: &[(u64, Address)],
+        target: Address,
+    ) -> (StatusCode, serde_json::Value, usize) {
+        let network = crate::network::Network::Base;
+        let rpc = SimRpc::new(past_the_cap());
+        let provider = provider(rpc.clone());
+        for (id, owner) in owned {
+            rpc.transfer(*id, *owner);
+        }
+        store_registry_bound(network, registry, rpc.max_id());
+        forget_lookup_cache(registry);
+        let before = rpc.calls();
+        let (status, body) = owner_lookup(&rpc, &provider, registry, target).await;
+        let calls = rpc.calls() - before;
+        forget_lookup_cache(registry);
+        REGISTRY_BOUND_CACHE.remove(&(network, registry));
+        (status, body, calls)
     }
 }
 
@@ -23413,6 +23557,58 @@ mod erc8004_register_gate_tests {
             Some(4_110)
         );
         register_jobs::clear_stranded(&key);
+    }
+
+    /// REFUTACION-c0der FAC-01, P3-2 (M10). The mint's `Registered` event feeds
+    /// the owner index: with the transfer refused, the identity stays with the
+    /// facilitator, and the next lookup of it past the scan cap is answered by
+    /// the index in one `ownerOf` round trip, without a walk.
+    #[tokio::test]
+    async fn a_minted_identity_is_indexed_from_its_registered_event() {
+        let uri = "https://execution.market/agents/gate-test-indexed-on-mint";
+        let (gate, _node) = gate_where_the_transfer_fails(4_120).await;
+        let (status, doc) = register(&gate, body("base", uri, Some(OWNER))).await;
+        assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "{doc}");
+        assert_eq!(doc["agentId"], "4120", "{doc}");
+        register_jobs::clear_stranded(&reclaim_key(uri));
+
+        let us = pinned_signer();
+        let (status, body, calls) =
+            super::owner_index_tests::lookup_past_the_cap_costs(registry(), &[(4_120, us)], us)
+                .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["agentId"].as_u64(), Some(4_120), "{body}");
+        assert_eq!(calls, 1, "the lookup walked instead of using the index");
+    }
+
+    /// REFUTACION-c0der FAC-01, P3-2 (M11). A confirmed delivery feeds the
+    /// owner index: the next lookup of the recipient past the scan cap is
+    /// answered by the index in one `ownerOf` round trip, without a walk.
+    #[tokio::test]
+    async fn a_delivered_identity_is_indexed_under_its_recipient() {
+        use crate::payment_operator::test_rpc::CallAnswer;
+        use alloy::sol_types::{SolCall, SolValue};
+        let uri = "https://execution.market/agents/gate-test-indexed-on-delivery";
+        let owner: alloy::primitives::Address = OWNER.parse().unwrap();
+        let (gate, node) = gate_where_the_mint_lands(4_121).await;
+        node.on_call(
+            registry(),
+            IIdentityRegistry::ownerOfCall::SELECTOR,
+            CallAnswer::Return(owner.abi_encode()),
+        );
+        let (status, doc) = register(&gate, body("base", uri, Some(OWNER))).await;
+        assert_eq!(status, StatusCode::OK, "{doc}");
+        assert_eq!(doc["agentId"], "4121", "{doc}");
+
+        let (status, body, calls) = super::owner_index_tests::lookup_past_the_cap_costs(
+            registry(),
+            &[(4_121, owner)],
+            owner,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["agentId"].as_u64(), Some(4_121), "{body}");
+        assert_eq!(calls, 1, "the lookup walked instead of using the index");
     }
 
     // ── Solana: a held identity is resumed only for the recipient it was minted for ──

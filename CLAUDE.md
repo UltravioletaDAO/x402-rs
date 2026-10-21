@@ -834,12 +834,14 @@ with them (spec v0.2 §18.1), never as a sixth hash.
 
 The supported-network set is `supported_networks()` in `src/erc8004/mod.rs` (currently **23**: 13 mainnets + 10 testnets, Solana and Arc included) — read it there, never from a hardcoded count. `src/openapi.rs` states that count and names every network in prose; `the_erc8004_prose_names_every_supported_network` (in `src/openapi.rs`) fails when either drifts, so change both together. The landing states it too, and `scripts/verify_landing_canonical.py --offline` (a CI step) checks those.
 
-**The owner lookup has no index behind it, and that shapes everything.** The
+**The owner lookup has no index on the chain behind it, and that shapes everything.** The
 registries expose no `owner -> agentId` mapping, are NOT `ERC721Enumerable`
 (`totalSupply()` **reverts on every deployed registry** -- verified on-chain
 2026-09-01 on celo and base), and SKALE caps `eth_getLogs` at 2000 blocks. So
 every cold lookup derives the registry's highest agent ID and scans `ownerOf`
-through Multicall3. Two rules follow:
+through Multicall3; the only index is the one each task derives in memory from
+those reads (`OWNER_INDEX`, `src/handlers.rs`), and it answers only when the
+`ownerOf`s it re-reads add up to a `balanceOf` read IN THE SAME BLOCK. Two rules follow:
 
 - **Never make a registry capability load-bearing without checking the chain.**
   Run `python scripts/erc8004_registry_capabilities.py` first. A revision that
@@ -851,13 +853,18 @@ through Multicall3. Two rules follow:
   /register` refuses to mint on it -- `Ok(None)` there used to be read as
   permission to mint, handing a duplicate identity to someone who already had one.
 - Base held **83,984** agents on 2026-09-01 against the 192,000 the scan can
-  walk (`OWNER_SCAN_MAX_BATCHES`). Past that cap every owner lookup on that chain
-  answers 503; it warns from 75%. The fix at that point is an owner index, not a
-  bigger cap.
+  walk (`OWNER_SCAN_MAX_BATCHES`), and crossed it in October 2026. Past that cap
+  the lookup resolves through the owner index, rebuilt across requests in passes
+  of at most `OWNER_SCAN_MAX_BATCHES` round trips (walk batches and probes alike):
+  a cold task can answer a retryable 503 until its walk has covered the owner. The
+  cap bounds each phase of a request, not the registry; do not raise it.
 
 **`/identity/:network/owner/:address` answers 404 and 503 for different things
 and callers must not collapse them.** 404 is "this address owns no agent"; 503 is
-"the lookup reached no verdict", and carries `"retryable": true`. Persisting
+"the lookup reached no verdict", and carries `"retryable": true` -- except for an
+owner holding more agents than one owner-index probe re-reads (`OWNER_INDEX_MAX_PROBES`),
+whose 503 says `"retryable": false` and `"errorCode": "owner_holds_too_many_agents"`
+because asking again cannot help; it is still a 503, never a 404. Persisting
 "not registered" from a 503 is how a transient RPC failure becomes a permanent
 wrong answer (INC-2026-07-21) — and on a registration path it mints a duplicate
 agent for someone who already has one. The same rule governs a `/register`

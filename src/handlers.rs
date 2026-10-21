@@ -129,13 +129,14 @@ where
 /// ERC-8004 identity READ routes.
 ///
 /// Split out of [`routes`] so `main.rs` can wrap these (and only these) in a
-/// `GovernorLayer`. `/identity/{network}/owner/{address}` cannot be answered
-/// from an index -- the registries expose no owner -> agentId mapping, are not
+/// `GovernorLayer`. `/identity/{network}/owner/{address}` has no index on the
+/// chain to read -- the registries expose no owner -> agentId mapping, are not
 /// `ERC721Enumerable`, and SKALE caps `eth_getLogs` at 2000 blocks -- so every
-/// cold lookup costs a `balanceOf`, a `totalSupply` and a Multicall3 scan.
-/// Cheap per call, but unbounded it amplifies one client into a multiple of
-/// that against the shared RPC budget, which is what starved `/settle` in
-/// INC-2026-07-06.
+/// cold lookup costs a `balanceOf`, the registry bound and Multicall3 `ownerOf`
+/// batches: a scan, or past the scan cap a pass of the owner index this process
+/// derives from those same batches (`OWNER_INDEX`). Bounded per request, but
+/// unbounded in requests it amplifies one client into a multiple of that against
+/// the shared RPC budget, which is what starved `/settle` in INC-2026-07-06.
 pub fn identity_read_routes<A>() -> Router<A>
 where
     A: Facilitator + HasProviderMap + Clone + Send + Sync + 'static,
@@ -9845,27 +9846,32 @@ where
 /// tighter `eth_call` caps of small public nodes.
 const OWNER_SCAN_BATCH: u64 = 2_000;
 
-/// Hard ceiling on batches per request, so a single lookup can never turn into
-/// an unbounded RPC storm as the registry keeps growing (INC-2026-07-06).
+/// Hard ceiling on the RPC round trips one PHASE of an owner lookup may spend,
+/// so a single lookup can never turn into an unbounded RPC storm as the
+/// registry keeps growing (INC-2026-07-06).
+///
+/// A phase is one scan, one owner-index probe ([`owner_index_answer`]) or one
+/// pass of the owner-index rebuild ([`owner_index_rebuild`]), whose walk
+/// batches and probes draw on the same allowance. A lookup runs the probe and
+/// then either the scan (plus, with a stale cached bound, the tail rescan) or
+/// one rebuild pass, so ONE request costs at most three times this below the
+/// cap and twice past it, plus bound discovery.
 ///
 /// It used to be a CLIFF: a registry past it made every owner lookup on that
 /// chain answer 503, permanently, on the day it was crossed -- which is what
 /// `GET /identity/base/owner/...` hit in production (FAC-01). Past it the
-/// lookup now resolves through [`OWNER_INDEX`], which is rebuilt in passes of
-/// at most this many batches per request, so the cap bounds what ONE request
-/// costs and no longer how large a registry can be served.
+/// lookup now resolves through [`OWNER_INDEX`], rebuilt in passes across
+/// requests, so the cap bounds what a request costs and no longer how large a
+/// registry can be served.
 ///
 /// Measured 2026-09-01, the Base registry held **83,984** agents against the
 /// 128,000 the old cap of 64 could walk -- 65% consumed, on the chain
-/// Execution Market registers into. Raised to 96 (192,000 agents) so the
-/// headroom is 2.3x today rather than 1.5x, and [`discover_max_agent_id`] now
-/// warns from 75% so the cliff announces itself months out instead of arriving
-/// as an outage.
+/// Execution Market registers into. Raised to 96 (192,000 agents) for 2.3x of
+/// headroom; Base crossed it anyway in October 2026 (FAC-01).
 ///
-/// Raising it further is not the long-term answer -- an owner index is. The
-/// registries expose no owner -> agentId mapping, are not `ERC721Enumerable`,
-/// and SKALE caps `eth_getLogs` at 2000 blocks, which is why there is a scan
-/// here at all.
+/// Raising it further is not the answer -- the owner index is. The registries
+/// expose no owner -> agentId mapping, are not `ERC721Enumerable`, and SKALE
+/// caps `eth_getLogs` at 2000 blocks, which is why there is a scan here at all.
 const OWNER_SCAN_MAX_BATCHES: u64 = 96;
 
 /// The order [`scan_range_for_owner`] must examine batches in.
@@ -10120,9 +10126,10 @@ static OWNER_LOOKUP_CACHE: Lazy<
 /// It is derived state, and a stale owner index does not answer 503 -- it
 /// answers the WRONG agent, which nobody sees. So nothing in it is ever served
 /// as is: [`owner_index_answer`] re-reads `ownerOf` for every candidate and
-/// answers only when the confirmed agents add up to the owner's `balanceOf`,
-/// which proves they are ALL of them and therefore that the lowest one is the
-/// lowest. A miss or a contradiction falls back to the scan, the cold rebuild.
+/// answers only when the confirmed agents add up to the owner's `balanceOf`
+/// read IN THE SAME BLOCK, which proves they are ALL of them and therefore that
+/// the lowest one is the lowest. A miss or a contradiction falls back to the
+/// scan, the cold rebuild.
 #[derive(Debug, Default)]
 struct OwnerIndex {
     /// `owner_of[id]` is the owner last observed for agent `id`;
@@ -10241,11 +10248,16 @@ fn owner_index_candidates(
 /// `balanceOf(target)` are they provably all of them, so only then is their
 /// minimum the lowest agent `target` owns -- whatever else moved since the
 /// index was populated.
+///
+/// `balance` has to be read in the SAME block as `probes`. One read before them
+/// proves nothing: an owner that gains an agent while the index still misses an
+/// older one adds up to the old balance and gets a higher agent answered
+/// (REFUTACION-c0der FAC-01V, P2-1).
 fn owner_index_verdict(
     target: alloy::primitives::Address,
     candidates: &[u64],
     probes: &[TokenProbe],
-    known_balance: alloy::primitives::U256,
+    balance: alloy::primitives::U256,
 ) -> Option<u64> {
     let confirmed: Vec<u64> = candidates
         .iter()
@@ -10253,24 +10265,61 @@ fn owner_index_verdict(
         .filter(|(_, probe)| matches!(probe, TokenProbe::Owned(owner) if *owner == target))
         .map(|(id, _)| *id)
         .collect();
-    if confirmed.is_empty() || alloy::primitives::U256::from(confirmed.len()) != known_balance {
+    if confirmed.is_empty() || alloy::primitives::U256::from(confirmed.len()) != balance {
         return None;
     }
     confirmed.into_iter().min()
 }
 
-/// The most candidates one owner-index answer re-reads: as many `ownerOf` as
-/// one request may scan. An owner holding more than this can never be proven
-/// by the index, so its lookup is refused before any walk (see
+/// The most candidates one owner-index probe re-reads: as many as fit in one
+/// phase of [`OWNER_SCAN_MAX_BATCHES`] round trips once the `balanceOf` read
+/// with them and the block number they are pinned to are paid for
+/// ([`owner_index_probe_cost`]). An owner holding more than this can never be
+/// proven by the index, so its lookup is refused before any walk (see
 /// [`owner_index_rebuild`]).
-const OWNER_INDEX_MAX_PROBES: u64 = OWNER_SCAN_MAX_BATCHES * OWNER_SCAN_BATCH;
+const OWNER_INDEX_MAX_PROBES: u64 = (OWNER_SCAN_MAX_BATCHES - 1) * OWNER_SCAN_BATCH - 1;
+
+/// RPC round trips one probe of `candidates` agents costs: its Multicall3
+/// batches (`balanceOf` takes one slot of the first), plus the `eth_blockNumber`
+/// that pins them to one block when there is more than one.
+fn owner_index_probe_cost(candidates: u64) -> u64 {
+    let batches = (candidates + 1).div_ceil(OWNER_SCAN_BATCH);
+    if batches > 1 {
+        batches + 1
+    } else {
+        batches
+    }
+}
+
+/// What one owner lookup carries from one owner-index probe to the next.
+#[derive(Debug, Clone, Copy)]
+struct OwnerIndexLookup {
+    /// The balance the index has to reach before a probe is worth sending: the
+    /// caller's `balanceOf`, until a probe reads it again in its own block.
+    balance: alloy::primitives::U256,
+    /// Round trips the current phase may still spend
+    /// ([`OWNER_SCAN_MAX_BATCHES`] per phase).
+    budget: u64,
+}
+
+impl OwnerIndexLookup {
+    fn new(balance: alloy::primitives::U256) -> Self {
+        Self {
+            balance,
+            budget: OWNER_SCAN_MAX_BATCHES,
+        }
+    }
+}
 
 /// Answer an owner lookup from the owner index, verified against the chain.
 ///
 /// `Ok(None)` is "the index cannot prove an answer" -- never "owns nothing";
-/// the caller falls back to the scan. Costs nothing when the index holds too
-/// few candidates to add up to the balance, and one Multicall3 round trip per
-/// [`OWNER_SCAN_BATCH`] candidates otherwise.
+/// the caller falls back to the scan. Costs nothing when the index holds fewer
+/// candidates than `lookup.balance`, or when the probe would not fit in
+/// `lookup.budget`; otherwise [`owner_index_probe_cost`] round trips, taken
+/// from the budget. The `balanceOf` the probe reads becomes `lookup.balance`,
+/// so a probe that found the index short is not repeated until the index has
+/// grown enough to reach it.
 ///
 /// Re-reads at most [`OWNER_INDEX_MAX_PROBES`] candidates, the lowest ones.
 /// Any subset is sound: the verdict needs the confirmed agents to equal the
@@ -10281,17 +10330,21 @@ async fn owner_index_answer(
     network: crate::network::Network,
     registry: alloy::primitives::Address,
     target: alloy::primitives::Address,
-    known_balance: alloy::primitives::U256,
+    lookup: &mut OwnerIndexLookup,
 ) -> Result<Option<u64>, String> {
     let mut candidates = owner_index_candidates(network, registry, target);
     candidates.truncate(OWNER_INDEX_MAX_PROBES as usize);
-    if candidates.is_empty() || alloy::primitives::U256::from(candidates.len()) < known_balance {
+    if candidates.is_empty() || alloy::primitives::U256::from(candidates.len()) < lookup.balance {
         return Ok(None);
     }
-    let mut probes = Vec::with_capacity(candidates.len());
-    for chunk in candidates.chunks(OWNER_SCAN_BATCH as usize) {
-        probes.extend(multicall_owner_of(provider, registry, chunk).await?);
+    let cost = owner_index_probe_cost(candidates.len() as u64);
+    if cost > lookup.budget {
+        return Ok(None);
     }
+    lookup.budget -= cost;
+    let (balance, probes) =
+        multicall_balance_and_owner_of(provider, registry, target, &candidates).await?;
+    lookup.balance = balance;
     owner_index_observe(
         network,
         registry,
@@ -10303,12 +10356,7 @@ async fn owner_index_answer(
                 TokenProbe::Absent => (*id, None),
             }),
     );
-    Ok(owner_index_verdict(
-        target,
-        &candidates,
-        &probes,
-        known_balance,
-    ))
+    Ok(owner_index_verdict(target, &candidates, &probes, balance))
 }
 
 /// Walk `ownerOf(first..=last)` in waves of [`OWNER_SCAN_WAVE`] batches and
@@ -10346,13 +10394,16 @@ async fn owner_index_walk_span(
 }
 
 /// The lookup for a registry past what one scan may walk: rebuild the owner
-/// index in passes, at most [`OWNER_SCAN_MAX_BATCHES`] batches per request,
-/// resuming where the last request stopped, and answer as soon as the index
-/// can prove the answer.
+/// index in passes of at most [`OWNER_SCAN_MAX_BATCHES`] round trips per
+/// request -- walk batches and probes alike -- resuming where the last request
+/// stopped, and answer as soon as the index can prove the answer.
+///
+/// `known_balance` is the freshest `balanceOf(target)` the lookup holds: the
+/// one a probe read in its own block, else the caller's.
 ///
 /// A pass that reaches the bound re-derives it before wrapping to agent 1, so
-/// agents minted since are walked too. `Err` is retryable: the next request
-/// resumes the walk instead of starting over.
+/// agents minted since are walked too. `Err` is retryable unless it carries a
+/// code: the next request resumes the walk instead of starting over.
 async fn owner_index_rebuild(
     provider: &crate::chain::evm::InnerProvider,
     network: crate::network::Network,
@@ -10360,30 +10411,35 @@ async fn owner_index_rebuild(
     target: alloy::primitives::Address,
     known_balance: alloy::primitives::U256,
     mut bound: u64,
-) -> Result<Option<u64>, String> {
-    // More agents than one answer may re-read: no walk can end in a verdict,
-    // so refuse now, as `main` did, without the RPC budget or the walk lock.
+) -> Result<Option<u64>, OwnerLookupError> {
+    // More agents than one probe may re-read: no walk can end in a verdict,
+    // so refuse now, without the RPC budget or the walk lock. Unlike `main`,
+    // which refused every lookup past the cap, this refusal is permanent for
+    // as long as the owner holds that many, so it does not ask for a retry.
     if known_balance > alloy::primitives::U256::from(OWNER_INDEX_MAX_PROBES) {
-        return Err(format!(
-            "owner holds {known_balance} agents on {network}; the owner index proves at most \
-             {OWNER_INDEX_MAX_PROBES} per lookup"
-        ));
+        return Err(OwnerLookupError {
+            message: format!(
+                "owner holds {known_balance} agents on {network}; the owner index proves at most \
+                 {OWNER_INDEX_MAX_PROBES} per lookup"
+            ),
+            code: Some(OWNER_HOLDS_TOO_MANY_AGENTS),
+        });
     }
     let walk = OWNER_INDEX_WALK
         .entry((network, registry))
         .or_default()
         .clone();
     let mut next = walk.lock().await;
+    let mut lookup = OwnerIndexLookup::new(known_balance);
     // Whoever held the walk before us may have just indexed this owner.
     if let Some(agent_id) =
-        owner_index_answer(provider, network, registry, target, known_balance).await?
+        owner_index_answer(provider, network, registry, target, &mut lookup).await?
     {
         return Ok(Some(agent_id));
     }
 
-    let mut budget = OWNER_SCAN_MAX_BATCHES;
     let mut rederived = false;
-    while budget > 0 {
+    while lookup.budget > 0 {
         if *next == 0 {
             *next = 1;
         }
@@ -10399,13 +10455,13 @@ async fn owner_index_rebuild(
             }
             *next = 1;
         }
-        let batches = budget.min(OWNER_SCAN_WAVE as u64);
+        let batches = lookup.budget.min(OWNER_SCAN_WAVE as u64);
         let last = (*next + batches * OWNER_SCAN_BATCH - 1).min(bound);
         owner_index_walk_span(provider, network, registry, *next, last).await?;
-        budget -= scan_batch_ranges(*next, last).len() as u64;
+        lookup.budget -= scan_batch_ranges(*next, last).len() as u64;
         *next = last + 1;
         if let Some(agent_id) =
-            owner_index_answer(provider, network, registry, target, known_balance).await?
+            owner_index_answer(provider, network, registry, target, &mut lookup).await?
         {
             return Ok(Some(agent_id));
         }
@@ -10429,7 +10485,8 @@ async fn owner_index_rebuild(
     Err(format!(
         "owner index for {network} is still being rebuilt: the registry holds {bound} agents, \
          one request walks at most {scannable}, walked through {walked_to}; retry"
-    ))
+    )
+    .into())
 }
 
 /// Classify an `eth_call` failure.
@@ -10470,11 +10527,13 @@ enum TokenProbe {
 
 /// Batch `ownerOf` over an arbitrary set of agent IDs in ONE Multicall3 call.
 ///
-/// The single RPC primitive behind both jobs this module has -- finding the
-/// registry's highest ID ([`discover_max_agent_id`]) and finding an owner's
-/// token ([`scan_range_for_owner`]) -- so the batch limits, the decode
-/// discipline and the absent/no-verdict distinction are written once and
-/// cannot drift between them.
+/// Every job this module has -- finding the registry's highest ID
+/// ([`discover_max_agent_id`]), finding an owner's token
+/// ([`scan_range_for_owner`]) and probing the owner index
+/// ([`multicall_balance_and_owner_of`]) -- goes through one primitive,
+/// [`multicall_registry_reads`], so the batch limits, the decode discipline and
+/// the absent/no-verdict distinction are written once and cannot drift between
+/// them.
 ///
 /// IDs need not be contiguous: the bound search probes a sparse ladder through
 /// the same path the dense scan uses.
@@ -10483,23 +10542,84 @@ async fn multicall_owner_of(
     registry: alloy::primitives::Address,
     ids: &[u64],
 ) -> Result<Vec<TokenProbe>, String> {
+    if ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    multicall_registry_reads(provider, registry, None, ids, None)
+        .await
+        .map(|(_, probes)| probes)
+}
+
+/// `balanceOf(holder)` and `ownerOf(ids)` as of ONE block, in as few
+/// Multicall3 batches as [`OWNER_SCAN_BATCH`] allows: what an owner-index probe
+/// needs for its verdict to mean anything ([`owner_index_verdict`]).
+///
+/// One batch is one `eth_call`, so one state. When the reads need more than
+/// one, every batch is pinned to the same block number, read once from
+/// `eth_blockNumber` -- never from `block.number` inside the EVM, which on
+/// Arbitrum is the L1 block number.
+async fn multicall_balance_and_owner_of(
+    provider: &crate::chain::evm::InnerProvider,
+    registry: alloy::primitives::Address,
+    holder: alloy::primitives::Address,
+    ids: &[u64],
+) -> Result<(alloy::primitives::U256, Vec<TokenProbe>), String> {
+    let (head, tail) = ids.split_at(ids.len().min(OWNER_SCAN_BATCH as usize - 1));
+    let block = if tail.is_empty() {
+        None
+    } else {
+        Some(
+            provider
+                .get_block_number()
+                .await
+                .map_err(|e| format!("eth_blockNumber for an owner-index probe failed: {e}"))?,
+        )
+    };
+    let (balance, mut probes) =
+        multicall_registry_reads(provider, registry, Some(holder), head, block).await?;
+    let balance = balance.ok_or("the probe batch returned no balanceOf")?;
+    for chunk in tail.chunks(OWNER_SCAN_BATCH as usize) {
+        let (_, more) = multicall_registry_reads(provider, registry, None, chunk, block).await?;
+        probes.extend(more);
+    }
+    Ok((balance, probes))
+}
+
+/// The one `aggregate3` behind [`multicall_owner_of`] and
+/// [`multicall_balance_and_owner_of`]: `balanceOf(holder)` first when `holder`
+/// is given, then `ownerOf` for every id, executed at `block` (`None`: the
+/// provider's default tag, as every scan batch).
+async fn multicall_registry_reads(
+    provider: &crate::chain::evm::InnerProvider,
+    registry: alloy::primitives::Address,
+    holder: Option<alloy::primitives::Address>,
+    ids: &[u64],
+    block: Option<u64>,
+) -> Result<(Option<alloy::primitives::U256>, Vec<TokenProbe>), String> {
     use alloy::providers::bindings::IMulticall3;
     use alloy::providers::MULTICALL3_ADDRESS;
     use alloy::sol_types::SolCall;
 
-    if ids.is_empty() {
-        return Ok(Vec::new());
-    }
-    if ids.len() as u64 > OWNER_SCAN_BATCH {
+    let reads = ids.len() + usize::from(holder.is_some());
+    if reads as u64 > OWNER_SCAN_BATCH {
         return Err(format!(
-            "multicall of {} ownerOf calls exceeds the measured batch cap of {OWNER_SCAN_BATCH}",
-            ids.len()
+            "multicall of {reads} registry reads exceeds the measured batch cap of \
+             {OWNER_SCAN_BATCH}"
         ));
     }
 
-    let calls: Vec<IMulticall3::Call3> = ids
-        .iter()
-        .map(|id| IMulticall3::Call3 {
+    let mut calls: Vec<IMulticall3::Call3> = Vec::with_capacity(reads);
+    if let Some(holder) = holder {
+        calls.push(IMulticall3::Call3 {
+            target: registry,
+            allowFailure: true,
+            callData: IIdentityRegistry::balanceOfCall { owner: holder }
+                .abi_encode()
+                .into(),
+        });
+    }
+    calls.extend(ids.iter().map(|id| {
+        IMulticall3::Call3 {
             target: registry,
             allowFailure: true,
             callData: IIdentityRegistry::ownerOfCall {
@@ -10507,17 +10627,21 @@ async fn multicall_owner_of(
             }
             .abi_encode()
             .into(),
-        })
-        .collect();
+        }
+    }));
 
     let encoded = IMulticall3::aggregate3Call { calls }.abi_encode();
     let tx = alloy::rpc::types::TransactionRequest::default()
         .to(MULTICALL3_ADDRESS)
         .input(alloy::rpc::types::TransactionInput::new(encoded.into()));
 
-    let first = ids[0];
-    let last = ids[ids.len() - 1];
-    let raw_result = provider.call(tx).await.map_err(|e| {
+    let first = ids.first().copied().unwrap_or_default();
+    let last = ids.last().copied().unwrap_or_default();
+    let mut call = provider.call(tx);
+    if let Some(number) = block {
+        call = call.block(alloy::eips::BlockId::number(number));
+    }
+    let raw_result = call.await.map_err(|e| {
         format!(
             "Multicall3 ownerOf batch of {} ({first}..={last}) failed: {e}",
             ids.len()
@@ -10529,27 +10653,46 @@ async fn multicall_owner_of(
 
     // A short return array would silently shift every ID-to-result mapping
     // below it, which is how a scan reports the WRONG agent rather than none.
-    if results.len() != ids.len() {
+    if results.len() != reads {
         return Err(format!(
             "Multicall3 returned {} results for {} ownerOf calls ({first}..={last})",
             results.len(),
-            ids.len()
+            reads
         ));
     }
 
-    Ok(results
-        .iter()
-        .map(|r| {
-            if r.success && r.returnData.len() >= 32 {
-                // ownerOf returns an abi-encoded address: 32 bytes, left-padded.
-                TokenProbe::Owned(alloy::primitives::Address::from_slice(
-                    &r.returnData[12..32],
-                ))
-            } else {
-                TokenProbe::Absent
+    let (balance, owners) = match holder {
+        Some(holder) => {
+            // `balanceOf` has no "absent" answer: a failed one is no verdict.
+            let read = &results[0];
+            if !read.success {
+                return Err(format!(
+                    "balanceOf({holder}) failed inside the Multicall3 batch ({first}..={last})"
+                ));
             }
-        })
-        .collect())
+            let balance = IIdentityRegistry::balanceOfCall::abi_decode_returns(&read.returnData)
+                .map_err(|e| format!("Failed to decode balanceOf({holder}): {e}"))?;
+            (Some(balance), &results[1..])
+        }
+        None => (None, &results[..]),
+    };
+
+    Ok((
+        balance,
+        owners
+            .iter()
+            .map(|r| {
+                if r.success && r.returnData.len() >= 32 {
+                    // ownerOf returns an abi-encoded address: 32 bytes, left-padded.
+                    TokenProbe::Owned(alloy::primitives::Address::from_slice(
+                        &r.returnData[12..32],
+                    ))
+                } else {
+                    TokenProbe::Absent
+                }
+            })
+            .collect(),
+    ))
 }
 
 /// `true` for every probe that came back with an owner.
@@ -10956,14 +11099,14 @@ async fn scan_range_for_owner(
 ///
 /// Cost of a cold lookup: one bound discovery (up to four Multicall3 round
 /// trips, or zero when the registry bound is cached) plus one scan batch per
-/// 2,000 agents.
+/// 2,000 agents. Every phase is capped by [`OWNER_SCAN_MAX_BATCHES`].
 async fn resolve_first_token_by_owner(
     provider: &crate::chain::evm::InnerProvider,
     network: crate::network::Network,
     registry: alloy::primitives::Address,
     target: alloy::primitives::Address,
     known_balance: alloy::primitives::U256,
-) -> Result<Option<u64>, String> {
+) -> Result<Option<u64>, OwnerLookupError> {
     // Serve a fresh cached resolution before spending any RPC budget.
     if let Some(entry) = OWNER_LOOKUP_CACHE.get(&(network, registry, target)) {
         let (agent_id, cached_at) = *entry;
@@ -10973,10 +11116,12 @@ async fn resolve_first_token_by_owner(
         }
     }
 
-    // Step 0: the owner index, verified against `ownerOf` and `balanceOf`
-    // before it is believed. One round trip when it knows the owner.
+    // Step 0: the owner index, verified against `ownerOf` and a `balanceOf`
+    // of the same block before it is believed. One round trip when it knows
+    // the owner.
+    let mut lookup = OwnerIndexLookup::new(known_balance);
     if let Some(agent_id) =
-        owner_index_answer(provider, network, registry, target, known_balance).await?
+        owner_index_answer(provider, network, registry, target, &mut lookup).await?
     {
         debug!(agent_id, %target, "Owner lookup served from the owner index");
         OWNER_LOOKUP_CACHE.insert(
@@ -11006,10 +11151,12 @@ async fn resolve_first_token_by_owner(
 
     // Past what one scan may walk, the scan below refuses before it probes
     // anything; that refusal was a permanent 503 (FAC-01). The owner index
-    // takes over, rebuilt across requests by the same batches.
+    // takes over, rebuilt across requests by the same batches. It starts from
+    // the balance step 0 read in its own block, when it read one.
     if scan_batch_ranges(1, max_id).len() as u64 > OWNER_SCAN_MAX_BATCHES {
         let found =
-            owner_index_rebuild(provider, network, registry, target, known_balance, max_id).await?;
+            owner_index_rebuild(provider, network, registry, target, lookup.balance, max_id)
+                .await?;
         if let Some(agent_id) = found {
             OWNER_LOOKUP_CACHE.insert(
                 (network, registry, target),
@@ -11103,14 +11250,62 @@ fn exhausted_scan_outcome(
     target: alloy::primitives::Address,
     known_balance: alloy::primitives::U256,
     scanned_to: u64,
-) -> Result<Option<u64>, String> {
+) -> Result<Option<u64>, OwnerLookupError> {
     if known_balance > alloy::primitives::U256::ZERO {
         return Err(format!(
             "balanceOf({target}) is {known_balance} but no agent in 1..={scanned_to} is owned by \
              it; the scan range is wrong, so this is not proof that the address owns nothing"
-        ));
+        )
+        .into());
     }
     Ok(None)
+}
+
+/// `errorCode` of the one owner lookup asking again cannot help: an owner
+/// holding more agents than one owner-index probe re-reads
+/// ([`OWNER_INDEX_MAX_PROBES`]).
+const OWNER_HOLDS_TOO_MANY_AGENTS: &str = "owner_holds_too_many_agents";
+
+/// Why an owner lookup reached no verdict. Never "owns nothing".
+///
+/// Almost always worth asking again -- an RPC failure, a contradiction, an
+/// owner index still being rebuilt -- so the 503 says `retryable: true`.
+/// `code` is set only when asking again cannot help, and then the 503 says
+/// `retryable: false` and carries it as `errorCode`, so a client stops instead
+/// of retrying for ever (REFUTACION-c0der FAC-01V, P3-3). It stays a 503, not a
+/// 4xx: what matters to every caller is that it is not the 404 they persist as
+/// "not registered".
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct OwnerLookupError {
+    message: String,
+    code: Option<&'static str>,
+}
+
+impl OwnerLookupError {
+    fn is_retryable(&self) -> bool {
+        self.code.is_none()
+    }
+}
+
+impl From<String> for OwnerLookupError {
+    fn from(message: String) -> Self {
+        Self {
+            message,
+            code: None,
+        }
+    }
+}
+
+impl From<&str> for OwnerLookupError {
+    fn from(message: &str) -> Self {
+        message.to_string().into()
+    }
+}
+
+impl std::fmt::Display for OwnerLookupError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
 }
 
 /// Path parameters for identity-by-owner query
@@ -11271,7 +11466,9 @@ where
 /// must never collapse is testable without a chain behind it:
 ///
 /// - `Ok(None)` is **404** -- "this address owns no agent".
-/// - `Err` is **503 + `retryable: true`** -- "the lookup reached no verdict".
+/// - `Err` is **503 + `retryable: true`** -- "the lookup reached no verdict" --
+///   or `retryable: false` plus an `errorCode` when asking again cannot help
+///   ([`OwnerLookupError`]).
 ///
 /// Callers persist a 404 as "not registered" and stop asking, so answering 404
 /// to what was really a transient RPC failure turns our outage into a permanent
@@ -11281,7 +11478,7 @@ fn owner_lookup_response(
     network: crate::network::Network,
     owner: alloy::primitives::Address,
     balance: &str,
-    outcome: Result<Option<(u64, String)>, String>,
+    outcome: Result<Option<(u64, String)>, OwnerLookupError>,
 ) -> (StatusCode, Json<serde_json::Value>) {
     match outcome {
         Ok(Some((agent_id, uri))) => (
@@ -11305,14 +11502,17 @@ fn owner_lookup_response(
         ),
         // The scan never reached a verdict. This must NOT be a 404: 503 tells
         // the client to retry instead of recording a permanent absence.
-        Err(e) => (
-            StatusCode::SERVICE_UNAVAILABLE,
-            Json(json!({
+        Err(e) => {
+            let mut body = json!({
                 "error": format!("Could not determine agent ID for {owner} on {network}: {e}"),
-                "retryable": true,
+                "retryable": e.is_retryable(),
                 "balance": balance
-            })),
-        ),
+            });
+            if let Some(code) = e.code {
+                body["errorCode"] = json!(code);
+            }
+            (StatusCode::SERVICE_UNAVAILABLE, Json(body))
+        }
     }
 }
 
@@ -12728,7 +12928,12 @@ where
                                 ))),
                                 error: Some(format!(
                                     "Could not verify existing identity for {target_owner} \
-                                     (retryable, no mint attempted): {e}"
+                                     ({}, no mint attempted): {e}",
+                                    if e.is_retryable() {
+                                        "retryable"
+                                    } else {
+                                        "not retryable"
+                                    }
                                 )),
                                 network,
                                 mint: None,
@@ -15000,14 +15205,31 @@ mod owner_index_tests {
                     .unwrap_or_else(|| filler_owner(id)),
             )
         }
+
+        fn balance_of(&self, target: Address) -> U256 {
+            let held = (1..=self.max_id)
+                .filter(|id| self.owner_of(*id) == Some(target))
+                .count();
+            U256::from(held)
+        }
     }
 
+    /// What the simulated `eth_blockNumber` answers.
+    const SIM_BLOCK: u64 = 0x2a;
+
     /// A JSON-RPC endpoint that answers `eth_call` to Multicall3 with the
-    /// simulated registry's `ownerOf`, counting every call it serves.
+    /// simulated registry's `ownerOf` and `balanceOf`, and `eth_blockNumber`,
+    /// counting every call it serves.
     #[derive(Clone)]
     struct SimRpc {
         registry: Arc<Mutex<SimRegistry>>,
         calls: Arc<AtomicUsize>,
+        /// Mints that land on the next call served, before it is answered: an
+        /// agent the owner gains while a lookup is under way.
+        pending_mints: Arc<Mutex<Vec<Address>>>,
+        /// The block parameter of every `eth_call` served, in order (`None`:
+        /// none sent).
+        pins: Arc<Mutex<Vec<Option<String>>>>,
     }
 
     impl SimRpc {
@@ -15018,7 +15240,13 @@ mod owner_index_tests {
                     owners: HashMap::new(),
                 })),
                 calls: Arc::new(AtomicUsize::new(0)),
+                pending_mints: Arc::new(Mutex::new(Vec::new())),
+                pins: Arc::new(Mutex::new(Vec::new())),
             }
+        }
+
+        fn pins(&self) -> Vec<Option<String>> {
+            self.pins.lock().unwrap().clone()
         }
 
         fn max_id(&self) -> u64 {
@@ -15047,11 +15275,7 @@ mod owner_index_tests {
         }
 
         fn balance_of(&self, target: Address) -> U256 {
-            let registry = self.registry.lock().unwrap();
-            let held = (1..=registry.max_id)
-                .filter(|id| registry.owner_of(*id) == Some(target))
-                .count();
-            U256::from(held)
+            self.registry.lock().unwrap().balance_of(target)
         }
 
         /// What a scan of the whole registry, right now, has to answer: the
@@ -15064,12 +15288,19 @@ mod owner_index_tests {
         fn answer(&self, req: &serde_json::Value) -> String {
             use alloy::providers::bindings::IMulticall3;
 
+            if req["method"].as_str() == Some("eth_blockNumber") {
+                return format!(r#""result":"0x{SIM_BLOCK:x}""#);
+            }
             if req["method"].as_str() != Some("eth_call") {
                 return format!(
                     r#""error":{{"code":-32601,"message":"{} not simulated"}}"#,
                     req["method"]
                 );
             }
+            self.pins
+                .lock()
+                .unwrap()
+                .push(req["params"][1].as_str().map(str::to_string));
             let tx = &req["params"][0];
             let input = tx["input"]
                 .as_str()
@@ -15084,8 +15315,18 @@ mod owner_index_tests {
                 .calls
                 .iter()
                 .map(|call| {
+                    if let Ok(read) = IIdentityRegistry::balanceOfCall::abi_decode(&call.callData) {
+                        return IMulticall3::Result {
+                            success: true,
+                            returnData: registry
+                                .balance_of(read.owner)
+                                .to_be_bytes::<32>()
+                                .to_vec()
+                                .into(),
+                        };
+                    }
                     let id: u64 = IIdentityRegistry::ownerOfCall::abi_decode(&call.callData)
-                        .expect("only ownerOf is simulated")
+                        .expect("only ownerOf and balanceOf are simulated")
                         .agentId
                         .try_into()
                         .expect("agent id fits u64");
@@ -15135,6 +15376,10 @@ mod owner_index_tests {
             let req = serde_json::to_value(&packet).expect("request serialises");
             Box::pin(async move {
                 this.calls.fetch_add(1, Ordering::SeqCst);
+                let pending = std::mem::take(&mut *this.pending_mints.lock().unwrap());
+                for to in pending {
+                    this.mint(to);
+                }
                 let id = req["id"].to_string();
                 let outcome = this.answer(&req);
                 let body = format!(r#"{{"jsonrpc":"2.0","id":{id},{outcome}}}"#);
@@ -15458,6 +15703,14 @@ mod owner_index_tests {
             body.to_string().contains("proves at most"),
             "the refusal must say why: {body}"
         );
+        // REFUTACION-c0der FAC-01V, P3-3: asking again cannot help, so it must
+        // not tell the client to retry for ever -- and it is still not a 404.
+        assert_eq!(body["retryable"].as_bool(), Some(false), "{body}");
+        assert_eq!(
+            body["errorCode"].as_str(),
+            Some(OWNER_HOLDS_TOO_MANY_AGENTS),
+            "{body}"
+        );
         assert_eq!(rpc.calls() - before, 0, "the refusal must not walk: {body}");
         assert!(
             !OWNER_INDEX_WALK.contains_key(&(crate::network::Network::Base, registry)),
@@ -15516,6 +15769,354 @@ mod owner_index_tests {
             1,
             "the second lookup must be the index (one ownerOf round trip), not a rescan"
         );
+
+        // REFUTACION-c0der FAC-01V, R7: what the index proved is cached like a
+        // scan's answer, so the next lookup within the TTL costs nothing.
+        let before = rpc.calls();
+        let (status, body) = owner_lookup(&rpc, &provider, registry, owner).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["agentId"].as_u64(), Some(9_000));
+        assert_eq!(
+            rpc.calls() - before,
+            0,
+            "an index answer must fill the positive cache"
+        );
+    }
+
+    /// REFUTADOR R2-T1. La prueba de completitud del indice (`|confirmados| ==
+    /// balanceOf`) compara un `ownerOf` leido DESPUES del walk con un
+    /// `balanceOf` leido ANTES. Si el owner gana un agente durante el walk y al
+    /// indice le falta uno viejo (una transferencia que el cursor ya habia
+    /// pasado), la cuenta cuadra por casualidad y el indice responde un agente
+    /// que no es el mas bajo.
+    #[tokio::test]
+    async fn refuter_r2_concurrent_gain_answers_a_non_lowest_agent() {
+        let registry = Address::repeat_byte(0xC2);
+        let rpc = SimRpc::new(past_the_cap());
+        let provider = provider(rpc.clone());
+        let owner = Address::repeat_byte(0x5A);
+        // 1) El indice aprende a `owner` con un solo agente; el walk pasa por
+        //    1.500 y lo registra con su dueno de relleno.
+        rpc.transfer(30_000, owner);
+        let attempts = requests_to_cover(rpc.max_id()) * 3;
+        let (status, body) =
+            owner_lookup_until_verdict(&rpc, &provider, registry, owner, attempts).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["agentId"].as_u64(), Some(30_000));
+        // 2) `owner` recibe 1.500, que el cursor ya habia pasado.
+        rpc.transfer(1_500, owner);
+        forget_lookup_cache(registry);
+        // 3) El lookup lee balanceOf = 2; durante el walk `owner` recibe un mint.
+        let balance = rpc.balance_of(owner);
+        assert_eq!(balance, U256::from(2));
+        rpc.pending_mints.lock().unwrap().push(owner);
+        let before = rpc.calls();
+        let found = resolve_first_token_by_owner(
+            &provider,
+            crate::network::Network::Base,
+            registry,
+            owner,
+            balance,
+        )
+        .await;
+        eprintln!(
+            "REFUTER R2-T1 found={found:?} lowest_owned_now={:?} balance_read=2 balance_now={} eth_calls={}",
+            rpc.lowest_owned_by(owner),
+            rpc.balance_of(owner),
+            rpc.calls() - before
+        );
+        // 1.500 era de `owner` antes de leer el balance y lo sigue siendo: el
+        // scan LowestFirst de main (balance >= 2) responde 1.500.
+        assert_eq!(
+            found,
+            Ok(Some(1_500)),
+            "the index answered an agent that is not the lowest"
+        );
+    }
+
+    /// REFUTADOR R2-T2. Costo de UN request cuando el indice conoce mas agentes
+    /// del owner que el `balanceOf` que leyo el request (el owner gano uno
+    /// despues de esa lectura y otro walk ya lo vio): cada `owner_index_answer`
+    /// re-lee hasta OWNER_INDEX_MAX_PROBES candidatos, no poda nada (todos
+    /// siguen siendo del owner) y se repite despues de cada wave del walk.
+    #[tokio::test]
+    async fn refuter_r2_probe_cost_per_request_when_the_index_knows_more_than_the_balance() {
+        let registry = Address::repeat_byte(0xC3);
+        let rpc = SimRpc::new(past_the_cap());
+        let provider = provider(rpc.clone());
+        let whale = Address::repeat_byte(0x5B);
+        let held: u64 = 50_000;
+        for id in 1..=held {
+            rpc.transfer(id, whale);
+        }
+        let attempts = requests_to_cover(rpc.max_id()) * 3;
+        let (status, body) =
+            owner_lookup_until_verdict(&rpc, &provider, registry, whale, attempts).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let new_id = rpc.mint(whale);
+        owner_index_observe(
+            crate::network::Network::Base,
+            registry,
+            [(new_id, Some(whale))],
+        );
+        forget_lookup_cache(registry);
+        let stale_balance = U256::from(held);
+        let before = rpc.calls();
+        let outcome = resolve_first_token_by_owner(
+            &provider,
+            crate::network::Network::Base,
+            registry,
+            whale,
+            stale_balance,
+        )
+        .await;
+        let calls = rpc.calls() - before;
+        eprintln!(
+            "REFUTER R2-T2 holder of {held}+1, balance read {held}: {calls} eth_calls (each up to {OWNER_SCAN_BATCH} ownerOf) in ONE request; walk budget {OWNER_SCAN_MAX_BATCHES}; outcome={outcome:?}"
+        );
+        assert!(
+            calls as u64 <= 2 * OWNER_SCAN_MAX_BATCHES,
+            "one request cost {calls} eth_calls, more than twice the per-request cap"
+        );
+    }
+
+    /// [`OWNER_INDEX_MAX_PROBES`] is exactly what one phase of
+    /// [`OWNER_SCAN_MAX_BATCHES`] round trips can re-read.
+    #[test]
+    fn the_largest_probe_fits_one_phase_and_one_more_candidate_does_not() {
+        assert_eq!(owner_index_probe_cost(1), 1);
+        assert_eq!(
+            owner_index_probe_cost(OWNER_SCAN_BATCH - 1),
+            1,
+            "balanceOf rides in the same batch"
+        );
+        assert_eq!(
+            owner_index_probe_cost(OWNER_SCAN_BATCH),
+            3,
+            "two batches, and the block number they are pinned to"
+        );
+        assert_eq!(
+            owner_index_probe_cost(OWNER_INDEX_MAX_PROBES),
+            OWNER_SCAN_MAX_BATCHES
+        );
+        assert!(owner_index_probe_cost(OWNER_INDEX_MAX_PROBES + 1) > OWNER_SCAN_MAX_BATCHES);
+    }
+
+    /// REFUTACION-c0der FAC-01V, P2-1. A probe that needs more than one
+    /// Multicall3 batch reads every batch at ONE block -- the one
+    /// `eth_blockNumber` answered -- so the `balanceOf` in its first batch is
+    /// the balance of the same state the `ownerOf`s of its last batch read.
+    /// One batch is one state already: no block number, no `eth_blockNumber`.
+    #[tokio::test]
+    async fn a_probe_that_spans_batches_reads_them_all_at_one_block() {
+        let network = crate::network::Network::Base;
+        let registry = Address::repeat_byte(0xC5);
+        let rpc = SimRpc::new(5 * OWNER_SCAN_BATCH + 3);
+        let provider = provider(rpc.clone());
+        let owner = Address::repeat_byte(0x5E);
+        let held = 2 * OWNER_SCAN_BATCH + 10;
+        for id in 1..=held {
+            rpc.transfer(id, owner);
+        }
+        owner_index_observe(network, registry, (1..=held).map(|id| (id, Some(owner))));
+
+        let pinned_from = rpc.pins().len();
+        let before = rpc.calls();
+        let (status, body) = owner_lookup(&rpc, &provider, registry, owner).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["agentId"].as_u64(), Some(1));
+        assert_eq!(
+            rpc.calls() - before,
+            owner_index_probe_cost(held) as usize,
+            "the lookup must be the probe alone"
+        );
+        let pins = rpc.pins()[pinned_from..].to_vec();
+        assert_eq!(pins.len(), 3, "three batches: {pins:?}");
+        let block = format!("0x{SIM_BLOCK:x}");
+        assert!(
+            pins.iter()
+                .all(|pin| pin.as_deref() == Some(block.as_str())),
+            "every batch of the probe must be pinned to the block eth_blockNumber answered: \
+             {pins:?}"
+        );
+
+        let single = Address::repeat_byte(0x5F);
+        rpc.transfer(held + 1, single);
+        owner_index_observe(network, registry, [(held + 1, Some(single))]);
+        let pinned_from = rpc.pins().len();
+        let before = rpc.calls();
+        let (status, body) = owner_lookup(&rpc, &provider, registry, single).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["agentId"].as_u64(), Some(held + 1));
+        assert_eq!(rpc.calls() - before, 1);
+        // The provider's default tag (alloy sends `pending`), like every scan
+        // batch: never a block number.
+        let pins = rpc.pins()[pinned_from..].to_vec();
+        assert_eq!(pins.len(), 1, "{pins:?}");
+        assert!(
+            !pins[0].as_deref().unwrap_or_default().starts_with("0x"),
+            "one batch is one state already and must not be pinned: {pins:?}"
+        );
+    }
+
+    /// REFUTACION-c0der FAC-01V, P2-2. A probe's round trips come out of the
+    /// phase's budget, and a probe that does not fit is not sent: what keeps
+    /// ONE request bounded by [`OWNER_SCAN_MAX_BATCHES`] per phase.
+    #[tokio::test]
+    async fn a_probe_is_paid_from_the_budget_and_not_sent_when_it_does_not_fit() {
+        let network = crate::network::Network::Base;
+        let registry = Address::repeat_byte(0xC6);
+        let rpc = SimRpc::new(5 * OWNER_SCAN_BATCH + 3);
+        let provider = provider(rpc.clone());
+        let owner = Address::repeat_byte(0x5D);
+        let held = OWNER_SCAN_BATCH + 500;
+        for id in 1..=held {
+            rpc.transfer(id, owner);
+        }
+        owner_index_observe(network, registry, (1..=held).map(|id| (id, Some(owner))));
+        let cost = owner_index_probe_cost(held);
+
+        let mut short = OwnerIndexLookup {
+            balance: U256::from(held),
+            budget: cost - 1,
+        };
+        let before = rpc.calls();
+        let found = owner_index_answer(&provider, network, registry, owner, &mut short).await;
+        assert_eq!(found, Ok(None));
+        assert_eq!(
+            rpc.calls() - before,
+            0,
+            "a probe that does not fit must not be sent"
+        );
+        assert_eq!(short.budget, cost - 1);
+
+        let mut exact = OwnerIndexLookup {
+            balance: U256::from(held),
+            budget: cost,
+        };
+        let before = rpc.calls();
+        let found = owner_index_answer(&provider, network, registry, owner, &mut exact).await;
+        assert_eq!(found, Ok(Some(1)));
+        assert_eq!(rpc.calls() - before, cost as usize);
+        assert_eq!(exact.budget, 0, "the probe must be paid from the budget");
+    }
+
+    /// REFUTACION-c0der FAC-01V, P2-2. A probe that reads, in its own block, a
+    /// balance the index cannot reach yet is not sent again until the index has
+    /// grown to it: the request's round trips go to the walk that finds the
+    /// missing agents, instead of to re-reading the same candidates after every
+    /// wave.
+    #[tokio::test]
+    async fn a_probe_that_finds_the_index_short_waits_for_the_walk() {
+        let network = crate::network::Network::Base;
+        let registry = Address::repeat_byte(0xC7);
+        let rpc = SimRpc::new(past_the_cap());
+        let provider = provider(rpc.clone());
+        let whale = Address::repeat_byte(0x5C);
+        // Known to the index: 1..=4_000. Unknown: ten agents the walk only
+        // reaches in its 19th wave.
+        let known: u64 = 4_000;
+        for id in (1..=known).chain(150_001..=150_010) {
+            rpc.transfer(id, whale);
+        }
+        owner_index_observe(network, registry, (1..=known).map(|id| (id, Some(whale))));
+        store_registry_bound(network, registry, rpc.max_id());
+
+        // The caller's balance predates the ten.
+        let before = rpc.calls();
+        let found =
+            resolve_first_token_by_owner(&provider, network, registry, whale, U256::from(known))
+                .await;
+        let calls = rpc.calls() - before;
+        assert_eq!(
+            found,
+            Ok(Some(1)),
+            "one request must walk to the ten and prove the answer ({calls} round trips)"
+        );
+        assert!(calls as u64 <= 2 * OWNER_SCAN_MAX_BATCHES, "{calls}");
+        forget_lookup_cache(registry);
+        REGISTRY_BOUND_CACHE.remove(&(network, registry));
+    }
+
+    /// The rebuild starts from the balance step 0 read in its own block: an
+    /// owner that grew past what one probe proves after the caller read its
+    /// balance is refused after that one probe, not probed and walked again.
+    #[tokio::test]
+    async fn an_owner_grown_past_what_one_probe_proves_is_refused_after_that_probe() {
+        let network = crate::network::Network::Base;
+        let registry = Address::repeat_byte(0xC8);
+        let rpc = SimRpc::new(past_the_cap());
+        let provider = provider(rpc.clone());
+        let whale = Address::repeat_byte(0x6B);
+        for id in 1..=OWNER_INDEX_MAX_PROBES + 1 {
+            rpc.transfer(id, whale);
+        }
+        owner_index_observe(
+            network,
+            registry,
+            (1..=OWNER_INDEX_MAX_PROBES).map(|id| (id, Some(whale))),
+        );
+        store_registry_bound(network, registry, rpc.max_id());
+
+        // The caller read the balance before the last agent arrived.
+        let before = rpc.calls();
+        let found = resolve_first_token_by_owner(
+            &provider,
+            network,
+            registry,
+            whale,
+            U256::from(OWNER_INDEX_MAX_PROBES),
+        )
+        .await;
+        let calls = rpc.calls() - before;
+        let refused = found.expect_err("an owner past what one probe proves gets no verdict");
+        assert_eq!(refused.code, Some(OWNER_HOLDS_TOO_MANY_AGENTS), "{refused}");
+        assert_eq!(
+            calls as u64,
+            owner_index_probe_cost(OWNER_INDEX_MAX_PROBES),
+            "one probe, then the refusal"
+        );
+        REGISTRY_BOUND_CACHE.remove(&(network, registry));
+    }
+
+    /// REFUTACION-c0der FAC-01V, P3-1. An index holding more candidates for an
+    /// owner than one probe re-reads -- here the owner's agents plus stale ones
+    /// above them -- still answers from the lowest of them, in one probe and
+    /// within one phase, instead of never sending one.
+    #[tokio::test]
+    async fn an_index_holding_more_candidates_than_one_probe_reads_still_answers() {
+        let network = crate::network::Network::Base;
+        let registry = Address::repeat_byte(0xC4);
+        let rpc = SimRpc::new(past_the_cap());
+        let provider = provider(rpc.clone());
+        let whale = Address::repeat_byte(0x6A);
+        for id in 1..=OWNER_INDEX_MAX_PROBES {
+            rpc.transfer(id, whale);
+        }
+        let top = rpc.max_id();
+        owner_index_observe(
+            network,
+            registry,
+            (1..=OWNER_INDEX_MAX_PROBES)
+                .chain(top - 4..=top)
+                .map(|id| (id, Some(whale))),
+        );
+        assert!(
+            owner_index_candidates(network, registry, whale).len() as u64 > OWNER_INDEX_MAX_PROBES
+        );
+        store_registry_bound(network, registry, top);
+
+        let before = rpc.calls();
+        let (status, body) = owner_lookup(&rpc, &provider, registry, whale).await;
+        let calls = rpc.calls() - before;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["agentId"].as_u64(), Some(1));
+        assert!(
+            calls as u64 <= OWNER_SCAN_MAX_BATCHES,
+            "one probe, one phase: {calls} round trips"
+        );
+        forget_lookup_cache(registry);
+        REGISTRY_BOUND_CACHE.remove(&(network, registry));
     }
 
     /// For the `/register` tests: one owner lookup of `target` on Base's

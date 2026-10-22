@@ -660,10 +660,13 @@ Terraform. Declared in `from_env.rs` alone, the container never receives the URL
   },
   ```
 
-- **RPC URL carrying an API key** -> NEVER in `environment`. Add the key to the
-  `facilitator-rpc-mainnet` / `facilitator-rpc-testnet` secret and reference it
-  from the `secrets` block, wired in
-  `terraform/environments/production/secrets.tf`. Task definitions are plaintext
+- **RPC URL carrying an API key** -> NEVER in `environment`. Since decision 266
+  the task reads SSM: put it in `/facilitator/rpc-mainnet/<network>` (or
+  `rpc-testnet`), point a `secrets` entry in
+  `terraform/environments/production/secrets.tf` at it and add the row to
+  `tests/ssm_reader.tftest.hcl` (CLAUDE.md, "When adding a new network with
+  premium RPC"); while the originals exist, also add the key to the
+  `facilitator-rpc-mainnet` / `facilitator-rpc-testnet` secret (balances Lambda). Task definitions are plaintext
   and their history is retained, so a key put there is exposed even after
   rotation.
 

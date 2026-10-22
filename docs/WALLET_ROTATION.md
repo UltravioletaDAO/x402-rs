@@ -1,5 +1,7 @@
 # Facilitator Wallet Rotation
 
+> **Since owner's decision 266 the facilitator task reads its keys from SSM Parameter Store, not from the Secrets Manager secrets named below** (`/facilitator/<secret name minus "facilitator-">/private_key`, see CLAUDE.md, "AWS Secrets Manager (Production)"). A rotation that writes only the secret never reaches the task: it keeps signing with the old key. Write the parameter (and, while the originals exist, the secret too).
+
 ## Overview
 
 This document records the facilitator wallet rotation performed on 2025-10-26 to establish a new hot wallet for production multi-network operations.
@@ -189,7 +191,7 @@ aws ecs describe-tasks \
 ## Security Best Practices
 
 1. **Private Key Storage**
-   - ✅ AWS Secrets Manager is the ONLY source of truth
+   - ✅ AWS (never a file): since decision 266 the task reads the SSM parameter, and the Secrets Manager secret stays in sync with it until the originals are deleted (see the note at the top)
    - ❌ NEVER store private keys in .env files (except for local testing overrides)
    - ❌ NEVER commit private keys to git
    - ✅ Temporary files during rotation are gitignored and deleted immediately

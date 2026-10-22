@@ -24,14 +24,15 @@ variable "arc_minimum_gas_usdc" {
 }
 
 locals {
-  # Arc mainnet settles through the `arc` key of facilitator-rpc-mainnet
-  # (secrets.tf): the public rpc.mainnet.arc.io limits by IP and answers 429
-  # without Retry-After, and this is the payment path. A URL that carries a key
-  # is a `secrets` entry of the task definition, never an `environment` one, and
-  # one variable cannot be both; `all_task_secrets` (secrets.tf) takes this.
+  # Arc mainnet settles through the `arc` key of facilitator-rpc-mainnet, read
+  # from its SSM copy /facilitator/rpc-mainnet/arc (secrets.tf): the public
+  # rpc.mainnet.arc.io limits by IP and answers 429 without Retry-After, and
+  # this is the payment path. A URL that carries a key is a `secrets` entry of
+  # the task definition, never an `environment` one, and one variable cannot be
+  # both; `all_task_secrets` (secrets.tf) takes this.
   arc_rpc_secrets = var.arc_mainnet_enabled ? [{
     name      = "RPC_URL_ARC"
-    valueFrom = "${data.aws_secretsmanager_secret.rpc_mainnet.arn}:arc::"
+    valueFrom = "${local.facilitator_parameter_arn_prefix}/rpc-mainnet/arc"
   }] : []
 
   # Public endpoints only: Arc testnet has no premium endpoint.

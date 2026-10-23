@@ -94,7 +94,8 @@ page or the balances Lambda pointed at the dead endpoint:
 
 | # | Location | Applies at |
 |---|---|---|
-| 1 | AWS Secrets Manager `facilitator-rpc-mainnet`, key = lowercase network | next ECS task start |
+| 1 | SSM Parameter Store `/facilitator/rpc-mainnet/<key>` -- what the task reads (decision 266) | next ECS task start |
+| 1b | AWS Secrets Manager `facilitator-rpc-mainnet`, key = lowercase network -- the balances Lambda, while the originals exist | next Lambda cold start |
 | 2 | `terraform/environments/production/lambda-balances.tf` | `terraform apply` |
 | 3 | `lambda/balances/handler.py` (`PUBLIC_RPCS`) | Lambda redeploy |
 | 4 | `static/index.html` (frontend balance fallback map) | facilitator rebuild |
@@ -107,7 +108,9 @@ replaces the entire JSON document, so pulling the current value, editing one
 key and writing it back is mandatory -- otherwise the other ~12 RPC URLs are
 destroyed. `scripts/swap_secret_rpc.py` does this safely and verifies the key
 set is unchanged. Rollback is the `AWSPREVIOUS` version stage; no secret is
-ever written to disk.
+ever written to disk. **It writes only the secret**: put the same URL in the
+SSM parameter of row 1 as well, or the task keeps the old one (the script ends
+by naming the parameter).
 
 Then verify after deploy:
 

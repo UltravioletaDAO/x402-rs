@@ -65,15 +65,16 @@ run "the_token_comes_from_ssm_on_its_own_key" {
     error_message = "alias/facilitator-bazaar-admin-token must name the token's key."
   }
 
-  # The execution role reads that one parameter...
+  # The execution role reads it with the grant every secret of the task shares since
+  # decision 266 (ssm_reader.tftest.hcl)...
   assert {
     condition = length([
       for st in jsondecode(aws_iam_role_policy.secrets_access.policy).Statement : st
       if try(st.Effect, "") == "Allow" &&
       try(st.Action, null) == ["ssm:GetParameters"] &&
-      try(st.Resource, null) == "arn:aws:ssm:us-east-2:${data.aws_caller_identity.current.account_id}:parameter/facilitator/bazaar-admin-token"
+      try(st.Resource, null) == "arn:aws:ssm:us-east-2:${data.aws_caller_identity.current.account_id}:parameter/facilitator/*"
     ]) == 1
-    error_message = "The execution role must be granted ssm:GetParameters on /facilitator/bazaar-admin-token, and only there."
+    error_message = "The execution role must be granted ssm:GetParameters on /facilitator/*, which covers /facilitator/bazaar-admin-token."
   }
 
   # ...and decrypts with that one key, only through SSM.
@@ -94,6 +95,17 @@ run "the_token_comes_from_ssm_on_its_own_key" {
       !contains(try(st.Action, []), "kms:Decrypt") || can(st.Condition.StringEquals["kms:ViaService"])
     ])
     error_message = "No kms:Decrypt grant on the execution role may stand without the SSM-only condition."
+  }
+
+  # Nor on any other key: the grant above covers every /facilitator/ parameter (decision 266). Any
+  # statement with a KMS action, a wildcard or another case of the name included, names the alias.
+  assert {
+    condition = alltrue([
+      for st in jsondecode(aws_iam_role_policy.secrets_access.policy).Statement :
+      !anytrue([for a in flatten([try(st.Action, [])]) : a == "*" || startswith(lower(a), "kms:")]) ||
+      try(st.Condition["ForAnyValue:StringEquals"]["kms:ResourceAliases"], null) == "alias/facilitator-bazaar-admin-token"
+    ])
+    error_message = "Every KMS grant on the execution role must be limited to alias/facilitator-bazaar-admin-token (kms:ResourceAliases)."
   }
 
   # The CI user cannot decrypt with it, whatever else is attached.

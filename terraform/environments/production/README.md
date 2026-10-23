@@ -99,7 +99,7 @@ All secrets are defined in `secrets.tf` as the SINGLE SOURCE OF TRUTH.
    - facilitator-rpc-mainnet (12 networks)
    - facilitator-rpc-testnet (3 networks)
 
-**Adding a new network:**
+**Adding a new network** (since decision 266 the task reads the SSM copies, `/facilitator/<secret>/<field>`, not the secrets: steps 1-2 go to the parameter too -- CLAUDE.md, "When adding a new network with premium RPC"):
 1. Add wallet secret to AWS Secrets Manager (if new chain family)
 2. Add RPC URL to appropriate secret (mainnet or testnet)
 3. Update `secrets.tf` with new references

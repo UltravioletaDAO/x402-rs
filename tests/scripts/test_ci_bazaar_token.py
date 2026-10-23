@@ -131,8 +131,10 @@ class TheDeployNeverDependsOnTheKey(unittest.TestCase):
 
     def test_the_locals_they_read_are_plain_values(self):
         secrets = (TF / "secrets.tf").read_text(encoding="utf-8")
+        # facilitator_parameter_arn_prefix: every secret of the task and the policy's SSM grant
+        # since decision 266 (secrets.tf).
         for name in ("bazaar_admin_token_parameter_arn", "bazaar_admin_token_kms_alias",
-                     "bazaar_admin_token_parameter"):
+                     "bazaar_admin_token_parameter", "facilitator_parameter_arn_prefix"):
             with self.subTest(local=name):
                 line = re.search(rf"^\s*{name}\s*=\s*(.+)$", secrets, re.MULTILINE)
                 self.assertIsNotNone(line, f"local.{name} is gone")

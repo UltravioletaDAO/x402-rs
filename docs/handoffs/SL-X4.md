@@ -136,9 +136,15 @@ El facilitador no tiene llave propia (ninguna lectura de `UVD_STACK_KEY`, la var
      → `true`, N, `"ok"` a más tardar 300 s después de la carga; y desde la IP de la lista
      `curl -s -o /dev/null -D - https://facilitator.ultravioletadao.xyz/config | grep -i '^x-ratelimit-exempt'`
      → `x-ratelimit-exempt: ip-allowlist`.
-  4. Emporium: `scripts/stack_key.py generate --service emporium`, cargar `{"sha256": ...}`, y en el mismo cambio
-     que pone `stack_key_emporium_loaded = true` aplicar a mano `aws_iam_role_policy.secrets_access` (el CI no
-     puede escribir el rol de ejecución; `scripts/drift_gate_iam.py` imprime el comando).
+  4. Emporium: `scripts/stack_key.py generate --service emporium`, y el digest va como hex pelado (sin JSON ni salto
+     de línea final) al parámetro `/facilitator/stack-key-digest-emporium/sha256`, no al secreto: desde la decisión
+     266 la tarea lee ese parámetro (`terraform/environments/production/secrets.tf`, comentario de
+     `stack_key_digest_emporium`), y cargar solo el secreto deja sin arrancar cada tarea nueva. P. ej.
+     `jq -j .sha256 emporium-stack-key.facilitator.json > /dev/shm/emporium-digest` y
+     `aws ssm put-parameter --key-id alias/facilitator-bazaar-admin-token --name /facilitator/stack-key-digest-emporium/sha256 --type SecureString --value file:///dev/shm/emporium-digest --region us-east-2`.
+     Después, en el mismo cambio que pone `stack_key_emporium_loaded = true`, aplicar a mano
+     `aws_iam_role_policy.secrets_access` (el CI no puede escribir el rol de ejecución; `scripts/drift_gate_iam.py`
+     imprime el comando).
 - El drift gate (`ci.yaml`, job `plan`) da rojo con `aws_secretsmanager_secret.stack_key_digest_emporium` hasta
   el paso 1: el deploy no depende de ese job, pero el run queda rojo. La política de lectura ya no aparece ahí
   porque el deploy la cubre.

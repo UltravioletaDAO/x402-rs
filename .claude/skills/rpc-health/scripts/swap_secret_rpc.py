@@ -28,13 +28,14 @@ def aws(*args):
     return subprocess.run(["aws", *args], capture_output=True, text=True, check=True).stdout
 
 
-def ssm_reminder(secret, key):
+def ssm_reminder(secret, key, region):
     # Decision 266: the task definition reads the SSM copy of each key, not this secret.
     parameter = "/facilitator/" + secret.removeprefix("facilitator-") + "/" + key
     print(f"\nNOT DONE: the facilitator task reads {parameter} from SSM, not this secret.")
-    print("Put the same URL there with `aws ssm put-parameter --overwrite` (CLAUDE.md, 'When adding")
-    print("a new network with premium RPC'), then it takes effect on the next ECS task start.")
-    print("This secret feeds the balances Lambda.")
+    print("Put the same URL there, from a file only you can read holding the URL alone (never the")
+    print("URL in argv; CLAUDE.md, 'When adding a new network with premium RPC'):")
+    print(f"  aws ssm put-parameter --overwrite --key-id alias/facilitator-bazaar-admin-token --name {parameter} --type SecureString --value file:///dev/shm/rpc-url --region {region}")
+    print("It takes effect on the next ECS task start. This secret feeds the balances Lambda.")
 
 
 def main():
@@ -58,11 +59,11 @@ def main():
 
     if current.get(args.key) == args.url:
         print("already set to the requested URL in the secret, nothing to do here")
-        ssm_reminder(args.secret, args.key)
+        ssm_reminder(args.secret, args.key, args.region)
         return 0
     if args.dry_run:
         print(f"[dry-run] would set {args.key} = {args.url}")
-        ssm_reminder(args.secret, args.key)
+        ssm_reminder(args.secret, args.key, args.region)
         return 0
 
     updated = dict(current)
@@ -81,7 +82,7 @@ def main():
     untouched = all(after[k] == current[k] for k in keys_before if k != args.key)
     print(f"{args.key} after : {after[args.key]}")
     print(f"other {len(keys_before) - 1} keys untouched: {untouched}")
-    ssm_reminder(args.secret, args.key)
+    ssm_reminder(args.secret, args.key, args.region)
     return 0 if untouched else 2
 
 

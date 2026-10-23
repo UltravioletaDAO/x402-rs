@@ -97,6 +97,17 @@ run "the_token_comes_from_ssm_on_its_own_key" {
     error_message = "No kms:Decrypt grant on the execution role may stand without the SSM-only condition."
   }
 
+  # Nor on any other key: the grant above covers every /facilitator/ parameter (decision 266). Any
+  # statement with a KMS action, a wildcard or another case of the name included, names the alias.
+  assert {
+    condition = alltrue([
+      for st in jsondecode(aws_iam_role_policy.secrets_access.policy).Statement :
+      !anytrue([for a in flatten([try(st.Action, [])]) : a == "*" || startswith(lower(a), "kms:")]) ||
+      try(st.Condition["ForAnyValue:StringEquals"]["kms:ResourceAliases"], null) == "alias/facilitator-bazaar-admin-token"
+    ])
+    error_message = "Every KMS grant on the execution role must be limited to alias/facilitator-bazaar-admin-token (kms:ResourceAliases)."
+  }
+
   # The CI user cannot decrypt with it, whatever else is attached.
   assert {
     condition = length([

@@ -405,7 +405,15 @@ See `/mnt/z/ultravioleta/dao/x402-rs/docs/WALLET_ROTATION.md` for complete proce
 
 **Quick rotation:**
 
-> **Decision 266: this sequence is incomplete.** The task reads `/facilitator/<name>/private_key` from SSM: `put-parameter --overwrite` the new key there before forcing the new deployment, and confirm the new tasks log the new signer, or the old key keeps signing and draining it (step 6) stops every EVM settle.
+> **Decision 266: this sequence is incomplete.** The task reads `/facilitator/<name>/private_key` from SSM. Before forcing the new deployment, overwrite that parameter with the new key, on the key every `/facilitator/` parameter is on, from a file only you can read holding the bare key (not the secret's JSON, no trailing newline):
+>
+> ```bash
+> aws ssm put-parameter --overwrite --key-id alias/facilitator-bazaar-admin-token \
+>   --name /facilitator/<name>/private_key --type SecureString \
+>   --value file:///dev/shm/<file> --region us-east-2
+> ```
+>
+> Then confirm the new tasks log the new signer, or the old key keeps signing and draining it (step 6) stops every EVM settle.
 
 ```bash
 # 1. Generate new wallet

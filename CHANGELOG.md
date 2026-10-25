@@ -1,5 +1,43 @@
 # Changelog
 
+## [2.51.1] - 2026-10-25
+
+NEAR provider hardening. Also ships what was merged after 2.51.0 without a
+release of its own: the EVM owner index (#123) and the TLS root update (#127).
+
+### Changed
+
+- **A NEAR payment is one `ft_transfer` on the network's USDC contract.**
+  `verify` and `settle` refuse a delegate action with more than one inner
+  action, an `ft_transfer` that attaches anything but 1 yoctoNEAR or more than
+  30 TGas (`MAX_FT_TRANSFER_GAS` in `src/chain/near.rs`: what every known client
+  attaches), and an asset that is not on the network's allow-list
+  (`assert_supported_asset`, `invalid_asset`; on NEAR that is USDC alone).
+- **NEAR `verify` and `settle` read the payer's state first**: a delegate
+  action whose nonce is already used is refused, and so is a payer whose
+  `ft_balance_of` (optimistic finality) does not cover the amount
+  (`insufficient_funds`). `settle` reads both before it registers a recipient or
+  sends anything. A state it cannot read fails closed.
+- **NEAR `settle` confirms the transfer in the outcome it gets back.** It follows
+  the meta-transaction to the `ft_transfer` receipt on the token contract and
+  reports the payment only when that receipt ended in `SuccessValue` and logged
+  the NEP-141 `ft_transfer` event for this payer, recipient and amount. A
+  receipt that failed answers `success: false`; anything else that is not that
+  payment (not executed, missing, no such event) answers `502
+  settlement_unconfirmed` with the transaction hash. `ft_transfer_call` is still
+  not accepted; the comment on `confirm_transfer` says what it would take.
+- **`GET /identity/{network}/owner/{address}` no longer answers 503 past the
+  scan cap on EVM** (#123): an owner index, checked against `ownerOf` and
+  `balanceOf` read in the same block, resolves it; the cold scan stays a
+  rebuild and the cap does not move. An owner holding more agents than one probe
+  re-reads answers `503` with `"retryable": false` and `errorCode`
+  `owner_holds_too_many_agents`.
+- **`Cargo.lock`: rustls-webpki 0.103.16, webpki-roots and webpki-root-certs
+  1.0.10** (#127): certificate paths through the eight compromised
+  eMudhra/emSign intermediates are refused, and the emSign ECC Root CA - G3 is
+  no longer in the 1.x root set. aws-lc-rs 1.18.0 / aws-lc-sys 0.44.0 come along
+  as the minimum those require.
+
 ## [2.51.0] - 2026-10-12
 
 Tanda 1011: X402-BAZAAR-REPLICAS + X4-BAZAAR-ADOPTA, X402-REGISTER-OWNER,

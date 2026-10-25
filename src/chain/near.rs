@@ -17,10 +17,11 @@
 use near_crypto::{InMemorySigner, PublicKey, SecretKey, Signer};
 use near_jsonrpc_client::{methods, JsonRpcClient};
 use near_jsonrpc_primitives::types::query::{QueryResponseKind, RpcQueryError};
-use near_primitives::action::delegate::{NonDelegateAction, SignedDelegateAction};
+use near_primitives::action::delegate::{DelegateAction, NonDelegateAction, SignedDelegateAction};
 use near_primitives::hash::CryptoHash;
 use near_primitives::transaction::{Action, FunctionCallAction, Transaction, TransactionV0};
 use near_primitives::types::{AccountId, BlockReference, Finality, Gas, Nonce};
+use near_primitives::views::{ExecutionStatusView, FinalExecutionOutcomeView};
 use near_token::NearToken;
 use serde::{Deserialize, Serialize};
 use std::fmt::{Debug, Formatter};
@@ -42,6 +43,20 @@ const STORAGE_DEPOSIT_AMOUNT: NearToken = NearToken::from_yoctonear(1_250_000_00
 
 /// Gas for storage_deposit call (5 TGas should be enough)
 const STORAGE_DEPOSIT_GAS: Gas = Gas::from_gas(5_000_000_000_000);
+
+/// Most gas the inner `ft_transfer` of a delegate action may attach.
+///
+/// The relayer prepays the gas and the deposit a delegate action attaches
+/// (NEP-366). Measured 2026-10-25 on the 20 meta-transactions in this
+/// relayer's NEAR mainnet history (2025-12-04 to 2026-09-07): every one
+/// carried a single `ft_transfer` with exactly 30 TGas -- the value the
+/// TypeScript and Python SDKs and the 402milly client hard-code -- and its
+/// receipt burnt at most 2.78 TGas. So the cap is what every known client
+/// sends, not the protocol's 300 TGas.
+const MAX_FT_TRANSFER_GAS: Gas = Gas::from_teragas(30);
+
+/// The deposit `ft_transfer` takes: NEP-141 asserts exactly one yoctoNEAR.
+const FT_TRANSFER_DEPOSIT: NearToken = NearToken::from_yoctonear(1);
 
 /// NEAR network chain configuration
 #[derive(Clone, Debug)]
@@ -140,11 +155,13 @@ pub struct StorageBalance {
 /// Validate that a slice of NonDelegateActions (from a DelegateAction) satisfies
 /// the payment requirements:
 ///
-/// - At least one action must be present.
-/// - Every action must be a FunctionCall with method_name == "ft_transfer".
-/// - Each ft_transfer's JSON args must decode to { receiver_id, amount }.
+/// - Exactly one action must be present.
+/// - It must be a FunctionCall with method_name == "ft_transfer".
+/// - Its JSON args must decode to { receiver_id, amount }.
 /// - receiver_id must exactly equal expected_receiver.
 /// - amount must exactly equal expected_amount (decimal string in atomic units).
+/// - It must attach exactly [`FT_TRANSFER_DEPOSIT`] and at most
+///   [`MAX_FT_TRANSFER_GAS`].
 ///
 /// Any deviation is rejected. Mixed action envelopes (e.g., Transfer + FunctionCall)
 /// are also rejected because we cannot safely reason about their combined effect.
@@ -207,6 +224,34 @@ pub(crate) fn validate_delegate_actions_inner(
                         i, args.amount, expected_amount
                     )));
                 }
+
+                if fc.deposit != FT_TRANSFER_DEPOSIT {
+                    tracing::warn!(
+                        index = i,
+                        deposit = %fc.deposit.as_yoctonear(),
+                        "Rejected DelegateAction: ft_transfer deposit is not 1 yoctoNEAR"
+                    );
+                    return Err(FacilitatorLocalError::Other(format!(
+                        "DelegateAction action[{}] attaches {} yoctoNEAR; ft_transfer takes exactly {}",
+                        i,
+                        fc.deposit.as_yoctonear(),
+                        FT_TRANSFER_DEPOSIT.as_yoctonear()
+                    )));
+                }
+
+                if fc.gas > MAX_FT_TRANSFER_GAS {
+                    tracing::warn!(
+                        index = i,
+                        gas = fc.gas.as_gas(),
+                        "Rejected DelegateAction: ft_transfer attaches more gas than the cap"
+                    );
+                    return Err(FacilitatorLocalError::Other(format!(
+                        "DelegateAction action[{}] attaches {} gas, above the {} gas cap",
+                        i,
+                        fc.gas.as_gas(),
+                        MAX_FT_TRANSFER_GAS.as_gas()
+                    )));
+                }
             }
             other => {
                 tracing::warn!(
@@ -220,6 +265,18 @@ pub(crate) fn validate_delegate_actions_inner(
                 )));
             }
         }
+    }
+
+    // After the loop, so an envelope with a bad action is refused for that action.
+    if actions.len() != 1 {
+        tracing::warn!(
+            count = actions.len(),
+            "Rejected DelegateAction: more than one inner action"
+        );
+        return Err(FacilitatorLocalError::Other(format!(
+            "DelegateAction carries {} inner actions; exactly one ft_transfer is accepted",
+            actions.len()
+        )));
     }
 
     Ok(())
@@ -644,6 +701,14 @@ impl NearProvider {
             }
         };
 
+        // Only the network's allow-listed asset (USDC): settle registers the
+        // recipient on this contract and reads the transfer back from its receipt.
+        crate::chain::assert_supported_asset(
+            self.network(),
+            Some(payer.clone().into()),
+            &requirements.asset,
+        )?;
+
         if signed_delegate_action
             .delegate_action
             .receiver_id
@@ -674,10 +739,97 @@ impl NearProvider {
             &expected_amount,
         )?;
 
+        let transfer = ExpectedTransfer {
+            token: signed_delegate_action.delegate_action.receiver_id.clone(),
+            payer: signed_delegate_action.delegate_action.sender_id.clone(),
+            receiver: expected_receiver,
+            amount: expected_amount,
+        };
+
         Ok(VerifyPaymentResult {
             payer,
             signed_delegate_action,
+            transfer,
         })
+    }
+
+    /// The payer-side reads verify and settle make: the delegate action's nonce
+    /// is unused and the payer holds the amount.
+    async fn check_payer_state(
+        &self,
+        verification: &VerifyPaymentResult,
+        request: &VerifyRequest,
+    ) -> Result<(), FacilitatorLocalError> {
+        let timeout = crate::chain::rpc_http_timeout();
+        self.check_delegate_nonce_unused(&verification.signed_delegate_action, timeout)
+            .await?;
+        self.check_payer_balance(
+            &verification.signed_delegate_action.delegate_action,
+            request.payment_requirements.max_amount_required.0,
+            timeout,
+        )
+        .await
+    }
+
+    /// Refuse a payer whose token balance is below the amount.
+    ///
+    /// Reads `ft_balance_of` on the token the delegate action calls, at
+    /// optimistic finality like the nonce check, so a payer funded a block ago
+    /// is not refused. A balance that cannot be read fails closed. An account
+    /// the token does not know reads `"0"` (NEP-141).
+    async fn check_payer_balance(
+        &self,
+        delegate_action: &DelegateAction,
+        amount: alloy::primitives::U256,
+        timeout: std::time::Duration,
+    ) -> Result<(), FacilitatorLocalError> {
+        let args = serde_json::json!({ "account_id": delegate_action.sender_id.to_string() });
+        let request = methods::query::RpcQueryRequest {
+            block_reference: BlockReference::Finality(Finality::None),
+            request: near_primitives::views::QueryRequest::CallFunction {
+                account_id: delegate_action.receiver_id.clone(),
+                method_name: "ft_balance_of".to_string(),
+                args: near_primitives::types::FunctionArgs::from(args.to_string().into_bytes()),
+            },
+        };
+
+        let response = match tokio::time::timeout(timeout, self.rpc_client.call(request)).await {
+            Ok(Ok(response)) => response,
+            Ok(Err(e)) => {
+                return Err(FacilitatorLocalError::ContractCall(format!(
+                    "Failed to call ft_balance_of: {e}"
+                )))
+            }
+            Err(_) => {
+                return Err(FacilitatorLocalError::ContractCall(format!(
+                    "ft_balance_of query timed out after {}ms",
+                    timeout.as_millis()
+                )))
+            }
+        };
+
+        let balance = match response.kind {
+            QueryResponseKind::CallResult(result) => parse_ft_balance(&result.result)?,
+            _ => {
+                return Err(FacilitatorLocalError::ContractCall(
+                    "Unexpected query response kind for ft_balance_of".to_string(),
+                ))
+            }
+        };
+
+        if alloy::primitives::U256::from(balance) < amount {
+            tracing::warn!(
+                payer = %delegate_action.sender_id,
+                balance = %balance,
+                required = %amount,
+                "Rejected NEAR payment: payer balance below the amount"
+            );
+            return Err(FacilitatorLocalError::InsufficientFunds(
+                MixedAddress::Near(delegate_action.sender_id.to_string()),
+            ));
+        }
+
+        Ok(())
     }
 
     /// Refuse a delegate action whose nonce the payer's access key has reached.
@@ -746,10 +898,12 @@ impl NearProvider {
     ///
     /// Wraps the SignedDelegateAction in a Transaction with Action::Delegate,
     /// signs it with the relayer's key, and submits to the network.
-    /// The relayer pays the gas fees.
+    /// The relayer pays the gas fees. The hash comes back only once
+    /// [`confirm_transfer`] has found `transfer` in the outcome.
     async fn submit_meta_transaction(
         &self,
         signed_delegate_action: SignedDelegateAction,
+        transfer: &ExpectedTransfer,
     ) -> Result<CryptoHash, FacilitatorLocalError> {
         // Get current nonce and block hash for the relayer's account
         let nonce = self.get_nonce().await? + 1;
@@ -781,14 +935,15 @@ impl NearProvider {
             "Submitting NEP-366 meta-transaction (relayer pays gas)"
         );
 
-        self.broadcast(signed_tx).await
+        let outcome = self.broadcast(signed_tx).await?;
+        confirm_transfer(&outcome, transfer, self.network())
     }
 
     /// `broadcast_tx_commit` of a signed meta-transaction, and its outcome.
     async fn broadcast(
         &self,
         signed_tx: near_primitives::transaction::SignedTransaction,
-    ) -> Result<CryptoHash, FacilitatorLocalError> {
+    ) -> Result<FinalExecutionOutcomeView, FacilitatorLocalError> {
         // The hash exists before the transaction leaves. A submission that
         // fails without the node refusing it may still execute, and then the
         // caller gets this hash to look up rather than a failure to retry.
@@ -814,8 +969,8 @@ impl NearProvider {
             FacilitatorLocalError::ContractCall(format!("Failed to submit meta-transaction: {e}"))
         })?;
 
-        // Check for execution errors
-        if let near_primitives::views::FinalExecutionStatus::Failure(err) = response.status {
+        // Check for execution errors. Not enough on its own: see `confirm_transfer`.
+        if let near_primitives::views::FinalExecutionStatus::Failure(err) = &response.status {
             return Err(FacilitatorLocalError::ContractCall(format!(
                 "Meta-transaction failed: {:?}",
                 err
@@ -827,7 +982,158 @@ impl NearProvider {
             "NEP-366 meta-transaction submitted successfully"
         );
 
-        Ok(response.transaction.hash)
+        Ok(response)
+    }
+}
+
+/// Parse an `ft_balance_of` answer: a JSON string holding a decimal u128.
+fn parse_ft_balance(result: &[u8]) -> Result<u128, FacilitatorLocalError> {
+    serde_json::from_slice::<String>(result)
+        .ok()
+        .and_then(|balance| balance.parse::<u128>().ok())
+        .ok_or_else(|| {
+            FacilitatorLocalError::ContractCall(format!(
+                "ft_balance_of returned {:?}, not a decimal balance",
+                String::from_utf8_lossy(result)
+            ))
+        })
+}
+
+/// The token movement a settled meta-transaction has to show.
+#[derive(Debug, Clone)]
+struct ExpectedTransfer {
+    /// The NEP-141 contract: the delegate action's receiver.
+    token: AccountId,
+    /// The delegate action's sender, the `old_owner_id` of the event.
+    payer: AccountId,
+    /// `pay_to`, the `new_owner_id` of the event.
+    receiver: String,
+    /// The amount in atomic units, as a decimal string.
+    amount: String,
+}
+
+/// The NEP-297 envelope a NEP-141 contract logs after `EVENT_JSON:`.
+#[derive(Deserialize)]
+struct Nep297Event {
+    standard: String,
+    event: String,
+    #[serde(default)]
+    data: serde_json::Value,
+}
+
+/// One transfer of a NEP-141 `ft_transfer` event (`memo` is not compared).
+#[derive(Deserialize)]
+struct FtTransferEvent {
+    old_owner_id: String,
+    new_owner_id: String,
+    amount: String,
+}
+
+/// Whether `logs` carry the NEP-141 `ft_transfer` event of `transfer`.
+fn logs_transfer(logs: &[String], transfer: &ExpectedTransfer) -> bool {
+    logs.iter()
+        .filter_map(|log| log.strip_prefix("EVENT_JSON:"))
+        .filter_map(|json| serde_json::from_str::<Nep297Event>(json).ok())
+        .filter(|event| event.standard == "nep141" && event.event == "ft_transfer")
+        .filter_map(|event| serde_json::from_value::<Vec<FtTransferEvent>>(event.data).ok())
+        .flatten()
+        .any(|moved| {
+            moved.old_owner_id == transfer.payer.as_str()
+                && moved.new_owner_id == transfer.receiver
+                && moved.amount == transfer.amount
+        })
+}
+
+/// Whether an executed meta-transaction actually moved the tokens.
+///
+/// The transaction's own status does not say. Its final status is the one of
+/// the receipt that ran the Delegate action on the payer's account, and that
+/// receipt succeeds once it has created the receipt with the inner actions.
+/// The `ft_transfer` runs in that second receipt, on the token contract, and
+/// its result exists only in `receipts_outcome`. So this follows the
+/// transaction to the Delegate receipt and to the receipt it created on the
+/// token, and takes the payment as made only when that receipt ended in
+/// `SuccessValue` AND logged the NEP-141 `ft_transfer` event for exactly this
+/// payer, recipient and amount. Only the token contract can log in a receipt
+/// it executes, so the event cannot come from anywhere else.
+///
+/// - The receipt (or the Delegate one) failed: a verdict, nothing was paid
+///   (`ContractCall`, which settle answers as `success: false`).
+/// - Anything else that is not that payment -- the receipt has not executed,
+///   the outcome does not contain it, it succeeded without the event, there
+///   is more than one, it returned a promise: no verdict. Tokens may have
+///   moved, so the hash travels as `SettlementUnconfirmed` for the caller to
+///   look up instead of paying again.
+///
+/// `ft_transfer_call` is NOT accepted (validation admits `ft_transfer` only)
+/// and would need more than this: its receipt returns a promise
+/// (`SuccessReceiptId`), the receiver's `ft_on_transfer` may hand tokens back,
+/// and the closing `ft_resolve_transfer` receipt answers `SuccessValue` with
+/// the amount actually used, which is what a settlement would have to compare,
+/// together with the `ft_transfer` event of any refund.
+fn confirm_transfer(
+    outcome: &FinalExecutionOutcomeView,
+    transfer: &ExpectedTransfer,
+    network: Network,
+) -> Result<CryptoHash, FacilitatorLocalError> {
+    let tx_hash = outcome.transaction.hash;
+    let no_verdict = |why: &str| {
+        tracing::warn!(%tx_hash, why, "NEAR meta-transaction executed, transfer not confirmed yet");
+        FacilitatorLocalError::SettlementUnconfirmed(TransactionHash::Near(tx_hash.0), network)
+    };
+    let not_paid = |why: String| {
+        FacilitatorLocalError::ContractCall(format!(
+            "Meta-transaction {tx_hash} executed without paying: {why}"
+        ))
+    };
+    let receipt = |id: &CryptoHash| outcome.receipts_outcome.iter().find(|r| r.id == *id);
+
+    let delegate = match &outcome.transaction_outcome.outcome.status {
+        ExecutionStatusView::SuccessReceiptId(id) => match receipt(id) {
+            Some(delegate) => delegate,
+            None => return Err(no_verdict("Delegate receipt missing from the outcome")),
+        },
+        _ => return Err(no_verdict("transaction not converted to a receipt")),
+    };
+    match &delegate.outcome.status {
+        ExecutionStatusView::Failure(e) => {
+            return Err(not_paid(format!("Delegate action failed: {e:?}")))
+        }
+        ExecutionStatusView::Unknown => return Err(no_verdict("Delegate receipt not executed")),
+        ExecutionStatusView::SuccessValue(_) | ExecutionStatusView::SuccessReceiptId(_) => {}
+    }
+
+    let on_token: Vec<_> = delegate
+        .outcome
+        .receipt_ids
+        .iter()
+        .filter_map(receipt)
+        .filter(|r| r.outcome.executor_id == transfer.token)
+        .collect();
+    let ft_transfer = match on_token.as_slice() {
+        [] => {
+            return Err(no_verdict(
+                "no receipt on the token contract in the outcome",
+            ))
+        }
+        [only] => only,
+        _ => return Err(no_verdict("more than one receipt on the token contract")),
+    };
+
+    match &ft_transfer.outcome.status {
+        ExecutionStatusView::SuccessValue(_)
+            if logs_transfer(&ft_transfer.outcome.logs, transfer) =>
+        {
+            Ok(tx_hash)
+        }
+        ExecutionStatusView::SuccessValue(_) => Err(no_verdict(
+            "ft_transfer succeeded without the NEP-141 event of this payment",
+        )),
+        ExecutionStatusView::Failure(e) => Err(not_paid(format!("ft_transfer failed: {e:?}"))),
+        ExecutionStatusView::SuccessReceiptId(_) => Err(no_verdict(
+            "ft_transfer returned a promise; only a plain ft_transfer settles",
+        )),
+        ExecutionStatusView::Unknown => Err(no_verdict("ft_transfer receipt not executed")),
     }
 }
 
@@ -919,6 +1225,7 @@ fn submission_may_have_landed(
 pub struct VerifyPaymentResult {
     pub payer: NearAddress,
     pub signed_delegate_action: SignedDelegateAction,
+    transfer: ExpectedTransfer,
 }
 
 impl FromEnvByNetworkBuild for NearProvider {
@@ -955,17 +1262,17 @@ impl Facilitator for NearProvider {
 
     async fn verify(&self, request: &VerifyRequest) -> Result<VerifyResponse, Self::Error> {
         let verification = self.verify_payment(request).await?;
-        // Settle is unchanged: the runtime refuses a used nonce on submission.
-        self.check_delegate_nonce_unused(
-            &verification.signed_delegate_action,
-            crate::chain::rpc_http_timeout(),
-        )
-        .await?;
+        self.check_payer_state(&verification, request).await?;
         Ok(VerifyResponse::valid(verification.payer.into()))
     }
 
     async fn settle(&self, request: &SettleRequest) -> Result<SettleResponse, Self::Error> {
         let verification = self.verify_payment(request).await?;
+
+        // The same reads as verify, before the relayer spends anything on this
+        // payment (a registration, the gas). The transfer itself is still
+        // confirmed in the outcome: these only make settle cheap to refuse.
+        self.check_payer_state(&verification, request).await?;
 
         // IMPORTANT: Ensure recipient is registered BEFORE submitting meta-transaction
         // This prevents the "account not registered" error and avoids wasting the user's nonce
@@ -987,7 +1294,7 @@ impl Facilitator for NearProvider {
 
         // Submit the meta-transaction (relayer pays gas!)
         let submitted = self
-            .submit_meta_transaction(verification.signed_delegate_action)
+            .submit_meta_transaction(verification.signed_delegate_action, &verification.transfer)
             .await;
         settle_outcome(submitted, verification.payer.into(), self.network())
     }
@@ -1166,9 +1473,427 @@ mod tests {
             other => panic!("unexpected error variant: {:?}", other),
         }
     }
+
+    const GOOD_ARGS: &str = r#"{"receiver_id":"merchant.near","amount":"1000000"}"#;
+
+    /// A ft_transfer with these args, gas and deposit.
+    fn ft_transfer_with(gas: Gas, deposit: NearToken) -> NonDelegateAction {
+        NonDelegateAction::try_from(Action::FunctionCall(Box::new(FunctionCallAction {
+            method_name: "ft_transfer".to_string(),
+            args: GOOD_ARGS.as_bytes().to_vec(),
+            gas,
+            deposit,
+        })))
+        .expect("FunctionCall is a valid NonDelegateAction")
+    }
+
+    fn rejection(actions: &[NonDelegateAction]) -> String {
+        match validate_delegate_actions_inner(actions, "merchant.near", "1000000") {
+            Err(FacilitatorLocalError::Other(msg)) => msg,
+            other => panic!("expected an Other rejection, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn two_valid_ft_transfers_are_rejected() {
+        // Each one would pass alone; together they are not the payment.
+        let actions = vec![
+            make_ft_transfer_action(GOOD_ARGS),
+            make_ft_transfer_action(GOOD_ARGS),
+        ];
+        let msg = rejection(&actions);
+        assert!(msg.contains("exactly one"), "got: {msg}");
+    }
+
+    #[test]
+    fn a_deposit_other_than_one_yocto_is_rejected() {
+        for deposit in [
+            NearToken::from_yoctonear(0),
+            NearToken::from_yoctonear(2),
+            NearToken::from_near(1),
+        ] {
+            let actions = vec![ft_transfer_with(MAX_FT_TRANSFER_GAS, deposit)];
+            let msg = rejection(&actions);
+            assert!(msg.contains("yoctoNEAR"), "{deposit}: got {msg}");
+        }
+    }
+
+    #[test]
+    fn gas_above_the_cap_is_rejected() {
+        for gas in [
+            Gas::from_gas(MAX_FT_TRANSFER_GAS.as_gas() + 1),
+            Gas::from_teragas(300),
+        ] {
+            let actions = vec![ft_transfer_with(gas, FT_TRANSFER_DEPOSIT)];
+            let msg = rejection(&actions);
+            assert!(msg.contains("gas cap"), "{gas}: got {msg}");
+        }
+    }
+
+    #[test]
+    fn the_gas_every_client_attaches_passes() {
+        // 30 TGas and one yoctoNEAR: what the SDKs send, and the cap itself.
+        let actions = vec![ft_transfer_with(
+            Gas::from_teragas(30),
+            NearToken::from_yoctonear(1),
+        )];
+        validate_delegate_actions_inner(&actions, "merchant.near", "1000000")
+            .expect("the SDKs' ft_transfer is the payment");
+    }
+
+    #[test]
+    fn the_only_near_asset_is_the_network_usdc() {
+        // `verify_payment` asks `assert_supported_asset`; on NEAR that list must
+        // stay USDC alone (settle registers recipients on it and reads it back).
+        for (network, usdc) in [
+            (
+                Network::Near,
+                "17208628f84f5d6ad33f0da3bbbeb27ffcb398eac501a31bd6ad2011e36133a1",
+            ),
+            (
+                Network::NearTestnet,
+                "3e2210e1184b45b64c8a434c0a7e7b23cc04ea7eb7a6c3c32520d03d4afcb8af",
+            ),
+        ] {
+            assert_eq!(
+                crate::network::supported_asset_addresses(network),
+                vec![MixedAddress::Near(usdc.to_string())],
+                "{network}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_ft_balance_is_a_decimal_string() {
+        assert_eq!(parse_ft_balance(br#""1000000""#).unwrap(), 1_000_000);
+        assert_eq!(parse_ft_balance(br#""0""#).unwrap(), 0);
+        let malformed: [&[u8]; 5] = [b"1000000", br#""-1""#, br#""1e6""#, b"null", b""];
+        for answer in malformed {
+            assert!(
+                matches!(
+                    parse_ft_balance(answer),
+                    Err(FacilitatorLocalError::ContractCall(_))
+                ),
+                "{:?}",
+                String::from_utf8_lossy(answer)
+            );
+        }
+    }
 }
 
-/// `verify` against the payer's access key nonce.
+/// `confirm_transfer` against outcomes of meta-transactions this relayer
+/// settled on NEAR mainnet, read back read-only on 2026-10-25 with the `tx`
+/// method of the public archival RPC and stored in
+/// `tests/fixtures/near/<hash>.json`. Same type `broadcast_tx_commit` returns,
+/// at `FINAL` (with the refund receipts, which `broadcast_tx_commit` may not
+/// wait for). The failure cases are the same outcomes with one receipt edited.
+#[cfg(test)]
+mod transfer_outcome_tests {
+    use super::*;
+    use serde_json::{json, Value};
+
+    const USDC_MAINNET: &str = "17208628f84f5d6ad33f0da3bbbeb27ffcb398eac501a31bd6ad2011e36133a1";
+
+    /// uvd-buyer.near -> 402milly.near, 1 USDC, with a memo.
+    const NAMED: &str =
+        include_str!("../../tests/fixtures/near/BY1QXFFLoojaNGr4bzqSW6Cmu1wc2G7sPLcHB6wXsSqM.json");
+    /// Implicit account to implicit account, 0.01 USDC, two refund receipts.
+    const IMPLICIT: &str =
+        include_str!("../../tests/fixtures/near/7r3qYWXUgzv2v7QACsXNDYMiU4qiZf4qLRAY4pUMrDhd.json");
+
+    fn named() -> (Value, ExpectedTransfer) {
+        (
+            serde_json::from_str(NAMED).unwrap(),
+            ExpectedTransfer {
+                token: USDC_MAINNET.parse().unwrap(),
+                payer: "uvd-buyer.near".parse().unwrap(),
+                receiver: "402milly.near".to_string(),
+                amount: "1000000".to_string(),
+            },
+        )
+    }
+
+    fn implicit() -> (Value, ExpectedTransfer) {
+        (
+            serde_json::from_str(IMPLICIT).unwrap(),
+            ExpectedTransfer {
+                token: USDC_MAINNET.parse().unwrap(),
+                payer: "aa5c387e7be96bcfd03676f983f38a03453dda0867c38329adeb01f8c356baf6"
+                    .parse()
+                    .unwrap(),
+                receiver: "ea178ea75470f542eef239a1ba25f0b11f43b63ef59f3e2a18789913b6d84cc5"
+                    .to_string(),
+                amount: "10000".to_string(),
+            },
+        )
+    }
+
+    fn view(outcome: &Value) -> FinalExecutionOutcomeView {
+        serde_json::from_value(outcome.clone()).expect("a broadcast_tx_commit outcome")
+    }
+
+    /// The outcome of the receipt executed by `executor`.
+    fn receipt_of<'a>(outcome: &'a mut Value, executor: &str) -> &'a mut Value {
+        outcome["receipts_outcome"]
+            .as_array_mut()
+            .unwrap()
+            .iter_mut()
+            .map(|receipt| &mut receipt["outcome"])
+            .find(|o| o["executor_id"] == executor)
+            .unwrap_or_else(|| panic!("no receipt executed by {executor}"))
+    }
+
+    /// What `ft_transfer` answers when NEP-141 refuses it.
+    fn panicked(message: &str) -> Value {
+        json!({"Failure": {"ActionError": {"index": 0, "kind": {
+            "FunctionCallError": {"ExecutionError": format!("Smart contract panicked: {message}")}
+        }}}})
+    }
+
+    fn not_paid(outcome: &Value, transfer: &ExpectedTransfer) -> String {
+        match confirm_transfer(&view(outcome), transfer, Network::Near) {
+            Err(FacilitatorLocalError::ContractCall(msg)) => msg,
+            other => panic!("expected a not-paid verdict, got {other:?}"),
+        }
+    }
+
+    fn no_verdict(outcome: &Value, transfer: &ExpectedTransfer) {
+        let hash: CryptoHash = outcome["transaction"]["hash"]
+            .as_str()
+            .unwrap()
+            .parse()
+            .unwrap();
+        match confirm_transfer(&view(outcome), transfer, Network::Near) {
+            Err(FacilitatorLocalError::SettlementUnconfirmed(tx, network)) => {
+                assert_eq!(tx, TransactionHash::Near(hash.0));
+                assert_eq!(network, Network::Near);
+            }
+            other => panic!("expected no verdict, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn recorded_settlements_are_paid() {
+        for (outcome, transfer) in [named(), implicit()] {
+            let hash: CryptoHash = outcome["transaction"]["hash"]
+                .as_str()
+                .unwrap()
+                .parse()
+                .unwrap();
+            assert_eq!(
+                confirm_transfer(&view(&outcome), &transfer, Network::Near).unwrap(),
+                hash
+            );
+        }
+    }
+
+    #[test]
+    fn an_inner_failure_under_a_successful_transaction_is_not_paid() {
+        for (mut outcome, transfer) in [named(), implicit()] {
+            let ft = receipt_of(&mut outcome, USDC_MAINNET);
+            ft["status"] = panicked("The account doesn't have enough balance");
+            ft["logs"] = json!([]);
+            // The transaction itself still reads as a success.
+            assert!(matches!(
+                view(&outcome).status,
+                near_primitives::views::FinalExecutionStatus::SuccessValue(_)
+            ));
+            let msg = not_paid(&outcome, &transfer);
+            assert!(msg.contains("ft_transfer failed"), "got: {msg}");
+        }
+    }
+
+    #[test]
+    fn a_failed_receipt_is_not_paid_even_with_the_event_logged() {
+        // A contract that panics keeps the logs it wrote before the panic.
+        for (mut outcome, transfer) in [named(), implicit()] {
+            receipt_of(&mut outcome, USDC_MAINNET)["status"] = panicked("after the event");
+            let msg = not_paid(&outcome, &transfer);
+            assert!(msg.contains("ft_transfer failed"), "got: {msg}");
+        }
+    }
+
+    /// A copy of the recorded token receipt under `id`, with `status` and no logs.
+    fn another_token_receipt(outcome: &Value, id: &str, status: Value) -> Value {
+        let mut copy = outcome["receipts_outcome"][1].clone();
+        assert_eq!(copy["outcome"]["executor_id"], USDC_MAINNET);
+        copy["id"] = json!(id);
+        copy["outcome"]["status"] = status;
+        copy["outcome"]["logs"] = json!([]);
+        copy
+    }
+
+    #[test]
+    fn two_receipts_on_the_token_are_not_one_transfer() {
+        // The recorded transfer plus a second, failed receipt the Delegate created.
+        let (mut outcome, transfer) = named();
+        let id = "11111111111111111111111111111112";
+        let second = another_token_receipt(&outcome, id, panicked("second call"));
+        outcome["receipts_outcome"]
+            .as_array_mut()
+            .unwrap()
+            .push(second);
+        receipt_of(&mut outcome, "uvd-buyer.near")["receipt_ids"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!(id));
+        no_verdict(&outcome, &transfer);
+    }
+
+    #[test]
+    fn a_token_receipt_the_delegate_did_not_create_does_not_count() {
+        // The Delegate's own receipt failed; a token receipt elsewhere in the
+        // outcome (child of the refund) carries the event.
+        let (mut outcome, transfer) = named();
+        let ft = receipt_of(&mut outcome, USDC_MAINNET);
+        let log = ft["logs"].clone();
+        ft["status"] = panicked("The account doesn't have enough balance");
+        ft["logs"] = json!([]);
+        let id = "11111111111111111111111111111113";
+        let mut elsewhere = another_token_receipt(&outcome, id, json!({"SuccessValue": ""}));
+        elsewhere["outcome"]["logs"] = log;
+        outcome["receipts_outcome"]
+            .as_array_mut()
+            .unwrap()
+            .push(elsewhere);
+        receipt_of(&mut outcome, "uvd-facilitator.near")["receipt_ids"] = json!([id]);
+        let msg = not_paid(&outcome, &transfer);
+        assert!(msg.contains("ft_transfer failed"), "got: {msg}");
+    }
+
+    #[test]
+    fn refund_receipts_missing_from_the_outcome_do_not_matter() {
+        // broadcast_tx_commit waits for every receipt but the refunds, so
+        // those may be absent (the recorded outcomes are FINAL, with them).
+        let (mut outcome, transfer) = implicit();
+        outcome["receipts_outcome"]
+            .as_array_mut()
+            .unwrap()
+            .retain(|r| r["outcome"]["executor_id"] != "uvd-facilitator.near");
+        assert_eq!(outcome["receipts_outcome"].as_array().unwrap().len(), 2);
+        confirm_transfer(&view(&outcome), &transfer, Network::Near)
+            .expect("the transfer is there without its refunds");
+    }
+
+    #[test]
+    fn a_delegate_receipt_not_executed_is_no_verdict() {
+        let (mut outcome, transfer) = named();
+        receipt_of(&mut outcome, "uvd-buyer.near")["status"] = json!("Unknown");
+        no_verdict(&outcome, &transfer);
+    }
+
+    #[test]
+    fn a_transaction_not_converted_to_a_receipt_is_no_verdict() {
+        let (mut outcome, transfer) = named();
+        outcome["transaction_outcome"]["outcome"]["status"] = json!("Unknown");
+        no_verdict(&outcome, &transfer);
+    }
+
+    #[test]
+    fn a_success_without_the_event_is_no_verdict() {
+        for (mut outcome, transfer) in [named(), implicit()] {
+            receipt_of(&mut outcome, USDC_MAINNET)["logs"] = json!([]);
+            no_verdict(&outcome, &transfer);
+        }
+    }
+
+    #[test]
+    fn an_event_for_another_transfer_is_no_verdict() {
+        let (outcome, transfer) = named();
+        for (field, value) in [
+            ("payer", "someone-else.near"),
+            ("receiver", "attacker.near"),
+            ("amount", "999999"),
+        ] {
+            let mut other = transfer.clone();
+            match field {
+                "payer" => other.payer = value.parse().unwrap(),
+                "receiver" => other.receiver = value.to_string(),
+                _ => other.amount = value.to_string(),
+            }
+            no_verdict(&outcome, &other);
+        }
+    }
+
+    #[test]
+    fn an_event_that_is_not_a_nep141_transfer_is_no_verdict() {
+        let (outcome, transfer) = named();
+        let log = receipt_of(&mut outcome.clone(), USDC_MAINNET)["logs"][0]
+            .as_str()
+            .unwrap()
+            .to_string();
+        for edited in [
+            log.replace("\"standard\":\"nep141\"", "\"standard\":\"nep171\""),
+            log.replace("\"event\":\"ft_transfer\"", "\"event\":\"ft_mint\""),
+            log.replace("EVENT_JSON:", "EVENT_JSON "),
+            log.replace("EVENT_JSON:", ""),
+        ] {
+            let mut outcome = outcome.clone();
+            receipt_of(&mut outcome, USDC_MAINNET)["logs"] = json!([edited]);
+            no_verdict(&outcome, &transfer);
+        }
+    }
+
+    #[test]
+    fn an_event_logged_by_another_account_does_not_count() {
+        // The event moved to the relayer's refund receipt.
+        let (mut outcome, transfer) = named();
+        let log = receipt_of(&mut outcome, USDC_MAINNET)["logs"][0].clone();
+        receipt_of(&mut outcome, USDC_MAINNET)["logs"] = json!([]);
+        receipt_of(&mut outcome, "uvd-facilitator.near")["logs"] = json!([log]);
+        no_verdict(&outcome, &transfer);
+    }
+
+    #[test]
+    fn a_receipt_on_another_contract_is_not_the_transfer() {
+        // The same transfer, run by a contract that is not the token.
+        let (mut outcome, transfer) = named();
+        receipt_of(&mut outcome, USDC_MAINNET)["executor_id"] = json!("usdt.tether-token.near");
+        no_verdict(&outcome, &transfer);
+    }
+
+    #[test]
+    fn an_unexecuted_transfer_is_no_verdict() {
+        for (mut outcome, transfer) in [named(), implicit()] {
+            let ft = receipt_of(&mut outcome, USDC_MAINNET);
+            ft["status"] = json!("Unknown");
+            ft["logs"] = json!([]);
+            no_verdict(&outcome, &transfer);
+        }
+    }
+
+    #[test]
+    fn a_transfer_missing_from_the_outcome_is_no_verdict() {
+        for (mut outcome, transfer) in [named(), implicit()] {
+            outcome["receipts_outcome"]
+                .as_array_mut()
+                .unwrap()
+                .retain(|r| r["outcome"]["executor_id"] != USDC_MAINNET);
+            no_verdict(&outcome, &transfer);
+        }
+    }
+
+    #[test]
+    fn a_failed_delegate_action_is_not_paid() {
+        let (mut outcome, transfer) = named();
+        receipt_of(&mut outcome, "uvd-buyer.near")["status"] = json!({"Failure": {"ActionError": {
+            "index": 0, "kind": "DelegateActionExpired"
+        }}});
+        let msg = not_paid(&outcome, &transfer);
+        assert!(msg.contains("Delegate action failed"), "got: {msg}");
+    }
+
+    #[test]
+    fn a_promise_from_the_token_is_no_verdict() {
+        // What ft_transfer_call answers first; it is not accepted yet.
+        let (mut outcome, transfer) = named();
+        let refund = outcome["receipts_outcome"][2]["id"].clone();
+        receipt_of(&mut outcome, USDC_MAINNET)["status"] = json!({ "SuccessReceiptId": refund });
+        no_verdict(&outcome, &transfer);
+    }
+}
+
+/// `verify` against the payer's access key nonce and token balance.
 ///
 /// Uses nothing newer than `verify` and the provider constructor, so the
 /// module also runs against the code before the check. The RPC node is a local
@@ -1183,21 +1908,32 @@ mod replay_verify_tests {
     use near_primitives::action::delegate::DelegateAction;
     use serde_json::{json, Value};
 
-    const USDC: &str = "usdc.testnet";
-    const MERCHANT: &str = "merchant.testnet";
-    const PAYER: &str = "payer.testnet";
-    const AMOUNT: u64 = 1_000_000;
+    /// The testnet USDC contract, the one token NEAR payments may move.
+    pub(super) const USDC: &str =
+        "3e2210e1184b45b64c8a434c0a7e7b23cc04ea7eb7a6c3c32520d03d4afcb8af";
+    pub(super) const MERCHANT: &str = "merchant.testnet";
+    pub(super) const PAYER: &str = "payer.testnet";
+    pub(super) const AMOUNT: u64 = 1_000_000;
     pub(super) const DELEGATE_NONCE: u64 = 42;
 
     #[derive(Clone, Copy)]
     pub(super) enum Node {
-        /// Answers view_access_key for PAYER with this nonce.
+        /// Answers view_access_key for PAYER with this nonce, and ft_balance_of
+        /// for PAYER on USDC with exactly AMOUNT.
         AccessKeyNonce(u64),
+        /// Same, with `balance` as the raw ft_balance_of answer (`None`: an error).
+        Funded {
+            nonce: u64,
+            balance: Option<&'static str>,
+        },
         /// Answers every call with HTTP 503.
         Down,
         /// Never answers.
         Hangs,
     }
+
+    /// `"1000000"`: what ft_balance_of answers for a payer holding AMOUNT.
+    const EXACTLY_AMOUNT: &str = r#""1000000""#;
 
     /// The key PAYER signs with. The stub answers only for this key, so a read
     /// of any other access key (the relayer's, say) fails the tests.
@@ -1208,32 +1944,46 @@ mod replay_verify_tests {
         let app = Router::new().route(
             "/",
             post(move |Json(req): Json<Value>| async move {
-                match node {
-                    Node::AccessKeyNonce(nonce) => {
-                        let params = &req["params"];
-                        let body = if params["request_type"] == "view_access_key"
-                            && params["account_id"] == PAYER
-                            && params["public_key"] == PAYER_KEY.public_key().to_string()
-                        {
-                            json!({"jsonrpc": "2.0", "id": req["id"], "result": {
-                                "nonce": nonce,
-                                "permission": "FullAccess",
-                                "block_height": 1,
-                                "block_hash": "11111111111111111111111111111111",
-                            }})
-                        } else {
-                            json!({"jsonrpc": "2.0", "id": req["id"], "error": {
-                                "code": -32601, "message": format!("unexpected call {req}"),
-                            }})
-                        };
-                        (StatusCode::OK, Json(body))
-                    }
-                    Node::Down => (StatusCode::SERVICE_UNAVAILABLE, Json(json!({}))),
+                let (nonce, balance) = match node {
+                    Node::AccessKeyNonce(nonce) => (nonce, Some(EXACTLY_AMOUNT)),
+                    Node::Funded { nonce, balance } => (nonce, balance),
+                    Node::Down => return (StatusCode::SERVICE_UNAVAILABLE, Json(json!({}))),
                     Node::Hangs => {
                         tokio::time::sleep(std::time::Duration::from_secs(3_600)).await;
-                        (StatusCode::OK, Json(json!({})))
+                        return (StatusCode::OK, Json(json!({})));
                     }
-                }
+                };
+                let params = &req["params"];
+                let balance_of_payer = params["request_type"] == "call_function"
+                    && params["account_id"] == USDC
+                    && params["method_name"] == "ft_balance_of"
+                    && params["args_base64"].as_str().and_then(|args| {
+                        base64::Engine::decode(&base64::engine::general_purpose::STANDARD, args)
+                            .ok()
+                    }) == Some(json!({ "account_id": PAYER }).to_string().into_bytes());
+                let body = if params["request_type"] == "view_access_key"
+                    && params["account_id"] == PAYER
+                    && params["public_key"] == PAYER_KEY.public_key().to_string()
+                {
+                    json!({"jsonrpc": "2.0", "id": req["id"], "result": {
+                        "nonce": nonce,
+                        "permission": "FullAccess",
+                        "block_height": 1,
+                        "block_hash": "11111111111111111111111111111111",
+                    }})
+                } else if let (true, Some(balance)) = (balance_of_payer, balance) {
+                    json!({"jsonrpc": "2.0", "id": req["id"], "result": {
+                        "result": balance.as_bytes(),
+                        "logs": [],
+                        "block_height": 1,
+                        "block_hash": "11111111111111111111111111111111",
+                    }})
+                } else {
+                    json!({"jsonrpc": "2.0", "id": req["id"], "error": {
+                        "code": -32601, "message": format!("unexpected call {req}"),
+                    }})
+                };
+                (StatusCode::OK, Json(body))
             }),
         );
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -1254,6 +2004,11 @@ mod replay_verify_tests {
 
     /// A USDC transfer delegate action signed by PAYER with DELEGATE_NONCE.
     pub(super) fn signed_delegate_action() -> SignedDelegateAction {
+        signed_delegate_action_to(USDC)
+    }
+
+    /// The same transfer, calling `token` instead of USDC.
+    fn signed_delegate_action_to(token: &str) -> SignedDelegateAction {
         let payer: Signer =
             InMemorySigner::from_secret_key(PAYER.parse().unwrap(), PAYER_KEY.clone());
         let transfer = Action::FunctionCall(Box::new(FunctionCallAction {
@@ -1266,7 +2021,7 @@ mod replay_verify_tests {
         }));
         let delegate_action = DelegateAction {
             sender_id: PAYER.parse().unwrap(),
-            receiver_id: USDC.parse().unwrap(),
+            receiver_id: token.parse().unwrap(),
             actions: vec![NonDelegateAction::try_from(transfer).unwrap()],
             nonce: DELEGATE_NONCE,
             max_block_height: 1_000_000,
@@ -1279,10 +2034,15 @@ mod replay_verify_tests {
         }
     }
 
-    fn request() -> VerifyRequest {
+    pub(super) fn request() -> VerifyRequest {
+        request_paying(USDC)
+    }
+
+    /// AMOUNT of `token` to MERCHANT, with a delegate action that calls `token`.
+    fn request_paying(token: &str) -> VerifyRequest {
         let encoded = base64::Engine::encode(
             &base64::engine::general_purpose::STANDARD,
-            borsh::to_vec(&signed_delegate_action()).unwrap(),
+            borsh::to_vec(&signed_delegate_action_to(token)).unwrap(),
         );
         VerifyRequest {
             x402_version: X402Version::V1,
@@ -1304,7 +2064,7 @@ mod replay_verify_tests {
                 output_schema: None,
                 pay_to: MixedAddress::Near(MERCHANT.to_string()),
                 max_timeout_seconds: 60,
-                asset: MixedAddress::Near(USDC.to_string()),
+                asset: MixedAddress::Near(token.to_string()),
                 extra: None,
             },
         }
@@ -1352,6 +2112,318 @@ mod replay_verify_tests {
             "got {err:?}"
         );
     }
+
+    // `verify_accepts_a_delegate_action_with_a_fresh_nonce` is also the
+    // boundary of the balance check: its node holds exactly AMOUNT.
+
+    #[tokio::test]
+    async fn verify_rejects_a_payer_holding_less_than_the_amount() {
+        let provider = provider(Node::Funded {
+            nonce: DELEGATE_NONCE - 1,
+            balance: Some(r#""999999""#),
+        })
+        .await;
+
+        let err = provider
+            .verify(&request())
+            .await
+            .expect_err("a payer short of the amount must not verify");
+        assert!(
+            matches!(&err, FacilitatorLocalError::InsufficientFunds(payer) if *payer == MixedAddress::Near(PAYER.to_string())),
+            "got {err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn verify_fails_closed_when_the_balance_cannot_be_read() {
+        for balance in [None, Some("null"), Some(r#""lots""#)] {
+            let provider = provider(Node::Funded {
+                nonce: DELEGATE_NONCE - 1,
+                balance,
+            })
+            .await;
+
+            let err = provider
+                .verify(&request())
+                .await
+                .expect_err("an unread balance must not vouch for a payer");
+            assert!(
+                matches!(&err, FacilitatorLocalError::ContractCall(_)),
+                "{balance:?}: got {err:?}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn verify_rejects_a_token_that_is_not_the_network_usdc() {
+        // Requirements and delegate action agree on the token; it is not USDC.
+        let provider = provider(Node::AccessKeyNonce(DELEGATE_NONCE - 1)).await;
+
+        for token in ["usdc.testnet", "usdt.tether-token.testnet"] {
+            let err = provider
+                .verify(&request_paying(token))
+                .await
+                .expect_err("only the network's USDC is a NEAR payment");
+            assert!(
+                matches!(
+                    &err,
+                    FacilitatorLocalError::UnsupportedAsset(Some(payer), Network::NearTestnet, asset)
+                        if *payer == MixedAddress::Near(PAYER.to_string()) && asset == token
+                ),
+                "{token}: got {err:?}"
+            );
+        }
+    }
+}
+
+/// `settle` end to end against a stub node: the payment is the transfer the
+/// `broadcast_tx_commit` outcome shows, not the transaction's own status.
+#[cfg(test)]
+mod settle_confirms_transfer_tests {
+    use super::replay_verify_tests::{request, AMOUNT, DELEGATE_NONCE, MERCHANT, PAYER, USDC};
+    use super::*;
+    use axum::{routing::post, Json, Router};
+    use near_crypto::KeyType;
+    use near_primitives::views::{BlockHeaderView, BlockView};
+    use serde_json::{json, Value};
+
+    const USDC_MAINNET: &str = "17208628f84f5d6ad33f0da3bbbeb27ffcb398eac501a31bd6ad2011e36133a1";
+    const RECORDED: &str =
+        include_str!("../../tests/fixtures/near/BY1QXFFLoojaNGr4bzqSW6Cmu1wc2G7sPLcHB6wXsSqM.json");
+
+    /// The recorded mainnet settlement, retold between this module's accounts.
+    fn recorded() -> Value {
+        assert_eq!(AMOUNT, 1_000_000, "the recorded transfer moved 1000000");
+        let retold = RECORDED
+            .replace(USDC_MAINNET, USDC)
+            .replace("uvd-buyer.near", PAYER)
+            .replace("402milly.near", MERCHANT);
+        serde_json::from_str(&retold).unwrap()
+    }
+
+    fn recorded_hash() -> CryptoHash {
+        recorded()["transaction"]["hash"]
+            .as_str()
+            .unwrap()
+            .parse()
+            .unwrap()
+    }
+
+    /// The outcome of the receipt the token contract executed.
+    fn token_receipt(outcome: &mut Value) -> &mut Value {
+        outcome["receipts_outcome"]
+            .as_array_mut()
+            .unwrap()
+            .iter_mut()
+            .map(|receipt| &mut receipt["outcome"])
+            .find(|o| o["executor_id"] == USDC)
+            .expect("the recorded outcome has a token receipt")
+    }
+
+    /// What the stub node answers.
+    #[derive(Clone)]
+    struct Chain {
+        /// The `broadcast_tx_commit` answer.
+        outcome: Value,
+        /// PAYER's access key nonce (the relayer's is 7).
+        payer_nonce: u64,
+        /// The raw `ft_balance_of` answer for PAYER.
+        payer_balance: &'static str,
+        /// Whether `storage_balance_of` finds MERCHANT on USDC.
+        merchant_registered: bool,
+    }
+
+    /// The recorded transfer, PAYER funded with exactly AMOUNT and a fresh
+    /// nonce, MERCHANT registered.
+    fn chain(outcome: Value) -> Chain {
+        Chain {
+            outcome,
+            payer_nonce: DELEGATE_NONCE - 1,
+            payer_balance: r#""1000000""#,
+            merchant_registered: true,
+        }
+    }
+
+    /// A provider on a stub node, and the count of `broadcast_tx_commit`
+    /// calls it got: every transaction the relayer would pay for (the
+    /// meta-transaction and a `storage_deposit` alike).
+    async fn provider(chain: Chain) -> (NearProvider, Arc<std::sync::atomic::AtomicUsize>) {
+        let sent = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counter = sent.clone();
+        let block = serde_json::to_value(BlockView {
+            author: "validator.testnet".parse().unwrap(),
+            header: BlockHeaderView::default(),
+            chunks: vec![],
+        })
+        .unwrap();
+        let app = Router::new().route(
+            "/",
+            post(move |Json(req): Json<Value>| {
+                let (chain, block, counter) = (chain.clone(), block.clone(), counter.clone());
+                async move {
+                    let params = &req["params"];
+                    let view = |result: Vec<u8>| {
+                        json!({
+                            "result": result,
+                            "logs": [],
+                            "block_height": 1,
+                            "block_hash": "11111111111111111111111111111111",
+                        })
+                    };
+                    let result = match req["method"].as_str() {
+                        Some("broadcast_tx_commit") => {
+                            counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                            chain.outcome
+                        }
+                        Some("block") => block,
+                        Some("query") if params["request_type"] == "view_access_key" => {
+                            let nonce = if params["account_id"] == PAYER {
+                                chain.payer_nonce
+                            } else {
+                                7
+                            };
+                            json!({
+                                "nonce": nonce,
+                                "permission": "FullAccess",
+                                "block_height": 1,
+                                "block_hash": "11111111111111111111111111111111",
+                            })
+                        }
+                        Some("query")
+                            if params["request_type"] == "call_function"
+                                && params["account_id"] == USDC
+                                && params["method_name"] == "storage_balance_of" =>
+                        {
+                            view(if chain.merchant_registered {
+                                br#"{"total":"1250000000000000000000","available":"0"}"#.to_vec()
+                            } else {
+                                b"null".to_vec()
+                            })
+                        }
+                        Some("query")
+                            if params["request_type"] == "call_function"
+                                && params["account_id"] == USDC
+                                && params["method_name"] == "ft_balance_of" =>
+                        {
+                            view(chain.payer_balance.as_bytes().to_vec())
+                        }
+                        _ => {
+                            return Json(json!({"jsonrpc": "2.0", "id": req["id"], "error": {
+                                "code": -32601, "message": format!("unexpected call {req}"),
+                            }}))
+                        }
+                    };
+                    Json(json!({"jsonrpc": "2.0", "id": req["id"], "result": result}))
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let provider = NearProvider::try_new(
+            SecretKey::from_random(KeyType::ED25519),
+            "facilitator.testnet".to_string(),
+            format!("http://{addr}"),
+            Network::NearTestnet,
+        )
+        .unwrap();
+        (provider, sent)
+    }
+
+    fn sent(counter: &std::sync::atomic::AtomicUsize) -> usize {
+        counter.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    #[tokio::test]
+    async fn settle_refuses_a_payer_short_of_the_amount_before_spending() {
+        // MERCHANT unregistered: a registration would be a transaction too.
+        let (provider, counter) = provider(Chain {
+            payer_balance: r#""999999""#,
+            merchant_registered: false,
+            ..chain(recorded())
+        })
+        .await;
+
+        let err = provider
+            .settle(&request())
+            .await
+            .expect_err("a payer short of the amount is refused");
+        assert!(
+            matches!(&err, FacilitatorLocalError::InsufficientFunds(payer) if *payer == MixedAddress::Near(PAYER.to_string())),
+            "got {err:?}"
+        );
+        assert_eq!(sent(&counter), 0, "nothing sent for a refused payer");
+    }
+
+    #[tokio::test]
+    async fn settle_refuses_a_used_delegate_nonce_before_spending() {
+        let (provider, counter) = provider(Chain {
+            payer_nonce: DELEGATE_NONCE,
+            merchant_registered: false,
+            ..chain(recorded())
+        })
+        .await;
+
+        let err = provider
+            .settle(&request())
+            .await
+            .expect_err("an executed delegate action is refused");
+        assert!(
+            matches!(&err, FacilitatorLocalError::Other(msg) if msg.contains("already used")),
+            "got {err:?}"
+        );
+        assert_eq!(sent(&counter), 0, "nothing sent for a used nonce");
+    }
+
+    #[tokio::test]
+    async fn settle_pays_when_the_outcome_shows_the_transfer() {
+        let (provider, counter) = provider(chain(recorded())).await;
+
+        let response = provider.settle(&request()).await.expect("a settle verdict");
+        assert!(response.success, "got {response:?}");
+        assert_eq!(
+            response.transaction,
+            Some(TransactionHash::Near(recorded_hash().0))
+        );
+        assert_eq!(sent(&counter), 1, "one meta-transaction, no registration");
+    }
+
+    #[tokio::test]
+    async fn settle_does_not_pay_an_inner_failure_under_a_successful_transaction() {
+        let mut outcome = recorded();
+        let ft = token_receipt(&mut outcome);
+        ft["status"] = json!({"Failure": {"ActionError": {"index": 0, "kind": {
+            "FunctionCallError": {"ExecutionError": "Smart contract panicked: The account doesn't have enough balance"}
+        }}}});
+        ft["logs"] = json!([]);
+        let (provider, _) = provider(chain(outcome)).await;
+
+        let response = provider.settle(&request()).await.expect("a settle verdict");
+        assert!(!response.success, "got {response:?}");
+        assert!(response.transaction.is_none(), "got {response:?}");
+        assert!(
+            matches!(
+                response.error_reason,
+                Some(FacilitatorErrorReason::UnexpectedSettleError)
+            ),
+            "got {response:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn settle_without_the_transfer_outcome_is_unconfirmed() {
+        let mut outcome = recorded();
+        token_receipt(&mut outcome)["status"] = json!("Unknown");
+        let (provider, _) = provider(chain(outcome)).await;
+
+        match provider.settle(&request()).await {
+            Err(FacilitatorLocalError::SettlementUnconfirmed(tx, network)) => {
+                assert_eq!(tx, TransactionHash::Near(recorded_hash().0));
+                assert_eq!(network, Network::NearTestnet);
+            }
+            other => panic!("expected the unconfirmed error, got {other:?}"),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -1367,6 +2439,26 @@ mod replay_verify_bound_tests {
             std::time::Duration::from_secs(5),
             provider.check_delegate_nonce_unused(
                 &signed_delegate_action(),
+                std::time::Duration::from_millis(200),
+            ),
+        )
+        .await
+        .expect("the check must return on its own timeout, not hang");
+        assert!(
+            matches!(&result, Err(FacilitatorLocalError::ContractCall(msg)) if msg.contains("timed out")),
+            "got {result:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn balance_read_gives_up_at_its_timeout() {
+        let provider = provider(Node::Hangs).await;
+
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            provider.check_payer_balance(
+                &signed_delegate_action().delegate_action,
+                alloy::primitives::U256::from(1u64),
                 std::time::Duration::from_millis(200),
             ),
         )

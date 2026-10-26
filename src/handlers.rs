@@ -1185,6 +1185,7 @@ fn failure_category(debug: &str) -> &'static str {
         "BlockedAddress" => "blocked_address",
         "UnsupportedNetwork" => "unsupported_network",
         "UnsupportedAsset" => "invalid_asset",
+        "RecipientNotRegistered" => "recipient_not_registered",
         "NetworkMismatch" => "network_mismatch",
         "SchemeMismatch" => "scheme_mismatch",
         "ReceiverMismatch" => "receiver_mismatch",
@@ -6220,6 +6221,15 @@ impl IntoResponse for FacilitatorLocalError {
                     payer,
                     FacilitatorErrorReason::FreeForm("invalid_asset".to_string()),
                 )),
+            )
+                .into_response(),
+            // A NEAR recipient the relayer will not register now (an hourly or
+            // daily cap, or its balance floor: `chain::near`). Refused before
+            // anything was spent; registering `payTo` on the token or retrying
+            // later clears it. Which limit it was stays in the server log.
+            FacilitatorLocalError::RecipientNotRegistered(payer, ..) => (
+                StatusCode::OK,
+                Json(invalid_because(payer, "recipient_not_registered")),
             )
                 .into_response(),
             FacilitatorLocalError::ContractCall(ref e) => {
@@ -19248,6 +19258,22 @@ mod chain_failure_response_tests {
         );
     }
 
+    /// A NEAR recipient the relayer would not register names itself in
+    /// `/events`, so a burst of refusals reads as the cap at work.
+    #[test]
+    fn a_refused_registration_has_its_own_event_category() {
+        assert_eq!(
+            failure_category(&format!(
+                "{:?}",
+                FacilitatorLocalError::RecipientNotRegistered(
+                    MixedAddress::Near("payer.near".to_string()),
+                    "hourly_cap".to_string(),
+                )
+            )),
+            "recipient_not_registered"
+        );
+    }
+
     /// Every category this module can emit is in the bounded vocabulary — no
     /// error text, no addresses, no RPC URL with a key in it.
     #[test]
@@ -19589,6 +19615,10 @@ mod rejection_reason_tests {
                     "0x000000000000000000000000000000000000dEaD".to_string(),
                 ),
             ),
+            (
+                "recipient_not_registered",
+                FacilitatorLocalError::RecipientNotRegistered(payer(), "hourly_cap".to_string()),
+            ),
         ]
     }
 
@@ -19660,7 +19690,7 @@ mod rejection_reason_tests {
                 panic!("`{first}` and `{name}` both answer `{token}`");
             }
         }
-        assert_eq!(seen.len(), 8, "one row per cause");
+        assert_eq!(seen.len(), 9, "one row per cause");
     }
 
     /// The defect that made the field useless rather than merely coarse.

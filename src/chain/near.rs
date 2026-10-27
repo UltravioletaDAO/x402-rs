@@ -8,7 +8,10 @@
 //! 1. User creates and signs a DelegateAction -> SignedDelegateAction
 //! 2. User sends SignedDelegateAction to facilitator (base64 encoded)
 //! 3. Facilitator checks if USDC recipient is registered (storage_balance_of)
-//! 4. If not registered, facilitator calls storage_deposit (pays ~0.00125 NEAR)
+//! 4. If not registered, facilitator calls storage_deposit (pays ~0.00125 NEAR),
+//!    within an hourly and a daily cap shared by every task and only while the
+//!    relayer holds at least a floor; otherwise the payment is refused
+//!    (`recipient_not_registered`), and verify refuses it too
 //! 5. Facilitator wraps SignedDelegateAction in Action::Delegate
 //! 6. Facilitator signs the Transaction with its own key (pays gas)
 //! 7. Facilitator submits to NEAR network
@@ -32,6 +35,7 @@ use crate::chain::{FacilitatorLocalError, FromEnvByNetworkBuild, NetworkProvider
 use crate::facilitator::Facilitator;
 use crate::from_env;
 use crate::network::Network;
+use crate::nonce_store::{NonceStore, NonceStoreError};
 use crate::types::{
     ExactPaymentPayload, FacilitatorErrorReason, MixedAddress, Scheme, SettleRequest,
     SettleResponse, SupportedPaymentKind, SupportedPaymentKindExtra, SupportedPaymentKindsResponse,
@@ -43,6 +47,299 @@ const STORAGE_DEPOSIT_AMOUNT: NearToken = NearToken::from_yoctonear(1_250_000_00
 
 /// Gas for storage_deposit call (5 TGas should be enough)
 const STORAGE_DEPOSIT_GAS: Gas = Gas::from_gas(5_000_000_000_000);
+
+/// Most recipients the relayer registers in one UTC hour, across every task
+/// of the service ([`RegistrationBudget`]).
+///
+/// A registration costs the relayer [`STORAGE_DEPOSIT_AMOUNT`] plus the gas
+/// of its `storage_deposit` (0.000266 NEAR on the mainnet one), and nobody
+/// pays it back, so what the relayer spends on them is bounded here. Measured
+/// 2026-10-26: the relayer registered ONE recipient in its whole mainnet
+/// history (2025-12-06) and none in the 30 days of production logs. So the
+/// caps never bind the traffic there is, and they hold what registrations
+/// alone can cost to 100 x 0.0015 = 0.15 NEAR a day: from the 8.94 NEAR the
+/// relayer held that day, 39 days to [`REGISTRATION_BALANCE_FLOOR`]. (The gas
+/// of the settlements themselves is not counted here.)
+const REGISTRATIONS_PER_HOUR: u32 = 20;
+
+/// Most recipients the relayer registers in one UTC day, across every task.
+/// See [`REGISTRATIONS_PER_HOUR`].
+const REGISTRATIONS_PER_DAY: u32 = 100;
+
+/// Relayer balance under which no recipient is registered.
+///
+/// The relayer also pays the gas of every settlement (0.00031 to 0.00038 NEAR
+/// on its 20 mainnet meta-transactions), so registrations stop with ~8,000
+/// settlements of gas left: recipients already registered keep settling while
+/// somebody refills the account.
+const REGISTRATION_BALANCE_FLOOR: NearToken = NearToken::from_near(3);
+
+/// Why the relayer is not registering a recipient: the cause carried by
+/// [`FacilitatorLocalError::RecipientNotRegistered`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Refusal {
+    /// [`REGISTRATIONS_PER_HOUR`] reached in this UTC hour.
+    HourlyCap,
+    /// [`REGISTRATIONS_PER_DAY`] reached in this UTC day.
+    DailyCap,
+    /// The relayer holds less than [`REGISTRATION_BALANCE_FLOOR`].
+    BalanceFloor,
+    /// The shared count could not be read or written. An unknown count is not
+    /// room for one more.
+    CountUnavailable,
+}
+
+impl Refusal {
+    fn as_str(self) -> &'static str {
+        match self {
+            Refusal::HourlyCap => "hourly_cap",
+            Refusal::DailyCap => "daily_cap",
+            Refusal::BalanceFloor => "balance_floor",
+            Refusal::CountUnavailable => "count_unavailable",
+        }
+    }
+}
+
+/// A window the registrations are counted in. Both start at the Unix epoch,
+/// so they are UTC hours and UTC days.
+#[derive(Clone, Copy)]
+struct Window {
+    /// What the window's keys carry: `h` or `d`.
+    tag: &'static str,
+    secs: u64,
+    cap: u32,
+    full: Refusal,
+}
+
+/// Hour first: see [`RegistrationBudget::take`].
+const WINDOWS: [Window; 2] = [
+    Window {
+        tag: "h",
+        secs: 3_600,
+        cap: REGISTRATIONS_PER_HOUR,
+        full: Refusal::HourlyCap,
+    },
+    Window {
+        tag: "d",
+        secs: 86_400,
+        cap: REGISTRATIONS_PER_DAY,
+        full: Refusal::DailyCap,
+    },
+];
+
+/// Seconds since the Unix epoch: the clock the windows run on.
+type Clock = Arc<dyn Fn() -> u64 + Send + Sync>;
+
+fn wall_clock() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_secs())
+        .unwrap_or(0)
+}
+
+/// The claim store the registrations are counted in, shared with the rest of
+/// the service like the other families' (`NONCE_STORE_TABLE_NAME`).
+static REGISTRATION_STORE: tokio::sync::OnceCell<Arc<dyn NonceStore>> =
+    tokio::sync::OnceCell::const_new();
+
+/// The relayer's registrations, counted across every task of the service.
+///
+/// The service runs several tasks (`desiredCount` 3 on 2026-10-26, between
+/// `min_capacity` and `max_capacity` in
+/// `terraform/environments/production/variables.tf`) and they all spend the
+/// same relayer, so the count cannot live in one task's memory. It lives in
+/// the claim store the service already shares ([`NonceStore`]: the DynamoDB
+/// table `facilitator-nonces` in production), one key per registration: slot
+/// `i` of a window is `near-registration#<network>#<tag><window>#<i>`, taken
+/// with the store's conditional put, so no two tasks take the same slot and a
+/// window never holds more than its cap whichever tasks registered. Without a
+/// table the store is this process's memory and the caps are per task.
+///
+/// A slot is put only once every lower one was seen taken, and none is ever
+/// given back, so the taken slots of a window are always a prefix of it: the
+/// window is full exactly when its last slot is taken (the one read verify
+/// makes), and its first free slot is a binary search over reads. Settle
+/// reads where both windows stand before it puts anything, so a full window
+/// costs no slot of the other one and a put lands on a taken slot only when
+/// another task took it in between. Each task remembers how far into the
+/// current windows it has seen slots taken, so a window it saw fill costs no
+/// store call at all.
+struct RegistrationBudget {
+    network: Network,
+    /// `None`: [`REGISTRATION_STORE`].
+    store: Option<Arc<dyn NonceStore>>,
+    clock: Clock,
+    /// Per entry of [`WINDOWS`]: (window number, first slot not seen taken).
+    seen: std::sync::Mutex<[(u64, u32); 2]>,
+}
+
+impl RegistrationBudget {
+    fn new(network: Network) -> Self {
+        Self::with(network, None, Arc::new(wall_clock))
+    }
+
+    fn with(network: Network, store: Option<Arc<dyn NonceStore>>, clock: Clock) -> Self {
+        Self {
+            network,
+            store,
+            clock,
+            seen: std::sync::Mutex::new([(0, 0); 2]),
+        }
+    }
+
+    async fn store(&self) -> Arc<dyn NonceStore> {
+        match &self.store {
+            Some(store) => store.clone(),
+            None => REGISTRATION_STORE
+                .get_or_init(|| async {
+                    let store = crate::nonce_store::create_nonce_store().await;
+                    if store.store_type() == "memory" {
+                        tracing::warn!(
+                            "NEAR registration caps are counted per task: no shared store \
+                             (NONCE_STORE_TABLE_NAME), so the service may register up to \
+                             its task count times the caps"
+                        );
+                    }
+                    store
+                })
+                .await
+                .clone(),
+        }
+    }
+
+    fn slot_key(&self, window: &Window, number: u64, slot: u32) -> String {
+        format!(
+            "near-registration#{}#{}{}#{}",
+            self.network, window.tag, number, slot
+        )
+    }
+
+    /// The first slot of window `w` (number `number`) not seen taken here.
+    fn next_slot(&self, w: usize, number: u64) -> u32 {
+        let seen = self.seen.lock().unwrap_or_else(|e| e.into_inner());
+        match seen[w] {
+            (current, next) if current == number => next,
+            _ => 0,
+        }
+    }
+
+    /// Record that every slot of window `w` below `next` is taken.
+    fn saw_taken(&self, w: usize, number: u64, next: u32) {
+        let mut seen = self.seen.lock().unwrap_or_else(|e| e.into_inner());
+        if seen[w].0 != number {
+            seen[w] = (number, next);
+        } else if seen[w].1 < next {
+            seen[w].1 = next;
+        }
+    }
+
+    /// Whether one more registration fits now, without taking it (verify).
+    async fn check(&self) -> Result<(), Refusal> {
+        let now = (self.clock)();
+        let store = self.store().await;
+        for (w, window) in WINDOWS.iter().enumerate() {
+            let number = now / window.secs;
+            if self.next_slot(w, number) >= window.cap {
+                return Err(window.full);
+            }
+            match store
+                .is_used(&self.slot_key(window, number, window.cap - 1))
+                .await
+            {
+                Ok(false) => {}
+                Ok(true) => {
+                    self.saw_taken(w, number, window.cap);
+                    return Err(window.full);
+                }
+                Err(e) => {
+                    tracing::warn!(network = %self.network, error = %e, "NEAR registration count unreadable");
+                    return Err(Refusal::CountUnavailable);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// The first slot of `window` (number `number`) from `from` on that is not
+    /// taken, or its cap when there is none. The taken slots are a prefix of
+    /// the window, so this is a binary search over reads. A put on a taken key
+    /// -- which the store logs as a replay attempt -- then happens only when
+    /// another task takes the slot between the read and the put, or when the
+    /// store applied a put whose answer was lost and its retry finds the key
+    /// (that costs the slot, never a registration over the cap).
+    async fn first_free(
+        &self,
+        store: &dyn NonceStore,
+        window: &Window,
+        number: u64,
+        from: u32,
+    ) -> Result<u32, Refusal> {
+        let (mut low, mut high) = (from, window.cap);
+        while low < high {
+            let middle = low + (high - low) / 2;
+            match store.is_used(&self.slot_key(window, number, middle)).await {
+                Ok(true) => low = middle + 1,
+                Ok(false) => high = middle,
+                Err(e) => {
+                    tracing::warn!(network = %self.network, error = %e, "NEAR registration count unreadable");
+                    return Err(Refusal::CountUnavailable);
+                }
+            }
+        }
+        Ok(low)
+    }
+
+    /// Take one registration: a slot of the current hour, then one of the
+    /// current day.
+    ///
+    /// Both windows are read first, so a full one is refused before a slot of
+    /// the other is spent. The puts go hour first because an hour never
+    /// outlasts its day (both windows start at the epoch, and a day is 24 of
+    /// them): if another task fills the day between the read and the put, the
+    /// hour slot is lost in an hour that is closed anyway, whereas a day slot
+    /// taken when the hour turned out full would be one day slot fewer for
+    /// nothing. A slot is kept whatever the registration does next: a failure
+    /// costs a slot, never a registration over the cap.
+    async fn take(&self) -> Result<(), Refusal> {
+        let now = (self.clock)();
+        let store = self.store().await;
+        let mut free = [0u32; 2];
+        for (w, window) in WINDOWS.iter().enumerate() {
+            let number = now / window.secs;
+            free[w] = self
+                .first_free(&*store, window, number, self.next_slot(w, number))
+                .await?;
+            self.saw_taken(w, number, free[w]);
+            if free[w] >= window.cap {
+                return Err(window.full);
+            }
+        }
+        for (w, window) in WINDOWS.iter().enumerate() {
+            let number = now / window.secs;
+            let mut slot = free[w];
+            loop {
+                if slot >= window.cap {
+                    self.saw_taken(w, number, window.cap);
+                    return Err(window.full);
+                }
+                let key = self.slot_key(window, number, slot);
+                match store.check_and_mark_used(&key, 2 * window.secs).await {
+                    Ok(()) => {
+                        self.saw_taken(w, number, slot + 1);
+                        break;
+                    }
+                    // Another task took it since the read.
+                    Err(NonceStoreError::NonceAlreadyUsed(_)) => slot += 1,
+                    Err(e) => {
+                        tracing::warn!(network = %self.network, key = %key, error = %e, "NEAR registration count unwritable");
+                        return Err(Refusal::CountUnavailable);
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+}
 
 /// Most gas the inner `ft_transfer` of a delegate action may attach.
 ///
@@ -290,7 +587,8 @@ pub(crate) fn validate_delegate_actions_inner(
 ///
 /// Features:
 /// - Auto-registration: If the USDC recipient is not registered on the token
-///   contract, the facilitator will call storage_deposit before the transfer.
+///   contract, the facilitator will call storage_deposit before the transfer,
+///   within [`RegistrationBudget`] and above [`REGISTRATION_BALANCE_FLOOR`].
 #[derive(Clone)]
 pub struct NearProvider {
     /// The relayer's signer for signing transactions
@@ -301,6 +599,8 @@ pub struct NearProvider {
     rpc_client: Arc<JsonRpcClient>,
     /// Network configuration
     chain: NearChain,
+    /// The registrations the relayer may still pay for.
+    registrations: Arc<RegistrationBudget>,
 }
 
 impl Debug for NearProvider {
@@ -341,7 +641,15 @@ impl NearProvider {
             account_id,
             rpc_client: Arc::new(rpc_client),
             chain,
+            registrations: Arc::new(RegistrationBudget::new(network)),
         })
+    }
+
+    /// The same provider, counting its registrations in `budget`.
+    #[cfg(test)]
+    fn with_registrations(mut self, budget: RegistrationBudget) -> Self {
+        self.registrations = Arc::new(budget);
+        self
     }
 
     /// Get the relayer's public key
@@ -448,9 +756,24 @@ impl NearProvider {
             },
         };
 
-        let response = self.rpc_client.call(request).await.map_err(|e| {
-            FacilitatorLocalError::ContractCall(format!("Failed to call storage_balance_of: {e}"))
-        })?;
+        // Bounded: verify asks this too, and a node that never answers must
+        // not hold a verify open.
+        let timeout = crate::chain::rpc_http_timeout();
+        let response = match tokio::time::timeout(timeout, self.rpc_client.call(request)).await {
+            Ok(Ok(response)) => response,
+            Ok(Err(e)) => {
+                return Err(FacilitatorLocalError::ContractCall(format!(
+                    "Failed to call storage_balance_of: {}",
+                    crate::redact::scrub_urls(&e.to_string())
+                )))
+            }
+            Err(_) => {
+                return Err(FacilitatorLocalError::ContractCall(format!(
+                    "storage_balance_of query timed out after {}ms",
+                    timeout.as_millis()
+                )))
+            }
+        };
 
         match response.kind {
             QueryResponseKind::CallResult(result) => {
@@ -515,7 +838,9 @@ impl NearProvider {
 
         let signed_tx = transaction.sign(&*self.signer);
 
-        tracing::info!(
+        // Warn, not info: every one is relayer money, and the monitor counts them.
+        tracing::warn!(
+            network = %self.network(),
             relayer = %self.account_id,
             token_contract = %token_contract,
             account_to_register = %account_id,
@@ -549,37 +874,89 @@ impl NearProvider {
         Ok(response.transaction.hash)
     }
 
-    /// Ensure the USDC recipient is registered on the token contract
+    /// The relayer's balance, at optimistic finality like the payer reads, so
+    /// a registration that just landed has already left it. Unreadable fails
+    /// closed.
+    async fn relayer_balance(&self) -> Result<NearToken, FacilitatorLocalError> {
+        let request = methods::query::RpcQueryRequest {
+            block_reference: BlockReference::Finality(Finality::None),
+            request: near_primitives::views::QueryRequest::ViewAccount {
+                account_id: self.account_id.clone(),
+            },
+        };
+
+        let timeout = crate::chain::rpc_http_timeout();
+        let response = match tokio::time::timeout(timeout, self.rpc_client.call(request)).await {
+            Ok(Ok(response)) => response,
+            Ok(Err(e)) => {
+                return Err(FacilitatorLocalError::ContractCall(format!(
+                    "Failed to read the relayer balance: {}",
+                    crate::redact::scrub_urls(&e.to_string())
+                )))
+            }
+            Err(_) => {
+                return Err(FacilitatorLocalError::ContractCall(format!(
+                    "Relayer balance query timed out after {}ms",
+                    timeout.as_millis()
+                )))
+            }
+        };
+
+        match response.kind {
+            QueryResponseKind::ViewAccount(account) => Ok(account.amount),
+            _ => Err(FacilitatorLocalError::ContractCall(
+                "Unexpected query response kind for view_account".to_string(),
+            )),
+        }
+    }
+
+    /// The recipient settle has to register first, if any; a payment whose
+    /// recipient the relayer will not register now is refused.
     ///
-    /// If not registered, automatically calls storage_deposit (facilitator pays).
-    async fn ensure_recipient_registered(
+    /// A recipient the token already knows passes untouched: no balance read,
+    /// no count. One it does not know is registered at the relayer's expense,
+    /// so it needs the relayer at or above [`REGISTRATION_BALANCE_FLOOR`] and
+    /// room in both windows of [`RegistrationBudget`]; otherwise the payment is
+    /// refused with [`FacilitatorLocalError::RecipientNotRegistered`] before
+    /// anything is sent. Settle (`take`) takes its slots here; verify only
+    /// reads the count, so it refuses what settle would refuse right now.
+    async fn admit_recipient(
         &self,
-        signed_delegate_action: &SignedDelegateAction,
-    ) -> Result<(), FacilitatorLocalError> {
-        // Get the token contract (receiver of the delegate action)
-        let token_contract = &signed_delegate_action.delegate_action.receiver_id;
-
-        // Extract the USDC recipient from ft_transfer args
-        let usdc_receiver = self.extract_usdc_receiver(signed_delegate_action)?;
-
-        // Check if the recipient is registered
-        let is_registered = self
-            .is_account_registered(token_contract, &usdc_receiver)
-            .await?;
-
-        if !is_registered {
-            tracing::warn!(
-                token_contract = %token_contract,
-                usdc_receiver = %usdc_receiver,
-                "USDC recipient not registered, auto-registering..."
-            );
-
-            // Register the recipient (facilitator pays storage deposit)
-            self.register_account(token_contract, &usdc_receiver)
-                .await?;
+        verification: &VerifyPaymentResult,
+        take: bool,
+    ) -> Result<Option<AccountId>, FacilitatorLocalError> {
+        let recipient = self.extract_usdc_receiver(&verification.signed_delegate_action)?;
+        if self
+            .is_account_registered(&verification.transfer.token, &recipient)
+            .await?
+        {
+            return Ok(None);
         }
 
-        Ok(())
+        let balance = self.relayer_balance().await?;
+        let admitted = if balance < REGISTRATION_BALANCE_FLOOR {
+            Err(Refusal::BalanceFloor)
+        } else if take {
+            self.registrations.take().await
+        } else {
+            self.registrations.check().await
+        };
+        if let Err(refusal) = admitted {
+            tracing::warn!(
+                network = %self.network(),
+                recipient = %recipient,
+                reason = refusal.as_str(),
+                relayer_balance_yocto = balance.as_yoctonear(),
+                phase = if take { "settle" } else { "verify" },
+                "NEAR recipient registration refused"
+            );
+            return Err(FacilitatorLocalError::RecipientNotRegistered(
+                verification.payer.clone().into(),
+                refusal.as_str().to_string(),
+            ));
+        }
+
+        Ok(Some(recipient))
     }
 
     /// Decode a SignedDelegateAction from base64
@@ -1263,6 +1640,8 @@ impl Facilitator for NearProvider {
     async fn verify(&self, request: &VerifyRequest) -> Result<VerifyResponse, Self::Error> {
         let verification = self.verify_payment(request).await?;
         self.check_payer_state(&verification, request).await?;
+        // A recipient settle would not register is refused here already.
+        self.admit_recipient(&verification, false).await?;
         Ok(VerifyResponse::valid(verification.payer.into()))
     }
 
@@ -1275,21 +1654,25 @@ impl Facilitator for NearProvider {
         self.check_payer_state(&verification, request).await?;
 
         // IMPORTANT: Ensure recipient is registered BEFORE submitting meta-transaction
-        // This prevents the "account not registered" error and avoids wasting the user's nonce
-        if let Err(e) = self
-            .ensure_recipient_registered(&verification.signed_delegate_action)
-            .await
-        {
-            tracing::error!(error = %e, "Failed to ensure recipient registration");
-            return Ok(SettleResponse {
-                success: false,
-                error_reason: Some(FacilitatorErrorReason::UnexpectedSettleError),
-                payer: verification.payer.into(),
-                transaction: None,
-                network: self.network(),
-                proof_of_payment: None,
-                extensions: None,
-            });
+        // This prevents the "account not registered" error and avoids wasting the user's nonce.
+        // The registration is the relayer's money: `admit_recipient` refuses it
+        // past the caps or under the floor, before anything is sent.
+        if let Some(recipient) = self.admit_recipient(&verification, true).await? {
+            if let Err(e) = self
+                .register_account(&verification.transfer.token, &recipient)
+                .await
+            {
+                tracing::error!(error = %e, "Failed to ensure recipient registration");
+                return Ok(SettleResponse {
+                    success: false,
+                    error_reason: Some(FacilitatorErrorReason::UnexpectedSettleError),
+                    payer: verification.payer.into(),
+                    transaction: None,
+                    network: self.network(),
+                    proof_of_payment: None,
+                    extensions: None,
+                });
+            }
         }
 
         // Submit the meta-transaction (relayer pays gas!)
@@ -1961,6 +2344,15 @@ mod replay_verify_tests {
                         base64::Engine::decode(&base64::engine::general_purpose::STANDARD, args)
                             .ok()
                     }) == Some(json!({ "account_id": PAYER }).to_string().into_bytes());
+                // MERCHANT is registered on USDC, so verify never reaches the
+                // relayer's registration limits here.
+                let storage_of_merchant = params["request_type"] == "call_function"
+                    && params["account_id"] == USDC
+                    && params["method_name"] == "storage_balance_of"
+                    && params["args_base64"].as_str().and_then(|args| {
+                        base64::Engine::decode(&base64::engine::general_purpose::STANDARD, args)
+                            .ok()
+                    }) == Some(json!({ "account_id": MERCHANT }).to_string().into_bytes());
                 let body = if params["request_type"] == "view_access_key"
                     && params["account_id"] == PAYER
                     && params["public_key"] == PAYER_KEY.public_key().to_string()
@@ -1974,6 +2366,13 @@ mod replay_verify_tests {
                 } else if let (true, Some(balance)) = (balance_of_payer, balance) {
                     json!({"jsonrpc": "2.0", "id": req["id"], "result": {
                         "result": balance.as_bytes(),
+                        "logs": [],
+                        "block_height": 1,
+                        "block_hash": "11111111111111111111111111111111",
+                    }})
+                } else if storage_of_merchant {
+                    json!({"jsonrpc": "2.0", "id": req["id"], "result": {
+                        "result": br#"{"total":"1250000000000000000000","available":"0"}"#.to_vec(),
                         "logs": [],
                         "block_height": 1,
                         "block_hash": "11111111111111111111111111111111",
@@ -2615,5 +3014,918 @@ mod submission_outcome_tests {
                 (other, _) => panic!("{status}: unexpected {other:?}"),
             }
         }
+    }
+}
+
+/// What the relayer spends registering recipients, end to end through
+/// `verify` and `settle` against a stub node that registers what it is sent.
+#[cfg(test)]
+mod registration_gate_tests {
+    use super::replay_verify_tests::{AMOUNT, DELEGATE_NONCE, MERCHANT, PAYER, USDC};
+    use super::*;
+    use crate::nonce_store::{MemoryNonceStore, NonceStore, NonceStoreError};
+    use crate::types::{ExactNearPayload, PaymentPayload, PaymentRequirements, TokenAmount};
+    use axum::{routing::post, Json, Router};
+    use near_crypto::KeyType;
+    use near_primitives::transaction::SignedTransaction;
+    use near_primitives::views::{BlockHeaderView, BlockView};
+    use serde_json::{json, Value};
+    use std::collections::HashSet;
+    use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+    use std::sync::Mutex;
+
+    const USDC_MAINNET: &str = "17208628f84f5d6ad33f0da3bbbeb27ffcb398eac501a31bd6ad2011e36133a1";
+    const RECORDED: &str =
+        include_str!("../../tests/fixtures/near/BY1QXFFLoojaNGr4bzqSW6Cmu1wc2G7sPLcHB6wXsSqM.json");
+    const RELAYER: &str = "facilitator.testnet";
+
+    /// 2026-10-26T00:00:00Z.
+    pub(super) const DAY_START: u64 = 1_792_972_800;
+    pub(super) const HOUR: u64 = 3_600;
+    /// The limits, spelled out (`registration_budget_tests` ties them to the
+    /// constants they stand for).
+    pub(super) const PER_HOUR: usize = 20;
+    pub(super) const PER_DAY: usize = 100;
+    /// 3 NEAR in yoctoNEAR.
+    pub(super) const FLOOR: u128 = 3_000_000_000_000_000_000_000_000;
+    /// About what the relayer held on 2026-10-26.
+    const FUNDED: u128 = 8_900_000_000_000_000_000_000_000;
+
+    /// The chain the stub node answers for.
+    struct Chain {
+        /// Accounts registered on USDC; a `storage_deposit` adds its account.
+        registered: Mutex<HashSet<String>>,
+        /// The relayer's balance in yoctoNEAR (`None`: the read fails).
+        relayer_balance: Option<u128>,
+        storage_deposits: AtomicUsize,
+        meta_transactions: AtomicUsize,
+    }
+
+    impl Chain {
+        /// MERCHANT registered, the relayer holding `relayer_balance`.
+        fn holding(relayer_balance: Option<u128>) -> Arc<Self> {
+            Arc::new(Self {
+                registered: Mutex::new(HashSet::from([MERCHANT.to_string()])),
+                relayer_balance,
+                storage_deposits: AtomicUsize::new(0),
+                meta_transactions: AtomicUsize::new(0),
+            })
+        }
+
+        /// `storage_deposit` transactions sent: registrations paid.
+        fn deposits(&self) -> usize {
+            self.storage_deposits.load(Ordering::SeqCst)
+        }
+
+        /// Meta-transactions sent: transfers attempted.
+        fn transfers(&self) -> usize {
+            self.meta_transactions.load(Ordering::SeqCst)
+        }
+    }
+
+    /// The recorded mainnet settlement, retold as PAYER paying `recipient`.
+    fn outcome_paying(recipient: &str) -> Value {
+        serde_json::from_str(
+            &RECORDED
+                .replace(USDC_MAINNET, USDC)
+                .replace("uvd-buyer.near", PAYER)
+                .replace("402milly.near", recipient),
+        )
+        .unwrap()
+    }
+
+    fn view(bytes: &[u8]) -> Value {
+        json!({
+            "result": bytes,
+            "logs": [],
+            "block_height": 1,
+            "block_hash": "11111111111111111111111111111111",
+        })
+    }
+
+    fn call_args(params: &Value) -> Value {
+        params["args_base64"]
+            .as_str()
+            .and_then(|args| {
+                base64::Engine::decode(&base64::engine::general_purpose::STANDARD, args).ok()
+            })
+            .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+            .unwrap_or(Value::Null)
+    }
+
+    /// The stub node's `result` for `req`; `None` for a call it does not expect.
+    fn answer(chain: &Chain, req: &Value) -> Option<Value> {
+        let params = &req["params"];
+        let on_usdc = |method: &str| {
+            params["request_type"] == "call_function"
+                && params["account_id"] == USDC
+                && params["method_name"] == method
+        };
+        match req["method"].as_str()? {
+            "broadcast_tx_commit" => {
+                let raw = base64::Engine::decode(
+                    &base64::engine::general_purpose::STANDARD,
+                    params[0].as_str()?,
+                )
+                .ok()?;
+                let sent: SignedTransaction = borsh::from_slice(&raw).ok()?;
+                match sent.transaction.actions() {
+                    [Action::FunctionCall(call)] if call.method_name == "storage_deposit" => {
+                        let args: StorageDepositArgs = serde_json::from_slice(&call.args).ok()?;
+                        chain.storage_deposits.fetch_add(1, Ordering::SeqCst);
+                        chain.registered.lock().unwrap().insert(args.account_id?);
+                        Some(outcome_paying(MERCHANT))
+                    }
+                    [Action::Delegate(signed)] => {
+                        let Action::FunctionCall(call) =
+                            Action::from(signed.delegate_action.actions.first()?.clone())
+                        else {
+                            return None;
+                        };
+                        let args: FtTransferArgs = serde_json::from_slice(&call.args).ok()?;
+                        chain.meta_transactions.fetch_add(1, Ordering::SeqCst);
+                        Some(outcome_paying(&args.receiver_id))
+                    }
+                    _ => None,
+                }
+            }
+            "block" => serde_json::to_value(BlockView {
+                author: "validator.testnet".parse().unwrap(),
+                header: BlockHeaderView::default(),
+                chunks: vec![],
+            })
+            .ok(),
+            "query" if params["request_type"] == "view_access_key" => {
+                let nonce = if params["account_id"] == PAYER {
+                    DELEGATE_NONCE - 1
+                } else {
+                    7
+                };
+                Some(json!({
+                    "nonce": nonce,
+                    "permission": "FullAccess",
+                    "block_height": 1,
+                    "block_hash": "11111111111111111111111111111111",
+                }))
+            }
+            "query"
+                if params["request_type"] == "view_account" && params["account_id"] == RELAYER =>
+            {
+                Some(json!({
+                    "amount": chain.relayer_balance?.to_string(),
+                    "locked": "0",
+                    "code_hash": "11111111111111111111111111111111",
+                    "storage_usage": 264,
+                    "storage_paid_at": 0,
+                    "block_height": 1,
+                    "block_hash": "11111111111111111111111111111111",
+                }))
+            }
+            "query" if on_usdc("storage_balance_of") => {
+                let account = call_args(params)["account_id"].as_str()?.to_string();
+                let bytes: &[u8] = if chain.registered.lock().unwrap().contains(&account) {
+                    br#"{"total":"1250000000000000000000","available":"0"}"#
+                } else {
+                    b"null"
+                };
+                Some(view(bytes))
+            }
+            "query" if on_usdc("ft_balance_of") && call_args(params)["account_id"] == PAYER => {
+                Some(view(br#""1000000""#))
+            }
+            _ => None,
+        }
+    }
+
+    /// A store that cannot answer.
+    #[derive(Debug)]
+    pub(super) struct Unreachable;
+
+    #[async_trait::async_trait]
+    impl NonceStore for Unreachable {
+        async fn check_and_mark_used(&self, _: &str, _: u64) -> Result<(), NonceStoreError> {
+            Err(NonceStoreError::WriteError("unreachable".to_string()))
+        }
+
+        async fn is_used(&self, _: &str) -> Result<bool, NonceStoreError> {
+            Err(NonceStoreError::ReadError("unreachable".to_string()))
+        }
+
+        async fn health_check(&self) -> Result<(), NonceStoreError> {
+            Err(NonceStoreError::ConnectionFailed("unreachable".to_string()))
+        }
+
+        fn store_type(&self) -> &'static str {
+            "unreachable"
+        }
+    }
+
+    /// A provider on a stub node for `chain`, its registrations counted on
+    /// `clock` in a store of its own.
+    async fn provider_on(chain: Arc<Chain>, clock: Arc<AtomicU64>) -> NearProvider {
+        provider_sharing(chain, clock, Arc::new(MemoryNonceStore::new())).await
+    }
+
+    /// The same, counting in `store`: two of these on one store are two tasks
+    /// of the service.
+    async fn provider_sharing(
+        chain: Arc<Chain>,
+        clock: Arc<AtomicU64>,
+        store: Arc<dyn NonceStore>,
+    ) -> NearProvider {
+        let app = Router::new().route(
+            "/",
+            post(move |Json(req): Json<Value>| {
+                let chain = chain.clone();
+                async move {
+                    Json(match answer(&chain, &req) {
+                        Some(result) => {
+                            json!({"jsonrpc": "2.0", "id": req["id"], "result": result})
+                        }
+                        None => json!({"jsonrpc": "2.0", "id": req["id"], "error": {
+                            "code": -32601, "message": format!("unexpected call {req}"),
+                        }}),
+                    })
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let provider = NearProvider::try_new(
+            SecretKey::from_random(KeyType::ED25519),
+            RELAYER.to_string(),
+            format!("http://{addr}"),
+            Network::NearTestnet,
+        )
+        .unwrap();
+        gated(provider, clock, store)
+    }
+
+    /// `provider`, counting its registrations in `store` on `clock`.
+    fn gated(
+        provider: NearProvider,
+        clock: Arc<AtomicU64>,
+        store: Arc<dyn NonceStore>,
+    ) -> NearProvider {
+        provider.with_registrations(RegistrationBudget::with(
+            Network::NearTestnet,
+            Some(store),
+            Arc::new(move || clock.load(Ordering::SeqCst)),
+        ))
+    }
+
+    static PAYER_KEY: once_cell::sync::Lazy<SecretKey> =
+        once_cell::sync::Lazy::new(|| SecretKey::from_random(KeyType::ED25519));
+
+    /// AMOUNT of USDC from PAYER to `recipient`, signed by PAYER.
+    fn paying(recipient: &str) -> VerifyRequest {
+        let payer: Signer =
+            InMemorySigner::from_secret_key(PAYER.parse().unwrap(), PAYER_KEY.clone());
+        let transfer = Action::FunctionCall(Box::new(FunctionCallAction {
+            method_name: "ft_transfer".to_string(),
+            args: json!({"receiver_id": recipient, "amount": AMOUNT.to_string()})
+                .to_string()
+                .into_bytes(),
+            gas: Gas::from_teragas(30),
+            deposit: NearToken::from_yoctonear(1),
+        }));
+        let delegate_action = DelegateAction {
+            sender_id: PAYER.parse().unwrap(),
+            receiver_id: USDC.parse().unwrap(),
+            actions: vec![NonDelegateAction::try_from(transfer).unwrap()],
+            nonce: DELEGATE_NONCE,
+            max_block_height: 1_000_000,
+            public_key: payer.public_key(),
+        };
+        let signature = payer.sign(delegate_action.get_nep461_hash().as_bytes());
+        let encoded = base64::Engine::encode(
+            &base64::engine::general_purpose::STANDARD,
+            borsh::to_vec(&SignedDelegateAction {
+                delegate_action,
+                signature,
+            })
+            .unwrap(),
+        );
+        VerifyRequest {
+            x402_version: X402Version::V1,
+            payment_payload: PaymentPayload {
+                x402_version: X402Version::V1,
+                scheme: Scheme::Exact,
+                network: Network::NearTestnet,
+                payload: ExactPaymentPayload::Near(ExactNearPayload {
+                    signed_delegate_action: encoded,
+                }),
+            },
+            payment_requirements: PaymentRequirements {
+                scheme: Scheme::Exact,
+                network: Network::NearTestnet,
+                max_amount_required: TokenAmount(alloy::primitives::U256::from(AMOUNT)),
+                resource: url::Url::parse("https://example.com/paid").unwrap(),
+                description: String::new(),
+                mime_type: "application/json".to_string(),
+                output_schema: None,
+                pay_to: MixedAddress::Near(recipient.to_string()),
+                max_timeout_seconds: 60,
+                asset: MixedAddress::Near(USDC.to_string()),
+                extra: None,
+            },
+        }
+    }
+
+    /// A recipient USDC does not know yet: the `i`-th implicit account.
+    fn new_recipient(i: usize) -> String {
+        format!("{i:064x}")
+    }
+
+    async fn settle_to(
+        provider: &NearProvider,
+        recipient: &str,
+    ) -> Result<SettleResponse, FacilitatorLocalError> {
+        provider.settle(&paying(recipient)).await
+    }
+
+    #[track_caller]
+    fn assert_paid(result: Result<SettleResponse, FacilitatorLocalError>) {
+        match result {
+            Ok(response) if response.success => {}
+            other => panic!("expected the payment settled, got {other:?}"),
+        }
+    }
+
+    #[track_caller]
+    fn assert_valid(result: Result<VerifyResponse, FacilitatorLocalError>) {
+        match result {
+            Ok(VerifyResponse::Valid { .. }) => {}
+            other => panic!("expected the payment valid, got {other:?}"),
+        }
+    }
+
+    #[track_caller]
+    fn assert_refused<T: std::fmt::Debug>(result: Result<T, FacilitatorLocalError>, cause: &str) {
+        match result {
+            Err(e) => assert_eq!(e.to_string(), format!("recipient_not_registered: {cause}")),
+            Ok(other) => panic!("expected the recipient refused ({cause}), got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn settle_registers_at_most_the_hourly_cap() {
+        let chain = Chain::holding(Some(FUNDED));
+        let clock = Arc::new(AtomicU64::new(DAY_START + 10 * HOUR));
+        let provider = provider_on(chain.clone(), clock.clone()).await;
+
+        for i in 0..PER_HOUR {
+            assert_paid(settle_to(&provider, &new_recipient(i)).await);
+        }
+        assert_eq!(chain.deposits(), PER_HOUR);
+
+        // The last second of that hour.
+        clock.store(DAY_START + 11 * HOUR - 1, Ordering::SeqCst);
+        assert_refused(
+            settle_to(&provider, &new_recipient(PER_HOUR)).await,
+            "hourly_cap",
+        );
+        assert_eq!(chain.deposits(), PER_HOUR, "refused before registering");
+        assert_eq!(chain.transfers(), PER_HOUR, "refused before the transfer");
+
+        // The next hour has room again.
+        clock.store(DAY_START + 11 * HOUR, Ordering::SeqCst);
+        assert_paid(settle_to(&provider, &new_recipient(PER_HOUR)).await);
+        assert_eq!(chain.deposits(), PER_HOUR + 1);
+    }
+
+    #[tokio::test]
+    async fn settle_registers_at_most_the_daily_cap() {
+        let chain = Chain::holding(Some(FUNDED));
+        let clock = Arc::new(AtomicU64::new(DAY_START));
+        let provider = provider_on(chain.clone(), clock.clone()).await;
+
+        let mut next = 0;
+        for hour in 0..(PER_DAY / PER_HOUR) as u64 {
+            clock.store(DAY_START + hour * HOUR, Ordering::SeqCst);
+            for _ in 0..PER_HOUR {
+                assert_paid(settle_to(&provider, &new_recipient(next)).await);
+                next += 1;
+            }
+        }
+        assert_eq!(chain.deposits(), PER_DAY);
+
+        // An hour with room, the last second of the same day.
+        clock.store(DAY_START + 24 * HOUR - 1, Ordering::SeqCst);
+        assert_refused(
+            settle_to(&provider, &new_recipient(next)).await,
+            "daily_cap",
+        );
+        assert_eq!(chain.deposits(), PER_DAY, "refused before registering");
+
+        clock.store(DAY_START + 24 * HOUR, Ordering::SeqCst);
+        assert_paid(settle_to(&provider, &new_recipient(next)).await);
+        assert_eq!(chain.deposits(), PER_DAY + 1);
+    }
+
+    #[tokio::test]
+    async fn no_recipient_is_registered_under_the_balance_floor() {
+        let clock = Arc::new(AtomicU64::new(DAY_START));
+        let short = Chain::holding(Some(FLOOR - 1));
+        let provider = provider_on(short.clone(), clock.clone()).await;
+
+        assert_refused(
+            settle_to(&provider, &new_recipient(0)).await,
+            "balance_floor",
+        );
+        assert_eq!(
+            (short.deposits(), short.transfers()),
+            (0, 0),
+            "nothing sent"
+        );
+
+        // A recipient already registered still settles.
+        assert_paid(settle_to(&provider, MERCHANT).await);
+        assert_eq!((short.deposits(), short.transfers()), (0, 1));
+
+        // Exactly the floor is enough.
+        let at_floor = Chain::holding(Some(FLOOR));
+        let provider = provider_on(at_floor.clone(), clock).await;
+        assert_paid(settle_to(&provider, &new_recipient(0)).await);
+        assert_eq!(at_floor.deposits(), 1);
+    }
+
+    #[tokio::test]
+    async fn an_unread_relayer_balance_registers_nothing() {
+        let chain = Chain::holding(None);
+        let provider = provider_on(chain.clone(), Arc::new(AtomicU64::new(DAY_START))).await;
+
+        let err = settle_to(&provider, &new_recipient(0))
+            .await
+            .expect_err("an unread balance is no room for a registration");
+        assert!(
+            matches!(&err, FacilitatorLocalError::ContractCall(_)),
+            "got {err:?}"
+        );
+        let err = provider
+            .verify(&paying(&new_recipient(0)))
+            .await
+            .expect_err("verify fails closed too");
+        assert!(
+            matches!(&err, FacilitatorLocalError::ContractCall(_)),
+            "got {err:?}"
+        );
+        assert_eq!(
+            (chain.deposits(), chain.transfers()),
+            (0, 0),
+            "nothing sent"
+        );
+
+        // A registered recipient needs no balance read.
+        assert_paid(settle_to(&provider, MERCHANT).await);
+    }
+
+    #[tokio::test]
+    async fn a_registered_recipient_takes_no_slot() {
+        let chain = Chain::holding(Some(FUNDED));
+        let provider = provider_on(chain.clone(), Arc::new(AtomicU64::new(DAY_START))).await;
+
+        for _ in 0..2 * PER_HOUR {
+            assert_paid(settle_to(&provider, MERCHANT).await);
+        }
+        assert_eq!(chain.deposits(), 0);
+
+        // The whole hour is still there for new recipients...
+        for i in 0..PER_HOUR {
+            assert_paid(settle_to(&provider, &new_recipient(i)).await);
+        }
+        assert_refused(
+            settle_to(&provider, &new_recipient(PER_HOUR)).await,
+            "hourly_cap",
+        );
+
+        // ...and with it gone, registered recipients still settle, including
+        // the ones this hour registered.
+        assert_paid(settle_to(&provider, MERCHANT).await);
+        assert_paid(settle_to(&provider, &new_recipient(0)).await);
+        assert_eq!(chain.deposits(), PER_HOUR);
+    }
+
+    #[tokio::test]
+    async fn verify_refuses_a_recipient_settle_would_not_register() {
+        let clock = Arc::new(AtomicU64::new(DAY_START));
+
+        let short = provider_on(Chain::holding(Some(FLOOR - 1)), clock.clone()).await;
+        assert_refused(
+            short.verify(&paying(&new_recipient(0))).await,
+            "balance_floor",
+        );
+        assert_valid(short.verify(&paying(MERCHANT)).await);
+
+        let chain = Chain::holding(Some(FUNDED));
+        let provider = provider_on(chain.clone(), clock).await;
+        for i in 0..PER_HOUR {
+            assert_paid(settle_to(&provider, &new_recipient(i)).await);
+        }
+        assert_refused(
+            provider.verify(&paying(&new_recipient(PER_HOUR))).await,
+            "hourly_cap",
+        );
+        assert_valid(provider.verify(&paying(MERCHANT)).await);
+        assert_valid(provider.verify(&paying(&new_recipient(0))).await);
+    }
+
+    #[tokio::test]
+    async fn verify_takes_no_slot() {
+        let chain = Chain::holding(Some(FUNDED));
+        let provider = provider_on(chain.clone(), Arc::new(AtomicU64::new(DAY_START))).await;
+
+        for i in 0..2 * PER_HOUR {
+            assert_valid(provider.verify(&paying(&new_recipient(i))).await);
+        }
+        for i in 0..PER_HOUR {
+            assert_paid(settle_to(&provider, &new_recipient(i)).await);
+        }
+        assert_eq!(chain.deposits(), PER_HOUR);
+    }
+
+    /// Two tasks of the service on one count: the hour another task filled
+    /// is full for verify and settle here too.
+    #[tokio::test]
+    async fn a_task_refuses_the_hour_another_task_filled() {
+        let chain = Chain::holding(Some(FUNDED));
+        let clock = Arc::new(AtomicU64::new(DAY_START));
+        let store: Arc<dyn NonceStore> = Arc::new(MemoryNonceStore::new());
+        let busy = provider_sharing(chain.clone(), clock.clone(), store.clone()).await;
+        let idle = provider_sharing(chain.clone(), clock, store).await;
+
+        for i in 0..PER_HOUR {
+            assert_paid(settle_to(&busy, &new_recipient(i)).await);
+        }
+        assert_refused(
+            idle.verify(&paying(&new_recipient(PER_HOUR))).await,
+            "hourly_cap",
+        );
+        assert_refused(
+            settle_to(&idle, &new_recipient(PER_HOUR)).await,
+            "hourly_cap",
+        );
+        assert_eq!(chain.deposits(), PER_HOUR);
+    }
+
+    #[tokio::test]
+    async fn an_unreachable_count_registers_nothing() {
+        let chain = Chain::holding(Some(FUNDED));
+        let provider = provider_sharing(
+            chain.clone(),
+            Arc::new(AtomicU64::new(DAY_START)),
+            Arc::new(Unreachable),
+        )
+        .await;
+
+        assert_refused(
+            provider.verify(&paying(&new_recipient(0))).await,
+            "count_unavailable",
+        );
+        assert_refused(
+            settle_to(&provider, &new_recipient(0)).await,
+            "count_unavailable",
+        );
+        assert_eq!(
+            (chain.deposits(), chain.transfers()),
+            (0, 0),
+            "nothing sent"
+        );
+
+        // A registered recipient needs no count.
+        assert_paid(settle_to(&provider, MERCHANT).await);
+    }
+}
+
+/// [`RegistrationBudget`] on its own: one count for every task, read without
+/// the store once a window is full, closed when the store cannot answer.
+#[cfg(test)]
+mod registration_budget_tests {
+    use super::registration_gate_tests::{Unreachable, DAY_START, FLOOR, HOUR, PER_DAY, PER_HOUR};
+    use super::*;
+    use crate::nonce_store::MemoryNonceStore;
+    use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+
+    #[test]
+    fn the_figures_the_tests_use_are_the_limits() {
+        assert_eq!(PER_HOUR, REGISTRATIONS_PER_HOUR as usize);
+        assert_eq!(PER_DAY, REGISTRATIONS_PER_DAY as usize);
+        assert_eq!(FLOOR, REGISTRATION_BALANCE_FLOOR.as_yoctonear());
+        assert_eq!(DAY_START % 86_400, 0, "DAY_START is a UTC midnight");
+    }
+
+    fn budget(
+        network: Network,
+        store: Arc<dyn NonceStore>,
+        clock: &Arc<AtomicU64>,
+    ) -> RegistrationBudget {
+        let clock = clock.clone();
+        RegistrationBudget::with(
+            network,
+            Some(store),
+            Arc::new(move || clock.load(Ordering::SeqCst)),
+        )
+    }
+
+    /// A store that counts what is asked of it.
+    #[derive(Debug, Default)]
+    struct Counted {
+        inner: MemoryNonceStore,
+        reads: AtomicUsize,
+        puts: AtomicUsize,
+        /// Puts on a key already taken: what DynamoDB logs as a replay attempt.
+        collisions: AtomicUsize,
+    }
+
+    impl Counted {
+        fn calls(&self) -> usize {
+            self.reads.load(Ordering::SeqCst) + self.puts.load(Ordering::SeqCst)
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl NonceStore for Counted {
+        async fn check_and_mark_used(
+            &self,
+            key: &str,
+            ttl_seconds: u64,
+        ) -> Result<(), NonceStoreError> {
+            self.puts.fetch_add(1, Ordering::SeqCst);
+            let put = self.inner.check_and_mark_used(key, ttl_seconds).await;
+            if let Err(NonceStoreError::NonceAlreadyUsed(_)) = put {
+                self.collisions.fetch_add(1, Ordering::SeqCst);
+            }
+            put
+        }
+
+        async fn is_used(&self, key: &str) -> Result<bool, NonceStoreError> {
+            self.reads.fetch_add(1, Ordering::SeqCst);
+            self.inner.is_used(key).await
+        }
+
+        async fn health_check(&self) -> Result<(), NonceStoreError> {
+            Ok(())
+        }
+
+        fn store_type(&self) -> &'static str {
+            "counted"
+        }
+    }
+
+    /// A store in memory whose reads or puts misbehave.
+    #[derive(Debug, Default)]
+    struct Faulty {
+        inner: MemoryNonceStore,
+        /// Reads fail.
+        reads_fail: bool,
+        /// Reads see nothing taken: every slot looks free until the put, as
+        /// when another task takes it between the read and the put.
+        reads_blind: bool,
+        /// Puts fail.
+        puts_fail: bool,
+    }
+
+    #[async_trait::async_trait]
+    impl NonceStore for Faulty {
+        async fn check_and_mark_used(
+            &self,
+            key: &str,
+            ttl_seconds: u64,
+        ) -> Result<(), NonceStoreError> {
+            if self.puts_fail {
+                return Err(NonceStoreError::WriteError("refused".to_string()));
+            }
+            self.inner.check_and_mark_used(key, ttl_seconds).await
+        }
+
+        async fn is_used(&self, key: &str) -> Result<bool, NonceStoreError> {
+            if self.reads_fail {
+                return Err(NonceStoreError::ReadError("refused".to_string()));
+            }
+            if self.reads_blind {
+                return Ok(false);
+            }
+            self.inner.is_used(key).await
+        }
+
+        async fn health_check(&self) -> Result<(), NonceStoreError> {
+            Ok(())
+        }
+
+        fn store_type(&self) -> &'static str {
+            "faulty"
+        }
+    }
+
+    #[tokio::test]
+    async fn every_task_draws_on_one_count() {
+        let store = Arc::new(Counted::default());
+        let clock = Arc::new(AtomicU64::new(DAY_START));
+        let tasks = [
+            budget(Network::Near, store.clone(), &clock),
+            budget(Network::Near, store.clone(), &clock),
+            budget(Network::Near, store.clone(), &clock),
+        ];
+
+        let mut taken = 0;
+        for _ in 0..PER_HOUR {
+            for task in &tasks {
+                if task.take().await.is_ok() {
+                    taken += 1;
+                }
+            }
+        }
+        assert_eq!(taken, PER_HOUR, "three tasks, one hourly cap");
+        for task in &tasks {
+            assert_eq!(task.check().await, Err(Refusal::HourlyCap));
+            assert_eq!(task.take().await, Err(Refusal::HourlyCap));
+        }
+        // Each task finds the slots the others took by reading, not by
+        // putting on them: one put per window per registration.
+        assert_eq!(store.collisions.load(Ordering::SeqCst), 0);
+        assert_eq!(store.puts.load(Ordering::SeqCst), 2 * PER_HOUR);
+    }
+
+    /// A full day is refused before an hour slot is spent, also by a task
+    /// that has not seen it fill.
+    #[tokio::test]
+    async fn a_full_day_spends_no_slot_of_the_hour() {
+        let store = Arc::new(Counted::default());
+        let clock = Arc::new(AtomicU64::new(DAY_START));
+        let busy = budget(Network::Near, store.clone(), &clock);
+        let fresh = budget(Network::Near, store.clone(), &clock);
+
+        for hour in 0..(PER_DAY / PER_HOUR) as u64 {
+            clock.store(DAY_START + hour * HOUR, Ordering::SeqCst);
+            for _ in 0..PER_HOUR {
+                busy.take().await.unwrap();
+            }
+        }
+        let late = DAY_START + 20 * HOUR;
+        clock.store(late, Ordering::SeqCst);
+        let puts = store.puts.load(Ordering::SeqCst);
+        for task in [&busy, &fresh] {
+            for _ in 0..3 {
+                assert_eq!(task.take().await, Err(Refusal::DailyCap));
+            }
+        }
+        assert_eq!(store.puts.load(Ordering::SeqCst), puts, "nothing taken");
+        assert!(
+            !store
+                .is_used(&busy.slot_key(&WINDOWS[0], late / HOUR, 0))
+                .await
+                .unwrap(),
+            "the hour is untouched"
+        );
+    }
+
+    /// What verify reads on a task that took none of the slots: another
+    /// task's registrations fill the window for it too.
+    #[tokio::test]
+    async fn a_window_filled_by_another_task_reads_full() {
+        let store: Arc<dyn NonceStore> = Arc::new(MemoryNonceStore::new());
+        let clock = Arc::new(AtomicU64::new(DAY_START));
+        let busy = budget(Network::Near, store.clone(), &clock);
+        let idle = budget(Network::Near, store, &clock);
+
+        for _ in 0..PER_HOUR - 1 {
+            busy.take().await.unwrap();
+        }
+        assert_eq!(idle.check().await, Ok(()), "one slot left this hour");
+        busy.take().await.unwrap();
+        assert_eq!(idle.check().await, Err(Refusal::HourlyCap));
+
+        for hour in 1..(PER_DAY / PER_HOUR) as u64 {
+            clock.store(DAY_START + hour * HOUR, Ordering::SeqCst);
+            for _ in 0..PER_HOUR {
+                busy.take().await.unwrap();
+            }
+        }
+        clock.store(DAY_START + 23 * HOUR, Ordering::SeqCst);
+        assert_eq!(idle.check().await, Err(Refusal::DailyCap));
+    }
+
+    #[tokio::test]
+    async fn a_full_window_answers_without_the_store() {
+        let store = Arc::new(Counted::default());
+        let clock = Arc::new(AtomicU64::new(DAY_START));
+        let task = budget(Network::Near, store.clone(), &clock);
+
+        for _ in 0..PER_HOUR {
+            task.take().await.unwrap();
+        }
+        assert_eq!(task.take().await, Err(Refusal::HourlyCap));
+        let calls = store.calls();
+
+        for _ in 0..10 {
+            assert_eq!(task.take().await, Err(Refusal::HourlyCap));
+            assert_eq!(task.check().await, Err(Refusal::HourlyCap));
+        }
+        assert_eq!(
+            store.calls(),
+            calls,
+            "a window this task saw fill costs no store call"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_count_the_store_cannot_give_admits_nothing() {
+        let clock = Arc::new(AtomicU64::new(DAY_START));
+        let unreachable = budget(Network::Near, Arc::new(Unreachable), &clock);
+        assert_eq!(unreachable.take().await, Err(Refusal::CountUnavailable));
+        assert_eq!(unreachable.check().await, Err(Refusal::CountUnavailable));
+
+        let unreadable = Arc::new(Faulty {
+            reads_fail: true,
+            ..Faulty::default()
+        });
+        let task = budget(Network::Near, unreadable, &clock);
+        assert_eq!(task.take().await, Err(Refusal::CountUnavailable));
+        assert_eq!(task.check().await, Err(Refusal::CountUnavailable));
+
+        let unwritable = Arc::new(Faulty {
+            puts_fail: true,
+            ..Faulty::default()
+        });
+        let task = budget(Network::Near, unwritable, &clock);
+        assert_eq!(task.take().await, Err(Refusal::CountUnavailable));
+    }
+
+    /// Two tasks whose reads miss what the other just took: the put is what
+    /// decides, a slot is counted once, and a full hour found that way spends
+    /// no slot of the day.
+    #[tokio::test]
+    async fn a_slot_taken_after_the_read_is_not_taken_twice() {
+        let store = Arc::new(Faulty {
+            reads_blind: true,
+            ..Faulty::default()
+        });
+        let clock = Arc::new(AtomicU64::new(DAY_START));
+        let tasks = [
+            budget(Network::Near, store.clone(), &clock),
+            budget(Network::Near, store.clone(), &clock),
+        ];
+
+        let mut taken = 0;
+        for _ in 0..PER_HOUR {
+            for task in &tasks {
+                if task.take().await.is_ok() {
+                    taken += 1;
+                }
+            }
+        }
+        assert_eq!(taken, PER_HOUR, "two tasks, one hourly cap");
+        let day = DAY_START / 86_400;
+        for slot in 0..PER_DAY {
+            let used = store
+                .inner
+                .is_used(&tasks[0].slot_key(&WINDOWS[1], day, slot as u32))
+                .await
+                .unwrap();
+            assert_eq!(used, slot < PER_HOUR, "day slot {slot}");
+        }
+    }
+
+    #[tokio::test]
+    async fn each_network_counts_its_own() {
+        let store: Arc<dyn NonceStore> = Arc::new(MemoryNonceStore::new());
+        let clock = Arc::new(AtomicU64::new(DAY_START));
+        let testnet = budget(Network::NearTestnet, store.clone(), &clock);
+        let mainnet = budget(Network::Near, store, &clock);
+
+        for _ in 0..PER_HOUR {
+            testnet.take().await.unwrap();
+        }
+        assert_eq!(testnet.take().await, Err(Refusal::HourlyCap));
+        assert_eq!(mainnet.check().await, Ok(()));
+        assert_eq!(mainnet.take().await, Ok(()));
+    }
+
+    /// A registration refused by a full hour leaves the day alone, so the day
+    /// still holds its whole cap across the other hours.
+    #[tokio::test]
+    async fn a_refused_hour_spends_nothing_of_the_day() {
+        let store: Arc<dyn NonceStore> = Arc::new(MemoryNonceStore::new());
+        let clock = Arc::new(AtomicU64::new(DAY_START));
+        let task = budget(Network::Near, store.clone(), &clock);
+        let other = budget(Network::Near, store, &clock);
+
+        for _ in 0..PER_HOUR {
+            task.take().await.unwrap();
+        }
+        for _ in 0..PER_HOUR {
+            assert_eq!(task.take().await, Err(Refusal::HourlyCap));
+            assert_eq!(other.take().await, Err(Refusal::HourlyCap));
+        }
+        for hour in 1..(PER_DAY / PER_HOUR) as u64 {
+            clock.store(DAY_START + hour * HOUR, Ordering::SeqCst);
+            for _ in 0..PER_HOUR {
+                task.take().await.unwrap();
+            }
+        }
+        clock.store(DAY_START + 23 * HOUR, Ordering::SeqCst);
+        assert_eq!(other.check().await, Err(Refusal::DailyCap));
+        assert_eq!(task.take().await, Err(Refusal::DailyCap));
     }
 }

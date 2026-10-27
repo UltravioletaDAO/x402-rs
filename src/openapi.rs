@@ -395,7 +395,10 @@ placeholders, not a real authorization, so copied verbatim it answers `200` with
 `invalid_timing`, `insufficient_funds`, `insufficient_value`,
 `receiver_mismatch`, `invalid_network`, `invalid_scheme`,
 `unexpected_settle_error`. Switch on it, but keep a default arm -- the list is
-open. It was `null` for every cause before 2.13.0.
+open. It was `null` for every cause before 2.13.0. On NEAR,
+`recipient_not_registered` means `payTo` is not registered on the USDC
+contract and the facilitator is not paying for new registrations right now;
+registering it (`storage_deposit`) or retrying later clears it.
 
 **Five things in that shape are load-bearing:**
 - `paymentPayload` carries its own `x402Version`, `scheme` and `network` at its root.

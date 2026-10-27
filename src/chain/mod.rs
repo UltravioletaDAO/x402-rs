@@ -349,6 +349,16 @@ pub enum FacilitatorLocalError {
     /// correlation id only we can resolve.
     #[error("unsupported_asset: network={1}, asset={2}")]
     UnsupportedAsset(Option<MixedAddress>, Network, String),
+    /// The recipient of a NEAR payment is not registered on the token, and the
+    /// relayer is not paying for new registrations right now: a spending cap or
+    /// its balance floor (`chain::near`), or a count it could not read.
+    ///
+    /// A verdict on the payment as it stands, answered
+    /// `recipient_not_registered` before anything is spent. Registering the
+    /// recipient on the token (`storage_deposit`) or retrying later clears it.
+    /// The string is which limit refused it, for the logs.
+    #[error("recipient_not_registered: {1}")]
+    RecipientNotRegistered(MixedAddress, String),
     /// Other errors.
     #[error("{0}")]
     Other(String),

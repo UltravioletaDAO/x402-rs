@@ -1,5 +1,34 @@
 # Changelog
 
+## [2.51.2] - 2026-10-26
+
+Spending cap on the NEAR provider.
+
+### Changed
+
+- **The NEAR relayer pays for registering a new recipient only within a cap.**
+  `settle` registers a `payTo` the USDC contract does not know yet
+  (`storage_deposit`, 0.00125 NEAR plus gas, paid by the relayer) at most 20
+  times per UTC hour and 100 per UTC day, counted across every task of the
+  service in the shared claim store (`NONCE_STORE_TABLE_NAME`), and never while
+  the relayer holds less than 3 NEAR. `REGISTRATIONS_PER_HOUR`,
+  `REGISTRATIONS_PER_DAY` and `REGISTRATION_BALANCE_FLOOR` in
+  `src/chain/near.rs` say why those figures. Past a limit, or with a count it
+  cannot read, the payment is refused before anything is sent with `200`,
+  `"isValid": false` and `"invalidReason": "recipient_not_registered"`;
+  registering `payTo` on the token or retrying later clears it. A recipient
+  that is already registered is never counted nor refused.
+- **NEAR `verify` refuses what `settle` would.** It reads whether `payTo` is
+  registered and, if not, the relayer's balance and the count (without taking
+  a slot), and answers `recipient_not_registered` the same way. A state it
+  cannot read fails closed, and so does that read in `settle`, which used to
+  answer `success: false` for it.
+- Each registration logs a `warn` ("Registering account on token contract"),
+  and each refusal another ("NEAR recipient registration refused", with the
+  limit that refused it), so both can be counted from the logs. Where
+  `/events` publishes failures (`X402_EVENTS_PUBLISH_FAILURES=true`), a refusal
+  has the category `recipient_not_registered`.
+
 ## [2.51.1] - 2026-10-25
 
 NEAR provider hardening. Also ships what was merged after 2.51.0 without a

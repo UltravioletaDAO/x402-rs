@@ -3648,6 +3648,165 @@ mod arc_testnet_identity_tests {
     }
 }
 
+/// HashKey Chain: the identity and the deployments, pinned to what the chains
+/// answered on 2026-10-29 -- `eth_chainId` 0xb1 from mainnet.hsk.xyz and 0x85
+/// from testnet.hsk.xyz, and each USDC's own `name()`, `version()` and
+/// `decimals()`. The domain separators these reproduce are pinned in
+/// `chain::evm`.
+#[cfg(test)]
+mod hashkey_identity_tests {
+    use super::*;
+    use alloy::primitives::address;
+
+    const MAINNET_USDC: alloy::primitives::Address =
+        address!("0x054ed45810DbBAb8B27668922D110669c9D88D0a");
+    const TESTNET_USDC: alloy::primitives::Address =
+        address!("0x8FE3cB719Ee4410E236Cd6b72ab1fCDC06eF53c6");
+
+    #[test]
+    fn hashkey_is_chain_177_and_its_testnet_133_under_both_spellings() {
+        for (network, v1, caip2) in [
+            (Network::HashKey, "hashkey", "eip155:177"),
+            (Network::HashKeyTestnet, "hashkey-testnet", "eip155:133"),
+        ] {
+            assert_eq!(network.to_string(), v1);
+            assert_eq!(network.to_caip2(), caip2);
+            assert_eq!(Network::from_str(v1).unwrap(), network);
+            assert_eq!(Network::from_caip2(caip2), Some(network));
+            assert_eq!(resolve_network(v1), Some(network));
+            assert_eq!(resolve_network(caip2), Some(network));
+            assert_eq!(
+                serde_json::to_value(network).unwrap(),
+                serde_json::json!(v1)
+            );
+            assert_eq!(
+                serde_json::from_value::<Network>(serde_json::json!(v1)).unwrap(),
+                network
+            );
+            assert!(
+                Network::variants().contains(&network),
+                "{v1} is in no variants() copy this build compiles, so nothing serves it"
+            );
+            assert!(matches!(NetworkFamily::from(network), NetworkFamily::Evm));
+        }
+        assert!(Network::HashKey.is_mainnet());
+        assert!(Network::HashKeyTestnet.is_testnet());
+    }
+
+    /// No alias was added: only the two names `/supported` publishes resolve,
+    /// and an identifier that is almost one of them is still unknown.
+    #[test]
+    fn only_the_published_hashkey_names_resolve() {
+        for near_miss in [
+            "HashKey",
+            "HASHKEY",
+            "hashkey-mainnet",
+            "hashkey ",
+            " hashkey",
+            "hsk",
+            "hashkey-sepolia",
+            "eip155:0177",
+            "eip155:177 ",
+            "eip155:1770",
+            "eip155:13",
+        ] {
+            assert_eq!(resolve_network(near_miss), None, "`{near_miss}` resolved");
+        }
+    }
+
+    #[test]
+    fn hashkey_usdc_is_the_deployment_each_contract_reports() {
+        for (network, usdc, name) in [
+            (Network::HashKey, MAINNET_USDC, "Bridged USDC"),
+            (Network::HashKeyTestnet, TESTNET_USDC, "USD Coin"),
+        ] {
+            let deployment =
+                get_token_deployment(network, TokenType::Usdc).expect("HashKey carries USDC");
+            assert_eq!(deployment.asset.address, MixedAddress::Evm(usdc.into()));
+            assert_eq!(deployment.asset.network, network);
+            assert_eq!(deployment.decimals, 6);
+            let eip712 = deployment.eip712.expect("a static EIP-712 domain");
+            assert_eq!(eip712.name, name, "{network}");
+            assert_eq!(eip712.version, "2", "{network}");
+            assert_eq!(decimals_for_asset(network, &usdc.to_string()), Some(6));
+        }
+    }
+
+    /// USDC only. HashKey's USDT has no EIP-3009 and no permit, so registering
+    /// it would announce a payment that cannot settle; the testnet's second
+    /// USDC ("Bridged USDC") is not the one the HSP sandbox pins. And each
+    /// network's USDC is refused on the other.
+    #[test]
+    fn hashkey_accepts_its_own_usdc_and_nothing_else() {
+        for network in [Network::HashKey, Network::HashKeyTestnet] {
+            assert_eq!(supported_tokens_for_network(network), vec![TokenType::Usdc]);
+            assert_eq!(exact_payment_tokens(network).len(), 1, "{network}");
+            assert_eq!(supported_asset_addresses(network).len(), 1, "{network}");
+        }
+        let mainnet_usdc: MixedAddress = MAINNET_USDC.into();
+        let testnet_usdc: MixedAddress = TESTNET_USDC.into();
+        assert!(is_supported_asset(Network::HashKey, &mainnet_usdc));
+        assert!(is_supported_asset(Network::HashKeyTestnet, &testnet_usdc));
+        assert!(!is_supported_asset(Network::HashKey, &testnet_usdc));
+        assert!(!is_supported_asset(Network::HashKeyTestnet, &mainnet_usdc));
+
+        let usdt: MixedAddress = address!("0xf1b50ed67a9e2cc94ad3c477779e2d4cbfff9029").into();
+        assert!(!is_supported_asset(Network::HashKey, &usdt));
+        let testnet_bridged: MixedAddress =
+            address!("0x18Ec8e93627c893ae61ae0491c1C98769FD4Dfa2").into();
+        assert!(!is_supported_asset(
+            Network::HashKeyTestnet,
+            &testnet_bridged
+        ));
+    }
+}
+
+/// `variants()` is written out four times, one per `algorand`/`sui` feature
+/// combination, and any build compiles exactly one of them. It is an array, not
+/// a `match`: a network missing from another copy compiles everywhere and is
+/// served nowhere in the builds that use that copy. CI builds only the
+/// production combination, so this reads all four copies from the source and
+/// holds them to one list (guides/ADDING_NEW_CHAINS.md, "The four copies of
+/// `variants()`").
+#[cfg(test)]
+mod variants_copies_tests {
+    use std::collections::BTreeSet;
+
+    #[test]
+    fn the_four_variants_copies_list_the_same_networks() {
+        // Spelled in two pieces so this line is not a fifth copy.
+        let needle = concat!("pub fn ", "variants() -> &'static [Network] {");
+        let copies: Vec<BTreeSet<&str>> = include_str!("network.rs")
+            .split(needle)
+            .skip(1)
+            .map(|body| {
+                body.lines()
+                    .map(str::trim)
+                    .take_while(|line| *line != "]")
+                    .filter_map(|line| line.strip_prefix("Network::"))
+                    .map(|name| name.trim_end_matches(','))
+                    // The one difference the feature gates are there for.
+                    .filter(|name| {
+                        !matches!(*name, "Algorand" | "AlgorandTestnet" | "Sui" | "SuiTestnet")
+                    })
+                    .collect()
+            })
+            .collect();
+        assert_eq!(copies.len(), 4, "expected the four feature-gated copies");
+        for (i, copy) in copies.iter().enumerate().skip(1) {
+            assert_eq!(
+                copy.symmetric_difference(&copies[0]).collect::<Vec<_>>(),
+                Vec::<&&str>::new(),
+                "copy {} of variants() lists different networks than the first",
+                i + 1
+            );
+        }
+        for network in ["HashKey", "HashKeyTestnet", "Base", "ArcTestnet"] {
+            assert!(copies[0].contains(network), "{network} is missing");
+        }
+    }
+}
+
 #[cfg(feature = "hedera")]
 static USDC_HEDERA: Lazy<USDCDeployment> = Lazy::new(|| USDCDeployment(TokenDeployment { asset: TokenAsset { address: MixedAddress::Hedera("0.0.456858".parse().unwrap()), network: Network::Hedera }, decimals: 6, eip712: None }));
 

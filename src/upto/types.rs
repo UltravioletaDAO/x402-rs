@@ -287,6 +287,20 @@ mod proxy_deployment_tests {
         }
     }
 
+    /// HashKey Chain, measured absent on 2026-10-29: `eth_getCode` = 0 bytes on
+    /// mainnet.hsk.xyz and testnet.hsk.xyz, and `is_contract: false` from each
+    /// network's Blockscout (hsk.blockscout.com, testnet-explorer.hskchain.net).
+    /// Permit2 itself IS deployed there; the proxy never was.
+    #[test]
+    fn hashkey_has_no_upto_proxy() {
+        for network in [Network::HashKey, Network::HashKeyTestnet] {
+            assert!(
+                !is_proxy_deployed_on(network),
+                "{network} has no proxy code but would be advertised as upto-capable"
+            );
+        }
+    }
+
     /// The eleven where the proxy really is deployed, 3142 bytes each. Excluding
     /// one of these would silently remove working functionality, which is the
     /// opposite failure and just as quiet.

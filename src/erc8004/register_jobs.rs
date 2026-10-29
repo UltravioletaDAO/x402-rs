@@ -466,6 +466,8 @@ mod tests {
             "reg_42",
             "REG_0123456789abcdef0123456789abcdef",
             "reg_0123456789ABCDEF0123456789abcdef",
+            "reg_0123456789abcdefg123456789abcdef",
+            "reg_zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz",
             "reg_0123456789abcdef0123456789abcde",
             "reg_0123456789abcdef0123456789abcdef0",
             "reg_..",

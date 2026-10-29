@@ -78,6 +78,11 @@ struct NodeState {
     /// While set, `eth_sendRawTransaction` keeps the transaction and answers
     /// an error: a node that took it and whose answer was lost.
     send_answers_lost: bool,
+    /// The same, for transactions whose data starts with one of these.
+    send_answers_lost_for: Vec<[u8; 4]>,
+    /// Once more than this many transactions were sent, every receipt request
+    /// answers an error.
+    receipts_fail_after_sends: Option<usize>,
     /// Reads answered in turn, before `calls`; the last answer repeats.
     call_sequences: HashMap<(Address, [u8; 4]), Vec<CallAnswer>>,
     /// Logs every receipt carries.
@@ -188,6 +193,24 @@ impl MockNode {
     /// [`Self::sent`]) and answer an error (or answer normally again).
     pub(crate) fn lose_send_answers(&self, lost: bool) {
         self.state.lock().unwrap().send_answers_lost = lost;
+    }
+
+    /// [`Self::lose_send_answers`] for transactions whose data starts with
+    /// `selector` only: one step of a flow goes out with its answer lost.
+    pub(crate) fn lose_send_answers_for(&self, selector: [u8; 4]) {
+        self.state
+            .lock()
+            .unwrap()
+            .send_answers_lost_for
+            .push(selector);
+    }
+
+    /// Answer receipts normally until more than `sends` transactions were
+    /// sent, then an error for every receipt request: the transactions after
+    /// the first `sends` never get a receipt back. Counted by sends, not by
+    /// receipt requests, because one confirmation can ask more than once.
+    pub(crate) fn fail_receipts_after_sends(&self, sends: usize) {
+        self.state.lock().unwrap().receipts_fail_after_sends = Some(sends);
     }
 
     /// Every transaction handed to the node, in order.
@@ -402,11 +425,19 @@ fn answer(state: &Mutex<NodeState>, req: &Value) -> Value {
                 .unwrap_or(TIP);
             block_json(number)
         }
-        "eth_getTransactionReceipt" => receipt_json(
-            params[0].as_str().unwrap_or_default(),
-            state.receipts_revert,
-            &state.receipt_logs,
-        ),
+        "eth_getTransactionReceipt" => {
+            if state
+                .receipts_fail_after_sends
+                .is_some_and(|sends| state.sent.len() > sends)
+            {
+                return rpc_error(id, -32603, "upstream request timed out");
+            }
+            receipt_json(
+                params[0].as_str().unwrap_or_default(),
+                state.receipts_revert,
+                &state.receipt_logs,
+            )
+        }
         "eth_sendRawTransaction" => {
             let raw = params[0].as_str().unwrap_or_default();
             let raw = hex::decode(raw.trim_start_matches("0x")).expect("raw tx hex");
@@ -418,7 +449,13 @@ fn answer(state: &Mutex<NodeState>, req: &Value) -> Value {
                 input: tx.input().to_vec(),
                 max_fee_per_gas: tx.max_fee_per_gas(),
             });
-            if state.send_answers_lost {
+            let input = tx.input().to_vec();
+            if state.send_answers_lost
+                || state
+                    .send_answers_lost_for
+                    .iter()
+                    .any(|selector| input.starts_with(selector))
+            {
                 return rpc_error(id, -32603, "upstream request timed out");
             }
             json!(format!("0x{}", hex::encode(SUBMITTED)))

@@ -18,10 +18,12 @@ landed is not reported failed.
   instead of a per-process counter, so a poll never reads another task's job
   under its own id.
 - **A transfer that landed is not reported failed.** After the transfer's
-  receipt, `ownerOf` is read at the block the receipt names; when that read
-  does not name the recipient, or the transfer did not confirm, the owner is
-  read again with backoff before the transfer is called failed (10 s for a
-  sync request, up to 10 min for an async job). On 2026-10-28 one stale read
+  receipt, `ownerOf` is read at the block the receipt names, and the first
+  such read that answers is final. A node without that block answers an error;
+  then it is read again with backoff, falling back to `latest`, which settles
+  it only by naming the recipient (10 s for a sync request, up to 10 min for
+  an async job). A transfer that may still be in flight is read the same way,
+  and one that never went out is read once. On 2026-10-28 one stale read
   150 ms after the receipt failed a delivered Base registration, the retire
   that followed reverted, and the job closed `failed`. Only an identity the
   facilitator still holds is retired; an owner that cannot be read, or a

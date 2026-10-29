@@ -1513,9 +1513,18 @@ Returns the status of an asynchronous ERC-8004 registration started with
 `mint_confirmed`/`done`, `agentId` is populated. Terminal jobs are retained for
 one hour before they age out (then this returns `404`).
 
+A job that cannot yet tell whether the recipient already holds an agent, or
+where the agent went after a transfer that did not confirm, stays `pending` or
+`mint_confirmed` while the facilitator asks again, for up to ten minutes per
+question; only past that does it end `failed`, with a retryable error.
+
+Any instance answers: one that does not run the job asks the one that does.
+`503` with `Retry-After` means it could not ask; poll again. Only `404` means
+the job is unknown or expired.
+
 ```json
 {
-  "jobId": "reg_42",
+  "jobId": "reg_3f2a9c0e5b7d4e1f8a6c2b9d0e4f7a13",
   "status": "done",
   "network": "base",
   "agentId": "17",
@@ -1528,7 +1537,8 @@ one hour before they age out (then this returns `404`).
     params(("job_id" = String, Path, description = "Job id from the async POST /register")),
     responses(
         (status = 200, description = "Current job status", body = Object),
-        (status = 404, description = "Job not found or expired", body = Object)
+        (status = 404, description = "Job not found or expired", body = Object),
+        (status = 503, description = "This instance could not ask the one running the job (`retryable: true`, `Retry-After`); poll again", body = Object)
     )
 )]
 async fn path_register_status() {}

@@ -395,6 +395,17 @@ def get_network_configs() -> dict[str, dict]:
             "address": TESTNET_ADDRESS,
             "type": "evm"
         },
+        # HashKey Chain (OP Stack L2; gas is HSK; official keyless RPCs)
+        "hashkey-mainnet": {
+            "rpcs": ["https://mainnet.hsk.xyz"],
+            "address": MAINNET_ADDRESS,
+            "type": "evm"
+        },
+        "hashkey-testnet": {
+            "rpcs": ["https://testnet.hsk.xyz"],
+            "address": TESTNET_ADDRESS,
+            "type": "evm"
+        },
         # XRPL (native XRP Ledger; public JSON-RPC, balance in drops, 1 XRP = 1e6 drops)
         "xrpl-mainnet": {
             "rpcs": ["https://s1.ripple.com:51234/", "https://xrplcluster.com/"],

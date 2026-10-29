@@ -1085,6 +1085,7 @@ where
         .route("/skale.png", get(get_skale_logo))
         .route("/scroll.png", get(get_scroll_logo))
         .route("/robinhood.png", get(get_robinhood_logo))
+        .route("/hashkey.png", get(get_hashkey_logo))
         .route("/arc.png", get(get_arc_logo))
         .route("/hedera.png", get(get_hedera_logo))
         .route("/usdc.png", get(get_usdc_logo))
@@ -3651,6 +3652,17 @@ pub async fn get_scroll_logo() -> impl IntoResponse {
 /// `GET /robinhood.png`: Returns Robinhood Chain logo.
 pub async fn get_robinhood_logo() -> impl IntoResponse {
     let bytes = include_bytes!("../static/robinhood.png");
+    (
+        StatusCode::OK,
+        [("content-type", "image/png")],
+        bytes.as_slice(),
+    )
+}
+
+/// `GET /hashkey.png`: Returns HashKey Chain logo, rasterized from the
+/// official `hashkeychain-logo.svg` (HashkeyHSK/documentation).
+pub async fn get_hashkey_logo() -> impl IntoResponse {
+    let bytes = include_bytes!("../static/hashkey.png");
     (
         StatusCode::OK,
         [("content-type", "image/png")],

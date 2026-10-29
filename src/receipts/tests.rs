@@ -1231,6 +1231,7 @@ fn every_network_and_token_on_the_rail_stays_on_it() {
         ("skale-base", &["usdc"]),
         ("scroll", &["usdc"]),
         ("robinhood", &["usdg"]),
+        ("hashkey", &["usdc"]),
         ("arc-testnet", &["usdc", "eurc"]),
         ("base-sepolia", &["usdc"]),
         ("polygon-amoy", &["usdc"]),
@@ -1242,6 +1243,7 @@ fn every_network_and_token_on_the_rail_stays_on_it() {
         ("unichain-sepolia", &["usdc"]),
         ("skale-base-sepolia", &["usdc"]),
         ("robinhood-testnet", &["usdg"]),
+        ("hashkey-testnet", &["usdc"]),
     ];
     let matrix = evm_matrix();
     for (name, symbols) in ON_THE_RAIL {

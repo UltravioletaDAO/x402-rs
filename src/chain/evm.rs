@@ -122,6 +122,10 @@ const fn has_eip6492_validator(network: Network) -> bool {
     match network {
         // eth_getCode -> 0 bytes on both Arc networks, measured 2026-09-16.
         Network::Arc | Network::ArcTestnet => false,
+        // eth_getCode -> 0 bytes on mainnet.hsk.xyz (177) and testnet.hsk.xyz
+        // (133), measured 2026-10-29, and `is_contract: false` on each
+        // network's Blockscout.
+        Network::HashKey | Network::HashKeyTestnet => false,
         _ => true,
     }
 }
@@ -342,6 +346,10 @@ impl TryFrom<Network> for EvmChain {
             // every signature recover a different address.
             Network::Arc => Ok(EvmChain::new(value, 5042)),
             Network::ArcTestnet => Ok(EvmChain::new(value, 5042002)),
+            // `eth_chainId` answered 0xb1 = 177 (mainnet.hsk.xyz) and 0x85 = 133
+            // (testnet.hsk.xyz) on 2026-10-29.
+            Network::HashKey => Ok(EvmChain::new(value, 177)),
+            Network::HashKeyTestnet => Ok(EvmChain::new(value, 133)),
             Network::Near => Err(FacilitatorLocalError::UnsupportedNetwork(None)),
             Network::NearTestnet => Err(FacilitatorLocalError::UnsupportedNetwork(None)),
             #[cfg(feature = "hedera")]
@@ -479,6 +487,37 @@ pub(crate) const fn eip1559_fee_floor(network: Network) -> Eip1559Floor {
             min_priority: 1_000_000,
             min_max_fee: 20 * GWEI,
             fallback_base_fee: 20 * GWEI,
+        },
+        // HashKey Chain mainnet holds its base fee at exactly 500 gwei: every
+        // one of the 1025 base fees `eth_feeHistory` returned on 2026-10-29
+        // (blocks 29,474,814 onwards) read 500 gwei, and `eth_gasPrice` read
+        // 500.001. A floor, the same shape as Arc's.
+        //
+        // The generic arm leaves two degraded paths unpriced for it. When
+        // `eth_feeHistory` answers without a base fee, its `fallback_base_fee`
+        // of 2 gwei gives `2 * 2 + 0.001` = 4.001 gwei, 125 times under what
+        // the chain accepts; when the read errors, its `min_max_fee` of 0 sets
+        // nothing and hands the pricing to alloy's filler. A refused settle
+        // holds a nonce nothing else can replace.
+        //
+        // `min_max_fee` is TWICE the floor, not the floor: a cap equal to the
+        // base fee leaves an effective tip of zero, and op-geth mines no tip
+        // below 1 mwei. Twice the floor is also exactly what the normal path
+        // already quotes (`2 * 500 gwei + tip`), so there this arm changes
+        // nothing; on the error branch it is the explicit cap, with the 1 mwei
+        // tip.
+        //
+        // The tip stays at the generic 1 mwei: `eth_maxPriorityFeePerGas`
+        // quoted exactly that. The testnet holds 1 gwei, which the generic
+        // fallback already clears, so it keeps the generic arm.
+        //
+        // Cost: none paid. `maxFeePerGas` is a cap; the base fee plus the tip
+        // is what is charged. What it does set is the reservation a node
+        // checks against the signer: ~0.1 HSK per in-flight settle.
+        Network::HashKey => Eip1559Floor {
+            min_priority: 1_000_000,
+            min_max_fee: 1000 * GWEI,
+            fallback_base_fee: 500 * GWEI,
         },
         // A 1 mwei tip floor, not 1 gwei and not 0.
         //
@@ -1628,6 +1667,9 @@ impl FromEnvByNetworkBuild for EvmProvider {
             // Arc prices type-2 transactions: the latest block carries a
             // baseFeePerGas (20 gwei, measured) and `eth_feeHistory` answers.
             Network::Arc | Network::ArcTestnet => true,
+            // OP Stack: every block carries a baseFeePerGas (500 gwei on
+            // mainnet, 1 gwei on testnet, measured 2026-10-29).
+            Network::HashKey | Network::HashKeyTestnet => true,
             Network::Near => false,           // NEAR is not an EVM chain
             Network::NearTestnet => false,    // NEAR is not an EVM chain
             #[cfg(feature = "hedera")]
@@ -5491,16 +5533,21 @@ mod arc_testnet_tests {
         );
     }
 
-    /// Only 6492 is gated, and only on Arc. An ordinary EOA payment -- which
-    /// is the whole of the first launch here -- travels the EIP-1271 branch
-    /// and must be untouched; so must every other chain's 6492 support.
+    /// Only 6492 is gated, and only where the validator was measured absent:
+    /// Arc and HashKey Chain. An ordinary EOA payment -- which is the whole of
+    /// the first launch here -- travels the EIP-1271 branch and must be
+    /// untouched; so must every other chain's 6492 support.
     #[test]
     fn the_gate_closes_on_nothing_else() {
-        // A plain 65-byte EOA signature, on the chain that has no validator.
+        // A plain 65-byte EOA signature, on the chains that have no validator.
         assert!(gate(Network::ArcTestnet, vec![0x33; 65]).is_ok());
+        assert!(gate(Network::HashKey, vec![0x33; 65]).is_ok());
 
         for network in Network::variants() {
-            if matches!(network, Network::Arc | Network::ArcTestnet) {
+            if matches!(
+                network,
+                Network::Arc | Network::ArcTestnet | Network::HashKey | Network::HashKeyTestnet
+            ) {
                 continue;
             }
             assert!(

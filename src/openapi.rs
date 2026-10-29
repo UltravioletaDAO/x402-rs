@@ -32,10 +32,10 @@ The x402 facilitator enables gasless micropayments across multiple blockchain ne
 ## Supported Networks
 
 ### EVM Chains (Mainnet)
-Ethereum, Base, Polygon, Optimism, Avalanche, Arbitrum, Celo, HyperEVM, Unichain, Monad, Scroll, Robinhood Chain (settles Paxos USDG - no native USDC), BSC, SKALE Base, Arc (`arc` / `eip155:5042`, USDC/EURC exact EOA payments; served only where `RPC_URL_ARC` is configured; check `/supported`)
+Ethereum, Base, Polygon, Optimism, Avalanche, Arbitrum, Celo, HyperEVM, Unichain, Monad, Scroll, Robinhood Chain (settles Paxos USDG - no native USDC), BSC, SKALE Base, Arc (`arc` / `eip155:5042`, USDC/EURC exact EOA payments; served only where `RPC_URL_ARC` is configured; check `/supported`), HashKey Chain (`hashkey` / `eip155:177`, Bridged USDC, EIP-712 domain `Bridged USDC` / `2`; EOA signatures only, no EIP-6492)
 
 ### EVM Chains (Testnet)
-Ethereum Sepolia, Base Sepolia, Polygon Amoy, Optimism Sepolia, Avalanche Fuji, Arbitrum Sepolia, Celo Sepolia, HyperEVM Testnet, Unichain Sepolia, SKALE Base Sepolia, Monad Testnet, Robinhood Chain Testnet, Arc Testnet (`arc-testnet` / `eip155:5042002`, Circle — USDC is the native gas token; served only where `RPC_URL_ARC_TESTNET` is configured, so check `/supported` rather than this list)
+Ethereum Sepolia, Base Sepolia, Polygon Amoy, Optimism Sepolia, Avalanche Fuji, Arbitrum Sepolia, Celo Sepolia, HyperEVM Testnet, Unichain Sepolia, SKALE Base Sepolia, Monad Testnet, Robinhood Chain Testnet, Arc Testnet (`arc-testnet` / `eip155:5042002`, Circle — USDC is the native gas token; served only where `RPC_URL_ARC_TESTNET` is configured, so check `/supported` rather than this list), HashKey Chain Testnet (`hashkey-testnet` / `eip155:133`, USDC with EIP-712 domain `USD Coin` / `2`, not mainnet's name)
 
 ### SVM Chains (Solana Virtual Machine)
 - **Solana**: Mainnet (`solana`) and Devnet (`solana-devnet`)
@@ -997,7 +997,7 @@ Until 2026-09-03 `escrow`, `commerce` and `upto` appeared **only** under CAIP-2 
 
 **Upto networks (11):** Base, Optimism, Arbitrum, Polygon, BSC, Ethereum, HyperEVM, Monad, Base Sepolia, Avalanche Fuji, Arbitrum Sepolia — via the x402UptoPermit2Proxy contract (Permit2-based, canonical CREATE2 address `0x4020A4f3b7b90ccA423B9fabCc0CE57C6C240002`).
 
-`upto` is **not** available on every EVM network that supports `exact`. The proxy address is identical on all chains because it is deployed with CREATE2, but the deployment still has to be replayed per chain, and on Avalanche, Celo, Scroll, Unichain and Optimism Sepolia it never was — the address has no code there. Query `/supported` rather than assuming: it now lists `upto` only where settlement can actually succeed.
+`upto` is **not** available on every EVM network that supports `exact`. The proxy address is identical on all chains because it is deployed with CREATE2, but the deployment still has to be replayed per chain, and on Avalanche, Celo, Scroll, Unichain, Optimism Sepolia and HashKey Chain (mainnet and testnet) it never was — the address has no code there. Query `/supported` rather than assuming: it now lists `upto` only where settlement can actually succeed.
 
 **Escrow networks (13):** `base`, `ethereum`, `polygon`, `arbitrum`, `celo`, `monad`, `avalanche`, `optimism`, `skale-base`, `arc`, `base-sepolia`, `ethereum-sepolia`, `arc-testnet`.
 Each lists `commerce`, and `escrow` once per PaymentOperator the facilitator declares for it; on `arc` and `arc-testnet` an operator is listed only once it has passed its on-chain self-check.

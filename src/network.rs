@@ -176,6 +176,14 @@ pub enum Network {
     /// Mainnet is a separate network, with its own chain ID and signing domain.
     #[serde(rename = "arc-testnet")]
     ArcTestnet,
+    /// HashKey Chain mainnet (chain ID 177), an OP Stack L2 on Ethereum whose
+    /// gas token is HSK. Settles Bridged USDC (`USDC.e`) by EIP-3009.
+    #[serde(rename = "hashkey")]
+    HashKey,
+    /// HashKey Chain testnet (chain ID 133). Gas is test HSK; the USDC here is
+    /// a different contract from mainnet's, with a different EIP-712 name.
+    #[serde(rename = "hashkey-testnet")]
+    HashKeyTestnet,
 }
 
 impl Display for Network {
@@ -235,6 +243,8 @@ impl Display for Network {
             Network::RobinhoodTestnet => write!(f, "robinhood-testnet"),
             Network::Arc => write!(f, "arc"),
             Network::ArcTestnet => write!(f, "arc-testnet"),
+            Network::HashKey => write!(f, "hashkey"),
+            Network::HashKeyTestnet => write!(f, "hashkey-testnet"),
         }
     }
 }
@@ -304,6 +314,8 @@ impl FromStr for Network {
             // Distinct names: a mainnet request must never resolve to testnet.
             "arc" => Ok(Network::Arc),
             "arc-testnet" => Ok(Network::ArcTestnet),
+            "hashkey" => Ok(Network::HashKey),
+            "hashkey-testnet" => Ok(Network::HashKeyTestnet),
             _ => Err(NetworkParseError(s.to_string())),
         }
     }
@@ -379,6 +391,7 @@ impl From<Network> for NetworkFamily {
             Network::Robinhood => NetworkFamily::Evm,
             Network::RobinhoodTestnet => NetworkFamily::Evm,
             Network::Arc | Network::ArcTestnet => NetworkFamily::Evm,
+            Network::HashKey | Network::HashKeyTestnet => NetworkFamily::Evm,
         }
     }
 }
@@ -444,6 +457,8 @@ impl Network {
             Network::RobinhoodTestnet,
             Network::Arc,
             Network::ArcTestnet,
+            Network::HashKey,
+            Network::HashKeyTestnet,
         ]
     }
 
@@ -496,6 +511,8 @@ impl Network {
             Network::RobinhoodTestnet,
             Network::Arc,
             Network::ArcTestnet,
+            Network::HashKey,
+            Network::HashKeyTestnet,
         ]
     }
 
@@ -548,6 +565,8 @@ impl Network {
             Network::RobinhoodTestnet,
             Network::Arc,
             Network::ArcTestnet,
+            Network::HashKey,
+            Network::HashKeyTestnet,
         ]
     }
 
@@ -598,6 +617,8 @@ impl Network {
             Network::RobinhoodTestnet,
             Network::Arc,
             Network::ArcTestnet,
+            Network::HashKey,
+            Network::HashKeyTestnet,
         ]
     }
 
@@ -636,6 +657,7 @@ impl Network {
                 | Network::SkaleBaseSepolia
                 | Network::RobinhoodTestnet
                 | Network::ArcTestnet
+                | Network::HashKeyTestnet
         )
     }
 
@@ -726,6 +748,11 @@ impl Network {
             // 2026-09-16 at block 62,335,077.
             Network::Arc => "eip155:5042".to_string(),
             Network::ArcTestnet => "eip155:5042002".to_string(),
+            // HashKey Chain - eip155:{chain_id}. `eth_chainId` answered 0xb1
+            // (177) from mainnet.hsk.xyz and 0x85 (133) from testnet.hsk.xyz on
+            // 2026-10-29.
+            Network::HashKey => "eip155:177".to_string(),
+            Network::HashKeyTestnet => "eip155:133".to_string(),
         }
     }
 
@@ -800,6 +827,9 @@ impl Network {
             // Arc
             "eip155:5042" => Some(Network::Arc),
             "eip155:5042002" => Some(Network::ArcTestnet),
+            // HashKey Chain
+            "eip155:177" => Some(Network::HashKey),
+            "eip155:133" => Some(Network::HashKeyTestnet),
             _ => None,
         }
     }
@@ -1686,6 +1716,54 @@ static USDC_ARC_TESTNET: Lazy<USDCDeployment> = Lazy::new(|| {
     })
 });
 
+/// Bridged USDC (`USDC.e`) on HashKey Chain mainnet, the address the official
+/// HashKey token list publishes. A FiatToken proxy with both
+/// `transferWithAuthorization` variants.
+///
+/// Read from the contract on 2026-10-29 at block 29,475,689 through
+/// `https://mainnet.hsk.xyz`: `name()` = "Bridged USDC", `version()` = "2",
+/// `decimals()` = 6, and `DOMAIN_SEPARATOR()` = `0x78101f50…a507259d`, which
+/// these fields plus chain id 177 recompute to exactly. The separator is
+/// pinned in `chain::evm` (`hashkey_usdc_domain_separators_are_the_ones_the_contracts_publish`):
+/// the name is "Bridged USDC", not "USD Coin", and a signature over the other
+/// one recovers a different address.
+static USDC_HASHKEY: Lazy<USDCDeployment> = Lazy::new(|| {
+    USDCDeployment(TokenDeployment {
+        asset: TokenAsset {
+            address: address!("0x054ed45810DbBAb8B27668922D110669c9D88D0a").into(),
+            network: Network::HashKey,
+        },
+        decimals: 6,
+        eip712: Some(TokenDeploymentEip712 {
+            name: "Bridged USDC".into(),
+            version: "2".into(),
+        }),
+    })
+});
+
+/// USDC on HashKey Chain testnet, the token the HSP sandbox pins. Not in the
+/// official token list (which lists mainnet only).
+///
+/// Read from the contract on 2026-10-29 at block 35,055,934 through
+/// `https://testnet.hsk.xyz`: `name()` = "USD Coin", `version()` = "2",
+/// `decimals()` = 6, `DOMAIN_SEPARATOR()` = `0x4b73b8fe…be71d09`, which these
+/// fields plus chain id 133 recompute to exactly (pinned in `chain::evm`). The
+/// testnet's other USDC, "Bridged USDC" at `0x18Ec8e93…69FD4Dfa2`, is not
+/// registered: one USDC per network.
+static USDC_HASHKEY_TESTNET: Lazy<USDCDeployment> = Lazy::new(|| {
+    USDCDeployment(TokenDeployment {
+        asset: TokenAsset {
+            address: address!("0x8FE3cB719Ee4410E236Cd6b72ab1fCDC06eF53c6").into(),
+            network: Network::HashKeyTestnet,
+        },
+        decimals: 6,
+        eip712: Some(TokenDeploymentEip712 {
+            name: "USD Coin".into(),
+            version: "2".into(),
+        }),
+    })
+});
+
 /// A known USDC deployment as a wrapper around [`TokenDeployment`].
 #[derive(Clone, Debug)]
 pub struct USDCDeployment(pub TokenDeployment);
@@ -1776,6 +1854,8 @@ impl USDCDeployment {
             Network::RobinhoodTestnet => None,
             Network::Arc => Some(&USDC_ARC),
             Network::ArcTestnet => Some(&USDC_ARC_TESTNET),
+            Network::HashKey => Some(&USDC_HASHKEY),
+            Network::HashKeyTestnet => Some(&USDC_HASHKEY_TESTNET),
         }
     }
 }

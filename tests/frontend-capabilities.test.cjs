@@ -159,7 +159,7 @@ test('static pages type no explorer and no icon: every reference names a network
   const html=fs.readFileSync(path.join(root,'static/index.html'),'utf8');
   // Every card links its wallet: a typed address or the fee payer /supported publishes.
   const cards=[...html.matchAll(/<div class="network-badge [a-z]+"([^>]*)>/g)].map(m=>m[1]).filter(a=>!a.includes('data-capability-network'));
-  assert.equal(cards.length,43);
+  assert.equal(cards.length,45);
   for (const attrs of cards) assert(/data-explorer="[^"]+" (data-explorer-address="[^"]+"|data-explorer-fee-payer)/.test(attrs),attrs);
   assert(html.includes('loadNetworks().then(() => hydrateNetworks())'));
 });

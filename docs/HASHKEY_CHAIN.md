@@ -203,7 +203,90 @@ check https://testnet.hsk.xyz 0x8FE3cB719Ee4410E236Cd6b72ab1fCDC06eF53c6
 
 ## Testnet end to end (F4)
 
-Pending: recorded in the F4 commit.
+**Verify: done, against both chains. Settle: pending** (command below). Run on
+2026-10-29 with the debug binary of this branch, started locally with only the
+two HashKey RPCs and throwaway EVM signers (`ENABLE_WRITER_LEASE=false`; an empty
+`config/blacklist.json`, as the Dockerfile creates). Every chain call was an
+`eth_call` or a read; nothing was broadcast.
+
+| Request | Result |
+|---|---|
+| `GET /supported` | `hashkey` / `eip155:177` and `hashkey-testnet` / `eip155:133`, `exact` only, `tokens: [usdc]`, both spellings linked by `networkAliases`; no `upto` |
+| `GET /networks.json` | both rows, with `chainId`, `displayName`, icon, the explorers above and the EIP-712 domain of each USDC |
+| `GET /hashkey.png` | 200 `image/png` |
+| `POST /verify` testnet, domain `"USD Coin"`, value 0 | `{"isValid":true,"payer":…}` |
+| `POST /verify` testnet, same body named `eip155:133` | `{"isValid":true,"payer":…}` |
+| `POST /verify` testnet, 0.01 USDC from a payer with none | `{"isValid":false,"invalidReason":"insufficient_funds"}` |
+| `POST /verify` testnet, signed as `"Bridged USDC"` (mainnet's name) | 400 `contract_call_failed`: the contract itself answered `FiatTokenV2: invalid signature` |
+| `POST /verify` mainnet, domain `"Bridged USDC"`, value 0 | `{"isValid":true,"payer":…}` |
+| `POST /verify` mainnet, 0.01 USDC from a payer with none | `{"isValid":false,"invalidReason":"insufficient_funds"}` |
+| `POST /verify` mainnet, signed as `"USD Coin"` | 400 `contract_call_failed` |
+| `GET /health/ready?network=hashkey` (signer with 0 HSK) | 503, `hashkey`: `down`, `signer_gas_critical` |
+
+Value 0 lets a fresh payer with no balance reach the signature check: the
+facilitator simulates `transferWithAuthorization` with `eth_call`, so a valid
+answer means the contract accepted the domain, the signature and the nonce. The
+same check is in the suite as an ignored test, read-only:
+
+```bash
+cargo test --locked -p x402-rs --lib --features solana,near,stellar,algorand,sui,xrpl,hedera \
+  -- --ignored hashkey_tests::live_verify
+```
+
+2026-10-29, 19:3xZ: `1 passed`. `hashkey: verify Valid` and `hashkey-testnet:
+verify Valid` for fresh payers; under the other network's name both answered
+`execution reverted: FiatTokenV2: invalid signature`.
+
+### Settle on testnet: pending
+
+Two things are missing, neither in this repo: the testnet signer needs test HSK
+(the faucet at `faucet.hsk.xyz/faucet` is a browser flow with a wallet), and the
+buyer needs testnet USDC `0x8FE3…F53c6`, which the HSP sandbox faucet hands out
+to registered teams. Once both exist, with `W2_KEY` the funded testnet signer
+and `BUYER_KEY` a buyer holding at least 0.01 USDC (neither ever printed):
+
+```bash
+# 1. A local facilitator serving hashkey-testnet only.
+[ -f config/blacklist.json ] || echo '[]' > config/blacklist.json
+SIGNER_TYPE=private-key EVM_PRIVATE_KEY_TESTNET="$W2_KEY" EVM_PRIVATE_KEY_MAINNET="$W2_KEY" \
+RPC_URL_HASHKEY_TESTNET=https://testnet.hsk.xyz ENABLE_WRITER_LEASE=false \
+HOST=127.0.0.1 PORT=18402 \
+cargo run --release --features solana,near,stellar,algorand,sui,xrpl,hedera &
+
+# 2. The buyer signs a 0.01 USDC EIP-3009 authorization to PAY_TO (domain "USD Coin", "2", 133).
+BUYER=$(cast wallet address --private-key "$BUYER_KEY")
+PAY_TO=0x2222222222222222222222222222222222222222
+NONCE=0x$(openssl rand -hex 32); BEFORE=$(( $(date +%s) + 600 ))
+cat > auth.json <<JSON
+{"types":{"EIP712Domain":[{"name":"name","type":"string"},{"name":"version","type":"string"},
+ {"name":"chainId","type":"uint256"},{"name":"verifyingContract","type":"address"}],
+ "TransferWithAuthorization":[{"name":"from","type":"address"},{"name":"to","type":"address"},
+ {"name":"value","type":"uint256"},{"name":"validAfter","type":"uint256"},
+ {"name":"validBefore","type":"uint256"},{"name":"nonce","type":"bytes32"}]},
+ "primaryType":"TransferWithAuthorization",
+ "domain":{"name":"USD Coin","version":"2","chainId":133,
+  "verifyingContract":"0x8FE3cB719Ee4410E236Cd6b72ab1fCDC06eF53c6"},
+ "message":{"from":"$BUYER","to":"$PAY_TO","value":"10000","validAfter":"0",
+  "validBefore":"$BEFORE","nonce":"$NONCE"}}
+JSON
+SIG=$(cast wallet sign --data --from-file auth.json --private-key "$BUYER_KEY")
+
+# 3. The x402 v1 body, then verify and settle.
+cat > body.json <<JSON
+{"x402Version":1,
+ "paymentPayload":{"x402Version":1,"scheme":"exact","network":"hashkey-testnet",
+  "payload":{"signature":"$SIG","authorization":{"from":"$BUYER","to":"$PAY_TO",
+   "value":"10000","validAfter":"0","validBefore":"$BEFORE","nonce":"$NONCE"}}},
+ "paymentRequirements":{"scheme":"exact","network":"hashkey-testnet","maxAmountRequired":"10000",
+  "resource":"https://example.com/hashkey-e2e","description":"","mimeType":"application/json",
+  "payTo":"$PAY_TO","maxTimeoutSeconds":300,
+  "asset":"0x8FE3cB719Ee4410E236Cd6b72ab1fCDC06eF53c6","extra":{"name":"USD Coin","version":"2"}}}
+JSON
+curl -s -X POST http://127.0.0.1:18402/verify -H 'Content-Type: application/json' --data @body.json
+curl -s -X POST http://127.0.0.1:18402/settle -H 'Content-Type: application/json' --data @body.json
+# -> {"success":true,"transaction":"0x…","network":"hashkey-testnet",…}. Record it here as a
+#    prefix (0x1234…abcd): the pre-commit hook refuses 0x + 64 hex, which a full link carries.
+```
 
 ## Files modified
 

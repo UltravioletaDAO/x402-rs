@@ -177,11 +177,11 @@ python scripts/compare_usdc_contracts.py
 - CORS support for cross-origin clients
 - Serves custom Ultravioleta DAO landing page and static assets
 
-**src/network.rs**: Network definitions (42 `Network` enum variants; 39 served in prod - Sei, SeiTestnet and XdcMainnet are enum-only). Verify: `curl -s https://facilitator.ultravioletadao.xyz/supported | jq -r '[.kinds[].network]|unique|.[]' | grep -v ':' | wc -l`
+**src/network.rs**: Network definitions (48 `Network` enum variants since 2.52.0 added HashKey Chain, Hedera and XRPL behind their features; 45 in the all-features copy of `variants()` - Sei, SeiTestnet and XdcMainnet are enum-only; `variants_copies_tests` holds the four feature-gated copies to one list). Verify: `curl -s https://facilitator.ultravioletadao.xyz/supported | jq -r '[.kinds[].network]|unique|.[]' | grep -v ':' | wc -l`
 - `Network` enum with chain IDs and display names
 - `NetworkFamily` (Evm, Solana, Near, Stellar, Xrpl, Algorand, Sui - 7 variants, `src/network.rs:275`) for multi-family dispatch
 - Static USDC/token deployment addresses per network
-- **CRITICAL**: nearly everything beyond Base/Avalanche/Solana is ours - HyperEVM, Polygon, Optimism, Celo, Ethereum, Arbitrum, Unichain, Monad, BSC, Scroll, SKALE, Robinhood, XDC, Sei, NEAR, Stellar, XRPL, Fogo, Algorand, Sui. Preserve ALL of them on upstream merges.
+- **CRITICAL**: nearly everything beyond Base/Avalanche/Solana is ours - HyperEVM, Polygon, Optimism, Celo, Ethereum, Arbitrum, Unichain, Monad, BSC, Scroll, SKALE, Robinhood, HashKey, XDC, Sei, NEAR, Stellar, XRPL, Fogo, Algorand, Sui. Preserve ALL of them on upstream merges.
 
 **src/handlers.rs**: HTTP request handlers
 - `get_root()` (`src/handlers.rs:1248`) - **Custom handler** serving the Ultravioleta DAO landing page via `include_str!("../static/index.html")`. `get_index()` (`:1289`) is a thin alias - the `include_str!` is NOT inside it.

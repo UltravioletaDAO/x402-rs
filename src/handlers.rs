@@ -12739,9 +12739,11 @@ fn solana_mint_response(
 ///
 /// An async job is not waiting on anybody's HTTP timeout, so it waits long
 /// ([`RegisterPatience::ASYNC`]) and its status stays `pending` or
-/// `mint_confirmed` meanwhile: a transient read never becomes a final state
-/// (X402RS-REGISTER-JOBS-REPLICAS). A sync caller keeps today's answer, a `503`
-/// at once for no verdict, and waits only a short delivery check: its client
+/// `mint_confirmed` meanwhile: a transient read does not become a final state
+/// (X402RS-REGISTER-JOBS-REPLICAS); only a read that stays unanswered for the
+/// whole window ends the job, `failed` and retryable. A sync caller keeps
+/// today's answer, a `503` at once for no verdict, and waits only a short
+/// delivery check: its client
 /// is already near its own timeout, and a request dropped mid-wait records
 /// nothing.
 #[derive(Debug, Clone, Copy)]
@@ -13413,6 +13415,42 @@ where
             }
         };
 
+        // The mint's receipt wait (up to 900 s on Ethereum) can outlast the
+        // lease, and the transfer is a send. Kept for a repeat of the request
+        // on this task, and reported as minted, not delivered.
+        if !crate::writer_lease::is_writer() {
+            warn!(
+                network = %network, agent_id,
+                "Agent minted but not transferred: this task no longer holds the EVM writer lease"
+            );
+            if register_recovery_enabled() {
+                if let Some(k) = &recovery_key {
+                    register_jobs::record_stranded(
+                        k.clone(),
+                        agent_id,
+                        Some(crate::types::TransactionHash::Evm(reg_tx_hash.0)),
+                    );
+                }
+            }
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                RegisterAgentResponse {
+                    success: true,
+                    agent_id: Some(agent_id_str.clone()),
+                    transaction: Some(crate::types::TransactionHash::Evm(reg_tx_hash.0)),
+                    transfer_transaction: None,
+                    owner: Some(final_owner),
+                    error: Some(format!(
+                        "Agent registered (id={agent_id_str}) but not transferred: this task \
+                         stopped holding the EVM writer lease while the mint confirmed \
+                         (retryable)."
+                    )),
+                    network,
+                    mint: None,
+                },
+            );
+        }
+
         info!(
             agent_id = agent_id,
             from = %facilitator_address,
@@ -13420,23 +13458,44 @@ where
             "Transferring agent NFT to recipient"
         );
 
-        let delivered = match transfer_agent_nft(
-            provider,
-            contracts.identity_registry,
-            facilitator_address,
-            recipient_address,
-            agent_id,
-            network,
-        )
-        .await
-        {
+        // Right after a preconfirmed mint the transfer's estimate can come from
+        // a node that has not seen the mint yet, and revert for that. Refused
+        // at estimation, nothing went out and no nonce was taken, so asking
+        // again is safe; a few seconds is what such a node needs. Each retry
+        // is a send, so only from the writer.
+        let mut estimating = Backoff::new(RegisterPatience::SYNC.delivery);
+        let transfer = loop {
+            let attempt = transfer_agent_nft(
+                provider,
+                contracts.identity_registry,
+                facilitator_address,
+                recipient_address,
+                agent_id,
+                network,
+            )
+            .await;
+            let refused_at_estimation =
+                matches!(&attempt, Err(failure) if failure.reverted && failure.tx.is_none());
+            if refused_at_estimation && estimating.wait().await && crate::writer_lease::is_writer()
+            {
+                warn!(
+                    network = %network, agent_id,
+                    "Transfer refused at estimation right after the mint; asking again"
+                );
+                continue;
+            }
+            break attempt;
+        };
+        let delivered = match transfer {
             Ok(tx) => Ok(Some(tx)),
             Err(failure) => {
                 error!(error = %failure, "Transfer failed - agent registered but NOT transferred");
                 // Look where the agent is before saying so and retiring it: on
                 // 2026-10-28 a transfer that landed was reported failed off one
                 // stale owner read, the retire reverted, and the job closed
-                // `failed` for an identity its recipient held.
+                // `failed` for an identity its recipient held. A revert needs
+                // no read here: the agent was minted to us a moment ago and
+                // this transfer is the only one there has ever been.
                 let verdict = if failure.reverted {
                     Err(NotDelivered::HeldBy(facilitator_address))
                 } else {
@@ -13711,8 +13770,19 @@ async fn try_recover_stranded_nft(
     let id = alloy::primitives::U256::from(agent_id);
 
     // (a) The NFT must still be held by the facilitator (our own self-mint).
+    //     Already with the recipient is a delivery -- an earlier transfer that
+    //     landed after its attempt gave up on it -- and minting another would
+    //     hand them a second identity. So would minting on no answer at all:
+    //     every read below that does not answer mints NOTHING.
     match identity_registry.ownerOf(id).call().await {
         Ok(owner) if owner == facilitator => {}
+        Ok(owner) if owner == recipient => {
+            warn!(
+                agent_id,
+                "Stranded recovery: the NFT is already with its recipient; nothing to send"
+            );
+            return StrandedRecovery::Recovered(None);
+        }
         Ok(other) => {
             warn!(
                 agent_id,
@@ -13722,8 +13792,8 @@ async fn try_recover_stranded_nft(
             return StrandedRecovery::Gone;
         }
         Err(e) => {
-            warn!(agent_id, error = %e, "Stranded recovery: ownerOf read failed; will mint fresh");
-            return StrandedRecovery::Transient;
+            warn!(agent_id, error = %e, "Stranded recovery: ownerOf read failed; minting nothing");
+            return StrandedRecovery::Unverified;
         }
     }
 
@@ -13742,8 +13812,8 @@ async fn try_recover_stranded_nft(
             return StrandedRecovery::Gone;
         }
         Err(e) => {
-            warn!(agent_id, error = %e, "Stranded recovery: tokenURI read failed; will mint fresh");
-            return StrandedRecovery::Transient;
+            warn!(agent_id, error = %e, "Stranded recovery: tokenURI read failed; minting nothing");
+            return StrandedRecovery::Unverified;
         }
     };
 
@@ -13761,12 +13831,18 @@ async fn try_recover_stranded_nft(
         )
         .await
         {
-            warn!(agent_id, error = %e, "Stranded recovery: could not restore the agentURI; will mint fresh");
-            return StrandedRecovery::Transient;
+            // Not sent, unconfirmed or reverted: it may still land, or the
+            // registry refused it because the NFT is no longer ours.
+            warn!(agent_id, error = %e, "Stranded recovery: could not restore the agentURI; minting nothing");
+            return StrandedRecovery::Unverified;
         }
     }
 
-    // (d) Transfer the recovered NFT to the recipient (on-chain success checked).
+    // (d) Transfer the recovered NFT to the recipient (on-chain success checked),
+    //     from the writer only: the restore above waits on a receipt.
+    if !crate::writer_lease::is_writer() {
+        return StrandedRecovery::Unverified;
+    }
     let failure = match transfer_agent_nft(
         provider,
         registry,
@@ -13782,21 +13858,19 @@ async fn try_recover_stranded_nft(
     };
     // (e) Where it is before calling it undelivered: a transfer that landed
     //     behind a stale owner read used to fall through to a fresh mint, and
-    //     the recipient got a second identity.
-    let verdict = if failure.reverted {
-        Err(NotDelivered::HeldBy(facilitator))
-    } else {
-        confirm_delivery(
-            provider,
-            network,
-            registry,
-            agent_id,
-            recipient,
-            &failure,
-            delivery_patience,
-        )
-        .await
-    };
+    //     the recipient got a second identity. Read even after a revert: here,
+    //     unlike right after our own mint, an earlier transfer of the same NFT
+    //     may have landed first, and "not the owner" is what reverted this one.
+    let verdict = confirm_delivery(
+        provider,
+        network,
+        registry,
+        agent_id,
+        recipient,
+        &failure,
+        delivery_patience,
+    )
+    .await;
     match verdict {
         Ok(()) => {
             warn!(
@@ -13804,7 +13878,9 @@ async fn try_recover_stranded_nft(
                 "Stranded recovery: the NFT is with its recipient although its transfer did not \
                  confirm at first"
             );
-            StrandedRecovery::Recovered(failure.tx)
+            // A reverted transfer delivered nothing: an earlier one did, and
+            // its hash is not this one.
+            StrandedRecovery::Recovered(if failure.reverted { None } else { failure.tx })
         }
         Err(NotDelivered::HeldBy(owner)) if owner == facilitator => {
             warn!(agent_id, error = %failure, "Stranded recovery: transfer failed; will mint fresh");
@@ -13880,6 +13956,14 @@ async fn confirm_delivery(
                 owner_index_observe(network, registry, [(agent_id, Some(owner))]);
                 return Ok(());
             }
+            // Possibly sent and never confirmed: the transfer may still land,
+            // so who holds the agent now says nothing about where it ends.
+            // Retiring it would queue behind that transfer and revert once it
+            // lands; a fresh mint would hand the recipient a second identity.
+            Ok(owner) if failure.in_flight => NotDelivered::Unreadable(format!(
+                "{owner} holds it, but the transfer may have gone out and never confirmed; it \
+                 may still land"
+            )),
             Ok(owner) => NotDelivered::HeldBy(owner),
             Err(e) => NotDelivered::Unreadable(e.to_string()),
         };
@@ -13918,6 +14002,7 @@ async fn transfer_agent_nft(
         tx: None,
         block: None,
         reverted: false,
+        in_flight: false,
         reason,
     };
 
@@ -13933,8 +14018,17 @@ async fn transfer_agent_nft(
         crate::chain::evm::send_call_estimated(transfer_call, network).await
     };
 
-    let pending =
-        send_result.map_err(|e| not_sent(format!("Failed to send transfer transaction: {e}")))?;
+    let pending = send_result.map_err(|e| {
+        // Refused at estimation: this send moved nothing, as surely as a
+        // mined revert. Any other send error may come after the node took the
+        // transaction, so it is in flight until a read says otherwise.
+        let reverted = matches!(e, crate::chain::evm::EstimatedSendError::Reverted(_));
+        TransferFailure {
+            reverted,
+            in_flight: !reverted,
+            ..not_sent(format!("Failed to send transfer transaction: {e}"))
+        }
+    })?;
     let sent = crate::types::TransactionHash::Evm(pending.tx_hash().0);
     let receipt = pending
         .with_timeout(Some(evm_receipt_timeout(&network)))
@@ -13944,6 +14038,7 @@ async fn transfer_agent_nft(
             tx: Some(sent),
             block: None,
             reverted: false,
+            in_flight: true,
             reason: format!("Transfer receipt failed: {e}"),
         })?;
     let tx = crate::types::TransactionHash::Evm(receipt.transaction_hash.0);
@@ -13954,6 +14049,7 @@ async fn transfer_agent_nft(
             tx: Some(tx),
             block,
             reverted: true,
+            in_flight: false,
             reason: format!(
                 "Transfer reverted on-chain (tx {})",
                 receipt.transaction_hash
@@ -13995,6 +14091,7 @@ async fn transfer_agent_nft(
         tx: Some(tx),
         block,
         reverted: false,
+        in_flight: false,
         reason,
     })
 }
@@ -14007,9 +14104,14 @@ struct TransferFailure {
     tx: Option<crate::types::TransactionHash>,
     /// The block its receipt names, when one came back.
     block: Option<u64>,
-    /// Mined and reverted: the agent did not move, and no read is needed to
-    /// say so.
+    /// Reverted, mined or at estimation: THIS send moved nothing. Right after
+    /// our own mint that settles it; on the recovery path it does not (an
+    /// earlier transfer of the same agent may be why it reverted).
     reverted: bool,
+    /// It may have gone out and nothing says where it ended: no receipt came
+    /// back, or the send itself errored after the node could have taken it (a
+    /// timeout, "already known"). Such a transfer can still land.
+    in_flight: bool,
     reason: String,
 }
 
@@ -14269,9 +14371,13 @@ pub async fn get_register_status(
 ///
 /// 1. The job is here: answer it. A task that lost the lease still answers the
 ///    jobs it is running.
-/// 2. This task is the writer, or the poll was already forwarded once: `404`.
-///    The second condition is what keeps two tasks from bouncing a poll.
-/// 3. Otherwise ask the lease holder, one hop over the same pooled client as a
+/// 2. This task is the writer, or the id is not one `POST /register` hands
+///    out: `404`.
+/// 3. The poll was already forwarded here, by a task that took this one for
+///    the writer: the lease moved, and the job may be on the new writer.
+///    `503`, and never passed on, which is what keeps two tasks from bouncing
+///    a poll.
+/// 4. Otherwise ask the lease holder, one hop over the same pooled client as a
 ///    forwarded write, and hand its answer back verbatim. When there is no
 ///    holder to ask, or asking fails, `503` with `Retry-After`: never a `404`,
 ///    which a poller reads as "this job does not exist".
@@ -14286,10 +14392,7 @@ async fn register_status(
     if let Some(job) = local {
         return (StatusCode::OK, Json(job)).into_response();
     }
-    let forwarded = request
-        .headers()
-        .contains_key(crate::writer_lease::FORWARDED_HEADER);
-    if crate::writer_lease::is_writer() || forwarded {
+    if crate::writer_lease::is_writer() || !register_jobs::is_job_id(job_id) {
         return (
             StatusCode::NOT_FOUND,
             Json(json!({
@@ -14313,6 +14416,12 @@ async fn register_status(
         )
             .into_response()
     };
+    if request
+        .headers()
+        .contains_key(crate::writer_lease::FORWARDED_HEADER)
+    {
+        return unavailable("forwarded_but_not_writer");
+    }
     let holder = crate::writer_lease::forwarding_enabled()
         .then(crate::writer_lease::holder_endpoint)
         .flatten();
@@ -24543,12 +24652,13 @@ mod erc8004_register_gate_tests {
         register_jobs::clear_stranded(&key);
     }
 
-    /// An owner that cannot be read after the transfer is no confirmation:
-    /// handled as a failed delivery. If it did land, the retire is refused at
-    /// estimation and a retry finds the recipient's identity.
+    /// An owner that cannot be read after the transfer is no confirmation,
+    /// and no verdict either: `503`, the identity recorded for the retry, and
+    /// NOT retired. Retiring on that guess relied on the retire being refused
+    /// at estimation if the transfer had landed; on 2026-10-28 the estimate
+    /// read the same stale state, the retire was sent and reverted on chain.
     #[tokio::test]
     async fn an_unreadable_owner_after_the_transfer_is_not_a_delivery() {
-        use crate::erc8004::retire::RETIRED_URI;
         use crate::payment_operator::test_rpc::CallAnswer;
         use alloy::sol_types::SolCall;
         let uri = "https://execution.market/agents/gate-test-owner-unreadable";
@@ -24563,13 +24673,17 @@ mod erc8004_register_gate_tests {
         );
         let (status, doc) = register(&gate, body("base", uri, Some(OWNER))).await;
 
-        assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "{doc}");
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{doc}");
         assert!(doc["transferTransaction"].is_null(), "{doc}");
+        assert!(doc["owner"].is_null(), "{doc}");
         let sent = node.sent();
+        assert!(
+            sent.iter().all(|tx| set_agent_uri_of(tx).is_none()),
+            "an identity whose owner could not be read was retired: {sent:?}"
+        );
         assert_eq!(
-            set_agent_uri_of(sent.last().unwrap()),
-            Some((4_112, RETIRED_URI.to_string())),
-            "{sent:?}"
+            register_jobs::get_stranded(&reclaim_key(uri)).map(|s| s.agent_id),
+            Some(4_112)
         );
         register_jobs::clear_stranded(&reclaim_key(uri));
     }
@@ -25747,9 +25861,9 @@ mod register_jobs_replica_tests {
         }
     }
 
-    fn store_with(jobs: &[&str]) -> Store {
+    fn store_with(jobs: &[String]) -> Store {
         Arc::new(Mutex::new(
-            jobs.iter().map(|id| (id.to_string(), job(id))).collect(),
+            jobs.iter().map(|id| (id.clone(), job(id))).collect(),
         ))
     }
 
@@ -25795,17 +25909,22 @@ mod register_jobs_replica_tests {
     /// A refused connection: what a holder that is gone answers.
     const NOBODY: &str = "http://127.0.0.1:9";
 
+    /// A job id of the shape `POST /register` hands out.
+    fn id(n: u8) -> String {
+        format!("reg_{n:032x}")
+    }
+
     /// The incident: the job ran on the writer and the poll landed elsewhere.
     #[tokio::test]
     async fn a_poll_on_a_task_without_the_job_gets_the_writers_answer() {
         let writer_hits = Arc::new(AtomicUsize::new(0));
-        let writer = serve(replica(store_with(&["reg_w"]), writer_hits.clone())).await;
+        let writer = serve(replica(store_with(&[id(1)]), writer_hits.clone())).await;
         let _lease = lease(false, Some(&writer));
         let other = replica(store_with(&[]), Arc::new(AtomicUsize::new(0)));
 
-        let (status, _, body) = poll(other, "reg_w").await;
+        let (status, _, body) = poll(other, &id(1)).await;
         assert_eq!(status, StatusCode::OK, "{body}");
-        assert_eq!(body, serde_json::to_value(job("reg_w")).unwrap());
+        assert_eq!(body, serde_json::to_value(job(&id(1))).unwrap());
         assert_eq!(writer_hits.load(Ordering::SeqCst), 1);
     }
 
@@ -25814,25 +25933,26 @@ mod register_jobs_replica_tests {
     #[tokio::test]
     async fn a_task_answers_its_own_jobs_without_the_lease() {
         let _lease = lease(false, Some(NOBODY));
-        let mine = replica(store_with(&["reg_mine"]), Arc::new(AtomicUsize::new(0)));
-        let (status, _, body) = poll(mine, "reg_mine").await;
+        let mine = replica(store_with(&[id(2)]), Arc::new(AtomicUsize::new(0)));
+        let (status, _, body) = poll(mine, &id(2)).await;
         assert_eq!(status, StatusCode::OK, "{body}");
-        assert_eq!(body["jobId"], "reg_mine");
+        assert_eq!(body["jobId"], id(2));
     }
 
-    /// One hop: the task a poll was forwarded to answers it, even when it is
-    /// not the writer either, instead of passing it on.
+    /// One hop: a poll forwarded to a task that turns out not to be the
+    /// writer (the lease moved) is answered there, `503`, never passed on, and
+    /// never a `404` for a job the new writer may be running.
     #[tokio::test]
-    async fn a_forwarded_poll_is_not_forwarded_again() {
-        let writer_hits = Arc::new(AtomicUsize::new(0));
-        let stale = serve(replica(store_with(&[]), writer_hits.clone())).await;
+    async fn a_forwarded_poll_is_answered_not_forwarded_again() {
+        let stale_hits = Arc::new(AtomicUsize::new(0));
+        let stale = serve(replica(store_with(&[]), stale_hits.clone())).await;
         let _lease = lease(false, Some(&stale));
         let other = replica(store_with(&[]), Arc::new(AtomicUsize::new(0)));
 
-        let (status, _, body) = poll(other, "reg_nowhere").await;
-        assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
-        assert_eq!(body["jobId"], "reg_nowhere");
-        assert_eq!(writer_hits.load(Ordering::SeqCst), 1);
+        let (status, _, body) = poll(other, &id(3)).await;
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{body}");
+        assert_eq!(body["reason"], "forwarded_but_not_writer", "{body}");
+        assert_eq!(stale_hits.load(Ordering::SeqCst), 1);
     }
 
     /// The writer is where the job would be: its miss is the real `404`, and
@@ -25840,13 +25960,28 @@ mod register_jobs_replica_tests {
     #[tokio::test]
     async fn the_writer_answers_404_for_a_job_it_does_not_have() {
         let elsewhere_hits = Arc::new(AtomicUsize::new(0));
-        let elsewhere = serve(replica(store_with(&["reg_x"]), elsewhere_hits.clone())).await;
+        let elsewhere = serve(replica(store_with(&[id(4)]), elsewhere_hits.clone())).await;
         let _lease = lease(true, Some(&elsewhere));
         let writer = replica(store_with(&[]), Arc::new(AtomicUsize::new(0)));
 
-        let (status, _, body) = poll(writer, "reg_x").await;
+        let (status, _, body) = poll(writer, &id(4)).await;
         assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
         assert_eq!(elsewhere_hits.load(Ordering::SeqCst), 0);
+    }
+
+    /// An id `POST /register` never hands out names no job anywhere: `404`
+    /// here, and nothing is forwarded for it.
+    #[tokio::test]
+    async fn an_id_that_is_not_a_job_id_is_not_forwarded() {
+        let writer_hits = Arc::new(AtomicUsize::new(0));
+        let writer = serve(replica(store_with(&[]), writer_hits.clone())).await;
+        let _lease = lease(false, Some(&writer));
+        for not_an_id in ["reg_42", "reg_%2e%2e", "anything"] {
+            let other = replica(store_with(&[]), Arc::new(AtomicUsize::new(0)));
+            let (status, _, body) = poll(other, not_an_id).await;
+            assert_eq!(status, StatusCode::NOT_FOUND, "{not_an_id}: {body}");
+        }
+        assert_eq!(writer_hits.load(Ordering::SeqCst), 0);
     }
 
     /// Not being able to ask is not "the job does not exist": a poller that
@@ -25856,7 +25991,7 @@ mod register_jobs_replica_tests {
         for holder in [None, Some(NOBODY)] {
             let _lease = lease(false, holder);
             let other = replica(store_with(&[]), Arc::new(AtomicUsize::new(0)));
-            let (status, headers, body) = poll(other, "reg_w").await;
+            let (status, headers, body) = poll(other, &id(5)).await;
             assert_eq!(
                 status,
                 StatusCode::SERVICE_UNAVAILABLE,
@@ -25871,16 +26006,15 @@ mod register_jobs_replica_tests {
     #[tokio::test]
     async fn the_mounted_route_reads_the_process_store() {
         let _lease = lease(false, None);
-        let id = match register_jobs::begin(Network::Base, None) {
+        let job_id = match register_jobs::begin(Network::Base, None) {
             register_jobs::BeginOutcome::Started(id) => id,
             register_jobs::BeginOutcome::AlreadyInflight(_) => unreachable!(),
         };
-        let router =
-            Router::new().route("/register/status/{job_id}", get(get_register_status));
-        let (status, _, body) = poll(router.clone(), &id).await;
+        let router = Router::new().route("/register/status/{job_id}", get(get_register_status));
+        let (status, _, body) = poll(router.clone(), &job_id).await;
         assert_eq!(status, StatusCode::OK, "{body}");
         assert_eq!(body["status"], "pending");
-        let (status, _, body) = poll(router, "reg_not_here").await;
+        let (status, _, body) = poll(router, &id(6)).await;
         assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{body}");
     }
 
@@ -25988,7 +26122,9 @@ mod register_jobs_replica_tests {
             self.node
                 .call_log()
                 .into_iter()
-                .filter(|(_, input, _)| input.starts_with(&IIdentityRegistry::ownerOfCall::SELECTOR))
+                .filter(|(_, input, _)| {
+                    input.starts_with(&IIdentityRegistry::ownerOfCall::SELECTOR)
+                })
                 .map(|(_, _, block)| block)
                 .collect()
         }
@@ -26135,7 +26271,10 @@ mod register_jobs_replica_tests {
         );
         assert_eq!(job.status, RegisterJobStatus::Failed, "{job:?}");
         let key = stranded_key(recipient);
-        assert_eq!(register_jobs::get_stranded(&key).map(|s| s.agent_id), Some(AGENT));
+        assert_eq!(
+            register_jobs::get_stranded(&key).map(|s| s.agent_id),
+            Some(AGENT)
+        );
         register_jobs::clear_stranded(&key);
     }
 
@@ -26177,7 +26316,10 @@ mod register_jobs_replica_tests {
         assert_eq!(resp.owner, None, "{resp:?}");
         assert_eq!(chain.sent(), vec![MINT, TRANSFER], "a retire was sent");
         let key = stranded_key(recipient);
-        assert_eq!(register_jobs::get_stranded(&key).map(|s| s.agent_id), Some(AGENT));
+        assert_eq!(
+            register_jobs::get_stranded(&key).map(|s| s.agent_id),
+            Some(AGENT)
+        );
         register_jobs::clear_stranded(&key);
     }
 
@@ -26238,9 +26380,16 @@ mod register_jobs_replica_tests {
         let (chain, status, resp, job) = register(chain, recipient, BRIEF).await;
 
         assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{resp:?}");
-        assert_eq!(chain.sent(), vec![TRANSFER], "something besides the reclaim was sent");
+        assert_eq!(
+            chain.sent(),
+            vec![TRANSFER],
+            "something besides the reclaim was sent"
+        );
         assert_eq!(job.status, RegisterJobStatus::Failed, "{job:?}");
-        assert_eq!(register_jobs::get_stranded(&key).map(|s| s.agent_id), Some(AGENT));
+        assert_eq!(
+            register_jobs::get_stranded(&key).map(|s| s.agent_id),
+            Some(AGENT)
+        );
         register_jobs::clear_stranded(&key);
     }
 
@@ -26289,7 +26438,11 @@ mod register_jobs_replica_tests {
         let (chain, status, resp, _job) = running.await.unwrap();
 
         assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{resp:?}");
-        assert_eq!(chain.sent(), vec![TRANSFER], "a non-writer retired or minted");
+        assert_eq!(
+            chain.sent(),
+            vec![TRANSFER],
+            "a non-writer retired or minted"
+        );
         register_jobs::clear_stranded(&key);
     }
 
@@ -26328,7 +26481,117 @@ mod register_jobs_replica_tests {
         assert_eq!(status, StatusCode::OK, "{resp:?}");
         assert_eq!(job.status, RegisterJobStatus::Done, "{job:?}");
         assert_eq!(chain.sent(), vec![MINT, TRANSFER]);
-        assert_eq!(chain.reads_of(IIdentityRegistry::balanceOfCall::SELECTOR), 3);
+        assert_eq!(
+            chain.reads_of(IIdentityRegistry::balanceOfCall::SELECTOR),
+            3
+        );
+    }
+
+    /// A facilitator whose only chain is the mock node, as `POST /register`
+    /// sees it.
+    #[derive(Clone)]
+    struct OnChain(Arc<Providers>);
+
+    impl HasProviderMap for OnChain {
+        type Map = Providers;
+        fn provider_map(&self) -> &Providers {
+            &self.0
+        }
+    }
+
+    impl Facilitator for OnChain {
+        type Error = FacilitatorLocalError;
+        async fn verify(
+            &self,
+            _r: &crate::types::VerifyRequest,
+        ) -> Result<VerifyResponse, Self::Error> {
+            Err(FacilitatorLocalError::ContractCall(
+                "no payments here".into(),
+            ))
+        }
+        async fn settle(&self, _r: &SettleRequest) -> Result<SettleResponse, Self::Error> {
+            Err(FacilitatorLocalError::ContractCall(
+                "no payments here".into(),
+            ))
+        }
+        async fn supported(
+            &self,
+        ) -> Result<crate::types::SupportedPaymentKindsResponse, Self::Error> {
+            Ok(crate::types::SupportedPaymentKindsResponse { kinds: vec![] })
+        }
+        async fn screen_recipient(
+            &self,
+            _address: &MixedAddress,
+        ) -> Result<Option<String>, Self::Error> {
+            Ok(None)
+        }
+    }
+
+    /// The whole async path, the way Execution Market drives it: `202`, polls
+    /// that read `pending` while the verdict is not there, then `done`.
+    #[tokio::test]
+    async fn an_async_registration_polls_pending_through_a_no_verdict_and_ends_done() {
+        let _lease = lease(true, None);
+        let recipient = Address::repeat_byte(0x6D);
+        let chain = chain().await;
+        chain.balances(vec![unanswered(), unanswered(), amount(U256::ZERO)]);
+        chain.owners(vec![word(recipient)]);
+        let Chain {
+            node, providers, ..
+        } = chain;
+
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "prefer",
+            axum::http::HeaderValue::from_static("respond-async"),
+        );
+        let body = serde_json::json!({
+            "x402Version": 1,
+            "network": "base",
+            "agentUri": URI,
+            "recipient": format!("{recipient:#x}"),
+        });
+        let response = post_register(
+            State(OnChain(Arc::new(providers))),
+            headers,
+            Bytes::from(body.to_string()),
+        )
+        .await
+        .into_response();
+        assert_eq!(response.status(), StatusCode::ACCEPTED);
+        let accepted: serde_json::Value = serde_json::from_slice(
+            &axum::body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        let job_id = accepted["jobId"].as_str().expect("a jobId").to_string();
+        let status_route =
+            Router::new().route("/register/status/{job_id}", get(get_register_status));
+
+        // Reads at 0 s and 1 s fail; the third, at 3 s, answers.
+        tokio::time::sleep(Duration::from_millis(1500)).await;
+        let (status, _, job) = poll(status_route.clone(), &job_id).await;
+        assert_eq!(status, StatusCode::OK, "{job}");
+        assert_eq!(job["status"], "pending", "{job}");
+
+        let deadline = std::time::Instant::now() + Duration::from_secs(20);
+        loop {
+            let (_, _, job) = poll(status_route.clone(), &job_id).await;
+            assert_ne!(job["status"], "failed", "{job}");
+            if job["status"] == "done" {
+                assert_eq!(job["agentId"], "1141732", "{job}");
+                break;
+            }
+            assert!(std::time::Instant::now() < deadline, "still {job}");
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+        let sent: Vec<[u8; 4]> = node
+            .sent()
+            .iter()
+            .map(|tx| tx.input[..4].try_into().unwrap())
+            .collect();
+        assert_eq!(sent, vec![MINT, TRANSFER]);
     }
 
     /// A sync caller keeps its answer: `503` at once, nothing sent.
@@ -26348,7 +26611,10 @@ mod register_jobs_replica_tests {
 
         assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{resp:?}");
         assert!(chain.sent().is_empty());
-        assert_eq!(chain.reads_of(IIdentityRegistry::balanceOfCall::SELECTOR), 1);
+        assert_eq!(
+            chain.reads_of(IIdentityRegistry::balanceOfCall::SELECTOR),
+            1
+        );
         assert_eq!(job.status, RegisterJobStatus::Failed);
     }
 
@@ -26372,27 +26638,417 @@ mod register_jobs_replica_tests {
 
         assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{resp:?}");
         assert!(
-            resp.error.as_deref().unwrap_or_default().contains("not retryable"),
+            resp.error
+                .as_deref()
+                .unwrap_or_default()
+                .contains("not retryable"),
             "{resp:?}"
         );
-        assert_eq!(chain.reads_of(IIdentityRegistry::balanceOfCall::SELECTOR), 1);
-        assert!(started.elapsed() < Duration::from_secs(1), "it waited to ask again");
+        assert_eq!(
+            chain.reads_of(IIdentityRegistry::balanceOfCall::SELECTOR),
+            1
+        );
+        assert!(
+            started.elapsed() < Duration::from_secs(1),
+            "it waited to ask again"
+        );
         assert!(chain.sent().is_empty());
         assert_eq!(job.status, RegisterJobStatus::Failed);
     }
 
     /// A wait can outlast the lease the request was routed by: what follows
-    /// it is a send, and only the writer may send.
+    /// it is a send, and only the writer may send. The lease goes while the
+    /// verdict is being asked again.
     #[tokio::test]
     async fn a_registration_that_lost_the_lease_while_waiting_sends_nothing() {
-        let _lease = lease(false, None);
+        let _lease = lease(true, None);
         let recipient = Address::repeat_byte(0x69);
         let chain = chain().await;
-        chain.balance(amount(U256::ZERO));
+        chain.balances(vec![unanswered(), amount(U256::ZERO)]);
 
-        let (chain, status, resp, _job) = register(chain, recipient, PATIENT).await;
+        let running = tokio::spawn(register(chain, recipient, PATIENT));
+        tokio::time::sleep(Duration::from_millis(400)).await;
+        crate::writer_lease::set_writer_for_test(false);
+        let (chain, status, resp, _job) = running.await.unwrap();
 
         assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{resp:?}");
         assert!(chain.sent().is_empty(), "a non-writer sent a transaction");
+    }
+
+    /// The incident's 503 itself: the owner index of a registry past one
+    /// scan's reach answers "no verdict" (here its walk cannot read the chain)
+    /// and the job stays `pending`; once the lookup resolves, the job answers
+    /// the agent the recipient already holds, and nothing is minted.
+    #[tokio::test]
+    async fn a_lookup_still_being_rebuilt_keeps_the_job_pending_and_resolves() {
+        let _lease = lease(true, None);
+        let recipient = Address::repeat_byte(0x6E);
+        let chain = chain().await;
+        let registry = chain.registry;
+        let past_the_cap = (OWNER_SCAN_MAX_BATCHES + 3) * OWNER_SCAN_BATCH + 7;
+        store_registry_bound(Network::Base, registry, past_the_cap);
+        chain.balance(amount(U256::from(1)));
+
+        let key = register_jobs::inflight_key(
+            &Network::Base,
+            URI,
+            &Some(MixedAddress::Evm(crate::types::EvmAddress(recipient))),
+        );
+        let running = tokio::spawn(register(chain, recipient, PATIENT));
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        let inflight = match register_jobs::begin(Network::Base, key) {
+            register_jobs::BeginOutcome::AlreadyInflight(job) => job,
+            register_jobs::BeginOutcome::Started(id) => {
+                panic!("the job already ended; a new one ({id}) could start")
+            }
+        };
+        assert_eq!(inflight.status, RegisterJobStatus::Pending, "{inflight:?}");
+        // The walk finishes elsewhere: the next lookup has its answer.
+        OWNER_LOOKUP_CACHE.insert(
+            (Network::Base, registry, recipient),
+            (AGENT, std::time::Instant::now()),
+        );
+
+        let (chain, status, resp, job) = running.await.unwrap();
+        OWNER_LOOKUP_CACHE.remove(&(Network::Base, registry, recipient));
+        REGISTRY_BOUND_CACHE.remove(&(Network::Base, registry));
+
+        assert_eq!(status, StatusCode::OK, "{resp:?}");
+        assert_eq!(resp.agent_id.as_deref(), Some("1141732"));
+        assert_eq!(job.status, RegisterJobStatus::Done, "{job:?}");
+        assert!(
+            chain.sent().is_empty(),
+            "the recipient already had an agent"
+        );
+    }
+
+    fn token_uri(chain: &Chain) {
+        chain.node.on_call(
+            chain.registry,
+            IIdentityRegistry::tokenURICall::SELECTOR,
+            CallAnswer::Return(IIdentityRegistry::tokenURICall::abi_encode_returns(
+                &URI.to_string(),
+            )),
+        );
+    }
+
+    /// The refutation's double mint: an earlier transfer of the stranded
+    /// identity lands while a retry is reclaiming it, so the retry's transfer
+    /// reverts ("not the owner"). That revert is a delivery, not a failure:
+    /// nothing is retired and nothing new is minted.
+    #[tokio::test]
+    async fn a_recovery_whose_transfer_reverts_after_an_earlier_one_landed_mints_nothing() {
+        let _lease = lease(true, None);
+        let recipient = Address::repeat_byte(0x6F);
+        let chain = chain().await;
+        chain.balance(amount(U256::ZERO));
+        token_uri(&chain);
+        chain.owners(vec![word(chain.facilitator), word(recipient)]);
+        chain.node.revert_receipts(true);
+        let key = stranded_key(recipient);
+        register_jobs::record_stranded(key.clone(), AGENT, None);
+
+        let (chain, status, resp, job) = register(chain, recipient, BRIEF).await;
+
+        assert_eq!(status, StatusCode::OK, "{resp:?}");
+        assert_eq!(resp.agent_id.as_deref(), Some("1141732"));
+        assert_eq!(
+            resp.transfer_transaction, None,
+            "the reverted transfer delivered nothing"
+        );
+        assert_eq!(
+            chain.sent(),
+            vec![TRANSFER],
+            "a retire or a fresh mint was sent"
+        );
+        assert_eq!(job.status, RegisterJobStatus::Done, "{job:?}");
+        assert!(register_jobs::get_stranded(&key).is_none());
+    }
+
+    /// A stranded identity that is already with its recipient is a delivery:
+    /// nothing is sent at all.
+    #[tokio::test]
+    async fn a_stranded_identity_already_with_its_recipient_is_not_minted_again() {
+        let _lease = lease(true, None);
+        let recipient = Address::repeat_byte(0x70);
+        let chain = chain().await;
+        chain.balance(amount(U256::ZERO));
+        chain.owners(vec![word(recipient)]);
+        let key = stranded_key(recipient);
+        register_jobs::record_stranded(key.clone(), AGENT, None);
+
+        let (chain, status, resp, job) = register(chain, recipient, BRIEF).await;
+
+        assert_eq!(status, StatusCode::OK, "{resp:?}");
+        assert!(
+            chain.sent().is_empty(),
+            "something was sent: {:?}",
+            chain.sent()
+        );
+        assert_eq!(job.status, RegisterJobStatus::Done, "{job:?}");
+        assert!(register_jobs::get_stranded(&key).is_none());
+    }
+
+    /// Not knowing who holds the stranded identity is no reason to mint
+    /// another: nothing is sent, and the record stays.
+    #[tokio::test]
+    async fn a_stranded_identity_whose_owner_cannot_be_read_is_not_minted_again() {
+        let _lease = lease(true, None);
+        let recipient = Address::repeat_byte(0x71);
+        let chain = chain().await;
+        chain.balance(amount(U256::ZERO));
+        chain.owners(vec![unanswered()]);
+        let key = stranded_key(recipient);
+        register_jobs::record_stranded(key.clone(), AGENT, None);
+
+        let (chain, status, resp, _job) = register(chain, recipient, BRIEF).await;
+
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{resp:?}");
+        assert!(
+            chain.sent().is_empty(),
+            "something was sent: {:?}",
+            chain.sent()
+        );
+        assert_eq!(
+            register_jobs::get_stranded(&key).map(|s| s.agent_id),
+            Some(AGENT)
+        );
+        register_jobs::clear_stranded(&key);
+    }
+
+    /// Its URI unreadable: still no reason to mint another.
+    #[tokio::test]
+    async fn a_stranded_identity_whose_uri_cannot_be_read_is_not_minted_again() {
+        let _lease = lease(true, None);
+        let recipient = Address::repeat_byte(0x74);
+        let chain = chain().await;
+        chain.balance(amount(U256::ZERO));
+        chain.owners(vec![word(chain.facilitator)]);
+        chain.node.on_call(
+            chain.registry,
+            IIdentityRegistry::tokenURICall::SELECTOR,
+            unanswered(),
+        );
+        let key = stranded_key(recipient);
+        register_jobs::record_stranded(key.clone(), AGENT, None);
+
+        let (chain, status, resp, _job) = register(chain, recipient, BRIEF).await;
+
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{resp:?}");
+        assert!(
+            chain.sent().is_empty(),
+            "something was sent: {:?}",
+            chain.sent()
+        );
+        register_jobs::clear_stranded(&key);
+    }
+
+    /// A retired stranded identity whose URI cannot be put back may no longer
+    /// be ours (the registry refuses `setAgentURI` from anybody else): no
+    /// transfer, no fresh mint.
+    #[tokio::test]
+    async fn a_stranded_identity_whose_uri_cannot_be_restored_is_not_minted_again() {
+        let _lease = lease(true, None);
+        let recipient = Address::repeat_byte(0x75);
+        let chain = chain().await;
+        chain.balance(amount(U256::ZERO));
+        chain.owners(vec![word(chain.facilitator)]);
+        chain.node.on_call(
+            chain.registry,
+            IIdentityRegistry::tokenURICall::SELECTOR,
+            CallAnswer::Return(IIdentityRegistry::tokenURICall::abi_encode_returns(
+                &crate::erc8004::retire::RETIRED_URI.to_string(),
+            )),
+        );
+        chain.node.revert_estimates(RETIRE);
+        let key = stranded_key(recipient);
+        register_jobs::record_stranded(key.clone(), AGENT, None);
+
+        let (chain, status, resp, _job) = register(chain, recipient, BRIEF).await;
+
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{resp:?}");
+        assert!(
+            chain.sent().is_empty(),
+            "something was sent: {:?}",
+            chain.sent()
+        );
+        register_jobs::clear_stranded(&key);
+    }
+
+    /// Putting a retired identity's URI back waits on a receipt; the lease can
+    /// go meanwhile, and the transfer after it is a send.
+    #[tokio::test]
+    async fn a_recovery_that_lost_the_lease_while_restoring_does_not_transfer() {
+        let _lease = lease(true, None);
+        let recipient = Address::repeat_byte(0x76);
+        let chain = chain().await;
+        chain.balance(amount(U256::ZERO));
+        chain.owners(vec![word(chain.facilitator)]);
+        chain.node.on_call(
+            chain.registry,
+            IIdentityRegistry::tokenURICall::SELECTOR,
+            CallAnswer::Return(IIdentityRegistry::tokenURICall::abi_encode_returns(
+                &crate::erc8004::retire::RETIRED_URI.to_string(),
+            )),
+        );
+        chain.node.delay_receipts(Duration::from_millis(800));
+        let key = stranded_key(recipient);
+        register_jobs::record_stranded(key.clone(), AGENT, None);
+
+        let running = tokio::spawn(register(chain, recipient, BRIEF));
+        tokio::time::sleep(Duration::from_millis(400)).await;
+        crate::writer_lease::set_writer_for_test(false);
+        let (chain, status, resp, _job) = running.await.unwrap();
+
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{resp:?}");
+        assert_eq!(chain.sent(), vec![RETIRE], "a non-writer sent the transfer");
+        register_jobs::clear_stranded(&key);
+    }
+
+    /// A transfer that was sent and never confirmed may still land: the
+    /// facilitator still holding the agent proves nothing, and is no verdict.
+    #[tokio::test]
+    async fn a_transfer_sent_without_a_receipt_is_no_verdict_while_the_facilitator_holds_it() {
+        let chain = chain().await;
+        chain.owners(vec![word(chain.facilitator)]);
+        let provider = test_rpc::evm(&chain.providers, Network::Base);
+        let recipient = Address::repeat_byte(0x72);
+        let sent = TransferFailure {
+            tx: Some(crate::types::TransactionHash::Evm([0x5e; 32])),
+            block: None,
+            reverted: false,
+            in_flight: true,
+            reason: "Transfer receipt failed: timed out".to_string(),
+        };
+        let verdict = confirm_delivery(
+            provider,
+            Network::Base,
+            chain.registry,
+            AGENT,
+            recipient,
+            &sent,
+            Duration::from_millis(1500),
+        )
+        .await;
+        assert!(
+            matches!(verdict, Err(NotDelivered::Unreadable(_))),
+            "{verdict:?}"
+        );
+
+        // Refused at estimation, so not sent: who holds it is the verdict.
+        let not_sent = TransferFailure {
+            tx: None,
+            block: None,
+            reverted: true,
+            in_flight: false,
+            reason: "Failed to send transfer transaction: gas estimation reverted".to_string(),
+        };
+        let verdict = confirm_delivery(
+            provider,
+            Network::Base,
+            chain.registry,
+            AGENT,
+            recipient,
+            &not_sent,
+            Duration::ZERO,
+        )
+        .await;
+        assert_eq!(verdict, Err(NotDelivered::HeldBy(chain.facilitator)));
+    }
+
+    /// A node that has not seen the preconfirmed mint yet refuses the
+    /// transfer at estimation: nothing went out, so it is asked again, and the
+    /// registration completes instead of failing and retiring the identity.
+    #[tokio::test]
+    async fn a_transfer_refused_at_estimation_right_after_the_mint_is_asked_again() {
+        let _lease = lease(true, None);
+        let recipient = Address::repeat_byte(0x77);
+        let chain = chain().await;
+        chain.balance(amount(U256::ZERO));
+        chain.owners(vec![word(recipient)]);
+        chain.node.revert_next_estimate(TRANSFER);
+
+        let (chain, status, resp, job) = register(chain, recipient, BRIEF).await;
+
+        assert_eq!(status, StatusCode::OK, "{resp:?}");
+        assert_eq!(chain.sent(), vec![MINT, TRANSFER], "{resp:?}");
+        assert_eq!(job.status, RegisterJobStatus::Done, "{job:?}");
+    }
+
+    /// Asking the transfer again is a send: not from a task that lost the
+    /// lease while it waited to.
+    #[tokio::test]
+    async fn a_task_that_lost_the_lease_does_not_ask_the_transfer_again() {
+        let _lease = lease(true, None);
+        let recipient = Address::repeat_byte(0x79);
+        let chain = chain().await;
+        chain.balance(amount(U256::ZERO));
+        chain.owners(vec![word(chain.facilitator)]);
+        chain.node.revert_next_estimate(TRANSFER);
+
+        let running = tokio::spawn(register(chain, recipient, BRIEF));
+        tokio::time::sleep(Duration::from_millis(400)).await;
+        crate::writer_lease::set_writer_for_test(false);
+        let (chain, status, resp, _job) = running.await.unwrap();
+
+        assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "{resp:?}");
+        assert_eq!(chain.sent(), vec![MINT], "a non-writer sent the transfer");
+        register_jobs::clear_stranded(&stranded_key(recipient));
+    }
+
+    /// The node took the reclaim transfer and its answer was lost: the
+    /// transfer may still land, so the facilitator holding the identity now
+    /// proves nothing. Nothing is retired and nothing new is minted.
+    #[tokio::test]
+    async fn a_reclaim_whose_send_answer_was_lost_mints_nothing() {
+        let _lease = lease(true, None);
+        let recipient = Address::repeat_byte(0x78);
+        let chain = chain().await;
+        chain.balance(amount(U256::ZERO));
+        token_uri(&chain);
+        chain.owners(vec![word(chain.facilitator)]);
+        chain.node.lose_send_answers(true);
+        let key = stranded_key(recipient);
+        register_jobs::record_stranded(key.clone(), AGENT, None);
+
+        let (chain, status, resp, _job) = register(chain, recipient, BRIEF).await;
+
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{resp:?}");
+        assert_eq!(
+            chain.sent(),
+            vec![TRANSFER],
+            "a retire or a fresh mint was sent"
+        );
+        assert_eq!(
+            register_jobs::get_stranded(&key).map(|s| s.agent_id),
+            Some(AGENT)
+        );
+        register_jobs::clear_stranded(&key);
+    }
+
+    /// The mint's receipt wait outlasted the lease: the transfer is a send,
+    /// and this task may no longer make one.
+    #[tokio::test]
+    async fn a_task_that_lost_the_lease_during_the_mint_does_not_transfer() {
+        let _lease = lease(true, None);
+        let recipient = Address::repeat_byte(0x73);
+        let chain = chain().await;
+        chain.balance(amount(U256::ZERO));
+        chain.owners(vec![word(recipient)]);
+        chain.node.delay_receipts(Duration::from_millis(800));
+
+        let running = tokio::spawn(register(chain, recipient, PATIENT));
+        tokio::time::sleep(Duration::from_millis(400)).await;
+        crate::writer_lease::set_writer_for_test(false);
+        let (chain, status, resp, _job) = running.await.unwrap();
+
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{resp:?}");
+        assert_eq!(chain.sent(), vec![MINT], "a non-writer transferred");
+        let key = stranded_key(recipient);
+        assert_eq!(
+            register_jobs::get_stranded(&key).map(|s| s.agent_id),
+            Some(AGENT)
+        );
+        register_jobs::clear_stranded(&key);
     }
 }

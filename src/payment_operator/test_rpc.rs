@@ -72,10 +72,18 @@ struct NodeState {
     receipts_revert: bool,
     /// Selectors whose `eth_estimateGas` answers `execution reverted`.
     estimate_reverts: Vec<[u8; 4]>,
+    /// Selectors whose NEXT `eth_estimateGas` answers `execution reverted`,
+    /// once each.
+    estimate_reverts_once: Vec<[u8; 4]>,
+    /// While set, `eth_sendRawTransaction` keeps the transaction and answers
+    /// an error: a node that took it and whose answer was lost.
+    send_answers_lost: bool,
     /// Reads answered in turn, before `calls`; the last answer repeats.
     call_sequences: HashMap<(Address, [u8; 4]), Vec<CallAnswer>>,
     /// Logs every receipt carries.
     receipt_logs: Vec<Value>,
+    /// How long `eth_getTransactionReceipt` takes to answer.
+    receipt_delay: std::time::Duration,
     sent: Vec<SentTx>,
 }
 
@@ -152,12 +160,34 @@ impl MockNode {
         self.state.lock().unwrap().receipts_revert = revert;
     }
 
+    /// Make every `eth_getTransactionReceipt` answer only after `delay`: a
+    /// transaction that takes that long to confirm.
+    pub(crate) fn delay_receipts(&self, delay: std::time::Duration) {
+        self.state.lock().unwrap().receipt_delay = delay;
+    }
+
     /// Make `eth_estimateGas` of every call whose data starts with `selector`
     /// answer `execution reverted`, as a node does for a call the chain would
     /// refuse: the send path then sends nothing for it. Other calls still go
     /// through, so one step of a flow can fail while the rest land.
     pub(crate) fn revert_estimates(&self, selector: [u8; 4]) {
         self.state.lock().unwrap().estimate_reverts.push(selector);
+    }
+
+    /// [`Self::revert_estimates`] for the next estimate of `selector` only: a
+    /// node that answers before it has caught up, then has.
+    pub(crate) fn revert_next_estimate(&self, selector: [u8; 4]) {
+        self.state
+            .lock()
+            .unwrap()
+            .estimate_reverts_once
+            .push(selector);
+    }
+
+    /// Make `eth_sendRawTransaction` take each transaction (it shows in
+    /// [`Self::sent`]) and answer an error (or answer normally again).
+    pub(crate) fn lose_send_answers(&self, lost: bool) {
+        self.state.lock().unwrap().send_answers_lost = lost;
     }
 
     /// Every transaction handed to the node, in order.
@@ -354,6 +384,14 @@ fn answer(state: &Mutex<NodeState>, req: &Value) -> Value {
             {
                 return rpc_error(id, 3, "execution reverted");
             }
+            if let Some(once) = state
+                .estimate_reverts_once
+                .iter()
+                .position(|selector| input.starts_with(selector))
+            {
+                state.estimate_reverts_once.remove(once);
+                return rpc_error(id, 3, "execution reverted");
+            }
             json!("0x30000")
         }
         "eth_blockNumber" => hex_quantity(TIP as u128),
@@ -380,6 +418,9 @@ fn answer(state: &Mutex<NodeState>, req: &Value) -> Value {
                 input: tx.input().to_vec(),
                 max_fee_per_gas: tx.max_fee_per_gas(),
             });
+            if state.send_answers_lost {
+                return rpc_error(id, -32603, "upstream request timed out");
+            }
             json!(format!("0x{}", hex::encode(SUBMITTED)))
         }
         "eth_getCode" => {
@@ -440,6 +481,16 @@ fn answer(state: &Mutex<NodeState>, req: &Value) -> Value {
 }
 
 async fn serve(State(state): State<Arc<Mutex<NodeState>>>, Json(body): Json<Value>) -> Json<Value> {
+    let asks_receipt =
+        |r: &Value| r.get("method").and_then(Value::as_str) == Some("eth_getTransactionReceipt");
+    let receipt = match &body {
+        Value::Array(reqs) => reqs.iter().any(asks_receipt),
+        req => asks_receipt(req),
+    };
+    let delay = state.lock().unwrap().receipt_delay;
+    if receipt && !delay.is_zero() {
+        tokio::time::sleep(delay).await;
+    }
     Json(match &body {
         Value::Array(reqs) => Value::Array(reqs.iter().map(|r| answer(&state, r)).collect()),
         req => answer(&state, req),

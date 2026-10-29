@@ -182,6 +182,14 @@ fn new_job_id() -> String {
     format!("reg_{}", uuid::Uuid::new_v4().simple())
 }
 
+/// Whether `id` has the shape [`new_job_id`] hands out. A poll for anything
+/// else is answered without asking another task.
+pub fn is_job_id(id: &str) -> bool {
+    id.strip_prefix("reg_").is_some_and(|hex| {
+        hex.len() == 32 && hex.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+    })
+}
+
 fn now() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -444,8 +452,27 @@ mod tests {
             let suffix = id.strip_prefix("reg_").expect("the reg_ prefix stays");
             assert_eq!(suffix.len(), 32, "{id}");
             assert!(suffix.chars().all(|c| c.is_ascii_hexdigit()), "{id}");
+            assert!(is_job_id(id), "{id}");
         }
         assert_ne!(ids[0], ids[1]);
+    }
+
+    #[test]
+    fn only_the_shape_begin_hands_out_is_a_job_id() {
+        assert!(is_job_id("reg_0123456789abcdef0123456789abcdef"));
+        for not_one in [
+            "",
+            "reg_",
+            "reg_42",
+            "REG_0123456789abcdef0123456789abcdef",
+            "reg_0123456789ABCDEF0123456789abcdef",
+            "reg_0123456789abcdef0123456789abcde",
+            "reg_0123456789abcdef0123456789abcdef0",
+            "reg_..",
+            "reg_0123456789abcdef0123456789abcde/",
+        ] {
+            assert!(!is_job_id(not_one), "{not_one:?}");
+        }
     }
 
     #[test]

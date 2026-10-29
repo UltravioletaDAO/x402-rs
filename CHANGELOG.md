@@ -12,8 +12,9 @@ landed is not reported failed.
   answered from whichever of the three tasks the ALB picked: two polls in three
   got `404` for a running job. A task without the job now forwards the poll to
   the lease holder, one hop, and answers `503` with `Retry-After` and
-  `"retryable": true` when it cannot ask; `404` comes only from the writer, or
-  from the task a poll was forwarded to. Job ids are random (`reg_<32 hex>`)
+  `"retryable": true` when it cannot ask, or when a forwarded poll reaches a
+  task that is no longer the writer; `404` comes only from the writer, or for
+  an id `POST /register` never hands out. Job ids are random (`reg_<32 hex>`)
   instead of a per-process counter, so a poll never reads another task's job
   under its own id.
 - **A transfer that landed is not reported failed.** After the transfer's
@@ -23,19 +24,26 @@ landed is not reported failed.
   sync request, up to 10 min for an async job). On 2026-10-28 one stale read
   150 ms after the receipt failed a delivered Base registration, the retire
   that followed reverted, and the job closed `failed`. Only an identity the
-  facilitator still holds is retired; an owner that cannot be read answers
-  `503`, nothing retired, recovery record kept. On the recovery path the same
-  stale read used to fall through to a fresh mint, a second identity for the
-  recipient: a delivery found there completes the recovery, and an unreadable
-  one mints nothing.
-- **A read that reaches no verdict is not an async job's final state.** Whether
+  facilitator still holds is retired; an owner that cannot be read, or a
+  transfer that may have gone out and never confirmed (no receipt, or a send
+  error after the node could have taken it), answers `503`, nothing retired,
+  recovery record kept. A transfer refused at estimation right after the mint
+  (a node that has not seen the preconfirmed mint yet) is asked again for a
+  few seconds before it counts as refused. On the recovery path the same stale read used to fall
+  through to a fresh mint, a second identity for the recipient. Now a delivery
+  found there completes the recovery, including one an earlier transfer made
+  (the retry's own transfer then reverts), and a stranded identity already
+  with its recipient is answered without sending anything. No read that fails
+  on that path mints anything any more.
+- **A read that reaches no verdict does not end an async job early.** Whether
   the recipient already holds an agent (balance unreadable, owner index still
   being rebuilt, a contradiction) is asked again with backoff for up to 10
-  minutes, nothing sent meanwhile, and the job stays `pending`. A sync request
-  still answers `503` at once, and an owner holding more agents than one owner
-  index probe re-reads (`owner_holds_too_many_agents`) is not asked again.
-  After any wait the task re-checks that it still holds the EVM writer lease
-  before it sends anything.
+  minutes, nothing sent meanwhile, and the job stays `pending`; only past that
+  window does it end `failed`, with a retryable error. A sync request still
+  answers `503` at once, and an owner holding more agents than one owner index
+  probe re-reads (`owner_holds_too_many_agents`) is not asked again. After any
+  wait, and before the transfer that follows the mint, the task re-checks that
+  it still holds the EVM writer lease before it sends anything.
 
 ## [2.51.2] - 2026-10-26
 

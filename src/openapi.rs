@@ -1515,8 +1515,8 @@ one hour before they age out (then this returns `404`).
 
 A job that cannot yet tell whether the recipient already holds an agent, or
 where the agent went after a transfer that did not confirm, stays `pending` or
-`mint_confirmed` while the facilitator asks again (up to ten minutes per
-question); a read that did not answer is never the job's final state.
+`mint_confirmed` while the facilitator asks again, for up to ten minutes per
+question; only past that does it end `failed`, with a retryable error.
 
 Any instance answers: one that does not run the job asks the one that does.
 `503` with `Retry-After` means it could not ask; poll again. Only `404` means

@@ -22,7 +22,10 @@
 //! that reports what it would do and an idempotent real run. `POST /register`
 //! also retires, on its own, an identity it minted and then failed to deliver
 //! ([`set_agent_uri`]): a transfer that reverts, or one whose receipt is fine
-//! but after which `ownerOf` is not the recipient. That is all it covers. An
+//! but after which `ownerOf` is not the recipient -- read again, at the
+//! receipt's block, before it is called that (`confirm_delivery` in
+//! `handlers.rs`), and retired only while the facilitator still holds it.
+//! That is all it covers. An
 //! identity its owner sends back to us later is ERC-721 working as designed,
 //! and nothing here sees it: `scripts/erc8004_custodied_identities.py` lists
 //! what the wallet holds, and this admin call retires it.

@@ -1,5 +1,42 @@
 # Changelog
 
+## [2.51.3] - 2026-10-28
+
+ERC-8004 async registrations read the same on every task, and a delivery that
+landed is not reported failed.
+
+### Fixed
+
+- **`GET /register/status/{jobId}` answers the same on every task.** The job
+  lives in the memory of the writer-lease task that runs it, and the route
+  answered from whichever of the three tasks the ALB picked: two polls in three
+  got `404` for a running job. A task without the job now forwards the poll to
+  the lease holder, one hop, and answers `503` with `Retry-After` and
+  `"retryable": true` when it cannot ask; `404` comes only from the writer, or
+  from the task a poll was forwarded to. Job ids are random (`reg_<32 hex>`)
+  instead of a per-process counter, so a poll never reads another task's job
+  under its own id.
+- **A transfer that landed is not reported failed.** After the transfer's
+  receipt, `ownerOf` is read at the block the receipt names; when that read
+  does not name the recipient, or the transfer did not confirm, the owner is
+  read again with backoff before the transfer is called failed (10 s for a
+  sync request, up to 10 min for an async job). On 2026-10-28 one stale read
+  150 ms after the receipt failed a delivered Base registration, the retire
+  that followed reverted, and the job closed `failed`. Only an identity the
+  facilitator still holds is retired; an owner that cannot be read answers
+  `503`, nothing retired, recovery record kept. On the recovery path the same
+  stale read used to fall through to a fresh mint, a second identity for the
+  recipient: a delivery found there completes the recovery, and an unreadable
+  one mints nothing.
+- **A read that reaches no verdict is not an async job's final state.** Whether
+  the recipient already holds an agent (balance unreadable, owner index still
+  being rebuilt, a contradiction) is asked again with backoff for up to 10
+  minutes, nothing sent meanwhile, and the job stays `pending`. A sync request
+  still answers `503` at once, and an owner holding more agents than one owner
+  index probe re-reads (`owner_holds_too_many_agents`) is not asked again.
+  After any wait the task re-checks that it still holds the EVM writer lease
+  before it sends anything.
+
 ## [2.51.2] - 2026-10-26
 
 Spending cap on the NEAR provider.

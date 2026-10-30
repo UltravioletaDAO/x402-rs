@@ -1292,6 +1292,9 @@ static USDC_ARBITRUM: Lazy<USDCDeployment> = Lazy::new(|| {
 });
 
 /// Lazily initialized known USDC deployment on Arbitrum Sepolia testnet as [`USDCDeployment`].
+///
+/// EIP-712 name "USD Coin", like Arbitrum One's and unlike most testnet USDCs
+/// ("USDC"); this entry carried "USDC" through 2.52.0.
 static USDC_ARBITRUM_SEPOLIA: Lazy<USDCDeployment> = Lazy::new(|| {
     USDCDeployment(TokenDeployment {
         asset: TokenAsset {
@@ -1300,7 +1303,7 @@ static USDC_ARBITRUM_SEPOLIA: Lazy<USDCDeployment> = Lazy::new(|| {
         },
         decimals: 6,
         eip712: Some(TokenDeploymentEip712 {
-            name: "USDC".into(),
+            name: "USD Coin".into(),
             version: "2".into(),
         }),
     })
@@ -1982,6 +1985,12 @@ impl EURCDeployment {
 // ============================================================================
 // AUSD (Agora USD) Deployments - Agora Finance
 // Uses deterministic CREATE2 address: 0x00000000eFE302BEAA2b3e6e1b18d08D69a9012a
+//
+// EIP-712 domain: ("Agora Dollar", "1") on all six EVM chains below -- what
+// `eip712Domain()` answers and what reproduces `DOMAIN_SEPARATOR()` (read
+// 2026-10-30). `name()` answers "AUSD",
+// which is not the domain name; Ethereum, Polygon, Arbitrum, Avalanche and Monad
+// carried "AUSD" through 2.52.0 (`chain::evm`, `static_eip712_domain_tests`).
 // ============================================================================
 
 /// AUSD deployment on Ethereum mainnet.
@@ -1993,7 +2002,7 @@ static AUSD_ETHEREUM: Lazy<AUSDDeployment> = Lazy::new(|| {
         },
         decimals: 6,
         eip712: Some(TokenDeploymentEip712 {
-            name: "AUSD".into(),
+            name: "Agora Dollar".into(),
             version: "1".into(),
         }),
     })
@@ -2008,7 +2017,7 @@ static AUSD_POLYGON: Lazy<AUSDDeployment> = Lazy::new(|| {
         },
         decimals: 6,
         eip712: Some(TokenDeploymentEip712 {
-            name: "AUSD".into(),
+            name: "Agora Dollar".into(),
             version: "1".into(),
         }),
     })
@@ -2023,7 +2032,7 @@ static AUSD_ARBITRUM: Lazy<AUSDDeployment> = Lazy::new(|| {
         },
         decimals: 6,
         eip712: Some(TokenDeploymentEip712 {
-            name: "AUSD".into(),
+            name: "Agora Dollar".into(),
             version: "1".into(),
         }),
     })
@@ -2038,7 +2047,7 @@ static AUSD_AVALANCHE: Lazy<AUSDDeployment> = Lazy::new(|| {
         },
         decimals: 6,
         eip712: Some(TokenDeploymentEip712 {
-            name: "AUSD".into(),
+            name: "Agora Dollar".into(),
             version: "1".into(),
         }),
     })
@@ -2053,7 +2062,7 @@ static AUSD_MONAD: Lazy<AUSDDeployment> = Lazy::new(|| {
         },
         decimals: 6,
         eip712: Some(TokenDeploymentEip712 {
-            name: "AUSD".into(),
+            name: "Agora Dollar".into(),
             version: "1".into(),
         }),
     })
@@ -2334,7 +2343,10 @@ static USDT_OPTIMISM: Lazy<USDTDeployment> = Lazy::new(|| {
 
 /// USDT0 deployment on Monad mainnet.
 /// Contract: 0xe7cd86e13AC4309349F30B3435a9d337750fC82D
-/// EIP-712 name: "USD₮0" (with TUGRIK SIGN Unicode character)
+/// EIP-712 name: "USDT0", plain ASCII -- NOT the "USD₮0" of Arbitrum and
+/// Optimism, which this entry carried through 2.52.0. `version()` reverts; only
+/// ("USDT0", "1") reproduces its `DOMAIN_SEPARATOR()` (`chain::evm`,
+/// `static_eip712_domain_tests`).
 static USDT_MONAD: Lazy<USDTDeployment> = Lazy::new(|| {
     USDTDeployment(TokenDeployment {
         asset: TokenAsset {
@@ -2343,7 +2355,7 @@ static USDT_MONAD: Lazy<USDTDeployment> = Lazy::new(|| {
         },
         decimals: 6,
         eip712: Some(TokenDeploymentEip712 {
-            name: "USD\u{20AE}0".into(), // USD₮0 (TUGRIK SIGN)
+            name: "USDT0".into(),
             version: "1".into(),
         }),
     })
@@ -3000,8 +3012,8 @@ mod tests {
             MixedAddress::Evm(address!("e7cd86e13AC4309349F30B3435a9d337750fC82D").into())
         );
         assert_eq!(deployment.decimals, 6);
-        // Check EIP-712 name (USD₮0 with Unicode TUGRIK SIGN)
-        assert_eq!(deployment.eip712.as_ref().unwrap().name, "USD\u{20AE}0");
+        // Plain ASCII "USDT0" on Monad, unlike Arbitrum's and Optimism's USD₮0
+        assert_eq!(deployment.eip712.as_ref().unwrap().name, "USDT0");
     }
 
     // ============================================================
@@ -3134,6 +3146,30 @@ mod tests {
             assert_eq!(eip712.name, "Global Dollar");
             assert_eq!(eip712.version, "1");
         }
+    }
+
+    #[test]
+    fn every_evm_ausd_deployment_signs_under_the_ausd_default_domain() {
+        // AUSD's domain is ("Agora Dollar", "1") on every EVM chain it is
+        // registered on (eip712Domain(), 2026-10-30), while name() answers
+        // "AUSD". Five entries and the TokenType default carried "AUSD"
+        // through 2.52.0; this holds them to one value.
+        assert_eq!(
+            TokenType::Ausd.eip712_domain(),
+            TokenDeploymentEip712 {
+                name: "Agora Dollar".into(),
+                version: "1".into()
+            }
+        );
+        let mut evm = 0;
+        for network in AUSDDeployment::supported_networks() {
+            let deployment = get_token_deployment(*network, TokenType::Ausd).unwrap();
+            if let Some(eip712) = deployment.eip712 {
+                assert_eq!(eip712, TokenType::Ausd.eip712_domain(), "{network}");
+                evm += 1;
+            }
+        }
+        assert_eq!(evm, 6, "the six EVM AUSD deployments");
     }
 
     #[test]

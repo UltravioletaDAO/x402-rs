@@ -1,5 +1,94 @@
 # Changelog
 
+## [2.52.1] - 2026-10-30
+
+Seven static EIP-712 domains are now the ones their contracts publish: USDT0
+on Monad, AUSD on five chains and the USDC on Arbitrum Sepolia.
+
+### Fixed
+
+One line per entry of the static EIP-712 table (`src/network.rs`); each row's
+`DOMAIN_SEPARATOR()` is pinned in `static_eip712_domain_tests`.
+
+| Network | Token | Contract | Was | Now (`name`, `version`) | `DOMAIN_SEPARATOR()` |
+|---|---|---|---|---|---|
+| `monad` | USDT0 | `0xe7cd86e13AC4309349F30B3435a9d337750fC82D` | `USD₮0` | `USDT0`, `1` | `101a9021…452a` |
+| `ethereum` | AUSD | `0x00000000eFE302BEAA2b3e6e1b18d08D69a9012a` | `AUSD` | `Agora Dollar`, `1` | `4a2d637a…519c` |
+| `polygon` | AUSD | `0x00000000eFE302BEAA2b3e6e1b18d08D69a9012a` | `AUSD` | `Agora Dollar`, `1` | `beadf6c9…f24e` |
+| `arbitrum` | AUSD | `0x00000000eFE302BEAA2b3e6e1b18d08D69a9012a` | `AUSD` | `Agora Dollar`, `1` | `b5e470b7…aa4d` |
+| `avalanche` | AUSD | `0x00000000eFE302BEAA2b3e6e1b18d08D69a9012a` | `AUSD` | `Agora Dollar`, `1` | `1b415e1f…d60c` |
+| `monad` | AUSD | `0x00000000eFE302BEAA2b3e6e1b18d08D69a9012a` | `AUSD` | `Agora Dollar`, `1` | `99506344…cafe` |
+| `arbitrum-sepolia` | USDC | `0x75faf114eafb1BDbe2F0316DF893fd58CE46AA4d` | `USDC` | `USD Coin`, `2` | `85944e12…08bb` |
+
+- USDT0 on Monad is plain ASCII `USDT0`, not the `USD₮0` (U+20AE TUGRIK SIGN)
+  of the USDT0 on Arbitrum and Optimism that the entry had been copied from.
+- AUSD's domain is what `eip712Domain()` (EIP-5267) answers on each chain;
+  `AUSD` is what `name()` answers, and is not the domain name. BSC's entry was
+  already right. `TokenType::Ausd.eip712_name()` follows.
+- Only the facilitator was wrong about AUSD and Arbitrum Sepolia: the
+  `uvd-x402-sdk` packages (TypeScript and Python) already sign AUSD under
+  `Agora Dollar`, and neither registers that Arbitrum Sepolia USDC. USDT0 on
+  Monad carried `USD₮0` in both SDKs too (UltravioletaDAO/uvd-x402-sdk-typescript#62).
+- What a wrong entry broke: `/networks.json` publishes the static domain, so a
+  client signing from it produced a signature the contract refuses; an
+  EIP-6492 signature (a counterfactual smart wallet) made under the contract's
+  real domain was refused by `/verify`, whose validator was handed a hash under
+  the wrong one; and DX402 recovered the payer's key from a digest under it, so
+  it skipped the evidence with `no_payer_key`. An EOA signature made under the
+  contract's real domain was not affected: outside Arc, `/verify` and `/settle`
+  judge it by simulating `transferWithAuthorization`, so the contract decides,
+  and a client name that differs from the table is only logged.
+
+### Added
+
+- **`scripts/verify_eip712_domains.py`**: for every EVM deployment in
+  `src/network.rs` with a static domain, reads `name()`, `version()`,
+  `eip712Domain()` and `DOMAIN_SEPARATOR()` and checks that the declared
+  domain reproduces the separator, which decides the verdict. Read-only
+  `eth_call`s, network required, not part of CI. Its RPCs come from the env var
+  the facilitator reads, else the task definition's public URL, else
+  `.env.example`. On 2026-10-30 it found the seven rows above wrong out of 47;
+  after this release all 47 match.
+- **`static_eip712_domain_tests`** (`chain::evm`): the seven fixed rows, plus
+  BSC's AUSD and the USDT0 on Arbitrum, Optimism and Celo as guards against
+  harmonizing a name across chains, each held to the `DOMAIN_SEPARATOR()` its
+  contract answered. The table's domain must reproduce it, the measured domain
+  must, and the wrong name must not.
+
+### Measured
+
+Read-only `eth_call`s to `https://rpc.monad.xyz` on 2026-10-30, block
+117,914,541 (cast 1.4.4), against USDT0
+`0xe7cd86e13AC4309349F30B3435a9d337750fC82D`:
+
+| Call | Answer |
+|---|---|
+| `eth_chainId` | `143` |
+| `name()` | `"USDT0"`, plain ASCII (`55 53 44 54 30`) |
+| `symbol()` / `decimals()` | `"USDT0"` / `6` |
+| `version()` | reverts, empty data (so does `eip712Domain()`) |
+| `DOMAIN_SEPARATOR()` | `101a90213d0b0d9d607fe3b94dcb41e91f20ab1432d4cd23ae9f820c0968452a`, the same at block 116,931,648 |
+
+The separator recomputed from `("USDT0", "1", 143, address)` is exactly that
+value; from `("USD₮0", "1", 143, address)` -- the name this facilitator
+shipped -- it is `0ff600ee71d562315937ca5d83509be72112ccd0377b972541aca4a66b225c8d`.
+With `version()` reverting, the version `1` is known only from that match.
+The mismatch was first reported against the TypeScript SDK
+(UltravioletaDAO/uvd-x402-sdk-typescript#62).
+
+The other six rows were read by the script the same day; the RPC, block and
+separator of each are next to its row in `static_eip712_domain_tests`. AUSD's separators were also checked
+by hand with `cast` (`eip712Domain()` returns `("Agora Dollar", "1", chain id,
+address)` on all six chains), and Arbitrum Sepolia's through two RPCs.
+What the wrong AUSD entry did to an EOA was checked once against the old table
+(2.52.0, `("AUSD", "1")`): its `verify`, live and read-only (an `eth_call`
+simulation, value 0, a fresh payer) on Ethereum and Monad, answered `Valid`
+for a signature under `Agora Dollar` and refused one under `AUSD` with the
+contract's `InvalidSignature()` (`0x8baa579f`).
+`.env.example`'s defaults for HyperEVM (`rpc.hyperevm.com`, no DNS) and
+Polygon (`polygon-rpc.com`, HTTP 401) did not answer; those two networks were
+read through `rpc.hyperliquid.xyz/evm` and `polygon-bor-rpc.publicnode.com`.
+
 ## [2.52.0] - 2026-10-29
 
 HashKey Chain, mainnet and testnet, settling USDC by EIP-3009.

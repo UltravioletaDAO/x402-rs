@@ -303,7 +303,8 @@ impl TokenType {
             TokenType::Hts => "",
             TokenType::Usdc => "USD Coin",
             TokenType::Eurc => "Euro Coin",
-            TokenType::Ausd => "AUSD",
+            // The domain name on every EVM chain AUSD is registered on; name() answers "AUSD".
+            TokenType::Ausd => "Agora Dollar",
             TokenType::Pyusd => "PayPal USD",
             // Note: USDT0 uses different names per network - "USD₮0" (Arbitrum/Optimism),
             // "Tether USD" (Celo) or plain "USDT0" (Monad).

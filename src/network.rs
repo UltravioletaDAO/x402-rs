@@ -1292,6 +1292,9 @@ static USDC_ARBITRUM: Lazy<USDCDeployment> = Lazy::new(|| {
 });
 
 /// Lazily initialized known USDC deployment on Arbitrum Sepolia testnet as [`USDCDeployment`].
+///
+/// EIP-712 name "USD Coin", like Arbitrum One's and unlike most testnet USDCs
+/// ("USDC"); this entry carried "USDC" through 2.52.0.
 static USDC_ARBITRUM_SEPOLIA: Lazy<USDCDeployment> = Lazy::new(|| {
     USDCDeployment(TokenDeployment {
         asset: TokenAsset {
@@ -1300,7 +1303,7 @@ static USDC_ARBITRUM_SEPOLIA: Lazy<USDCDeployment> = Lazy::new(|| {
         },
         decimals: 6,
         eip712: Some(TokenDeploymentEip712 {
-            name: "USDC".into(),
+            name: "USD Coin".into(),
             version: "2".into(),
         }),
     })
@@ -1982,6 +1985,12 @@ impl EURCDeployment {
 // ============================================================================
 // AUSD (Agora USD) Deployments - Agora Finance
 // Uses deterministic CREATE2 address: 0x00000000eFE302BEAA2b3e6e1b18d08D69a9012a
+//
+// EIP-712 domain: ("Agora Dollar", "1") on all six EVM chains below -- what
+// `eip712Domain()` answers and what reproduces `DOMAIN_SEPARATOR()` (read
+// 2026-10-30). `name()` answers "AUSD",
+// which is not the domain name; Ethereum, Polygon, Arbitrum, Avalanche and Monad
+// carried "AUSD" through 2.52.0 (`chain::evm`, `static_eip712_domain_tests`).
 // ============================================================================
 
 /// AUSD deployment on Ethereum mainnet.
@@ -1993,7 +2002,7 @@ static AUSD_ETHEREUM: Lazy<AUSDDeployment> = Lazy::new(|| {
         },
         decimals: 6,
         eip712: Some(TokenDeploymentEip712 {
-            name: "AUSD".into(),
+            name: "Agora Dollar".into(),
             version: "1".into(),
         }),
     })
@@ -2008,7 +2017,7 @@ static AUSD_POLYGON: Lazy<AUSDDeployment> = Lazy::new(|| {
         },
         decimals: 6,
         eip712: Some(TokenDeploymentEip712 {
-            name: "AUSD".into(),
+            name: "Agora Dollar".into(),
             version: "1".into(),
         }),
     })
@@ -2023,7 +2032,7 @@ static AUSD_ARBITRUM: Lazy<AUSDDeployment> = Lazy::new(|| {
         },
         decimals: 6,
         eip712: Some(TokenDeploymentEip712 {
-            name: "AUSD".into(),
+            name: "Agora Dollar".into(),
             version: "1".into(),
         }),
     })
@@ -2038,7 +2047,7 @@ static AUSD_AVALANCHE: Lazy<AUSDDeployment> = Lazy::new(|| {
         },
         decimals: 6,
         eip712: Some(TokenDeploymentEip712 {
-            name: "AUSD".into(),
+            name: "Agora Dollar".into(),
             version: "1".into(),
         }),
     })
@@ -2053,7 +2062,7 @@ static AUSD_MONAD: Lazy<AUSDDeployment> = Lazy::new(|| {
         },
         decimals: 6,
         eip712: Some(TokenDeploymentEip712 {
-            name: "AUSD".into(),
+            name: "Agora Dollar".into(),
             version: "1".into(),
         }),
     })

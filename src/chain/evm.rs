@@ -7186,10 +7186,16 @@ mod hashkey_tests {
 }
 
 /// Static EIP-712 domains held to the `DOMAIN_SEPARATOR()` each contract
-/// publishes, read off the chains on 2026-10-30 with `eth_call`.
+/// publishes: every row found wrong on 2026-10-30, and the right rows a fix
+/// would most plausibly break.
 ///
-/// USDT0 on Monad is plain ASCII `USDT0`, not the `USD₮0` (U+20AE) of
-/// Arbitrum and Optimism, which this table carried for Monad through 2.52.0.
+/// `scripts/verify_eip712_domains.py` read every EVM domain in `network.rs`
+/// off its chain that day (read-only `eth_call`s), and seven did not reproduce
+/// their contract's separator. USDT0 on Monad is plain ASCII `USDT0`, not the
+/// `USD₮0` (U+20AE) of Arbitrum and Optimism; AUSD signs under `Agora Dollar`
+/// on every chain although `name()` answers `AUSD`; Arbitrum Sepolia's USDC is
+/// `USD Coin`, not the `USDC` of most testnets. Through 2.52.0 the table
+/// carried the wrong one of each.
 ///
 /// A wrong static domain is not caught by the EOA path: an EOA signature is
 /// judged by simulating `transferWithAuthorization`, so by the contract. It
@@ -7200,8 +7206,8 @@ mod hashkey_tests {
 ///
 /// The guard rows were right through 2.52.0. They are here because the
 /// plausible regression is harmonizing one token's name across chains, in
-/// either direction: Arbitrum and Optimism carry the `USD₮0` Monad was copied
-/// from, Celo the third USDT0 name.
+/// either direction: BSC's AUSD was the one row already right, Arbitrum and
+/// Optimism carry the `USD₮0` Monad was copied from, Celo the third USDT0 name.
 #[cfg(test)]
 mod static_eip712_domain_tests {
     use super::*;
@@ -7225,7 +7231,9 @@ mod static_eip712_domain_tests {
         separator: [u8; 32],
     }
 
-    const CASES: [Case; 4] = [
+    const AUSD: Address = address!("0x00000000eFE302BEAA2b3e6e1b18d08D69a9012a");
+
+    const CASES: [Case; 11] = [
         // rpc.monad.xyz, block 117,917,220; the same separator at 116,931,648,
         // the block UltravioletaDAO/uvd-x402-sdk-typescript#62 read it at.
         // version() reverts: "1" is known from this separator only.
@@ -7238,6 +7246,85 @@ mod static_eip712_domain_tests {
             version: "1",
             wrong_name: "USD\u{20AE}0",
             separator: hex!("101a90213d0b0d9d607fe3b94dcb41e91f20ab1432d4cd23ae9f820c0968452a"),
+        },
+        // AUSD: eip712Domain() answered ("Agora Dollar", "1") on each chain.
+        // ethereum-rpc.publicnode.com, block 26,306,045.
+        Case {
+            network: Network::Ethereum,
+            token: TokenType::Ausd,
+            address: AUSD,
+            chain_id: 1,
+            name: "Agora Dollar",
+            version: "1",
+            wrong_name: "AUSD",
+            separator: hex!("4a2d637ab67cc3b27da88cf95d6108d7596feb9f8364c0219da88a6dd72a519c"),
+        },
+        // polygon-bor-rpc.publicnode.com, block 96,442,372.
+        Case {
+            network: Network::Polygon,
+            token: TokenType::Ausd,
+            address: AUSD,
+            chain_id: 137,
+            name: "Agora Dollar",
+            version: "1",
+            wrong_name: "AUSD",
+            separator: hex!("beadf6c9bbe39a11dfad78bb287c40d799fbfda4077be040fafa2a52d9bcf24e"),
+        },
+        // public-arb-mainnet.fastnode.io, block 519,697,690.
+        Case {
+            network: Network::Arbitrum,
+            token: TokenType::Ausd,
+            address: AUSD,
+            chain_id: 42161,
+            name: "Agora Dollar",
+            version: "1",
+            wrong_name: "AUSD",
+            separator: hex!("b5e470b722a01c64ead6d4245815830a55e6330e6d1d32ff36ba66d3ebc8aa4d"),
+        },
+        // api.avax.network, block 98,960,129.
+        Case {
+            network: Network::Avalanche,
+            token: TokenType::Ausd,
+            address: AUSD,
+            chain_id: 43114,
+            name: "Agora Dollar",
+            version: "1",
+            wrong_name: "AUSD",
+            separator: hex!("1b415e1fdec4058b42f2e8a1fcc859f6d3976a0b2cd9f0e9e016d07b0915d60c"),
+        },
+        // rpc.monad.xyz, block 117,917,220.
+        Case {
+            network: Network::Monad,
+            token: TokenType::Ausd,
+            address: AUSD,
+            chain_id: 143,
+            name: "Agora Dollar",
+            version: "1",
+            wrong_name: "AUSD",
+            separator: hex!("995063441ebf2219c94dce05014a545da4390d2362f99b3d7ad456046678cafe"),
+        },
+        // arbitrum-sepolia-rpc.publicnode.com, block 324,362,812 (and the same
+        // from sepolia-rollup.arbitrum.io).
+        Case {
+            network: Network::ArbitrumSepolia,
+            token: TokenType::Usdc,
+            address: address!("0x75faf114eafb1BDbe2F0316DF893fd58CE46AA4d"),
+            chain_id: 421614,
+            name: "USD Coin",
+            version: "2",
+            wrong_name: "USDC",
+            separator: hex!("85944e1292d007732838d6eadfa67589b78ffcededbd4df60488d0af251308bb"),
+        },
+        // Guard: bsc-rpc.publicnode.com, block 130,677,803.
+        Case {
+            network: Network::Bsc,
+            token: TokenType::Ausd,
+            address: AUSD,
+            chain_id: 56,
+            name: "Agora Dollar",
+            version: "1",
+            wrong_name: "AUSD",
+            separator: hex!("95947d916419101a31226f63304f3d76b5316d1bfb31c0f0edced1560e61802b"),
         },
         // Guard: public-arb-mainnet.fastnode.io, block 519,697,690.
         Case {

@@ -504,6 +504,7 @@ Located in `tests/crossmint-smart-wallet/`:
 ```bash
 python scripts/diagnose_payment.py   # Base mainnet only - no --network flag exists
 python scripts/compare_domain_separator.py
+python3 scripts/verify_eip712_domains.py --md   # every static domain vs its contract's DOMAIN_SEPARATOR(); read-only, needs network
 ```
 
 **CRITICAL: EIP-712 Domain Names Vary by Chain!**
@@ -513,7 +514,11 @@ Different chains use different domain names for the same stablecoin:
 | Token | Usual name | Exceptions |
 |-------|-----------|------------|
 | EURC | `"Euro Coin"` (Ethereum, Avalanche) | `"EURC"` on Base |
-| USDC | `"USD Coin"` - **including Base MAINNET** (`src/network.rs:733`) | `"USDC"` on Celo, HyperEVM, Unichain, Monad and most `-sepolia`/`-testnet` variants (Base Sepolia = `"USDC"`). The name FLIPS between a chain's mainnet and testnet (Base mainnet `"USD Coin"` vs Base Sepolia `"USDC"`; HyperEVM testnet is `"USDC"` like its mainnet since 2.39.1). Bridged variants differ again: XDC `"Bridged USDC(XDC)"`, SKALE `"Bridged USDC (SKALE Bridge)"`. Never infer - grep `name:` in `src/network.rs`. |
+| USDC | `"USD Coin"` - **including Base MAINNET** (`src/network.rs:733`) | `"USDC"` on Celo, HyperEVM, Unichain, Monad and most `-sepolia`/`-testnet` variants (Base Sepolia = `"USDC"`; Arbitrum Sepolia is `"USD Coin"`, fixed in 2.52.1). The name FLIPS between a chain's mainnet and testnet (Base mainnet `"USD Coin"` vs Base Sepolia `"USDC"`; HyperEVM testnet is `"USDC"` like its mainnet since 2.39.1). Bridged variants differ again: XDC `"Bridged USDC(XDC)"`, SKALE `"Bridged USDC (SKALE Bridge)"`. Never infer - grep `name:` in `src/network.rs`. |
+| USDT0 | `"USD₮0"` with U+20AE TUGRIK SIGN (Arbitrum, Optimism) | `"Tether USD"` on Celo, plain ASCII `"USDT0"` on Monad (fixed in 2.52.1). `version()` reverts on all four. |
+| AUSD | `"Agora Dollar"` on EVERY EVM chain registered here (6) | `name()` answers `"AUSD"`, which is NOT the domain name: read `eip712Domain()` (EIP-5267). Only BSC was right through 2.52.0. |
+
+**A token's `name()` is not proof of its EIP-712 name** - check the separator: `python3 scripts/verify_eip712_domains.py` recomputes every static domain against the `DOMAIN_SEPARATOR()` its contract publishes (seven rows were wrong on 2026-10-30), and `static_eip712_domain_tests` in `src/chain/evm.rs` pins the measured ones.
 
 The facilitator resolves domains in this priority order (`assert_domain()`, `src/chain/evm.rs:1588`):
 1. Static lookup in `src/network.rs` (`find_known_eip712_metadata`) - for KNOWN deployments this WINS, and a differing client value is only logged as a warning

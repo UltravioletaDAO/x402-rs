@@ -241,6 +241,17 @@
         "upto": false
       },
       {
+        "name": "hashkey",
+        "caip2": "eip155:177",
+        "family": "evm",
+        "network": "mainnet",
+        "tokens": [
+          "USDC"
+        ],
+        "escrow": false,
+        "upto": false
+      },
+      {
         "name": "hyperevm",
         "caip2": "eip155:999",
         "family": "evm",
@@ -419,6 +430,10 @@
       {
         "name": "fogo-testnet",
         "caip2": "fogo:testnet"
+      },
+      {
+        "name": "hashkey-testnet",
+        "caip2": "eip155:133"
       },
       {
         "name": "hyperevm-testnet",

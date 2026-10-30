@@ -1,5 +1,55 @@
 # Changelog
 
+## [2.52.0] - 2026-10-29
+
+HashKey Chain, mainnet and testnet, settling USDC by EIP-3009.
+
+### Added
+
+- **`hashkey` (`eip155:177`) and `hashkey-testnet` (`eip155:133`).** An OP Stack
+  L2 whose gas token is HSK. Each network settles one USDC, and the two carry
+  different EIP-712 names: mainnet's Bridged USDC
+  (`0x054ed45810DbBAb8B27668922D110669c9D88D0a`, domain `Bridged USDC` / `2`)
+  and testnet's USDC (`0x8FE3cB719Ee4410E236Cd6b72ab1fCDC06eF53c6`, domain
+  `USD Coin` / `2`, the token the HSP sandbox pins), both 6 decimals. Both
+  domains were read off the contracts on 2026-10-29 and recompute exactly to
+  the `DOMAIN_SEPARATOR()` each publishes; the separators are pinned in
+  `chain::evm` (`hashkey_tests`). HashKey's USDT is not registered (no
+  EIP-3009, no permit), and `upto` is not announced: the Permit2 proxy has no
+  code on either network.
+- RPCs from the official keyless endpoints: `RPC_URL_HASHKEY`
+  (`https://mainnet.hsk.xyz`) and `RPC_URL_HASHKEY_TESTNET`
+  (`https://testnet.hsk.xyz`), in the task definition's `environment`. No new
+  secret: the EVM signers are the existing mainnet and testnet ones.
+- Landing cards, logo (`/hashkey.png`, from the official SVG), `/networks.json`
+  rows, the balances Lambda, `/.well-known/x402`, OpenAPI prose and the receipt
+  rail (`hashkey` and `hashkey-testnet` USDC).
+- `variants_copies_tests`: the four feature-gated copies of
+  `Network::variants()` are read from the source and held to one list. CI
+  compiles only the production combination, so a network missing from another
+  copy used to compile everywhere and be served nowhere in those builds.
+
+### Changed
+
+- **EIP-6492 is refused on HashKey with a verdict**, as on Arc: the universal
+  signature validator has no code on either network, and the default arm of
+  `has_eip6492_validator` is fail-open. EOA signatures are unaffected.
+- **HashKey mainnet gets its own EIP-1559 floor.** Its base fee is held at 500
+  gwei (all 1025 readings of `eth_feeHistory` on 2026-10-29). With the generic
+  arm, a fee history without a base fee priced a settle at 4.001 gwei, which
+  the chain refuses, and a failed read set no cap and left it to alloy's
+  filler. The floor caps at 1000 gwei with a 1 mwei tip on both (twice the base
+  fee, so the tip fits). The normal path already quotes that, so it does not
+  move.
+
+### Operations
+
+- `/health/ready` values a HashKey settle at 0.13 HSK (130,000 gas at the
+  1000 gwei cap). Under 1.3 HSK on the mainnet signer (10 settles) `hashkey`
+  reads `down: signer_gas_critical` and the endpoint answers 503; until ~13.1
+  HSK (101 settles) it reads `degraded`. Verify works either way; settle needs
+  the gas. See `docs/HASHKEY_CHAIN.md`.
+
 ## [2.51.3] - 2026-10-28
 
 ERC-8004 async registrations read the same on every task, and a delivery that

@@ -122,6 +122,10 @@ const fn has_eip6492_validator(network: Network) -> bool {
     match network {
         // eth_getCode -> 0 bytes on both Arc networks, measured 2026-09-16.
         Network::Arc | Network::ArcTestnet => false,
+        // eth_getCode -> 0 bytes on mainnet.hsk.xyz (177) and testnet.hsk.xyz
+        // (133), measured 2026-10-29, and `is_contract: false` on each
+        // network's Blockscout.
+        Network::HashKey | Network::HashKeyTestnet => false,
         _ => true,
     }
 }
@@ -342,6 +346,10 @@ impl TryFrom<Network> for EvmChain {
             // every signature recover a different address.
             Network::Arc => Ok(EvmChain::new(value, 5042)),
             Network::ArcTestnet => Ok(EvmChain::new(value, 5042002)),
+            // `eth_chainId` answered 0xb1 = 177 (mainnet.hsk.xyz) and 0x85 = 133
+            // (testnet.hsk.xyz) on 2026-10-29.
+            Network::HashKey => Ok(EvmChain::new(value, 177)),
+            Network::HashKeyTestnet => Ok(EvmChain::new(value, 133)),
             Network::Near => Err(FacilitatorLocalError::UnsupportedNetwork(None)),
             Network::NearTestnet => Err(FacilitatorLocalError::UnsupportedNetwork(None)),
             #[cfg(feature = "hedera")]
@@ -479,6 +487,37 @@ pub(crate) const fn eip1559_fee_floor(network: Network) -> Eip1559Floor {
             min_priority: 1_000_000,
             min_max_fee: 20 * GWEI,
             fallback_base_fee: 20 * GWEI,
+        },
+        // HashKey Chain mainnet holds its base fee at exactly 500 gwei: every
+        // one of the 1025 base fees `eth_feeHistory` returned on 2026-10-29
+        // (blocks 29,474,814 onwards) read 500 gwei, and `eth_gasPrice` read
+        // 500.001. A floor, the same shape as Arc's.
+        //
+        // The generic arm leaves two degraded paths unpriced for it. When
+        // `eth_feeHistory` answers without a base fee, its `fallback_base_fee`
+        // of 2 gwei gives `2 * 2 + 0.001` = 4.001 gwei, 125 times under what
+        // the chain accepts; when the read errors, its `min_max_fee` of 0 sets
+        // nothing and hands the pricing to alloy's filler. A refused settle
+        // holds a nonce nothing else can replace.
+        //
+        // `min_max_fee` is TWICE the floor, not the floor: a cap equal to the
+        // base fee leaves an effective tip of zero, and op-geth mines no tip
+        // below 1 mwei. Twice the floor is also exactly what the normal path
+        // already quotes (`2 * 500 gwei + tip`), so there this arm changes
+        // nothing; on the error branch it is the explicit cap, with the 1 mwei
+        // tip.
+        //
+        // The tip stays at the generic 1 mwei: `eth_maxPriorityFeePerGas`
+        // quoted exactly that. The testnet holds 1 gwei, which the generic
+        // fallback already clears, so it keeps the generic arm.
+        //
+        // Cost: none paid. `maxFeePerGas` is a cap; the base fee plus the tip
+        // is what is charged. What it does set is the reservation a node
+        // checks against the signer: ~0.1 HSK per in-flight settle.
+        Network::HashKey => Eip1559Floor {
+            min_priority: 1_000_000,
+            min_max_fee: 1000 * GWEI,
+            fallback_base_fee: 500 * GWEI,
         },
         // A 1 mwei tip floor, not 1 gwei and not 0.
         //
@@ -1628,6 +1667,9 @@ impl FromEnvByNetworkBuild for EvmProvider {
             // Arc prices type-2 transactions: the latest block carries a
             // baseFeePerGas (20 gwei, measured) and `eth_feeHistory` answers.
             Network::Arc | Network::ArcTestnet => true,
+            // OP Stack: every block carries a baseFeePerGas (500 gwei on
+            // mainnet, 1 gwei on testnet, measured 2026-10-29).
+            Network::HashKey | Network::HashKeyTestnet => true,
             Network::Near => false,           // NEAR is not an EVM chain
             Network::NearTestnet => false,    // NEAR is not an EVM chain
             #[cfg(feature = "hedera")]
@@ -5491,16 +5533,21 @@ mod arc_testnet_tests {
         );
     }
 
-    /// Only 6492 is gated, and only on Arc. An ordinary EOA payment -- which
-    /// is the whole of the first launch here -- travels the EIP-1271 branch
-    /// and must be untouched; so must every other chain's 6492 support.
+    /// Only 6492 is gated, and only where the validator was measured absent:
+    /// Arc and HashKey Chain. An ordinary EOA payment -- which is the whole of
+    /// the first launch here -- travels the EIP-1271 branch and must be
+    /// untouched; so must every other chain's 6492 support.
     #[test]
     fn the_gate_closes_on_nothing_else() {
-        // A plain 65-byte EOA signature, on the chain that has no validator.
+        // A plain 65-byte EOA signature, on the chains that have no validator.
         assert!(gate(Network::ArcTestnet, vec![0x33; 65]).is_ok());
+        assert!(gate(Network::HashKey, vec![0x33; 65]).is_ok());
 
         for network in Network::variants() {
-            if matches!(network, Network::Arc | Network::ArcTestnet) {
+            if matches!(
+                network,
+                Network::Arc | Network::ArcTestnet | Network::HashKey | Network::HashKeyTestnet
+            ) {
                 continue;
             }
             assert!(
@@ -6809,6 +6856,330 @@ mod mislabeled_testnet_domain_tests {
                     panic!("{network}: the shipped domain must not verify")
                 }
                 refused => eprintln!("{network}: shipped domain refused as expected: {refused:?}"),
+            }
+        }
+    }
+}
+
+/// HashKey Chain, the parts decided without an RPC, plus one read-only live
+/// check.
+///
+/// Every number here was read off the chains on 2026-10-29: mainnet through
+/// `https://mainnet.hsk.xyz` (block 29,475,689), testnet through
+/// `https://testnet.hsk.xyz` (block 35,055,934). The two USDC contracts carry
+/// DIFFERENT EIP-712 names -- "Bridged USDC" on mainnet, "USD Coin" on testnet
+/// -- so the mistake this pins is copying one network's name onto the other.
+#[cfg(test)]
+mod hashkey_tests {
+    use super::*;
+    use alloy::signers::local::PrivateKeySigner;
+    use alloy::signers::SignerSync;
+    use serde_json::{json, Value};
+
+    const PAYEE: Address = address!("0x2222222222222222222222222222222222222222");
+    const NONCE: [u8; 32] = [0x17; 32];
+
+    struct Case {
+        network: Network,
+        /// `eth_chainId` of the public RPC.
+        chain_id: u64,
+        /// `name()` of its USDC, as the contract answered.
+        name: &'static str,
+        /// The other HashKey network's USDC name: the plausible wrong one.
+        wrong_name: &'static str,
+        /// `DOMAIN_SEPARATOR()` of its USDC, as the contract answered.
+        separator: [u8; 32],
+        rpc: &'static str,
+        rpc_env: &'static str,
+    }
+
+    const CASES: [Case; 2] = [
+        Case {
+            network: Network::HashKey,
+            chain_id: 177,
+            name: "Bridged USDC",
+            wrong_name: "USD Coin",
+            separator: hex!("78101f50ab6b299bde76a9973e97b1c9ead7df26f6a40692f4440296a507259d"),
+            rpc: "https://mainnet.hsk.xyz",
+            rpc_env: "RPC_URL_HASHKEY",
+        },
+        Case {
+            network: Network::HashKeyTestnet,
+            chain_id: 133,
+            name: "USD Coin",
+            wrong_name: "Bridged USDC",
+            separator: hex!("4b73b8fe157f795886e2aa243f2ccddcc00b80eaa9f9b4b368b716895be71d09"),
+            rpc: "https://testnet.hsk.xyz",
+            rpc_env: "RPC_URL_HASHKEY_TESTNET",
+        },
+    ];
+
+    fn usdc(case: &Case) -> Address {
+        USDCDeployment::by_network(case.network)
+            .expect("a USDC deployment")
+            .address()
+            .try_into()
+            .expect("an EVM address")
+    }
+
+    /// The domain as the facilitator builds it: the static table plus the
+    /// chain id, what `assert_domain` resolves for a known token.
+    fn our_domain(case: &Case) -> Eip712Domain {
+        let (name, version) = find_known_eip712_metadata(case.network, &usdc(case))
+            .expect("HashKey USDC is in the static EIP-712 table");
+        eip712_domain! {
+            name: name,
+            version: version,
+            chain_id: EvmChain::try_from(case.network).unwrap().chain_id,
+            verifying_contract: usdc(case),
+        }
+    }
+
+    /// A domain written out by a client, from the contract's own answers (or,
+    /// with `wrong_name`, from the other network's).
+    fn client_domain(case: &Case, name: &'static str) -> Eip712Domain {
+        eip712_domain! {
+            name: name,
+            version: "2",
+            chain_id: case.chain_id,
+            verifying_contract: usdc(case),
+        }
+    }
+
+    fn body(case: &Case, payer: &PrivateKeySigner, value: u64, domain: &Eip712Domain) -> Value {
+        let valid_before = crate::erc8004::proof::unix_now_secs() + 300;
+        let transfer = TransferWithAuthorization {
+            from: payer.address(),
+            to: PAYEE,
+            value: U256::from(value),
+            validAfter: U256::ZERO,
+            validBefore: U256::from(valid_before),
+            nonce: FixedBytes(NONCE),
+        };
+        let signature = payer
+            .sign_hash_sync(&transfer.eip712_signing_hash(domain))
+            .expect("signs");
+        let network = case.network.to_string();
+        json!({
+            "x402Version": 1,
+            "paymentPayload": {
+                "x402Version": 1,
+                "scheme": "exact",
+                "network": network,
+                "payload": {
+                    "signature": format!("0x{}", hex::encode(signature.as_bytes())),
+                    "authorization": {
+                        "from": payer.address(),
+                        "to": PAYEE,
+                        "value": value.to_string(),
+                        "validAfter": "0",
+                        "validBefore": valid_before.to_string(),
+                        "nonce": format!("0x{}", hex::encode(NONCE)),
+                    }
+                }
+            },
+            "paymentRequirements": {
+                "scheme": "exact",
+                "network": network,
+                "maxAmountRequired": value.to_string(),
+                "resource": "https://example.com/paid",
+                "description": "",
+                "mimeType": "application/json",
+                "payTo": PAYEE,
+                "maxTimeoutSeconds": 300,
+                "asset": usdc(case),
+                "extra": {"name": case.name, "version": "2"},
+            }
+        })
+    }
+
+    #[test]
+    fn hashkey_networks_sign_for_the_chain_ids_their_rpcs_answer() {
+        for case in &CASES {
+            assert_eq!(
+                EvmChain::try_from(case.network).unwrap().chain_id,
+                case.chain_id,
+                "{}",
+                case.network
+            );
+        }
+    }
+
+    /// The four fields a payer's signature commits to (address, name, version,
+    /// chain id), checked against the one number each contract publishes. The
+    /// wrong name is checked against the same number, so the first assertion
+    /// cannot be met by a field that is ignored.
+    #[test]
+    fn hashkey_usdc_domain_separators_are_the_ones_the_contracts_publish() {
+        for case in &CASES {
+            let network = case.network;
+            assert_eq!(our_domain(case).separator().0, case.separator, "{network}");
+            assert_eq!(
+                client_domain(case, case.name).separator().0,
+                case.separator,
+                "{network}"
+            );
+            assert_ne!(
+                client_domain(case, case.wrong_name).separator().0,
+                case.separator,
+                "{network}: the other network's name must not reproduce this separator"
+            );
+        }
+    }
+
+    /// One payer signs the same authorization under the contract's domain and
+    /// under the wrong name. Hashed the way the facilitator hashes it, the
+    /// first recovers the payer and the second recovers somebody else.
+    #[test]
+    fn a_signature_under_the_wrong_usdc_name_recovers_someone_else() {
+        let payer = PrivateKeySigner::random();
+        for case in &CASES {
+            for (name, verifies) in [(case.name, true), (case.wrong_name, false)] {
+                let domain = client_domain(case, name);
+                let request: VerifyRequest =
+                    serde_json::from_value(body(case, &payer, 10_000, &domain)).expect("parses");
+                let ExactPaymentPayload::Evm(evm) = &request.payment_payload.payload else {
+                    panic!("an EVM payload");
+                };
+                let payment = ExactEvmPayment {
+                    chain: EvmChain::try_from(case.network).unwrap(),
+                    from: evm.authorization.from,
+                    to: evm.authorization.to,
+                    value: evm.authorization.value,
+                    valid_after: evm.authorization.valid_after,
+                    valid_before: evm.authorization.valid_before,
+                    nonce: evm.authorization.nonce,
+                    signature: evm.signature.clone(),
+                };
+                let signed = SignedMessage::extract(&payment, &our_domain(case)).expect("extracts");
+                let recovered =
+                    alloy::primitives::Signature::try_from(payment.signature.0.as_slice())
+                        .expect("65 bytes")
+                        .recover_address_from_prehash(&signed.hash)
+                        .expect("recovers some address");
+                assert_eq!(
+                    recovered == payer.address(),
+                    verifies,
+                    "{}: a signature under `{name}` must {}recover the payer",
+                    case.network,
+                    if verifies { "" } else { "not " }
+                );
+            }
+        }
+    }
+
+    /// The universal signature validator has no code on either HashKey
+    /// network (measured: 0 bytes), so a counterfactual signature is refused
+    /// with a verdict before anything calls it, and an EOA one is not.
+    #[test]
+    fn eip6492_is_refused_on_hashkey_and_an_eoa_signature_is_not() {
+        let payer = EvmAddress(address!("0x1111111111111111111111111111111111111111"));
+        for case in &CASES {
+            let network = case.network;
+            assert!(!has_eip6492_validator(network), "{network}");
+            let wire = EvmSignature(super::arc_testnet_tests::wire_eip6492_signature());
+            match assert_signature_scheme_supported(network, payer, &wire) {
+                Err(FacilitatorLocalError::InvalidSignature(_, message)) => assert!(
+                    message.contains("EIP-6492") && message.contains(&network.to_string()),
+                    "{message}"
+                ),
+                other => panic!("{network}: expected an invalid-signature verdict, got {other:?}"),
+            }
+            assert!(
+                assert_signature_scheme_supported(network, payer, &EvmSignature(vec![0x33; 65]))
+                    .is_ok(),
+                "{network}: an EOA signature must pass the gate"
+            );
+        }
+    }
+
+    /// HashKey mainnet's base fee sits at 500 gwei (all 1025 readings of
+    /// `eth_feeHistory` on 2026-10-29). Delete its arm in
+    /// [`eip1559_fee_floor`] and a fee history without a base fee prices a
+    /// settle at 4.001 gwei, which the chain refuses, while a failed read sets
+    /// no cap at all.
+    #[test]
+    fn a_settle_on_hashkey_is_priced_above_its_base_fee_floor_even_on_a_failed_read() {
+        const FLOOR: u128 = 500 * GWEI;
+        const ONE_MWEI: u128 = 1_000_000;
+        let floor = eip1559_fee_floor(Network::HashKey);
+
+        // The normal path, at the node's own answers.
+        let (priority, max_fee) = compute_eip1559_fees(FLOOR, ONE_MWEI, floor);
+        assert_eq!(priority, ONE_MWEI, "the tip floor is the generic 1 mwei");
+        assert!(max_fee > FLOOR, "priced at {max_fee} wei");
+
+        // `quote_eip1559_fees` when `eth_feeHistory` returns no base fee.
+        let (_, from_fallback) = compute_eip1559_fees(floor.fallback_base_fee, 0, floor);
+        assert!(
+            from_fallback >= FLOOR + ONE_MWEI,
+            "a failed fee read prices HashKey at {from_fallback} wei"
+        );
+        // The send path's error branch, which sets `min_max_fee` directly: it
+        // must leave room for the 1 mwei tip above the base fee.
+        assert!(
+            floor.min_max_fee >= FLOOR + floor.min_priority,
+            "min_max_fee {} leaves no tip above a {FLOOR} wei base fee",
+            floor.min_max_fee
+        );
+        assert_eq!(floor.min_priority, ONE_MWEI);
+
+        // The testnet holds 1 gwei, which the generic arm already clears.
+        let testnet = eip1559_fee_floor(Network::HashKeyTestnet);
+        assert_eq!(testnet, eip1559_fee_floor(Network::Base));
+        let (_, testnet_fallback) = compute_eip1559_fees(testnet.fallback_base_fee, 0, testnet);
+        assert!(testnet_fallback > GWEI);
+    }
+
+    /// The facilitator's own `verify` against each HashKey chain. Read-only:
+    /// `verify` simulates with `eth_call` and never broadcasts, and value 0
+    /// lets a fresh payer with no balance reach the signature check.
+    ///
+    /// `cargo test --features <CI features> -p x402-rs hashkey_tests -- --ignored`
+    #[tokio::test]
+    #[ignore = "Read-only live RPC check against HashKey Chain; run explicitly"]
+    async fn live_verify_accepts_only_the_contracts_domain_on_hashkey() {
+        for case in &CASES {
+            let network = case.network;
+            let url = std::env::var(case.rpc_env).unwrap_or_else(|_| case.rpc.into());
+            let provider = EvmProvider::try_new(
+                EthereumWallet::from(PrivateKeySigner::random()),
+                &url,
+                true,
+                network,
+            )
+            .await
+            .expect("provider");
+            assert_eq!(
+                provider.inner().get_chain_id().await.expect("eth_chainId"),
+                case.chain_id,
+                "{url} is not {network}"
+            );
+            let payer = PrivateKeySigner::random();
+
+            let right: VerifyRequest =
+                serde_json::from_value(body(case, &payer, 0, &client_domain(case, case.name)))
+                    .unwrap();
+            match provider.verify(&right).await {
+                Ok(VerifyResponse::Valid { payer: p }) => {
+                    assert_eq!(p, MixedAddress::from(payer.address()));
+                    eprintln!("{network}: verify Valid for {}", payer.address());
+                }
+                other => panic!("{network}: the contract's domain must verify: {other:?}"),
+            }
+
+            let wrong: VerifyRequest = serde_json::from_value(body(
+                case,
+                &payer,
+                0,
+                &client_domain(case, case.wrong_name),
+            ))
+            .unwrap();
+            match provider.verify(&wrong).await {
+                Ok(VerifyResponse::Valid { .. }) => {
+                    panic!("{network}: the wrong USDC name must not verify")
+                }
+                refused => eprintln!("{network}: wrong name refused as expected: {refused:?}"),
             }
         }
     }

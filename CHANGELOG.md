@@ -2,8 +2,44 @@
 
 ## [2.52.1] - 2026-10-30
 
-USDT0 on Monad is signed under the EIP-712 name its contract publishes,
-`USDT0`, not `USD₮0`.
+Seven static EIP-712 domains are now the ones their contracts publish: USDT0
+on Monad, AUSD on five chains and the USDC on Arbitrum Sepolia.
+
+### Fixed
+
+- **USDT0 on Monad (`0xe7cd86e13AC4309349F30B3435a9d337750fC82D`) signs under
+  `USDT0`**, plain ASCII, not the `USD₮0` (U+20AE TUGRIK SIGN) of the USDT0 on
+  Arbitrum and Optimism that the entry had been copied from.
+- **AUSD on Ethereum, Polygon, Arbitrum, Avalanche and Monad signs under
+  `Agora Dollar` / `1`**, what `eip712Domain()` (EIP-5267) answers on each of
+  them. The table carried `AUSD`, which is what `name()` answers and not the
+  domain name; BSC's entry was already right. `TokenType::Ausd.eip712_name()`
+  follows.
+- **USDC on Arbitrum Sepolia (`0x75faf114eafb1BDbe2F0316DF893fd58CE46AA4d`)
+  signs under `USD Coin`**, not `USDC`.
+- What a wrong entry broke: `/networks.json` publishes the static domain, so a
+  client signing from it produced a signature the contract refuses; an
+  EIP-6492 signature was checked against a hash under it; and DX402 recovered
+  the payer's key from a digest under it, so it skipped the evidence with
+  `no_payer_key`. An EOA signature made under the contract's real domain was
+  not affected: outside Arc, `/verify` and `/settle` judge it by simulating
+  `transferWithAuthorization`, so the contract decides.
+
+### Added
+
+- **`scripts/verify_eip712_domains.py`**: for every EVM deployment in
+  `src/network.rs` with a static domain, reads `name()`, `version()`,
+  `eip712Domain()` and `DOMAIN_SEPARATOR()` and checks that the declared
+  domain reproduces the separator, which decides the verdict. Read-only
+  `eth_call`s, network required, not part of CI. Its RPCs come from the env var
+  the facilitator reads, else the task definition's public URL, else
+  `.env.example`. On 2026-10-30 it found the seven rows above wrong out of 47;
+  after this release all 47 match.
+- **`static_eip712_domain_tests`** (`chain::evm`): the seven fixed rows, plus
+  BSC's AUSD and the USDT0 on Arbitrum, Optimism and Celo as guards against
+  harmonizing a name across chains, each held to the `DOMAIN_SEPARATOR()` its
+  contract answered. The table's domain must reproduce it, the measured domain
+  must, and the wrong name must not.
 
 ### Measured
 
@@ -25,6 +61,14 @@ shipped -- it is `0ff600ee71d562315937ca5d83509be72112ccd0377b972541aca4a66b225c
 With `version()` reverting, the version `1` is known only from that match.
 The mismatch was first reported against the TypeScript SDK
 (UltravioletaDAO/uvd-x402-sdk-typescript#62).
+
+The other six rows were read by the script the same day; the RPC, block and
+separator of each are next to its row in `static_eip712_domain_tests`. AUSD's separators were also checked
+by hand with `cast` (`eip712Domain()` returns `("Agora Dollar", "1", chain id,
+address)` on all six chains), and Arbitrum Sepolia's through two RPCs.
+`.env.example`'s defaults for HyperEVM (`rpc.hyperevm.com`, no DNS) and
+Polygon (`polygon-rpc.com`, HTTP 401) did not answer; those two networks were
+read through `rpc.hyperliquid.xyz/evm` and `polygon-bor-rpc.publicnode.com`.
 
 ## [2.52.0] - 2026-10-29
 

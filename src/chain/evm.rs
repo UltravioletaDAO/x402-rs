@@ -7384,8 +7384,8 @@ mod static_eip712_domain_tests {
         if address != case.address {
             return Err(format!("the table points at {address}"));
         }
-        let (name, version) = find_known_eip712_metadata(case.network, &address)
-            .ok_or("no static EIP-712 domain")?;
+        let (name, version) =
+            find_known_eip712_metadata(case.network, &address).ok_or("no static EIP-712 domain")?;
         Ok(eip712_domain! {
             name: name,
             version: version,
@@ -7403,7 +7403,11 @@ mod static_eip712_domain_tests {
         let mut refused = Vec::new();
         for case in &CASES {
             let label = format!("{} {}", case.network, case.token);
-            assert_eq!(domain(case, case.name).separator().0, case.separator, "{label}");
+            assert_eq!(
+                domain(case, case.name).separator().0,
+                case.separator,
+                "{label}"
+            );
             assert_ne!(
                 domain(case, case.wrong_name).separator().0,
                 case.separator,

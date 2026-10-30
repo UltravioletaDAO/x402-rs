@@ -3149,6 +3149,30 @@ mod tests {
     }
 
     #[test]
+    fn every_evm_ausd_deployment_signs_under_the_ausd_default_domain() {
+        // AUSD's domain is ("Agora Dollar", "1") on every EVM chain it is
+        // registered on (eip712Domain(), 2026-10-30), while name() answers
+        // "AUSD". Five entries and the TokenType default carried "AUSD"
+        // through 2.52.0; this holds them to one value.
+        assert_eq!(
+            TokenType::Ausd.eip712_domain(),
+            TokenDeploymentEip712 {
+                name: "Agora Dollar".into(),
+                version: "1".into()
+            }
+        );
+        let mut evm = 0;
+        for network in AUSDDeployment::supported_networks() {
+            let deployment = get_token_deployment(*network, TokenType::Ausd).unwrap();
+            if let Some(eip712) = deployment.eip712 {
+                assert_eq!(eip712, TokenType::Ausd.eip712_domain(), "{network}");
+                evm += 1;
+            }
+        }
+        assert_eq!(evm, 6, "the six EVM AUSD deployments");
+    }
+
+    #[test]
     fn test_robinhood_asset_allowlist_is_usdg_only() {
         // The strict allow-list for Robinhood Chain must contain exactly USDG:
         // no USDC exists there, and impostor 18-decimal "USDC"/"PYUSD"/"USDT0"

@@ -7,23 +7,37 @@ on Monad, AUSD on five chains and the USDC on Arbitrum Sepolia.
 
 ### Fixed
 
-- **USDT0 on Monad (`0xe7cd86e13AC4309349F30B3435a9d337750fC82D`) signs under
-  `USDT0`**, plain ASCII, not the `USD₮0` (U+20AE TUGRIK SIGN) of the USDT0 on
-  Arbitrum and Optimism that the entry had been copied from.
-- **AUSD on Ethereum, Polygon, Arbitrum, Avalanche and Monad signs under
-  `Agora Dollar` / `1`**, what `eip712Domain()` (EIP-5267) answers on each of
-  them. The table carried `AUSD`, which is what `name()` answers and not the
-  domain name; BSC's entry was already right. `TokenType::Ausd.eip712_name()`
-  follows.
-- **USDC on Arbitrum Sepolia (`0x75faf114eafb1BDbe2F0316DF893fd58CE46AA4d`)
-  signs under `USD Coin`**, not `USDC`.
+One line per entry of the static EIP-712 table (`src/network.rs`); each row's
+`DOMAIN_SEPARATOR()` is pinned in `static_eip712_domain_tests`.
+
+| Network | Token | Contract | Was | Now (`name`, `version`) | `DOMAIN_SEPARATOR()` |
+|---|---|---|---|---|---|
+| `monad` | USDT0 | `0xe7cd86e13AC4309349F30B3435a9d337750fC82D` | `USD₮0` | `USDT0`, `1` | `101a9021…452a` |
+| `ethereum` | AUSD | `0x00000000eFE302BEAA2b3e6e1b18d08D69a9012a` | `AUSD` | `Agora Dollar`, `1` | `4a2d637a…519c` |
+| `polygon` | AUSD | `0x00000000eFE302BEAA2b3e6e1b18d08D69a9012a` | `AUSD` | `Agora Dollar`, `1` | `beadf6c9…f24e` |
+| `arbitrum` | AUSD | `0x00000000eFE302BEAA2b3e6e1b18d08D69a9012a` | `AUSD` | `Agora Dollar`, `1` | `b5e470b7…aa4d` |
+| `avalanche` | AUSD | `0x00000000eFE302BEAA2b3e6e1b18d08D69a9012a` | `AUSD` | `Agora Dollar`, `1` | `1b415e1f…d60c` |
+| `monad` | AUSD | `0x00000000eFE302BEAA2b3e6e1b18d08D69a9012a` | `AUSD` | `Agora Dollar`, `1` | `99506344…cafe` |
+| `arbitrum-sepolia` | USDC | `0x75faf114eafb1BDbe2F0316DF893fd58CE46AA4d` | `USDC` | `USD Coin`, `2` | `85944e12…08bb` |
+
+- USDT0 on Monad is plain ASCII `USDT0`, not the `USD₮0` (U+20AE TUGRIK SIGN)
+  of the USDT0 on Arbitrum and Optimism that the entry had been copied from.
+- AUSD's domain is what `eip712Domain()` (EIP-5267) answers on each chain;
+  `AUSD` is what `name()` answers, and is not the domain name. BSC's entry was
+  already right. `TokenType::Ausd.eip712_name()` follows.
+- Only the facilitator was wrong about AUSD and Arbitrum Sepolia: the
+  `uvd-x402-sdk` packages (TypeScript and Python) already sign AUSD under
+  `Agora Dollar`, and neither registers that Arbitrum Sepolia USDC. USDT0 on
+  Monad carried `USD₮0` in both SDKs too (UltravioletaDAO/uvd-x402-sdk-typescript#62).
 - What a wrong entry broke: `/networks.json` publishes the static domain, so a
   client signing from it produced a signature the contract refuses; an
-  EIP-6492 signature was checked against a hash under it; and DX402 recovered
-  the payer's key from a digest under it, so it skipped the evidence with
-  `no_payer_key`. An EOA signature made under the contract's real domain was
-  not affected: outside Arc, `/verify` and `/settle` judge it by simulating
-  `transferWithAuthorization`, so the contract decides.
+  EIP-6492 signature (a counterfactual smart wallet) made under the contract's
+  real domain was refused by `/verify`, whose validator was handed a hash under
+  the wrong one; and DX402 recovered the payer's key from a digest under it, so
+  it skipped the evidence with `no_payer_key`. An EOA signature made under the
+  contract's real domain was not affected: outside Arc, `/verify` and `/settle`
+  judge it by simulating `transferWithAuthorization`, so the contract decides,
+  and a client name that differs from the table is only logged.
 
 ### Added
 
@@ -66,6 +80,11 @@ The other six rows were read by the script the same day; the RPC, block and
 separator of each are next to its row in `static_eip712_domain_tests`. AUSD's separators were also checked
 by hand with `cast` (`eip712Domain()` returns `("Agora Dollar", "1", chain id,
 address)` on all six chains), and Arbitrum Sepolia's through two RPCs.
+What the wrong AUSD entry did to an EOA was checked once against the old table
+(2.52.0, `("AUSD", "1")`): its `verify`, live and read-only (an `eth_call`
+simulation, value 0, a fresh payer) on Ethereum and Monad, answered `Valid`
+for a signature under `Agora Dollar` and refused one under `AUSD` with the
+contract's `InvalidSignature()` (`0x8baa579f`).
 `.env.example`'s defaults for HyperEVM (`rpc.hyperevm.com`, no DNS) and
 Polygon (`polygon-rpc.com`, HTTP 401) did not answer; those two networks were
 read through `rpc.hyperliquid.xyz/evm` and `polygon-bor-rpc.publicnode.com`.

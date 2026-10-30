@@ -7185,6 +7185,160 @@ mod hashkey_tests {
     }
 }
 
+/// Static EIP-712 domains held to the `DOMAIN_SEPARATOR()` each contract
+/// publishes, read off the chains on 2026-10-30 with `eth_call`.
+///
+/// USDT0 on Monad is plain ASCII `USDT0`, not the `USD₮0` (U+20AE) of
+/// Arbitrum and Optimism, which this table carried for Monad through 2.52.0.
+///
+/// A wrong static domain is not caught by the EOA path: an EOA signature is
+/// judged by simulating `transferWithAuthorization`, so by the contract. It
+/// breaks what reads the table: `/networks.json` publishes it, so a client
+/// that signs from it signs a domain the contract refuses; an EIP-6492
+/// signature is checked against a hash under it; and DX402 recovers the
+/// payer's key from a digest under it and skips with `no_payer_key`.
+///
+/// The guard rows were right through 2.52.0. They are here because the
+/// plausible regression is harmonizing one token's name across chains, in
+/// either direction: Arbitrum and Optimism carry the `USD₮0` Monad was copied
+/// from, Celo the third USDT0 name.
+#[cfg(test)]
+mod static_eip712_domain_tests {
+    use super::*;
+    use crate::network::get_token_deployment;
+    use crate::types::TokenType;
+
+    struct Case {
+        network: Network,
+        token: TokenType,
+        /// The contract the separator was read from.
+        address: Address,
+        /// `eth_chainId` of the RPC it was read through.
+        chain_id: u64,
+        /// The domain that reproduces `separator`.
+        name: &'static str,
+        version: &'static str,
+        /// For a fixed row, the name this table carried through 2.52.0; for a
+        /// guard row, the same token's name on another chain.
+        wrong_name: &'static str,
+        /// `DOMAIN_SEPARATOR()`, as the contract answered on 2026-10-30.
+        separator: [u8; 32],
+    }
+
+    const CASES: [Case; 4] = [
+        // rpc.monad.xyz, block 117,917,220; the same separator at 116,931,648,
+        // the block UltravioletaDAO/uvd-x402-sdk-typescript#62 read it at.
+        // version() reverts: "1" is known from this separator only.
+        Case {
+            network: Network::Monad,
+            token: TokenType::Usdt,
+            address: address!("0xe7cd86e13AC4309349F30B3435a9d337750fC82D"),
+            chain_id: 143,
+            name: "USDT0",
+            version: "1",
+            wrong_name: "USD\u{20AE}0",
+            separator: hex!("101a90213d0b0d9d607fe3b94dcb41e91f20ab1432d4cd23ae9f820c0968452a"),
+        },
+        // Guard: public-arb-mainnet.fastnode.io, block 519,697,690.
+        Case {
+            network: Network::Arbitrum,
+            token: TokenType::Usdt,
+            address: address!("0xFd086bC7CD5C481DCC9C85ebE478A1C0b69FCbb9"),
+            chain_id: 42161,
+            name: "USD\u{20AE}0",
+            version: "1",
+            wrong_name: "USDT0",
+            separator: hex!("566af68fb471b22d6421762f84aa7bd761c670a2e4d5c8a47d4085d5957b127c"),
+        },
+        // Guard: mainnet.optimism.io, block 158,885,118.
+        Case {
+            network: Network::Optimism,
+            token: TokenType::Usdt,
+            address: address!("0x01bff41798a0bcf287b996046ca68b395dbc1071"),
+            chain_id: 10,
+            name: "USD\u{20AE}0",
+            version: "1",
+            wrong_name: "USDT0",
+            separator: hex!("d5d99c075f21e38eddc66fa99b98beae156454110a618179d962c413a942762c"),
+        },
+        // Guard: celo-rpc.quickapi.com, block 81,468,257.
+        Case {
+            network: Network::Celo,
+            token: TokenType::Usdt,
+            address: address!("0x48065fbBE25f71C9282ddf5e1cD6D6A887483D5e"),
+            chain_id: 42220,
+            name: "Tether USD",
+            version: "1",
+            wrong_name: "USD\u{20AE}0",
+            separator: hex!("bcb4d62e4834b598d0eacecd84c0b397a0254e077c41cf2143e394d5701d1088"),
+        },
+    ];
+
+    fn domain(case: &Case, name: &'static str) -> Eip712Domain {
+        eip712_domain! {
+            name: name,
+            version: case.version,
+            chain_id: case.chain_id,
+            verifying_contract: case.address,
+        }
+    }
+
+    /// The domain the facilitator builds for a payment in this token: the
+    /// table's address, `find_known_eip712_metadata` and `EvmChain`'s chain
+    /// id -- what `assert_domain`, `/networks.json` and DX402 read.
+    fn our_domain(case: &Case) -> Result<Eip712Domain, String> {
+        let deployment =
+            get_token_deployment(case.network, case.token).ok_or("no deployment in the table")?;
+        let address: Address = deployment
+            .asset
+            .address
+            .try_into()
+            .map_err(|_| "not an EVM address".to_string())?;
+        if address != case.address {
+            return Err(format!("the table points at {address}"));
+        }
+        let (name, version) = find_known_eip712_metadata(case.network, &address)
+            .ok_or("no static EIP-712 domain")?;
+        Ok(eip712_domain! {
+            name: name,
+            version: version,
+            chain_id: EvmChain::try_from(case.network).unwrap().chain_id,
+            verifying_contract: address,
+        })
+    }
+
+    /// The measured domain must reproduce the separator and the wrong name
+    /// must not, or the comparison with the table proves nothing; then the
+    /// table's domain must be the measured one. Every row is checked before
+    /// failing, so one run names every wrong entry.
+    #[test]
+    fn static_eip712_domains_reproduce_the_separators_the_contracts_publish() {
+        let mut refused = Vec::new();
+        for case in &CASES {
+            let label = format!("{} {}", case.network, case.token);
+            assert_eq!(domain(case, case.name).separator().0, case.separator, "{label}");
+            assert_ne!(
+                domain(case, case.wrong_name).separator().0,
+                case.separator,
+                "{label}: the wrong name must not reproduce the contract's separator"
+            );
+            match our_domain(case) {
+                Ok(ours) if ours.separator().0 == case.separator => {}
+                Ok(ours) => refused.push(format!(
+                    "{label}: the table signs name {:?} version {:?} chain {:?}; the contract publishes ({:?}, {:?}, {})",
+                    ours.name, ours.version, ours.chain_id, case.name, case.version, case.chain_id
+                )),
+                Err(why) => refused.push(format!("{label}: {why}")),
+            }
+        }
+        assert!(
+            refused.is_empty(),
+            "static EIP-712 domains the contracts refuse:\n{}",
+            refused.join("\n")
+        );
+    }
+}
+
 /// The ERC-8004 proof of payment a settle emits, end to end.
 ///
 /// A proof is only worth emitting if `verify_payment_facts` -- the check behind

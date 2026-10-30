@@ -305,7 +305,8 @@ impl TokenType {
             TokenType::Eurc => "Euro Coin",
             TokenType::Ausd => "AUSD",
             TokenType::Pyusd => "PayPal USD",
-            // Note: USDT0 uses different names per network - "USD₮0" (Arbitrum/Optimism) or "Tether USD" (Celo)
+            // Note: USDT0 uses different names per network - "USD₮0" (Arbitrum/Optimism),
+            // "Tether USD" (Celo) or plain "USDT0" (Monad).
             // The network-specific name is stored in TokenDeployment.eip712
             TokenType::Usdt => "USD\u{20AE}0", // USD₮0 (Unicode TUGRIK SIGN)
             // USDG's on-chain version() getter reverts (Paxos facet dispatcher),

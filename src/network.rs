@@ -2334,7 +2334,10 @@ static USDT_OPTIMISM: Lazy<USDTDeployment> = Lazy::new(|| {
 
 /// USDT0 deployment on Monad mainnet.
 /// Contract: 0xe7cd86e13AC4309349F30B3435a9d337750fC82D
-/// EIP-712 name: "USD₮0" (with TUGRIK SIGN Unicode character)
+/// EIP-712 name: "USDT0", plain ASCII -- NOT the "USD₮0" of Arbitrum and
+/// Optimism, which this entry carried through 2.52.0. `version()` reverts; only
+/// ("USDT0", "1") reproduces its `DOMAIN_SEPARATOR()` (`chain::evm`,
+/// `static_eip712_domain_tests`).
 static USDT_MONAD: Lazy<USDTDeployment> = Lazy::new(|| {
     USDTDeployment(TokenDeployment {
         asset: TokenAsset {
@@ -2343,7 +2346,7 @@ static USDT_MONAD: Lazy<USDTDeployment> = Lazy::new(|| {
         },
         decimals: 6,
         eip712: Some(TokenDeploymentEip712 {
-            name: "USD\u{20AE}0".into(), // USD₮0 (TUGRIK SIGN)
+            name: "USDT0".into(),
             version: "1".into(),
         }),
     })
@@ -3000,8 +3003,8 @@ mod tests {
             MixedAddress::Evm(address!("e7cd86e13AC4309349F30B3435a9d337750fC82D").into())
         );
         assert_eq!(deployment.decimals, 6);
-        // Check EIP-712 name (USD₮0 with Unicode TUGRIK SIGN)
-        assert_eq!(deployment.eip712.as_ref().unwrap().name, "USD\u{20AE}0");
+        // Plain ASCII "USDT0" on Monad, unlike Arbitrum's and Optimism's USD₮0
+        assert_eq!(deployment.eip712.as_ref().unwrap().name, "USDT0");
     }
 
     // ============================================================

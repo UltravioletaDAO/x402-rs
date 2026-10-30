@@ -1,5 +1,31 @@
 # Changelog
 
+## [2.52.1] - 2026-10-30
+
+USDT0 on Monad is signed under the EIP-712 name its contract publishes,
+`USDT0`, not `USD₮0`.
+
+### Measured
+
+Read-only `eth_call`s to `https://rpc.monad.xyz` on 2026-10-30, block
+117,914,541 (cast 1.4.4), against USDT0
+`0xe7cd86e13AC4309349F30B3435a9d337750fC82D`:
+
+| Call | Answer |
+|---|---|
+| `eth_chainId` | `143` |
+| `name()` | `"USDT0"`, plain ASCII (`55 53 44 54 30`) |
+| `symbol()` / `decimals()` | `"USDT0"` / `6` |
+| `version()` | reverts, empty data (so does `eip712Domain()`) |
+| `DOMAIN_SEPARATOR()` | `101a90213d0b0d9d607fe3b94dcb41e91f20ab1432d4cd23ae9f820c0968452a`, the same at block 116,931,648 |
+
+The separator recomputed from `("USDT0", "1", 143, address)` is exactly that
+value; from `("USD₮0", "1", 143, address)` -- the name this facilitator
+shipped -- it is `0ff600ee71d562315937ca5d83509be72112ccd0377b972541aca4a66b225c8d`.
+With `version()` reverting, the version `1` is known only from that match.
+The mismatch was first reported against the TypeScript SDK
+(UltravioletaDAO/uvd-x402-sdk-typescript#62).
+
 ## [2.52.0] - 2026-10-29
 
 HashKey Chain, mainnet and testnet, settling USDC by EIP-3009.

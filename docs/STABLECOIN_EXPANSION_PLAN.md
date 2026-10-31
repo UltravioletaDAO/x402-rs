@@ -236,11 +236,17 @@ The following networks use **different token standards** and do not support EIP-
 
 | Network          | Chain ID | EIP-712 Domain                      |
 |------------------|----------|-------------------------------------|
-| Ethereum Mainnet | 1        | name: "AUSD", version: "1" (verify) |
-| Base Mainnet     | 8453     | name: "AUSD", version: "1" (verify) |
-| Polygon Mainnet  | 137      | name: "AUSD", version: "1" (verify) |
-| Arbitrum One     | 42161    | name: "AUSD", version: "1" (verify) |
-| Avalanche C-Chain| 43114    | name: "AUSD", version: "1" (verify) |
+| Ethereum Mainnet | 1        | name: "Agora Dollar", version: "1"  |
+| Base Mainnet     | 8453     | name: "AUSD", version: "1" (verify; not measured) |
+| Polygon Mainnet  | 137      | name: "Agora Dollar", version: "1"  |
+| Arbitrum One     | 42161    | name: "Agora Dollar", version: "1"  |
+| Avalanche C-Chain| 43114    | name: "Agora Dollar", version: "1"  |
+
+> 2026-10-30: the "AUSD" guesses above were never verified, and on every chain
+> measured the domain is ("Agora Dollar", "1") -- what `eip712Domain()` answers
+> and what reproduces `DOMAIN_SEPARATOR()`; `name()` answers "AUSD". Base is not
+> registered in `src/network.rs` and was not read. Check with
+> `python3 scripts/verify_eip712_domains.py`.
 
 #### Why Interesting
 

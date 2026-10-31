@@ -522,6 +522,16 @@
             box-shadow: 0 8px 24px rgba(204, 255, 0, 0.3);
         }
 
+        .network-badge.hashkey {
+            border-color: #AE82F1;
+            box-shadow: 0 0 20px rgba(174, 130, 241, 0.2);
+        }
+
+        .network-badge.hashkey:hover {
+            border-color: #AE82F1;
+            box-shadow: 0 8px 24px rgba(174, 130, 241, 0.3);
+        }
+
         .network-badge.arc {
             border-color: #8593b0;
             box-shadow: 0 0 20px rgba(133, 147, 176, 0.2);
@@ -1621,6 +1631,20 @@
                             <div style="font-size: 0.7rem; color: var(--text-muted);">ETH Balance</div>
                             <div data-tokens="robinhood-mainnet"></div>
                         </div>
+                        <div class="network-badge hashkey"
+                            style="padding: 1.25rem 2rem; font-size: 1.1rem; flex-direction: column; gap: 0.75rem; min-height: 220px; width: 100%; cursor: pointer;"
+                            data-explorer="hashkey" data-explorer-address="0x103040545AC5031A11E8C03dd11324C7333a13C7">
+                            <div style="display: flex; align-items: center; gap: 0.75rem;">
+                                <img data-net-icon="hashkey" alt="HashKey Chain" class="network-logo">
+                                <span style="font-weight: 700;">HashKey Chain</span>
+                            </div>
+                            <div class="balance-amount" data-balance="hashkey-mainnet"
+                                style="font-size: 1.1rem; font-weight: 700; font-family: 'JetBrains Mono', monospace; color: rgba(255,255,255,0.9);">
+                                Loading...
+                            </div>
+                            <div style="font-size: 0.7rem; color: var(--text-muted);">HSK Balance</div>
+                            <div data-tokens="hashkey-mainnet"></div>
+                        </div>
                         <div class="network-badge hedera" data-explorer="hedera:mainnet" data-explorer-fee-payer
                             style="display: none; padding: 1.25rem 2rem; font-size: 1.1rem; flex-direction: column; gap: 0.75rem; min-height: 220px; width: 100%; cursor: pointer;">
                             <div style="display: flex; align-items: center; gap: 0.75rem;">
@@ -1901,6 +1925,20 @@
                             </div>
                             <div style="font-size: 0.7rem; color: var(--text-muted);">ETH Balance</div>
                             <div data-tokens="robinhood-testnet"></div>
+                        </div>
+                        <div class="network-badge hashkey"
+                            style="padding: 1.25rem 2rem; font-size: 1.1rem; flex-direction: column; gap: 0.75rem; min-height: 180px; width: 100%; cursor: pointer;"
+                            data-explorer="hashkey-testnet" data-explorer-address="0x34033041a5944B8F10f8E4D8496Bfb84f1A293A8">
+                            <div style="display: flex; align-items: center; gap: 0.75rem;">
+                                <img data-net-icon="hashkey-testnet" alt="HashKey Chain Testnet" class="network-logo">
+                                <span style="font-weight: 700;">HashKey Testnet</span>
+                            </div>
+                            <div class="balance-amount" data-balance="hashkey-testnet"
+                                style="font-size: 1.1rem; font-weight: 700; font-family: 'JetBrains Mono', monospace; color: rgba(255,255,255,0.9);">
+                                Loading...
+                            </div>
+                            <div style="font-size: 0.7rem; color: var(--text-muted);">HSK Balance</div>
+                            <div data-tokens="hashkey-testnet"></div>
                         </div>
                         <div class="network-badge arc" data-arc-network="arc-testnet" data-arc-caip="eip155:5042002"
                             style="display: none; padding: 1.25rem 2rem; font-size: 1.1rem; flex-direction: column; gap: 0.75rem; min-height: 180px; width: 100%; cursor: pointer;"
@@ -3678,6 +3716,8 @@
             'scroll-mainnet': { rpcs: ['https://scroll.drpc.org', 'https://1rpc.io/scroll', 'https://rpc.scroll.io'], addr: WALLET_MAINNET, type: 'evm' },
             'robinhood-mainnet': { rpc: 'https://rpc.mainnet.chain.robinhood.com', addr: WALLET_MAINNET, type: 'evm' },
             'robinhood-testnet': { rpc: 'https://rpc.testnet.chain.robinhood.com', addr: WALLET_TESTNET, type: 'evm' },
+            'hashkey-mainnet': { rpc: 'https://mainnet.hsk.xyz', addr: WALLET_MAINNET, type: 'evm' },
+            'hashkey-testnet': { rpc: 'https://testnet.hsk.xyz', addr: WALLET_TESTNET, type: 'evm' },
             'arc-mainnet': { rpc: 'https://rpc.mainnet.arc.io', addr: WALLET_MAINNET, type: 'evm' },
             'arc-testnet': { rpc: 'https://rpc.testnet.arc.io', addr: WALLET_TESTNET, type: 'evm' },
             'near-mainnet': { rpcs: ['https://free.rpc.fastnear.com', 'https://near.lava.build'], addr: NEAR_MAINNET, type: 'near' },

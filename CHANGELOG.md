@@ -1,5 +1,258 @@
 # Changelog
 
+## [2.52.1] - 2026-10-30
+
+Seven static EIP-712 domains are now the ones their contracts publish: USDT0
+on Monad, AUSD on five chains and the USDC on Arbitrum Sepolia.
+
+### Fixed
+
+One line per entry of the static EIP-712 table (`src/network.rs`); each row's
+`DOMAIN_SEPARATOR()` is pinned in `static_eip712_domain_tests`.
+
+| Network | Token | Contract | Was | Now (`name`, `version`) | `DOMAIN_SEPARATOR()` |
+|---|---|---|---|---|---|
+| `monad` | USDT0 | `0xe7cd86e13AC4309349F30B3435a9d337750fC82D` | `USD₮0` | `USDT0`, `1` | `101a9021…452a` |
+| `ethereum` | AUSD | `0x00000000eFE302BEAA2b3e6e1b18d08D69a9012a` | `AUSD` | `Agora Dollar`, `1` | `4a2d637a…519c` |
+| `polygon` | AUSD | `0x00000000eFE302BEAA2b3e6e1b18d08D69a9012a` | `AUSD` | `Agora Dollar`, `1` | `beadf6c9…f24e` |
+| `arbitrum` | AUSD | `0x00000000eFE302BEAA2b3e6e1b18d08D69a9012a` | `AUSD` | `Agora Dollar`, `1` | `b5e470b7…aa4d` |
+| `avalanche` | AUSD | `0x00000000eFE302BEAA2b3e6e1b18d08D69a9012a` | `AUSD` | `Agora Dollar`, `1` | `1b415e1f…d60c` |
+| `monad` | AUSD | `0x00000000eFE302BEAA2b3e6e1b18d08D69a9012a` | `AUSD` | `Agora Dollar`, `1` | `99506344…cafe` |
+| `arbitrum-sepolia` | USDC | `0x75faf114eafb1BDbe2F0316DF893fd58CE46AA4d` | `USDC` | `USD Coin`, `2` | `85944e12…08bb` |
+
+- USDT0 on Monad is plain ASCII `USDT0`, not the `USD₮0` (U+20AE TUGRIK SIGN)
+  of the USDT0 on Arbitrum and Optimism that the entry had been copied from.
+- AUSD's domain is what `eip712Domain()` (EIP-5267) answers on each chain;
+  `AUSD` is what `name()` answers, and is not the domain name. BSC's entry was
+  already right. `TokenType::Ausd.eip712_name()` follows.
+- Only the facilitator was wrong about AUSD and Arbitrum Sepolia: the
+  `uvd-x402-sdk` packages (TypeScript and Python) already sign AUSD under
+  `Agora Dollar`, and neither registers that Arbitrum Sepolia USDC. USDT0 on
+  Monad carried `USD₮0` in both SDKs too (UltravioletaDAO/uvd-x402-sdk-typescript#62).
+- What a wrong entry broke: `/networks.json` publishes the static domain, so a
+  client signing from it produced a signature the contract refuses; an
+  EIP-6492 signature (a counterfactual smart wallet) made under the contract's
+  real domain was refused by `/verify`, whose validator was handed a hash under
+  the wrong one; and DX402 recovered the payer's key from a digest under it, so
+  it skipped the evidence with `no_payer_key`. An EOA signature made under the
+  contract's real domain was not affected: outside Arc, `/verify` and `/settle`
+  judge it by simulating `transferWithAuthorization`, so the contract decides,
+  and a client name that differs from the table is only logged.
+
+### Added
+
+- **`scripts/verify_eip712_domains.py`**: for every EVM deployment in
+  `src/network.rs` with a static domain, reads `name()`, `version()`,
+  `eip712Domain()` and `DOMAIN_SEPARATOR()` and checks that the declared
+  domain reproduces the separator, which decides the verdict. Read-only
+  `eth_call`s, network required, not part of CI. Its RPCs come from the env var
+  the facilitator reads, else the task definition's public URL, else
+  `.env.example`. On 2026-10-30 it found the seven rows above wrong out of 47;
+  after this release all 47 match.
+- **`static_eip712_domain_tests`** (`chain::evm`): the seven fixed rows, plus
+  BSC's AUSD and the USDT0 on Arbitrum, Optimism and Celo as guards against
+  harmonizing a name across chains, each held to the `DOMAIN_SEPARATOR()` its
+  contract answered. The table's domain must reproduce it, the measured domain
+  must, and the wrong name must not.
+
+### Measured
+
+Read-only `eth_call`s to `https://rpc.monad.xyz` on 2026-10-30, block
+117,914,541 (cast 1.4.4), against USDT0
+`0xe7cd86e13AC4309349F30B3435a9d337750fC82D`:
+
+| Call | Answer |
+|---|---|
+| `eth_chainId` | `143` |
+| `name()` | `"USDT0"`, plain ASCII (`55 53 44 54 30`) |
+| `symbol()` / `decimals()` | `"USDT0"` / `6` |
+| `version()` | reverts, empty data (so does `eip712Domain()`) |
+| `DOMAIN_SEPARATOR()` | `101a90213d0b0d9d607fe3b94dcb41e91f20ab1432d4cd23ae9f820c0968452a`, the same at block 116,931,648 |
+
+The separator recomputed from `("USDT0", "1", 143, address)` is exactly that
+value; from `("USD₮0", "1", 143, address)` -- the name this facilitator
+shipped -- it is `0ff600ee71d562315937ca5d83509be72112ccd0377b972541aca4a66b225c8d`.
+With `version()` reverting, the version `1` is known only from that match.
+The mismatch was first reported against the TypeScript SDK
+(UltravioletaDAO/uvd-x402-sdk-typescript#62).
+
+The other six rows were read by the script the same day; the RPC, block and
+separator of each are next to its row in `static_eip712_domain_tests`. AUSD's separators were also checked
+by hand with `cast` (`eip712Domain()` returns `("Agora Dollar", "1", chain id,
+address)` on all six chains), and Arbitrum Sepolia's through two RPCs.
+What the wrong AUSD entry did to an EOA was checked once against the old table
+(2.52.0, `("AUSD", "1")`): its `verify`, live and read-only (an `eth_call`
+simulation, value 0, a fresh payer) on Ethereum and Monad, answered `Valid`
+for a signature under `Agora Dollar` and refused one under `AUSD` with the
+contract's `InvalidSignature()` (`0x8baa579f`).
+`.env.example`'s defaults for HyperEVM (`rpc.hyperevm.com`, no DNS) and
+Polygon (`polygon-rpc.com`, HTTP 401) did not answer; those two networks were
+read through `rpc.hyperliquid.xyz/evm` and `polygon-bor-rpc.publicnode.com`.
+
+## [2.52.0] - 2026-10-29
+
+HashKey Chain, mainnet and testnet, settling USDC by EIP-3009.
+
+### Added
+
+- **`hashkey` (`eip155:177`) and `hashkey-testnet` (`eip155:133`).** An OP Stack
+  L2 whose gas token is HSK. Each network settles one USDC, and the two carry
+  different EIP-712 names: mainnet's Bridged USDC
+  (`0x054ed45810DbBAb8B27668922D110669c9D88D0a`, domain `Bridged USDC` / `2`)
+  and testnet's USDC (`0x8FE3cB719Ee4410E236Cd6b72ab1fCDC06eF53c6`, domain
+  `USD Coin` / `2`, the token the HSP sandbox pins), both 6 decimals. Both
+  domains were read off the contracts on 2026-10-29 and recompute exactly to
+  the `DOMAIN_SEPARATOR()` each publishes; the separators are pinned in
+  `chain::evm` (`hashkey_tests`). HashKey's USDT is not registered (no
+  EIP-3009, no permit), and `upto` is not announced: the Permit2 proxy has no
+  code on either network.
+- RPCs from the official keyless endpoints: `RPC_URL_HASHKEY`
+  (`https://mainnet.hsk.xyz`) and `RPC_URL_HASHKEY_TESTNET`
+  (`https://testnet.hsk.xyz`), in the task definition's `environment`. No new
+  secret: the EVM signers are the existing mainnet and testnet ones.
+- Landing cards, logo (`/hashkey.png`, from the official SVG), `/networks.json`
+  rows, the balances Lambda, `/.well-known/x402`, OpenAPI prose and the receipt
+  rail (`hashkey` and `hashkey-testnet` USDC).
+- `variants_copies_tests`: the four feature-gated copies of
+  `Network::variants()` are read from the source and held to one list. CI
+  compiles only the production combination, so a network missing from another
+  copy used to compile everywhere and be served nowhere in those builds.
+
+### Changed
+
+- **EIP-6492 is refused on HashKey with a verdict**, as on Arc: the universal
+  signature validator has no code on either network, and the default arm of
+  `has_eip6492_validator` is fail-open. EOA signatures are unaffected.
+- **HashKey mainnet gets its own EIP-1559 floor.** Its base fee is held at 500
+  gwei (all 1025 readings of `eth_feeHistory` on 2026-10-29). With the generic
+  arm, a fee history without a base fee priced a settle at 4.001 gwei, which
+  the chain refuses, and a failed read set no cap and left it to alloy's
+  filler. The floor caps at 1000 gwei with a 1 mwei tip on both (twice the base
+  fee, so the tip fits). The normal path already quotes that, so it does not
+  move.
+
+### Operations
+
+- `/health/ready` values a HashKey settle at 0.13 HSK (130,000 gas at the
+  1000 gwei cap). Under 1.3 HSK on the mainnet signer (10 settles) `hashkey`
+  reads `down: signer_gas_critical` and the endpoint answers 503; until ~13.1
+  HSK (101 settles) it reads `degraded`. Verify works either way; settle needs
+  the gas. See `docs/HASHKEY_CHAIN.md`.
+
+## [2.51.3] - 2026-10-28
+
+ERC-8004 async registrations read the same on every task, and a delivery that
+landed is not reported failed.
+
+### Fixed
+
+- **`GET /register/status/{jobId}` answers the same on every task.** The job
+  lives in the memory of the writer-lease task that runs it, and the route
+  answered from whichever of the three tasks the ALB picked: two polls in three
+  got `404` for a running job. A task without the job now forwards the poll to
+  the lease holder, one hop, and answers `503` with `Retry-After` and
+  `"retryable": true` when it cannot ask, or when a forwarded poll reaches a
+  task that is no longer the writer; `404` comes only from the writer, or for
+  an id `POST /register` never hands out. Job ids are random (`reg_<32 hex>`)
+  instead of a per-process counter, so a poll never reads another task's job
+  under its own id.
+- **A transfer that landed is not reported failed.** After the transfer's
+  receipt, `ownerOf` is read at the block the receipt names, and the first
+  such read that answers is final. A node without that block answers an error;
+  then it is read again with backoff, falling back to `latest`, which settles
+  it only by naming the recipient (10 s for a sync request, up to 10 min for
+  an async job). A transfer that may still be in flight is read the same way,
+  and one that never went out is read once. On 2026-10-28 one stale read
+  150 ms after the receipt failed a delivered Base registration, the retire
+  that followed reverted, and the job closed `failed`. Only an identity the
+  facilitator still holds is retired; an owner that cannot be read, or a
+  transfer that may have gone out and never confirmed (no receipt, or a send
+  error after the node could have taken it), answers `503`, nothing retired,
+  recovery record kept. A transfer refused at estimation right after the mint
+  (a node that has not seen the preconfirmed mint yet) is asked again for a
+  few seconds before it counts as refused. On the recovery path the same stale read used to fall
+  through to a fresh mint, a second identity for the recipient. Now a delivery
+  found there completes the recovery, including one an earlier transfer made
+  (the retry's own transfer then reverts), and a stranded identity already
+  with its recipient is answered without sending anything. No read that fails
+  on that path mints anything any more.
+- **A read that reaches no verdict does not end an async job early.** Whether
+  the recipient already holds an agent (balance unreadable, owner index still
+  being rebuilt, a contradiction) is asked again with backoff for up to 10
+  minutes, nothing sent meanwhile, and the job stays `pending`; only past that
+  window does it end `failed`, with a retryable error. A sync request still
+  answers `503` at once, and an owner holding more agents than one owner index
+  probe re-reads (`owner_holds_too_many_agents`) is not asked again. After any
+  wait, and before the transfer that follows the mint, the task re-checks that
+  it still holds the EVM writer lease before it sends anything.
+
+## [2.51.2] - 2026-10-26
+
+Spending cap on the NEAR provider.
+
+### Changed
+
+- **The NEAR relayer pays for registering a new recipient only within a cap.**
+  `settle` registers a `payTo` the USDC contract does not know yet
+  (`storage_deposit`, 0.00125 NEAR plus gas, paid by the relayer) at most 20
+  times per UTC hour and 100 per UTC day, counted across every task of the
+  service in the shared claim store (`NONCE_STORE_TABLE_NAME`), and never while
+  the relayer holds less than 3 NEAR. `REGISTRATIONS_PER_HOUR`,
+  `REGISTRATIONS_PER_DAY` and `REGISTRATION_BALANCE_FLOOR` in
+  `src/chain/near.rs` say why those figures. Past a limit, or with a count it
+  cannot read, the payment is refused before anything is sent with `200`,
+  `"isValid": false` and `"invalidReason": "recipient_not_registered"`;
+  registering `payTo` on the token or retrying later clears it. A recipient
+  that is already registered is never counted nor refused.
+- **NEAR `verify` refuses what `settle` would.** It reads whether `payTo` is
+  registered and, if not, the relayer's balance and the count (without taking
+  a slot), and answers `recipient_not_registered` the same way. A state it
+  cannot read fails closed, and so does that read in `settle`, which used to
+  answer `success: false` for it.
+- Each registration logs a `warn` ("Registering account on token contract"),
+  and each refusal another ("NEAR recipient registration refused", with the
+  limit that refused it), so both can be counted from the logs. Where
+  `/events` publishes failures (`X402_EVENTS_PUBLISH_FAILURES=true`), a refusal
+  has the category `recipient_not_registered`.
+
+## [2.51.1] - 2026-10-25
+
+NEAR provider hardening. Also ships what was merged after 2.51.0 without a
+release of its own: the EVM owner index (#123) and the TLS root update (#127).
+
+### Changed
+
+- **A NEAR payment is one `ft_transfer` on the network's USDC contract.**
+  `verify` and `settle` refuse a delegate action with more than one inner
+  action, an `ft_transfer` that attaches anything but 1 yoctoNEAR or more than
+  30 TGas (`MAX_FT_TRANSFER_GAS` in `src/chain/near.rs`: what every known client
+  attaches), and an asset that is not on the network's allow-list
+  (`assert_supported_asset`, `invalid_asset`; on NEAR that is USDC alone).
+- **NEAR `verify` and `settle` read the payer's state first**: a delegate
+  action whose nonce is already used is refused, and so is a payer whose
+  `ft_balance_of` (optimistic finality) does not cover the amount
+  (`insufficient_funds`). `settle` reads both before it registers a recipient or
+  sends anything. A state it cannot read fails closed.
+- **NEAR `settle` confirms the transfer in the outcome it gets back.** It follows
+  the meta-transaction to the `ft_transfer` receipt on the token contract and
+  reports the payment only when that receipt ended in `SuccessValue` and logged
+  the NEP-141 `ft_transfer` event for this payer, recipient and amount. A
+  receipt that failed answers `success: false`; anything else that is not that
+  payment (not executed, missing, no such event) answers `502
+  settlement_unconfirmed` with the transaction hash. `ft_transfer_call` is still
+  not accepted; the comment on `confirm_transfer` says what it would take.
+- **`GET /identity/{network}/owner/{address}` no longer answers 503 past the
+  scan cap on EVM** (#123): an owner index, checked against `ownerOf` and
+  `balanceOf` read in the same block, resolves it; the cold scan stays a
+  rebuild and the cap does not move. An owner holding more agents than one probe
+  re-reads answers `503` with `"retryable": false` and `errorCode`
+  `owner_holds_too_many_agents`.
+- **`Cargo.lock`: rustls-webpki 0.103.16, webpki-roots and webpki-root-certs
+  1.0.10** (#127): certificate paths through the eight compromised
+  eMudhra/emSign intermediates are refused, and the emSign ECC Root CA - G3 is
+  no longer in the 1.x root set. aws-lc-rs 1.18.0 / aws-lc-sys 0.44.0 come along
+  as the minimum those require.
+
 ## [2.51.0] - 2026-10-12
 
 Tanda 1011: X402-BAZAAR-REPLICAS + X4-BAZAAR-ADOPTA, X402-REGISTER-OWNER,

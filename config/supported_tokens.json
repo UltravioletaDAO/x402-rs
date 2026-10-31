@@ -1,7 +1,7 @@
 {
   "_comment": "Presentation of every network the facilitator serves: displayName, icon (a PNG served at /<icon>.png), explorer + explorerPaths ({tx} / {address} templates), plus tokens and facilitator wallets. Compiled into the binary and published by GET /networks.json, which takes its ROWS from GET /supported and only presentation from here. Keyed by the identifier /supported uses (the CAIP-2 id for native Hedera, which has no v1 name). `tokens` is exactly what /supported publishes for the network's `exact` scheme; `exactServed: false` marks a network production serves without `exact`. src/networks_json.rs tests all of it against the code. Wallet addresses sourced from lambda/balances/handler.py.",
-  "_lastUpdated": "2026-09-24",
-  "_version": "2.41.0",
+  "_lastUpdated": "2026-10-29",
+  "_version": "2.52.0",
 
   "evm_mainnets": {
     "arc": {
@@ -140,6 +140,16 @@
       "explorer": "https://robinhoodchain.blockscout.com",
       "explorerPaths": {"tx": "/tx/{tx}", "address": "/address/{address}"},
       "facilitatorWallet": "0x103040545AC5031A11E8C03dd11324C7333a13C7"
+    },
+    "hashkey": {
+      "displayName": "HashKey Chain",
+      "icon": "hashkey",
+      "chainId": 177,
+      "tokens": ["usdc"],
+      "explorer": "https://hsk.blockscout.com",
+      "explorerPaths": {"tx": "/tx/{tx}", "address": "/address/{address}"},
+      "facilitatorWallet": "0x103040545AC5031A11E8C03dd11324C7333a13C7",
+      "_note": "Bridged USDC (USDC.e), EIP-712 domain \"Bridged USDC\" / \"2\". Gas is HSK. explorer.hsk.xyz and hashkey.blockscout.com redirect to hsk.blockscout.com (2026-10-29)."
     }
   },
 
@@ -255,6 +265,16 @@
       "explorerPaths": {"tx": "/tx/{tx}", "address": "/address/{address}"},
       "facilitatorWallet": "0x34033041a5944B8F10f8E4D8496Bfb84f1A293A8",
       "_note": "Configured only when RPC_URL_ARC_TESTNET is set. Check /supported for live availability. Direct USDC/EURC EIP-3009 with EOA signatures; no Gateway or EIP-6492. Native gas uses 18 decimals and ERC-20 payments use 6 over one shared balance. Do not sum them. EURC has its own six-decimal balance in euros; gas remains USDC."
+    },
+    "hashkey-testnet": {
+      "displayName": "HashKey Chain Testnet",
+      "icon": "hashkey",
+      "chainId": 133,
+      "tokens": ["usdc"],
+      "explorer": "https://testnet-explorer.hskchain.net",
+      "explorerPaths": {"tx": "/tx/{tx}", "address": "/address/{address}"},
+      "facilitatorWallet": "0x34033041a5944B8F10f8E4D8496Bfb84f1A293A8",
+      "_note": "USDC 0x8FE3...6eF53c6, EIP-712 domain \"USD Coin\" / \"2\" (not mainnet's name): the token the HSP sandbox pins. testnet-explorer.hsk.xyz, which the HashKey docs name, has no DNS record (2026-10-29); this is the explorer ethereum-lists registers."
     }
   },
 
@@ -520,7 +540,9 @@
       "monad": "0x754704bc059f8c67012fed69bc8a327a5aafb603",
       "bsc": "0x8AC76a51cc950d9822D68b83fE1Ad97B32Cd580d",
       "skale-base": "0x85889c8c714505E0c94b30fcfcF64fE3Ac8FCb20",
-      "scroll": "0x06eFdBFf2a14a7c8E15944D1F4A48F9F95F663A4"
+      "scroll": "0x06eFdBFf2a14a7c8E15944D1F4A48F9F95F663A4",
+      "hashkey": "0x054ed45810DbBAb8B27668922D110669c9D88D0a",
+      "hashkey-testnet": "0x8FE3cB719Ee4410E236Cd6b72ab1fCDC06eF53c6"
     },
     "eurc": {
       "ethereum": "0x1aBaEA1f7C830bD89Acc67eC4af516284b1bC33c",
@@ -551,9 +573,9 @@
   },
 
   "summary": {
-    "total_networks": 43,
-    "evm_mainnets": 15,
-    "evm_testnets": 12,
+    "total_networks": 45,
+    "evm_mainnets": 16,
+    "evm_testnets": 13,
     "svm_networks": 4,
     "sui_networks": 2,
     "near_networks": 2,

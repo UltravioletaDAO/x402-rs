@@ -1227,6 +1227,15 @@ resource "aws_ecs_task_definition" "facilitator" {
           name  = "RPC_URL_ROBINHOOD_TESTNET"
           value = "https://rpc.testnet.chain.robinhood.com"
         },
+        # HashKey Chain: official keyless RPCs, so `environment`, not a secret.
+        {
+          name  = "RPC_URL_HASHKEY"
+          value = "https://mainnet.hsk.xyz"
+        },
+        {
+          name  = "RPC_URL_HASHKEY_TESTNET"
+          value = "https://testnet.hsk.xyz"
+        },
         # Discovery API (Bazaar) configuration
         {
           name  = "DISCOVERY_S3_BUCKET"

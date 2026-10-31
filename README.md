@@ -37,7 +37,7 @@ Includes [ERC-8004](https://eips.ethereum.org/EIPS/eip-8004) on-chain reputation
 > curl -s https://facilitator.ultravioletadao.xyz/supported | jq -r '[.kinds[].network] | unique | .[]' | grep -v ':' | grep -vcE 'testnet|sepolia|devnet|fuji|amoy'
 > ```
 >
-> The two tables below listed exactly what `/supported` served on 2026-09-17: 23 mainnets and 20 testnets, Arc and Hedera included.
+> The two tables below listed exactly what `/supported` served on 2026-09-17: 23 mainnets and 20 testnets, Arc and Hedera included. HashKey Chain (mainnet and testnet, 2.52.0) was added after that reading: it is served once the release that carries it is deployed — check `/supported`. Details: [docs/HASHKEY_CHAIN.md](docs/HASHKEY_CHAIN.md).
 
 ### Arc (independently enabled)
 
@@ -101,6 +101,7 @@ durable-evidence and other unsupported extensions.
 | **SKALE Base** | 1187947933 | USDC.e | [skale-base-explorer](https://skale-base-explorer.skalenodes.com) |
 | **Scroll** | 534352 | USDC | [scrollscan.com](https://scrollscan.com) |
 | **Robinhood Chain** | 4663 | USDG | [robinhoodchain.blockscout.com](https://robinhoodchain.blockscout.com) |
+| **HashKey Chain** | 177 | USDC (Bridged USDC) | [hsk.blockscout.com](https://hsk.blockscout.com) |
 | **Sui** | - | USDC | [suiscan.xyz](https://suiscan.xyz) |
 | **Solana** | - | USDC, AUSD, PYUSD | [solscan.io](https://solscan.io) |
 | **Fogo** | - | USDC | [fogoscan.com](https://fogoscan.com) |
@@ -133,6 +134,7 @@ durable-evidence and other unsupported extensions.
 | Sui Testnet | - | [suifaucet.com](https://suifaucet.com) |
 | XRPL Testnet | `xrpl-testnet` / `xrpl:1` | - |
 | Robinhood Chain Testnet | 46630 | [faucet.testnet.chain.robinhood.com](https://faucet.testnet.chain.robinhood.com) |
+| HashKey Chain Testnet | 133 (`hashkey-testnet`) | [faucet.hsk.xyz](https://faucet.hsk.xyz/faucet) (test HSK) |
 
 ### Supported Stablecoins
 
@@ -166,6 +168,7 @@ durable-evidence and other unsupported extensions.
 | Unichain | Y | - | - | - | - | - | - |
 | Scroll | Y | - | - | - | - | - | - |
 | Robinhood Chain | - | - | - | - | - | Y | - |
+| HashKey Chain (mainnet + testnet) | Y | - | - | - | - | - | - |
 | Arc (mainnet + testnet) | Y | - | Y | - | - | - | - |
 | Hedera (mainnet + testnet) | Y | - | - | - | - | - | - |
 | SKALE Base | Y | - | - | - | - | - | - |

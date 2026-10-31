@@ -107,6 +107,10 @@ pub const ENV_RPC_ROBINHOOD_TESTNET: &str = "RPC_URL_ROBINHOOD_TESTNET";
 pub const ENV_RPC_ARC: &str = "RPC_URL_ARC";
 pub const ENV_RPC_ARC_TESTNET: &str = "RPC_URL_ARC_TESTNET";
 
+// HashKey Chain RPC URLs (OP Stack L2 on Ethereum; gas is HSK)
+pub const ENV_RPC_HASHKEY: &str = "RPC_URL_HASHKEY";
+pub const ENV_RPC_HASHKEY_TESTNET: &str = "RPC_URL_HASHKEY_TESTNET";
+
 // Sui wallet private key environment variables
 #[cfg(feature = "sui")]
 pub const ENV_SUI_PRIVATE_KEY: &str = "SUI_PRIVATE_KEY";
@@ -171,6 +175,8 @@ pub fn rpc_env_name_from_network(network: Network) -> &'static str {
         Network::RobinhoodTestnet => ENV_RPC_ROBINHOOD_TESTNET,
         Network::Arc => ENV_RPC_ARC,
         Network::ArcTestnet => ENV_RPC_ARC_TESTNET,
+        Network::HashKey => ENV_RPC_HASHKEY,
+        Network::HashKeyTestnet => ENV_RPC_HASHKEY_TESTNET,
     }
 }
 

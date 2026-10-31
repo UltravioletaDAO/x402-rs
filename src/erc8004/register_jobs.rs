@@ -51,12 +51,19 @@
 //!
 //! The store is process-local and intentionally simple: an in-memory map swept
 //! lazily on access. `/register` runs only on the task holding the writer lease,
-//! so every record is written and read by that one task; a lease move (every
-//! deploy) or a restart drops them. Terminal jobs (`Done`/`Failed`) live
-//! for [`REGISTER_JOB_TTL_SECONDS`] so a slow poller can still read the result.
+//! so every record is written by that one task; a lease move (every deploy) or
+//! a restart drops them. Terminal jobs (`Done`/`Failed`) live for
+//! [`REGISTER_JOB_TTL_SECONDS`] so a slow poller can still read the result.
+//!
+//! `GET /register/status/{jobId}` is served by every task, so a task without
+//! the job asks the writer for it (`handlers::get_register_status`): until
+//! 2026-10-28 it answered `404` itself, and with three tasks two polls in three
+//! said a running job did not exist (X402RS-REGISTER-JOBS-REPLICAS). That is
+//! also why a job id is random rather than a per-process counter: a poll that
+//! reaches whichever task holds the lease NOW must never find another task's
+//! job under the same id.
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -170,7 +177,18 @@ static STORE: Lazy<Mutex<Inner>> = Lazy::new(|| {
     })
 });
 
-static COUNTER: AtomicU64 = AtomicU64::new(1);
+/// A job id no other task will ever hand out (see the module docs).
+fn new_job_id() -> String {
+    format!("reg_{}", uuid::Uuid::new_v4().simple())
+}
+
+/// Whether `id` has the shape [`new_job_id`] hands out. A poll for anything
+/// else is answered without asking another task.
+pub fn is_job_id(id: &str) -> bool {
+    id.strip_prefix("reg_").is_some_and(|hex| {
+        hex.len() == 32 && hex.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+    })
+}
 
 fn now() -> u64 {
     SystemTime::now()
@@ -230,7 +248,7 @@ pub fn begin(network: Network, key: Option<String>) -> BeginOutcome {
         }
     }
 
-    let id = format!("reg_{}", COUNTER.fetch_add(1, Ordering::Relaxed));
+    let id = new_job_id();
     let job = RegisterJob {
         job_id: id.clone(),
         status: RegisterJobStatus::Pending,
@@ -417,6 +435,46 @@ mod tests {
     #[test]
     fn keyless_requests_are_not_deduped() {
         assert!(inflight_key(&Network::Base, "", &None).is_none());
+    }
+
+    /// A per-process counter handed out `reg_1`, `reg_2`... in every task, so a
+    /// poll that reaches whichever task holds the lease now could read another
+    /// registration's result under its own id.
+    #[test]
+    fn a_job_id_is_random_not_a_counter() {
+        let ids: Vec<String> = (0..2)
+            .map(|_| match begin(Network::Base, None) {
+                BeginOutcome::Started(id) => id,
+                BeginOutcome::AlreadyInflight(_) => unreachable!("keyless jobs never dedup"),
+            })
+            .collect();
+        for id in &ids {
+            let suffix = id.strip_prefix("reg_").expect("the reg_ prefix stays");
+            assert_eq!(suffix.len(), 32, "{id}");
+            assert!(suffix.chars().all(|c| c.is_ascii_hexdigit()), "{id}");
+            assert!(is_job_id(id), "{id}");
+        }
+        assert_ne!(ids[0], ids[1]);
+    }
+
+    #[test]
+    fn only_the_shape_begin_hands_out_is_a_job_id() {
+        assert!(is_job_id("reg_0123456789abcdef0123456789abcdef"));
+        for not_one in [
+            "",
+            "reg_",
+            "reg_42",
+            "REG_0123456789abcdef0123456789abcdef",
+            "reg_0123456789ABCDEF0123456789abcdef",
+            "reg_0123456789abcdefg123456789abcdef",
+            "reg_zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz",
+            "reg_0123456789abcdef0123456789abcde",
+            "reg_0123456789abcdef0123456789abcdef0",
+            "reg_..",
+            "reg_0123456789abcdef0123456789abcde/",
+        ] {
+            assert!(!is_job_id(not_one), "{not_one:?}");
+        }
     }
 
     #[test]

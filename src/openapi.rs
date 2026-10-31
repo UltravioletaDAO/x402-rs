@@ -32,10 +32,10 @@ The x402 facilitator enables gasless micropayments across multiple blockchain ne
 ## Supported Networks
 
 ### EVM Chains (Mainnet)
-Ethereum, Base, Polygon, Optimism, Avalanche, Arbitrum, Celo, HyperEVM, Unichain, Monad, Scroll, Robinhood Chain (settles Paxos USDG - no native USDC), BSC, SKALE Base, Arc (`arc` / `eip155:5042`, USDC/EURC exact EOA payments; served only where `RPC_URL_ARC` is configured; check `/supported`)
+Ethereum, Base, Polygon, Optimism, Avalanche, Arbitrum, Celo, HyperEVM, Unichain, Monad, Scroll, Robinhood Chain (settles Paxos USDG - no native USDC), BSC, SKALE Base, Arc (`arc` / `eip155:5042`, USDC/EURC exact EOA payments; served only where `RPC_URL_ARC` is configured; check `/supported`), HashKey Chain (`hashkey` / `eip155:177`, Bridged USDC, EIP-712 domain `Bridged USDC` / `2`; EOA signatures only, no EIP-6492)
 
 ### EVM Chains (Testnet)
-Ethereum Sepolia, Base Sepolia, Polygon Amoy, Optimism Sepolia, Avalanche Fuji, Arbitrum Sepolia, Celo Sepolia, HyperEVM Testnet, Unichain Sepolia, SKALE Base Sepolia, Monad Testnet, Robinhood Chain Testnet, Arc Testnet (`arc-testnet` / `eip155:5042002`, Circle — USDC is the native gas token; served only where `RPC_URL_ARC_TESTNET` is configured, so check `/supported` rather than this list)
+Ethereum Sepolia, Base Sepolia, Polygon Amoy, Optimism Sepolia, Avalanche Fuji, Arbitrum Sepolia, Celo Sepolia, HyperEVM Testnet, Unichain Sepolia, SKALE Base Sepolia, Monad Testnet, Robinhood Chain Testnet, Arc Testnet (`arc-testnet` / `eip155:5042002`, Circle — USDC is the native gas token; served only where `RPC_URL_ARC_TESTNET` is configured, so check `/supported` rather than this list), HashKey Chain Testnet (`hashkey-testnet` / `eip155:133`, USDC with EIP-712 domain `USD Coin` / `2`, not mainnet's name)
 
 ### SVM Chains (Solana Virtual Machine)
 - **Solana**: Mainnet (`solana`) and Devnet (`solana-devnet`)
@@ -395,7 +395,10 @@ placeholders, not a real authorization, so copied verbatim it answers `200` with
 `invalid_timing`, `insufficient_funds`, `insufficient_value`,
 `receiver_mismatch`, `invalid_network`, `invalid_scheme`,
 `unexpected_settle_error`. Switch on it, but keep a default arm -- the list is
-open. It was `null` for every cause before 2.13.0.
+open. It was `null` for every cause before 2.13.0. On NEAR,
+`recipient_not_registered` means `payTo` is not registered on the USDC
+contract and the facilitator is not paying for new registrations right now;
+registering it (`storage_deposit`) or retrying later clears it.
 
 **Five things in that shape are load-bearing:**
 - `paymentPayload` carries its own `x402Version`, `scheme` and `network` at its root.
@@ -994,7 +997,7 @@ Until 2026-09-03 `escrow`, `commerce` and `upto` appeared **only** under CAIP-2 
 
 **Upto networks (11):** Base, Optimism, Arbitrum, Polygon, BSC, Ethereum, HyperEVM, Monad, Base Sepolia, Avalanche Fuji, Arbitrum Sepolia — via the x402UptoPermit2Proxy contract (Permit2-based, canonical CREATE2 address `0x4020A4f3b7b90ccA423B9fabCc0CE57C6C240002`).
 
-`upto` is **not** available on every EVM network that supports `exact`. The proxy address is identical on all chains because it is deployed with CREATE2, but the deployment still has to be replayed per chain, and on Avalanche, Celo, Scroll, Unichain and Optimism Sepolia it never was — the address has no code there. Query `/supported` rather than assuming: it now lists `upto` only where settlement can actually succeed.
+`upto` is **not** available on every EVM network that supports `exact`. The proxy address is identical on all chains because it is deployed with CREATE2, but the deployment still has to be replayed per chain, and on Avalanche, Celo, Scroll, Unichain, Optimism Sepolia and HashKey Chain (mainnet and testnet) it never was — the address has no code there. Query `/supported` rather than assuming: it now lists `upto` only where settlement can actually succeed.
 
 **Escrow networks (13):** `base`, `ethereum`, `polygon`, `arbitrum`, `celo`, `monad`, `avalanche`, `optimism`, `skale-base`, `arc`, `base-sepolia`, `ethereum-sepolia`, `arc-testnet`.
 Each lists `commerce`, and `escrow` once per PaymentOperator the facilitator declares for it; on `arc` and `arc-testnet` an operator is listed only once it has passed its on-chain self-check.
@@ -1510,9 +1513,18 @@ Returns the status of an asynchronous ERC-8004 registration started with
 `mint_confirmed`/`done`, `agentId` is populated. Terminal jobs are retained for
 one hour before they age out (then this returns `404`).
 
+A job that cannot yet tell whether the recipient already holds an agent, or
+where the agent went after a transfer that did not confirm, stays `pending` or
+`mint_confirmed` while the facilitator asks again, for up to ten minutes per
+question; only past that does it end `failed`, with a retryable error.
+
+Any instance answers: one that does not run the job asks the one that does.
+`503` with `Retry-After` means it could not ask; poll again. Only `404` means
+the job is unknown or expired.
+
 ```json
 {
-  "jobId": "reg_42",
+  "jobId": "reg_3f2a9c0e5b7d4e1f8a6c2b9d0e4f7a13",
   "status": "done",
   "network": "base",
   "agentId": "17",
@@ -1525,7 +1537,8 @@ one hour before they age out (then this returns `404`).
     params(("job_id" = String, Path, description = "Job id from the async POST /register")),
     responses(
         (status = 200, description = "Current job status", body = Object),
-        (status = 404, description = "Job not found or expired", body = Object)
+        (status = 404, description = "Job not found or expired", body = Object),
+        (status = 503, description = "This instance could not ask the one running the job (`retryable: true`, `Retry-After`); poll again", body = Object)
     )
 )]
 async fn path_register_status() {}

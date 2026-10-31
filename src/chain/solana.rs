@@ -187,6 +187,8 @@ impl TryFrom<Network> for SolanaChain {
             Network::Arc | Network::ArcTestnet => {
                 Err(FacilitatorLocalError::UnsupportedNetwork(None))
             }
+            Network::HashKey => Err(FacilitatorLocalError::UnsupportedNetwork(None)),
+            Network::HashKeyTestnet => Err(FacilitatorLocalError::UnsupportedNetwork(None)),
             Network::Near => Err(FacilitatorLocalError::UnsupportedNetwork(None)),
             Network::NearTestnet => Err(FacilitatorLocalError::UnsupportedNetwork(None)),
             #[cfg(feature = "hedera")]

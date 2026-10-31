@@ -26,6 +26,16 @@ It also reports, by name only, any difference in the environment, the image or t
 names between the two revisions (the new revision must change nothing but where its secrets come
 from), and each parameter's type and KMS key (ssm:DescribeParameters, metadata only).
 
+A COPY OLDER THAN ITS SECRET IS A DIFFERENCE, IN EVERY MODE
+-----------------------------------------------------------
+Each copy has to have been written strictly after its secret last changed: the parameter's
+LastModifiedDate (DescribeParameters) against the secret's LastChangedDate (DescribeSecret).
+Otherwise the row is COPIA VIEJA and the exit code 1, even when the bytes happen to match -- writing
+the parameter again clears it. This is the risk of the migration itself (a value written only to
+Secrets Manager no longer reaches the task), it reads no value, and so --solo-metadatos catches it
+too. Measured 2026-10-31: facilitator-rpc-testnet changed on 2026-10-30, two weeks after its three
+copies, and the comparison by name alone printed "metadatos en orden".
+
 WHAT IT NEVER PRINTS
 --------------------
 No value, no part of one, no length, no hash. Variable, secret and parameter names only, with the
@@ -34,17 +44,18 @@ could quote a value (a JSON error quotes the document) prints only its type.
 
 USAGE
 -----
-    python3 scripts/verificar_ssm_igual.py --viejo facilitator-production:478 --nuevo plan.json
-    python3 scripts/verificar_ssm_igual.py --viejo td-478.json --nuevo facilitator-production:479
+    python3 scripts/verificar_ssm_igual.py --viejo facilitator-production:482 --nuevo plan.json
+    python3 scripts/verificar_ssm_igual.py --viejo td-482.json --nuevo facilitator-production:483
     python3 scripts/verificar_ssm_igual.py --viejo ... --nuevo ... --solo-metadatos
 
 --viejo / --nuevo take a file -- `aws ecs describe-task-definition` output, `terraform show -json`
 of a plan, or a bare containerDefinitions list -- or a family:revision read from ECS.
---solo-metadatos reads no value at all: names, sources, environment, image and parameter metadata,
-which is what an identity without kms:Decrypt can check.
+--solo-metadatos reads no value at all: names, sources, environment, image, parameter metadata and
+the dates of secrets and copies, which is what an identity without kms:Decrypt can check.
 
-Permissions: ecs:DescribeTaskDefinition (family:revision only), secretsmanager:GetSecretValue,
-ssm:GetParameter + kms:Decrypt on the parameters' key, ssm:DescribeParameters.
+Permissions: ecs:DescribeTaskDefinition (family:revision only), secretsmanager:DescribeSecret,
+secretsmanager:GetSecretValue, ssm:GetParameter + kms:Decrypt on the parameters' key,
+ssm:DescribeParameters. --solo-metadatos needs neither GetSecretValue nor GetParameter/kms:Decrypt.
 
 Exit code: 0 every pair equal and nothing else changed; 1 something differs or is missing;
 2 no verdict: nothing differs, but a read failed (credentials, network, access) or an input
@@ -60,6 +71,7 @@ import os
 import re
 import sys
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Optional
 
 REGION = "us-east-2"
@@ -127,11 +139,19 @@ class AwsSources:
             raise ReadFailed("SecretBinary")
         return answer["SecretString"]
 
+    def changed(self, secret_id: str) -> datetime:
+        """When the secret last changed in any way (a value, a staging label). Metadata only."""
+        answer = self._call(self._sm.describe_secret, ("ResourceNotFoundException",), SecretId=secret_id)
+        when = answer.get("LastChangedDate") or answer.get("CreatedDate")
+        if when is None:
+            raise ReadFailed("DescribeSecret sin fecha")
+        return when
+
     def parameter(self, name: str) -> str:
         answer = self._call(self._ssm.get_parameter, ("ParameterNotFound",), Name=name, WithDecryption=True)
         return answer["Parameter"]["Value"]
 
-    def metadata(self, name: str) -> Optional[tuple[str, str]]:
+    def metadata(self, name: str) -> Optional[tuple[str, str, Optional[datetime]]]:
         # DescribeParameters may answer an empty page with a NextToken even for an Equals filter:
         # only the last page can say "does not exist".
         kwargs = {"ParameterFilters": [{"Key": "Name", "Option": "Equals", "Values": [name]}]}
@@ -139,7 +159,7 @@ class AwsSources:
             answer = self._call(self._ssm.describe_parameters, (), **kwargs)
             found = answer.get("Parameters", [])
             if found:
-                return found[0].get("Type", ""), found[0].get("KeyId", "")
+                return found[0].get("Type", ""), found[0].get("KeyId", ""), found[0].get("LastModifiedDate")
             if not answer.get("NextToken"):
                 return None
             kwargs["NextToken"] = answer["NextToken"]
@@ -321,9 +341,10 @@ def compare(old_defs: list, new_defs: list, sources, *, values: bool, key_alias:
     for added in sorted(set(new_secrets) - set(old_secrets)):
         report.row("SOLO EN EL NUEVO", added, "-", parse_value_from(new_secrets[added]).label(), "-")
 
+    changed_at: dict = {}   # secret ARN -> when it last changed: one DescribeSecret per secret
     for variable in sorted(set(old_secrets) & set(new_secrets)):
         before, after = parse_value_from(old_secrets[variable]), parse_value_from(new_secrets[variable])
-        meta = check_metadata(after, sources, key_alias) if after.kind == "ssm" else "-"
+        meta, written = check_metadata(after, sources, key_alias) if after.kind == "ssm" else ("-", None)
         if after.kind != "ssm":
             report.row("SIGUE EN SECRETS MANAGER", variable, before.label(), after.label(), meta)
             continue
@@ -336,6 +357,20 @@ def compare(old_defs: list, new_defs: list, sources, *, values: bool, key_alias:
         if before == after:
             report.row("sin cambio", variable, before.label(), after.label(), meta)
             continue
+        if before.kind == "sm":
+            try:
+                stale = copied_before_last_change(before, written, sources, changed_at)
+            except NotFound as missing:
+                report.row("FALTA EN EL VIEJO", variable, before.label(), after.label(), str(missing))
+                continue
+            except ReadFailed as failed:
+                report.row("ERROR", variable, before.label(), after.label(), f"fecha: {failed}")
+                continue
+            if stale:
+                report.row("COPIA VIEJA", variable, before.label(), after.label(),
+                           "el secreto cambio despues de la copia")
+                continue
+            meta += "; copia posterior al secreto"
         if not values:
             report.row("omitido", variable, before.label(), after.label(), meta)
             continue
@@ -365,19 +400,32 @@ def compare(old_defs: list, new_defs: list, sources, *, values: bool, key_alias:
     return report
 
 
-def check_metadata(source: Source, sources, key_alias: str) -> str:
+def check_metadata(source: Source, sources, key_alias: str) -> tuple[str, Optional[datetime]]:
+    """(verdict, when the parameter was last written). The date is only meaningful with "ok"."""
     try:
         found = sources.metadata(source.name)
     except ReadFailed as failed:
-        return f"metadatos: {failed}"
+        return f"metadatos: {failed}", None
     if found is None:
-        return "parametro inexistente"
-    kind, key_id = found
+        return "parametro inexistente", None
+    kind, key_id, written = found
     if kind != "SecureString":
-        return f"no es SecureString ({kind})"
+        return f"no es SecureString ({kind})", None
     if key_id != key_alias and not key_id.endswith(":" + key_alias):
-        return "otra llave KMS"
-    return "ok"
+        return "otra llave KMS", None
+    return "ok", written
+
+
+def copied_before_last_change(secret: Source, written: Optional[datetime], sources, changed_at: dict) -> bool:
+    """True unless the parameter was written strictly after the secret last changed.
+
+    A tie counts as stale: a real copy is written after the read it copies. A parameter or a secret
+    with no date is no verdict (ReadFailed), never "fresh"."""
+    if written is None:
+        raise ReadFailed("parametro sin fecha")
+    if secret.ref not in changed_at:
+        changed_at[secret.ref] = sources.changed(secret.ref)
+    return changed_at[secret.ref] >= written
 
 
 def main(argv: Optional[list] = None, sources=None) -> int:

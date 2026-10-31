@@ -17,6 +17,7 @@ import secrets
 import sys
 import tempfile
 import unittest
+from datetime import datetime, timedelta, timezone
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "scripts"))
 
@@ -31,6 +32,13 @@ SSM = "arn:aws:ssm:us-east-2:" + ACCOUNT + ":parameter"
 KEY = "alias/facilitator-bazaar-admin-token"
 IMAGE = ACCOUNT + ".dkr.ecr.us-east-2.amazonaws.com/facilitator:2.51.0-abc1234"
 
+# The dates of production: every secret last changed before 2026-10-16, when the copies were
+# written; facilitator-rpc-testnet changed again on 2026-10-30.
+CHANGED = datetime(2026, 9, 24, 19, 38, 28, tzinfo=timezone.utc)
+COPIED = datetime(2026, 10, 16, 3, 44, 6, tzinfo=timezone.utc)
+LATER = datetime(2026, 10, 30, 19, 15, 11, tzinfo=timezone.utc)
+NEAR_SECRET = SM + "facilitator-near-mainnet-keypair-" + SUFFIX
+
 
 def rand() -> str:
     # 59 characters: a length nothing else in the output is likely to print.
@@ -42,11 +50,22 @@ class Fake:
 
     def __init__(self):
         self.secrets = {}    # secret ARN -> SecretString
+        self.changed_at = {} # secret ARN -> LastChangedDate (CHANGED when absent)
         self.params = {}     # parameter ARN -> value
-        self.meta = {}       # parameter name -> (Type, KeyId)
+        self.meta = {}       # parameter name -> (Type, KeyId, LastModifiedDate)
         self.tds = {}        # family:revision -> containerDefinitions
         self.fail = {}       # ARN or name -> error code to raise
         self.reads = []
+        self.described = []
+
+    def changed(self, secret_id):
+        # DescribeSecret: metadata, so NoValues keeps it.
+        self.described.append(secret_id)
+        if secret_id in self.fail:
+            raise v.ReadFailed(self.fail[secret_id])
+        if secret_id not in self.secrets:
+            raise v.NotFound("ResourceNotFoundException")
+        return self.changed_at.get(secret_id, CHANGED)
 
     def secret(self, secret_id, stage, version):
         self.reads.append(secret_id)
@@ -106,12 +125,13 @@ def world(fake=None):
         old.append({"name": variable, "valueFrom": value_from})
         new.append({"name": variable, "valueFrom": SSM + name})
         f.params[SSM + name] = value
-        f.meta[name] = ("SecureString", KEY)
+        f.meta[name] = ("SecureString", KEY, COPIED)
     bazaar_arn = SSM + "/facilitator/bazaar-admin-token"
     old.append({"name": "BAZAAR_ADMIN_TOKEN", "valueFrom": bazaar_arn})
     new.append({"name": "BAZAAR_ADMIN_TOKEN", "valueFrom": bazaar_arn})
     f.params[bazaar_arn] = bazaar
-    f.meta["/facilitator/bazaar-admin-token"] = ("SecureString", KEY)
+    # Older than everything else on purpose: an SSM -> same SSM pair has no copy to date.
+    f.meta["/facilitator/bazaar-admin-token"] = ("SecureString", KEY, CHANGED - timedelta(days=30))
     env = [{"name": "ESCROW_LIFECYCLE_AUTH", "value": "log"}, {"name": "PORT", "value": "8080"}]
     old_td = [{"name": "facilitator", "image": IMAGE, "environment": env, "secrets": old}]
     new_td = [{"name": "facilitator", "image": IMAGE, "environment": [dict(e) for e in env], "secrets": new}]
@@ -260,7 +280,7 @@ class Shape(Base):
         f, old_td, new_td, values = world()
         moved = SSM + "/facilitator/bazaar-admin-token-v2"
         f.params[moved] = rand()
-        f.meta["/facilitator/bazaar-admin-token-v2"] = ("SecureString", KEY)
+        f.meta["/facilitator/bazaar-admin-token-v2"] = ("SecureString", KEY, COPIED)
         for s in new_td[0]["secrets"]:
             if s["name"] == "BAZAAR_ADMIN_TOKEN":
                 s["valueFrom"] = moved
@@ -272,6 +292,25 @@ class Shape(Base):
         self.assertEqual(code, 0, out)
         self.assertTrue(row(out, "BAZAAR_ADMIN_TOKEN").startswith("| ok |"))
         self.assertNoLeak(out, values)
+
+    def test_the_same_parameter_name_under_another_arn_is_compared_not_skipped(self):
+        # Same name in another region or account is another parameter: only an identical valueFrom
+        # is "sin cambio", never a match on kind + name (mutation MP4 of the round-1 refutation).
+        for elsewhere in (SSM.replace("us-east-2", "us-west-2"), SSM.replace(ACCOUNT, "4444" + "55556666")):
+            f, old_td, new_td, values = world()
+            old_arn = elsewhere + "/facilitator/bazaar-admin-token"
+            for s in old_td[0]["secrets"]:
+                if s["name"] == "BAZAAR_ADMIN_TOKEN":
+                    s["valueFrom"] = old_arn
+            f.params[old_arn] = rand()
+            code, out = run(f, old_td, new_td)
+            self.assertEqual(code, 1, out)
+            self.assertTrue(row(out, "BAZAAR_ADMIN_TOKEN").startswith("| DIFIERE |"), row(out, "BAZAAR_ADMIN_TOKEN"))
+            f.params[old_arn] = values[6]
+            code, out = run(f, old_td, new_td)
+            self.assertEqual(code, 0, out)
+            self.assertTrue(row(out, "BAZAAR_ADMIN_TOKEN").startswith("| ok |"), row(out, "BAZAAR_ADMIN_TOKEN"))
+            self.assertNoLeak(out, values)
 
     def test_a_variable_still_on_secrets_manager(self):
         f, old_td, new_td, values = world()
@@ -319,24 +358,92 @@ class Metadata(Base):
 
     def test_the_default_aws_ssm_key_is_refused(self):
         f, old_td, new_td, values = world(NoValues())
-        f.meta["/facilitator/evm-mainnet-private-key/private_key"] = ("SecureString", "alias/aws/ssm")
+        f.meta["/facilitator/evm-mainnet-private-key/private_key"] = ("SecureString", "alias/aws/ssm", COPIED)
         code, out = run(f, old_td, new_td, "--solo-metadatos")
         self.assertEqual(code, 1)
         self.assertTrue(row(out, "EVM_PRIVATE_KEY_MAINNET").startswith("| OTRA LLAVE KMS |"))
 
     def test_the_key_by_its_alias_arn_is_accepted(self):
         f, old_td, new_td, values = world(NoValues())
-        f.meta["/facilitator/rpc-mainnet/base"] = ("SecureString", "arn:aws:kms:us-east-2:" + ACCOUNT + ":" + KEY)
+        f.meta["/facilitator/rpc-mainnet/base"] = ("SecureString", "arn:aws:kms:us-east-2:" + ACCOUNT + ":" + KEY, COPIED)
         code, out = run(f, old_td, new_td, "--solo-metadatos")
         self.assertEqual(code, 0, out)
         self.assertNoLeak(out, values)
 
     def test_a_plain_string_parameter_is_refused(self):
         f, old_td, new_td, values = world(NoValues())
-        f.meta["/facilitator/rpc-mainnet/base"] = ("String", "")
+        f.meta["/facilitator/rpc-mainnet/base"] = ("String", "", COPIED)
         code, out = run(f, old_td, new_td, "--solo-metadatos")
         self.assertEqual(code, 1)
         self.assertIn("no es SecureString", row(out, "RPC_URL_BASE"))
+
+
+class Freshness(Base):
+    """A copy written before its secret last changed is a difference, seen from metadata alone."""
+
+    def test_a_secret_changed_after_its_copy_is_a_stale_copy_in_both_modes(self):
+        # Production on 2026-10-31: the secret changed after its copies. With values the bytes still
+        # match here, and it is a difference anyway: the copy is not what the secret was last given.
+        for fake, extra in ((None, ()), (NoValues(), ("--solo-metadatos",))):
+            f, old_td, new_td, values = world(fake)
+            f.changed_at[NEAR_SECRET] = LATER
+            code, out = run(f, old_td, new_td, *extra)
+            self.assertEqual(code, 1, out)
+            for variable in ("NEAR_PRIVATE_KEY_MAINNET", "NEAR_ACCOUNT_ID_MAINNET"):
+                self.assertTrue(row(out, variable).startswith("| COPIA VIEJA |"), row(out, variable))
+                self.assertIn("el secreto cambio despues de la copia", row(out, variable))
+            # Each secret is judged on its own date, not on the first one described.
+            for variable in ("EVM_PRIVATE_KEY_MAINNET", "RPC_URL_BASE", "STELLAR_PRIVATE_KEY_MAINNET"):
+                self.assertIn("copia posterior al secreto", row(out, variable))
+            self.assertIn("RESULTADO: hay diferencias o faltantes", out)
+            self.assertNoLeak(out, values)
+
+    def test_writing_the_copy_again_clears_it(self):
+        f, old_td, new_td, values = world(NoValues())
+        f.changed_at[NEAR_SECRET] = LATER
+        for name in ("/facilitator/near-mainnet-keypair/private_key", "/facilitator/near-mainnet-keypair/account_id"):
+            f.meta[name] = ("SecureString", KEY, LATER + timedelta(minutes=5))
+        code, out = run(f, old_td, new_td, "--solo-metadatos")
+        self.assertEqual(code, 0, out)
+        self.assertIn("copia posterior al secreto", row(out, "NEAR_ACCOUNT_ID_MAINNET"))
+        self.assertIn("metadatos en orden", out)
+
+    def test_a_copy_written_at_the_same_instant_is_stale(self):
+        f, old_td, new_td, values = world(NoValues())
+        f.changed_at[SM + "facilitator-rpc-mainnet-" + SUFFIX] = COPIED
+        code, out = run(f, old_td, new_td, "--solo-metadatos")
+        self.assertEqual(code, 1, out)
+        self.assertTrue(row(out, "RPC_URL_BASE").startswith("| COPIA VIEJA |"), row(out, "RPC_URL_BASE"))
+
+    def test_a_secret_whose_date_cannot_be_read_is_no_verdict(self):
+        f, old_td, new_td, values = world(NoValues())
+        f.fail[SM + "facilitator-stellar-keypair-mainnet-" + SUFFIX] = "AccessDeniedException"
+        code, out = run(f, old_td, new_td, "--solo-metadatos")
+        self.assertEqual(code, 2, out)
+        self.assertTrue(row(out, "STELLAR_PRIVATE_KEY_MAINNET").startswith("| ERROR |"))
+        self.assertIn("fecha: AccessDeniedException", row(out, "STELLAR_PRIVATE_KEY_MAINNET"))
+        self.assertNoLeak(out, values)
+
+    def test_a_parameter_without_a_date_is_no_verdict(self):
+        f, old_td, new_td, values = world(NoValues())
+        f.meta["/facilitator/rpc-mainnet/base"] = ("SecureString", KEY, None)
+        code, out = run(f, old_td, new_td, "--solo-metadatos")
+        self.assertEqual(code, 2, out)
+        self.assertTrue(row(out, "RPC_URL_BASE").startswith("| ERROR |"))
+        self.assertIn("parametro sin fecha", row(out, "RPC_URL_BASE"))
+
+    def test_a_secret_that_no_longer_exists(self):
+        f, old_td, new_td, values = world(NoValues())
+        del f.secrets[SM + "facilitator-stellar-keypair-mainnet-" + SUFFIX]
+        code, out = run(f, old_td, new_td, "--solo-metadatos")
+        self.assertEqual(code, 1, out)
+        self.assertTrue(row(out, "STELLAR_PRIVATE_KEY_MAINNET").startswith("| FALTA EN EL VIEJO |"))
+
+    def test_each_secret_is_described_once(self):
+        f, old_td, new_td, values = world()
+        self.assertEqual(run(f, old_td, new_td)[0], 0)
+        self.assertEqual(sorted(f.described), sorted(set(f.described)))
+        self.assertEqual(len(f.described), 4)   # evm, near (two fields), stellar, rpc
 
 
 class Inputs(Base):
@@ -353,14 +460,14 @@ class Inputs(Base):
 
     def test_a_family_revision_is_read_from_ecs(self):
         f, old_td, new_td, values = world()
-        f.tds["facilitator-production:478"] = old_td
+        f.tds["facilitator-production:482"] = old_td
         with tempfile.TemporaryDirectory() as tmp:
             new_path = os.path.join(tmp, "nuevo.json")
             with open(new_path, "w", encoding="utf-8") as handle:
                 json.dump(new_td, handle)
             out = io.StringIO()
             with contextlib.redirect_stdout(out):
-                code = v.main(["--viejo", "facilitator-production:478", "--nuevo", new_path], sources=f)
+                code = v.main(["--viejo", "facilitator-production:482", "--nuevo", new_path], sources=f)
             self.assertEqual(code, 0, out.getvalue())
             with contextlib.redirect_stdout(io.StringIO()):
                 code = v.main(["--viejo", "facilitator-production:1", "--nuevo", new_path], sources=f)
@@ -415,14 +522,37 @@ class Inputs(Base):
                 self.calls.append(kwargs)
                 if "NextToken" not in kwargs:
                     return {"Parameters": [], "NextToken": "page-2"}
-                return {"Parameters": [{"Type": "SecureString", "KeyId": KEY}]}
+                return {"Parameters": [{"Type": "SecureString", "KeyId": KEY, "LastModifiedDate": COPIED}]}
 
         aws = object.__new__(v.AwsSources)
         aws._client_error, aws._botocore_error, aws._ssm = Boom, Boom, Ssm()
-        self.assertEqual(aws.metadata("/facilitator/rpc-mainnet/base"), ("SecureString", KEY))
+        self.assertEqual(aws.metadata("/facilitator/rpc-mainnet/base"), ("SecureString", KEY, COPIED))
         self.assertEqual(aws._ssm.calls[1].get("NextToken"), "page-2")
         aws._ssm.describe_parameters = lambda **kwargs: {"Parameters": []}
         self.assertIsNone(aws.metadata("/facilitator/rpc-mainnet/base"))
+
+    def test_changed_reads_last_changed_date_then_created_date(self):
+        class Boom(Exception):
+            pass
+
+        class Sm:
+            def __init__(self, answer):
+                self.answer, self.calls = answer, []
+
+            def describe_secret(self, **kwargs):
+                self.calls.append(kwargs)
+                return self.answer
+
+        aws = object.__new__(v.AwsSources)
+        aws._client_error, aws._botocore_error = Boom, Boom
+        aws._sm = Sm({"LastChangedDate": LATER, "CreatedDate": CHANGED})
+        self.assertEqual(aws.changed(NEAR_SECRET), LATER)
+        self.assertEqual(aws._sm.calls, [{"SecretId": NEAR_SECRET}])
+        aws._sm = Sm({"CreatedDate": CHANGED})
+        self.assertEqual(aws.changed(NEAR_SECRET), CHANGED)
+        aws._sm = Sm({})
+        with self.assertRaises(v.ReadFailed):
+            aws.changed(NEAR_SECRET)
 
     @unittest.skipUnless(importlib.util.find_spec("botocore"), "botocore not installed")
     def test_a_botocore_failure_is_no_verdict_and_names_no_account(self):
@@ -486,7 +616,7 @@ class Addresses(Base):
         secret = SM + "facilitator-solana-mainnet-keypair-" + SUFFIX
         f.secrets[secret] = json.dumps({"private_key": keypair})
         f.params[name] = keypair + " "
-        f.meta["/facilitator/solana-mainnet-keypair/private_key"] = ("SecureString", KEY)
+        f.meta["/facilitator/solana-mainnet-keypair/private_key"] = ("SecureString", KEY, COPIED)
         old_td[0]["secrets"].append({"name": "SOLANA_PRIVATE_KEY_MAINNET", "valueFrom": secret + ":private_key::"})
         new_td[0]["secrets"].append({"name": "SOLANA_PRIVATE_KEY_MAINNET", "valueFrom": name})
         code, out = run(f, old_td, new_td)

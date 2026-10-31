@@ -5,7 +5,7 @@
 #   terraform init -backend=false && terraform test
 # (CI: job "Build & test", step "Terraform NAT guards", which runs every file in tests/).
 #
-# The table below is the live task definition's (revision 478, 2026-10-22): the same 45 names,
+# The table below is the live task definition's (revision 482, measured 2026-10-31): the same 45 names,
 # each pointed at the parameter copied from the secret field it used to read. A name that
 # disappears, a new one, or a parameter that moves goes red here. That each parameter holds the
 # same value as its secret is not something a plan can see: scripts/verificar_ssm_igual.py.

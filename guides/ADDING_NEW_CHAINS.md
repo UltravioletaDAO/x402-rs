@@ -258,6 +258,8 @@ RPC_URL_UNICHAIN_SEPOLIA=https://unichain-sepolia.drpc.org
 
 #### 2.2 Configure AWS Secrets Manager (Mainnet Premium RPC)
 
+> **Since owner's decision 266 the task definition reads `/facilitator/rpc-mainnet/<network>` from SSM Parameter Store, not this secret.** Put the URL in that parameter and point the `secrets` entry at it (CLAUDE.md, "When adding a new network with premium RPC"); the secret below still feeds the balances Lambda while the originals exist.
+
 **CRITICAL**: Never put RPC URLs with API keys in task definitions!
 
 Update AWS Secrets Manager secret:

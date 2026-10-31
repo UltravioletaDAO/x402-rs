@@ -1,5 +1,7 @@
 # Secrets Management - Production Infrastructure
 
+> **Since owner's decision 266 the task definition reads every secret from SSM Parameter Store** (`/facilitator/<secret name minus "facilitator-">[/<field>]`, see `secrets.tf` and CLAUDE.md, "AWS Secrets Manager (Production)"), **not from the Secrets Manager secrets this document describes.** Every procedure below that writes a secret (new wallet, new RPC, rotation) must write the parameter too, or the task never sees it: a rotation done only here leaves the task signing with the old key.
+
 This document explains how secrets are managed in the Facilitator production deployment and how to add new networks without breaking production.
 
 ## Problem This Solves
@@ -160,6 +162,8 @@ RPC secrets are JSON objects with network keys:
 ## How to Add a New Network
 
 ### Step 1: Create Wallet in Secrets Manager
+
+> Decision 266: the task reads the SSM parameter, not this secret. Put each field the task reads in `/facilitator/<name>/<field>` (SecureString, `--key-id alias/facilitator-bazaar-admin-token`) and point `secrets.tf` at it; Steps 1 and 2 alone never reach the task.
 
 Choose the appropriate secret based on network type:
 
@@ -400,6 +404,17 @@ secrets = [
 See `/mnt/z/ultravioleta/dao/x402-rs/docs/WALLET_ROTATION.md` for complete procedures.
 
 **Quick rotation:**
+
+> **Decision 266: this sequence is incomplete.** The task reads `/facilitator/<name>/private_key` from SSM. Before forcing the new deployment, overwrite that parameter with the new key, on the key every `/facilitator/` parameter is on, from a file only you can read holding the bare key (not the secret's JSON, no trailing newline):
+>
+> ```bash
+> aws ssm put-parameter --overwrite --key-id alias/facilitator-bazaar-admin-token \
+>   --name /facilitator/<name>/private_key --type SecureString \
+>   --value file:///dev/shm/<file> --region us-east-2
+> ```
+>
+> Then confirm the new tasks log the new signer, or the old key keeps signing and draining it (step 6) stops every EVM settle.
+
 ```bash
 # 1. Generate new wallet
 # 2. Fund new wallet with gas tokens

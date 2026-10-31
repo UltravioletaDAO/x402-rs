@@ -743,6 +743,10 @@ resource "aws_iam_role_policy" "secrets_access" {
   policy = jsonencode({
     Version = "2012-10-17"
     Statement = [
+      # The task definition no longer reads Secrets Manager (decision 266,
+      # secrets.tf). Kept until the task has run on the SSM copies: reverting
+      # the mapping is the rollback and needs this grant. It goes, with the data
+      # sources, in a change of its own before the originals are deleted.
       {
         Effect = "Allow"
         Action = [
@@ -750,16 +754,19 @@ resource "aws_iam_role_policy" "secrets_access" {
         ]
         Resource = local.all_secret_arns
       },
-      # BAZAAR_ADMIN_TOKEN: an SSM SecureString on its own KMS key (secrets.tf).
+      # Every secret of the task definition: SSM SecureStrings under /facilitator/
+      # (secrets.tf), BAZAAR_ADMIN_TOKEN among them.
       {
         Effect   = "Allow"
         Action   = ["ssm:GetParameters"]
-        Resource = local.bazaar_admin_token_parameter_arn
+        Resource = "${local.facilitator_parameter_arn_prefix}/*"
       },
-      # The key by its alias, not by aws_kms_key's ARN: this policy is in the image
-      # deploy's -target list, and a reference would drag the key into every deploy
-      # as a dependency the CI user cannot create or update -- the way
-      # aws_ecs_cluster.main broke #115's deploy. Only through SSM.
+      # The key that encrypts every /facilitator/ parameter, by its alias (named
+      # after the bazaar token, the first parameter on it), not by aws_kms_key's
+      # ARN: this policy is in the image deploy's -target list, and a reference
+      # would drag the key into every deploy as a dependency the CI user cannot
+      # create or update -- the way aws_ecs_cluster.main broke #115's deploy.
+      # Only through SSM.
       {
         Effect   = "Allow"
         Action   = ["kms:Decrypt"]

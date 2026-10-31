@@ -551,11 +551,14 @@ variable "ip_allowlist_secret_name" {
 
 variable "stack_key_emporium_loaded" {
   description = <<-EOT
-    Set true once facilitator-stack-key-digest-emporium exists AND holds the
-    digest of Emporium's stack key (field sha256). Until then the task
-    definition and the execution role do not reference the secret: ECS refuses
-    to start a task whose valueFrom names a secret with no value. Emporium is
-    listed in GET /config as inactive meanwhile.
+    Set true once the SSM SecureString /facilitator/stack-key-digest-emporium/sha256
+    exists, on alias/facilitator-bazaar-admin-token, AND holds the digest of
+    Emporium's stack key: that parameter is what the task definition reads
+    (secrets.tf, decision 266), not the facilitator-stack-key-digest-emporium
+    secret. Until then the task definition does not reference the parameter
+    (nor the execution role's Secrets Manager grant the secret): ECS refuses to
+    start a task whose valueFrom names a parameter that does not exist. Emporium is listed in GET /config as inactive
+    meanwhile.
 
     Flipping it changes aws_iam_role_policy.secrets_access, which the CI user
     cannot write: apply that policy by hand before the merge that flips it

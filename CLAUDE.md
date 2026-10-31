@@ -321,7 +321,9 @@ Copy `.env.example` to `.env` and configure:
 
 ### AWS Secrets Manager (Production)
 
-Leave wallet environment variables empty in `.env`. The facilitator will fetch them from AWS Secrets Manager if running on ECS with appropriate IAM permissions.
+Leave wallet environment variables empty in `.env`. On ECS, the task definition injects them.
+
+**The task definition reads every secret from SSM Parameter Store, not from Secrets Manager** (owner's decision 266, `terraform/environments/production/secrets.tf`). Each field the task reads is a SecureString of its own, copied from the secrets below on 2026-10-16: `/facilitator/<secret name minus "facilitator-">/<field>` (`/facilitator/rpc-mainnet/base`, `/facilitator/near-mainnet-keypair/account_id`), or without `/<field>` for a whole-string secret (`/facilitator/stellar-keypair-mainnet`), all on the key behind `alias/facilitator-bazaar-admin-token`. **A value changed only in Secrets Manager never reaches the container**: put it in the parameter (`aws ssm put-parameter --overwrite ... --key-id alias/facilitator-bazaar-admin-token --value file://...`), and while the originals exist also in the secret, which the balances Lambda and the operator scripts still read. The secrets and the execution role's grant on them stay until a follow-up removes them; `scripts/verificar_ssm_igual.py` compares every pair in memory and prints only ok / DIFIERE, and in every mode (`--solo-metadatos` too, from dates alone) marks `COPIA VIEJA` any parameter not written after its secret's `LastChangedDate` - `facilitator-rpc-testnet` changed on 2026-10-30, two weeks after its copies.
 
 **IMPORTANT**: As of v1.3.0, the facilitator uses separate wallets for mainnet and testnet environments. This prevents the critical bug where testnet transactions were signed with mainnet keys.
 
@@ -350,7 +352,7 @@ Golden source is `terraform/environments/production/secrets.tf`. The naming is N
 2. Task definition history is preserved, exposing keys even after rotation
 3. API keys in URLs are visible in AWS Console, CLI output, and logs
 
-**ALWAYS use AWS Secrets Manager references for RPC URLs with API keys:**
+**ALWAYS use `secrets` references (SSM SecureStrings, see above) for RPC URLs with API keys:**
 
 ❌ **WRONG** (Exposes API key):
 ```json
@@ -364,34 +366,29 @@ Golden source is `terraform/environments/production/secrets.tf`. The naming is N
 ```json
 {
   "name": "RPC_URL_ARBITRUM",
-  "valueFrom": "arn:aws:secretsmanager:us-east-2:<AWS_ACCOUNT_ID>:secret:facilitator-rpc-mainnet-<SUFIJO>:arbitrum::"
+  "valueFrom": "arn:aws:ssm:us-east-2:<AWS_ACCOUNT_ID>:parameter/facilitator/rpc-mainnet/arbitrum"
 }
 ```
 
 **When adding a new network with premium RPC:**
 
-1. Add the RPC URL to the appropriate secret in AWS Secrets Manager:
+1. Put the RPC URL in its own SSM parameter, from a file only you can read (never in argv):
    ```bash
-   # For mainnet
-   aws secretsmanager update-secret \
-     --secret-id facilitator-rpc-mainnet \
-     --region us-east-2 \
-     --secret-string '{"network-name": "https://rpc-url-with-api-key"}'
-
-   # For testnet
-   aws secretsmanager update-secret \
-     --secret-id facilitator-rpc-testnet \
-     --region us-east-2 \
-     --secret-string '{"network-name": "https://rpc-url"}'
+   # For mainnet (testnet: /facilitator/rpc-testnet/<network>). Add --overwrite to replace an existing one.
+   aws ssm put-parameter --name /facilitator/rpc-mainnet/<network> --type SecureString \
+     --key-id alias/facilitator-bazaar-admin-token --value file:///dev/shm/rpc-url --region us-east-2
    ```
+   `--value file://...` also keeps AWS CLI v1 from downloading a `--value https://...` instead of storing it.
+   While the originals exist, add the same key to the `facilitator-rpc-mainnet` / `facilitator-rpc-testnet` secret as well: the balances Lambda still reads it. `aws secretsmanager update-secret --secret-string` REPLACES the whole JSON; merge into the current value.
 
-2. Add the secret reference to the task definition's `secrets` array (NOT `environment`):
-   ```json
+2. Add the parameter to the task definition's `secrets` (NOT `environment`), in `secrets.tf`:
+   ```hcl
    {
-     "name": "RPC_URL_NETWORK_NAME",
-     "valueFrom": "arn:aws:secretsmanager:REGION:ACCOUNT:secret:SECRET_NAME:KEY::"
+     name      = "RPC_URL_NETWORK_NAME"
+     valueFrom = "${local.facilitator_parameter_arn_prefix}/rpc-mainnet/<network>"
    }
    ```
+   and add the same row to the table in `terraform/environments/production/tests/ssm_reader.tftest.hcl` (and its count), or `terraform test` in CI goes red.
 
 3. Public/free RPC endpoints (without API keys) can go directly in `environment` variables or `.env.example`
 
@@ -591,7 +588,7 @@ every n seconds*, not n per second.
 ### RPC timeouts
 - Use premium RPC endpoints (QuickNode, Alchemy)
 - Override the network's own `RPC_URL_<NETWORK>` - that is the only var the code reads, there is no fallback chain, and `QUICKNODE_BASE_RPC` is dead
-- In production `RPC_URL_*` comes from the `facilitator-rpc-mainnet` / `facilitator-rpc-testnet` secrets, not from `.env`
+- In production `RPC_URL_*` comes from the SSM parameters `/facilitator/rpc-mainnet/<network>` / `/facilitator/rpc-testnet/<network>` (copies of the `facilitator-rpc-*` secrets, decision 266), not from `.env`
 - Check network connectivity to RPC URLs
 
 ### Missing branding after deployment
@@ -826,7 +823,7 @@ with them (spec v0.2 §18.1), never as a sixth hash.
 - `POST /feedback` - Submit reputation feedback. **The facilitator is the AUTHOR on this path** — the registry records `msg.sender` (EVM) / account 0 (SVM), and that is us. Use the prepare/submit pairs below for real authorship.
 - `POST /feedback/evm/prepare` + `POST /feedback/evm/submit` - EIP-7702 relayed rating: the rater delegates their EOA to Execution Market's `FeedbackDelegate`, signs a digest, and we send a type-4 tx **to the rater's address** so the registry sees the rater. Served only where a delegate is deployed AND verified on-chain — today `base`, `ethereum`, `polygon`, `arbitrum`, `optimism`, `celo`, `bsc`, `monad`, `arc` and `base-sepolia`, all v4. The table is `delegate_address()` in `src/erc8004/relay.rs` and EM's golden source is `contracts/deployments/feedback-delegate.json` in execution-market: read the address there and verify it on-chain (`eth_getCode`, `VERSION()`, `REPUTATION_REGISTRY()`) before adding a row. Tests tie the `/docs` list and the `/erc8004` page to that table.
 - `POST /feedback/solana/prepare` + `POST /feedback/solana/submit` - partially-signed SVM tx: the rater signs as `client`, we stay fee payer. `submit` refuses any transaction that is not byte-for-byte the one it built.
-- `POST /feedback/revoke` - Revoke feedback. **ADMIN ONLY**: `Authorization: Bearer <ERC8004_ADMIN_TOKEN>`, and **404 when no token is configured** (fail-closed, so the route is indistinguishable from absent). Deliberately NOT `BAZAAR_ADMIN_TOKEN` — this one erases third-party reputation irreversibly. In production the token comes from the `facilitator-erc8004-admin-token` secret.
+- `POST /feedback/revoke` - Revoke feedback. **ADMIN ONLY**: `Authorization: Bearer <ERC8004_ADMIN_TOKEN>`, and **404 when no token is configured** (fail-closed, so the route is indistinguishable from absent). Deliberately NOT `BAZAAR_ADMIN_TOKEN` — this one erases third-party reputation irreversibly. In production the token comes from `/facilitator/erc8004-admin-token/token`, the SSM copy of the `facilitator-erc8004-admin-token` secret (decision 266).
 - `POST /erc8004/admin/retire-identity` - `{network, agentId, dryRun?}`. **ADMIN ONLY**, same token, same 404, behind the writer lease. Points the `agentURI` of an EVM identity a facilitator signer holds at `/erc8004/retired` with `setAgentURI`, sent by the service through its own nonce manager - never by hand with the hot key (it collides with `PendingNonceManager`), never a transfer to a dead address (the URI would stay forever). Idempotent (`already_retired`), `dryRun` reports the old URI and the `/register` rules it breaks, somebody else's identity is `409`. `scripts/erc8004_custodied_identities.py` (read-only) lists what the wallet still holds and flags the URIs to retire
 - `GET /erc8004/retired` - The ERC-8004 registration file (`active: false`) retired identities point at
 - Every ERC-8004 write that sends a transaction (`/register`, `/feedback`, the `/feedback/*` submits, not `prepare` or `revoke`) also counts against a per-network UTC-day limit (`src/erc8004/daily_cap.rs`): past it the write answers 429 `erc8004_daily_write_limit` without touching the chain. A write keeps its slot only if a send primitive actually broadcast (`daily_cap::mark_sent`). Limits: `ERC8004_DAILY_WRITE_CAP` (all networks) and `ERC8004_DAILY_WRITE_CAP_<NETWORK>`; `0` refuses every write on that network.
@@ -1023,12 +1020,12 @@ This complete checklist covers:
 **Quick summary** (refer to guide for full details):
 1. Add enum variant to `Network` in `src/network.rs`
 2. Add USDC deployment constants and chain ID mappings
-3. Add RPC environment variables in ALL live sites — `src/from_env.rs` (parsing), `.env.example` (local dev), `terraform/environments/production/main.tf` (ECS `environment`) or `secrets.tf` (if the URL carries an API key), and `lambda/balances/handler.py`. Declared only in `from_env.rs`, the container never receives it.
+3. Add RPC environment variables in ALL live sites — `src/from_env.rs` (parsing), `.env.example` (local dev), `terraform/environments/production/main.tf` (ECS `environment`) or `secrets.tf` (if the URL carries an API key: an SSM parameter, see "When adding a new network with premium RPC"), and `lambda/balances/handler.py`. Declared only in `from_env.rs`, the container never receives it.
 4. Update `src/chain/evm.rs` or `src/chain/solana.rs`
 5. Add logo PNG file to `static/` directory
 6. Add logo handler to `src/handlers.rs`
 7. Update `static/index.html` with network cards and CSS styling
-8. Configure AWS Secrets Manager with premium mainnet RPC
+8. Put the premium mainnet RPC in SSM (`/facilitator/rpc-mainnet/<network>`, what the task reads) and, while the originals exist, in the `facilitator-rpc-mainnet` secret (the balances Lambda)
 9. Fund both mainnet and testnet facilitator wallets with native tokens
 10. Build Docker image, push to ECR, and deploy to ECS
 11. Verify in `/supported` endpoint and test frontend

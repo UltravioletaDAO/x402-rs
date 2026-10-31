@@ -83,20 +83,21 @@ locals {
     { name = "HEDERA_DAILY_BUDGET_TINYBARS_MAINNET", value = tostring(var.hedera_daily_budget_tinybars_mainnet) },
     { name = "HEDERA_SETTLEMENT_TABLE_NAME", value = aws_dynamodb_table.hedera_settlements.name },
   ]
+  # SSM copies of the fields of the two secrets above (secrets.tf, decision 266).
   hedera_secrets = concat(
     var.hedera_enabled_testnet ? [
-      { name = "HEDERA_PRIVATE_KEY_TESTNET", valueFrom = "${data.aws_secretsmanager_secret.hedera_testnet.arn}:private_key::" },
-      { name = "HEDERA_ACCOUNT_ID_TESTNET", valueFrom = "${data.aws_secretsmanager_secret.hedera_testnet.arn}:account_id::" },
+      { name = "HEDERA_PRIVATE_KEY_TESTNET", valueFrom = "${local.facilitator_parameter_arn_prefix}/hedera-testnet-keypair/private_key" },
+      { name = "HEDERA_ACCOUNT_ID_TESTNET", valueFrom = "${local.facilitator_parameter_arn_prefix}/hedera-testnet-keypair/account_id" },
     ] : [],
     var.hedera_enabled_mainnet ? [
-      { name = "HEDERA_PRIVATE_KEY_MAINNET", valueFrom = "${data.aws_secretsmanager_secret.hedera_mainnet.arn}:private_key::" },
-      { name = "HEDERA_ACCOUNT_ID_MAINNET", valueFrom = "${data.aws_secretsmanager_secret.hedera_mainnet.arn}:account_id::" },
+      { name = "HEDERA_PRIVATE_KEY_MAINNET", valueFrom = "${local.facilitator_parameter_arn_prefix}/hedera-mainnet-keypair/private_key" },
+      { name = "HEDERA_ACCOUNT_ID_MAINNET", valueFrom = "${local.facilitator_parameter_arn_prefix}/hedera-mainnet-keypair/account_id" },
     ] : [],
   )
 }
 
 # Public numeric IDs for balance monitoring only. Signers still come from the
-# existing Secrets Manager records and verify ownership against Mirror.
+# SSM copies of the Secrets Manager records above and verify ownership against Mirror.
 variable "hedera_account_id_testnet" {
   type    = string
   default = ""

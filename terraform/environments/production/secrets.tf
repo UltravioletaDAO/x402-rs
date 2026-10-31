@@ -223,10 +223,19 @@ data "aws_secretsmanager_secret" "dx402_pinata" {
 # GetSecretValue this role needs would read every key in the clear, whatever
 # field ECS injects. A digest that leaks authenticates nobody.
 #
-# Revoke by setting "sha256" to "" -- never delete the field: ECS refuses to
-# start a task whose valueFrom names a JSON key that is missing. Rotate with
-# "<new>,<old>" for one restart. Generate both halves with scripts/stack_key.py;
-# the full procedure is docs/handoffs/X4-STACK-429.md section 6.
+# The task reads each digest from its SSM copy,
+# /facilitator/stack-key-digest-<service>/sha256 (task definition mappings,
+# below), so that parameter is what a change has to reach. It holds the BARE
+# value ECS injects -- "<64 hex>", or "<new>,<old>" -- never the JSON document
+# scripts/stack_key.py writes: a parameter holding {"sha256": ...} is skipped
+# with a warning and the service silently becomes a third party (429s). Revoke
+# by overwriting it with a value that is not a digest, such as `revoked`
+# (src/rate_policy.rs skips it with a warning; SSM refuses an empty value) --
+# never delete it: ECS refuses to start a task whose valueFrom names a parameter
+# that is missing. Rotate with "<new>,<old>" for one restart. Generate both
+# halves with scripts/stack_key.py; the full procedure is
+# docs/handoffs/X4-STACK-429.md section 6, written for the Secrets Manager
+# secret, which the task no longer reads.
 data "aws_secretsmanager_secret" "stack_key_digest_execution_market" {
   name = "facilitator-stack-key-digest-execution-market"
 }
@@ -244,13 +253,19 @@ data "aws_secretsmanager_secret" "stack_key_digest_meshrelay" {
 }
 
 # Emporium reads the bazaar with its own key (decision 144). Declared WITHOUT a
-# value: load {"sha256": "<64 hex>"} by hand (scripts/stack_key.py generate
-# --service emporium), then set var.stack_key_emporium_loaded = true.
+# value. The task definition reads the digest from the SSM parameter
+# /facilitator/stack-key-digest-emporium/sha256, not from this secret (decision
+# 266, mappings below), and that parameter does not exist yet: put the bare
+# "<64 hex>" there first (scripts/stack_key.py generate --service emporium;
+# SecureString, --key-id alias/facilitator-bazaar-admin-token), then set
+# var.stack_key_emporium_loaded = true. Loading only this secret leaves every
+# new task unable to start.
 #
 # Nothing a deploy applies references this resource. A reference -- even in the
 # branch of a conditional that is not taken -- would put its creation inside the
 # image deploy's -target closure, and the CI user cannot create secrets. The
-# task reads it through the data source below, by name, once it holds a value.
+# execution role's Secrets Manager grant reaches it through the data source
+# below, by name, once the variable is set.
 resource "aws_secretsmanager_secret" "stack_key_digest_emporium" {
   name        = "facilitator-stack-key-digest-emporium"
   description = "SHA-256 of Emporium's X-UVD-Stack-Key (field sha256). Loaded by hand."
@@ -356,11 +371,39 @@ locals {
 # ============================================================================
 # ECS Task Definition Secret Mappings
 # ============================================================================
-# These locals define the complete mapping from environment variables to
-# Secrets Manager values. This is the SINGLE SOURCE OF TRUTH for secrets.
+# These locals define the complete mapping from environment variables to the
+# values ECS injects. This is the SINGLE SOURCE OF TRUTH for secrets.
 # When adding a new network, add its required secrets here.
+#
+# Every value comes from an SSM Parameter Store SecureString under /facilitator/
+# (owner's decision 266), never from Secrets Manager. The parameters are on the
+# key behind alias/facilitator-bazaar-admin-token -- its name is historical: the
+# bazaar token was the first parameter on it, and the copies of every other
+# secret went onto the same key -- so the execution role's kms:Decrypt grant
+# (main.tf, aws_iam_role_policy.secrets_access) covers them all.
+#
+# SSM cannot pick a field out of a JSON value the way a Secrets Manager
+# valueFrom `<arn>:<field>::` does, so each field the task reads is a parameter
+# of its own, named after the secret it was copied from (2026-10-16):
+#   secret facilitator-<name>, field <field>   ->  /facilitator/<name>/<field>
+#   secret facilitator-<name>, whole string    ->  /facilitator/<name>
+# scripts/verificar_ssm_igual.py compares each pair in memory and prints only
+# ok / DIFIERE. A new secret is a new parameter: put-parameter --type
+# SecureString --key-id alias/facilitator-bazaar-admin-token, then add it here.
+#
+# The ARN is composed, never read: a data or resource "aws_ssm_parameter" would
+# put the value or its ciphertext in the state, and the plan does not need the
+# parameter to exist. A missing one stops the task from starting instead.
+#
+# The Secrets Manager data sources above, and the execution role's
+# secretsmanager:GetSecretValue on them (local.all_secret_arns), stay until the
+# task has run on these parameters: reverting this mapping is the rollback, and
+# it needs that grant. They go together, in a change of their own, before the
+# originals are deleted.
 
 locals {
+  facilitator_parameter_arn_prefix = "arn:aws:ssm:${var.aws_region}:${data.aws_caller_identity.current.account_id}:parameter/facilitator"
+
   # ----------------------------------------------------------------------------
   # Wallet Private Keys
   # ----------------------------------------------------------------------------
@@ -368,84 +411,84 @@ locals {
     # EVM wallets (network-specific)
     {
       name      = "EVM_PRIVATE_KEY_MAINNET"
-      valueFrom = "${data.aws_secretsmanager_secret.evm_mainnet_private_key.arn}:private_key::"
+      valueFrom = "${local.facilitator_parameter_arn_prefix}/evm-mainnet-private-key/private_key"
     },
     {
       name      = "EVM_PRIVATE_KEY_TESTNET"
-      valueFrom = "${data.aws_secretsmanager_secret.evm_testnet_private_key.arn}:private_key::"
+      valueFrom = "${local.facilitator_parameter_arn_prefix}/evm-testnet-private-key/private_key"
     },
     # Legacy EVM wallet (fallback for backward compatibility)
     {
       name      = "EVM_PRIVATE_KEY"
-      valueFrom = "${data.aws_secretsmanager_secret.evm_private_key_legacy.arn}:private_key::"
+      valueFrom = "${local.facilitator_parameter_arn_prefix}/evm-private-key/private_key"
     },
 
     # Solana wallets (network-specific)
     {
       name      = "SOLANA_PRIVATE_KEY_MAINNET"
-      valueFrom = "${data.aws_secretsmanager_secret.solana_mainnet_keypair.arn}:private_key::"
+      valueFrom = "${local.facilitator_parameter_arn_prefix}/solana-mainnet-keypair/private_key"
     },
     {
       name      = "SOLANA_PRIVATE_KEY_TESTNET"
-      valueFrom = "${data.aws_secretsmanager_secret.solana_testnet_keypair.arn}:private_key::"
+      valueFrom = "${local.facilitator_parameter_arn_prefix}/solana-testnet-keypair/private_key"
     },
     # Legacy Solana wallet (fallback for backward compatibility)
     {
       name      = "SOLANA_PRIVATE_KEY"
-      valueFrom = "${data.aws_secretsmanager_secret.solana_keypair_legacy.arn}:private_key::"
+      valueFrom = "${local.facilitator_parameter_arn_prefix}/solana-keypair/private_key"
     },
 
     # NEAR wallets (network-specific with account IDs)
     {
       name      = "NEAR_PRIVATE_KEY_MAINNET"
-      valueFrom = "${data.aws_secretsmanager_secret.near_mainnet_keypair.arn}:private_key::"
+      valueFrom = "${local.facilitator_parameter_arn_prefix}/near-mainnet-keypair/private_key"
     },
     {
       name      = "NEAR_ACCOUNT_ID_MAINNET"
-      valueFrom = "${data.aws_secretsmanager_secret.near_mainnet_keypair.arn}:account_id::"
+      valueFrom = "${local.facilitator_parameter_arn_prefix}/near-mainnet-keypair/account_id"
     },
     {
       name      = "NEAR_PRIVATE_KEY_TESTNET"
-      valueFrom = "${data.aws_secretsmanager_secret.near_testnet_keypair.arn}:private_key::"
+      valueFrom = "${local.facilitator_parameter_arn_prefix}/near-testnet-keypair/private_key"
     },
     {
       name      = "NEAR_ACCOUNT_ID_TESTNET"
-      valueFrom = "${data.aws_secretsmanager_secret.near_testnet_keypair.arn}:account_id::"
+      valueFrom = "${local.facilitator_parameter_arn_prefix}/near-testnet-keypair/account_id"
     },
 
     # Stellar wallets (network-specific, plain string format)
     {
       name      = "STELLAR_PRIVATE_KEY_MAINNET"
-      valueFrom = data.aws_secretsmanager_secret.stellar_mainnet_keypair.arn
+      valueFrom = "${local.facilitator_parameter_arn_prefix}/stellar-keypair-mainnet"
     },
     {
       name      = "STELLAR_PRIVATE_KEY_TESTNET"
-      valueFrom = data.aws_secretsmanager_secret.stellar_testnet_keypair.arn
+      valueFrom = "${local.facilitator_parameter_arn_prefix}/stellar-keypair-testnet"
     },
 
     # Sui wallets (network-specific, plain string format - bech32 suiprivkey)
     {
       name      = "SUI_PRIVATE_KEY_MAINNET"
-      valueFrom = data.aws_secretsmanager_secret.sui_mainnet_keypair.arn
+      valueFrom = "${local.facilitator_parameter_arn_prefix}/sui-keypair-mainnet"
     },
     {
       name      = "SUI_PRIVATE_KEY_TESTNET"
-      valueFrom = data.aws_secretsmanager_secret.sui_testnet_keypair.arn
+      valueFrom = "${local.facilitator_parameter_arn_prefix}/sui-keypair-testnet"
     },
 
     # Algorand wallets (network-specific, 25-word mnemonic format)
     {
       name      = "ALGORAND_MNEMONIC_MAINNET"
-      valueFrom = data.aws_secretsmanager_secret.algorand_mainnet_mnemonic.arn
+      valueFrom = "${local.facilitator_parameter_arn_prefix}/algorand-mnemonic-mainnet"
     },
     {
       name      = "ALGORAND_MNEMONIC_TESTNET"
-      valueFrom = data.aws_secretsmanager_secret.algorand_testnet_mnemonic.arn
+      valueFrom = "${local.facilitator_parameter_arn_prefix}/algorand-mnemonic-testnet"
     },
   ]
 
   # ----------------------------------------------------------------------------
-  # Mainnet RPC URLs (from facilitator-rpc-mainnet secret)
+  # Mainnet RPC URLs (copies of the fields of the facilitator-rpc-mainnet secret)
   # ----------------------------------------------------------------------------
   # Current networks with premium mainnet RPCs:
   # - base, avalanche, polygon, optimism, celo, hyperevm, ethereum, arbitrum, unichain, solana, near
@@ -454,69 +497,69 @@ locals {
     # EVM Networks
     {
       name      = "RPC_URL_BASE"
-      valueFrom = "${data.aws_secretsmanager_secret.rpc_mainnet.arn}:base::"
+      valueFrom = "${local.facilitator_parameter_arn_prefix}/rpc-mainnet/base"
     },
     {
       name      = "RPC_URL_AVALANCHE"
-      valueFrom = "${data.aws_secretsmanager_secret.rpc_mainnet.arn}:avalanche::"
+      valueFrom = "${local.facilitator_parameter_arn_prefix}/rpc-mainnet/avalanche"
     },
     {
       name      = "RPC_URL_POLYGON"
-      valueFrom = "${data.aws_secretsmanager_secret.rpc_mainnet.arn}:polygon::"
+      valueFrom = "${local.facilitator_parameter_arn_prefix}/rpc-mainnet/polygon"
     },
     {
       name      = "RPC_URL_OPTIMISM"
-      valueFrom = "${data.aws_secretsmanager_secret.rpc_mainnet.arn}:optimism::"
+      valueFrom = "${local.facilitator_parameter_arn_prefix}/rpc-mainnet/optimism"
     },
     {
       name      = "RPC_URL_CELO"
-      valueFrom = "${data.aws_secretsmanager_secret.rpc_mainnet.arn}:celo::"
+      valueFrom = "${local.facilitator_parameter_arn_prefix}/rpc-mainnet/celo"
     },
     {
       name      = "RPC_URL_HYPEREVM"
-      valueFrom = "${data.aws_secretsmanager_secret.rpc_mainnet.arn}:hyperevm::"
+      valueFrom = "${local.facilitator_parameter_arn_prefix}/rpc-mainnet/hyperevm"
     },
     {
       name      = "RPC_URL_ETHEREUM"
-      valueFrom = "${data.aws_secretsmanager_secret.rpc_mainnet.arn}:ethereum::"
+      valueFrom = "${local.facilitator_parameter_arn_prefix}/rpc-mainnet/ethereum"
     },
     {
       name      = "RPC_URL_ARBITRUM"
-      valueFrom = "${data.aws_secretsmanager_secret.rpc_mainnet.arn}:arbitrum::"
+      valueFrom = "${local.facilitator_parameter_arn_prefix}/rpc-mainnet/arbitrum"
     },
     {
       name      = "RPC_URL_UNICHAIN"
-      valueFrom = "${data.aws_secretsmanager_secret.rpc_mainnet.arn}:unichain::"
+      valueFrom = "${local.facilitator_parameter_arn_prefix}/rpc-mainnet/unichain"
     },
 
     # Non-EVM Networks
     {
       name      = "RPC_URL_SOLANA"
-      valueFrom = "${data.aws_secretsmanager_secret.rpc_mainnet.arn}:solana::"
+      valueFrom = "${local.facilitator_parameter_arn_prefix}/rpc-mainnet/solana"
     },
     {
       name      = "RPC_URL_NEAR"
-      valueFrom = "${data.aws_secretsmanager_secret.rpc_mainnet.arn}:near::"
+      valueFrom = "${local.facilitator_parameter_arn_prefix}/rpc-mainnet/near"
     },
   ]
 
   # ----------------------------------------------------------------------------
-  # Testnet RPC URLs (from facilitator-rpc-testnet secret)
+  # Testnet RPC URLs (copies of the fields of the facilitator-rpc-testnet secret)
   # ----------------------------------------------------------------------------
-  # Current networks with testnet RPCs in Secrets Manager:
+  # Current networks with premium testnet RPCs:
   # - solana-devnet, arbitrum-sepolia, near (testnet)
   testnet_rpc_secrets = [
     {
       name      = "RPC_URL_SOLANA_DEVNET"
-      valueFrom = "${data.aws_secretsmanager_secret.rpc_testnet.arn}:solana-devnet::"
+      valueFrom = "${local.facilitator_parameter_arn_prefix}/rpc-testnet/solana-devnet"
     },
     {
       name      = "RPC_URL_ARBITRUM_SEPOLIA"
-      valueFrom = "${data.aws_secretsmanager_secret.rpc_testnet.arn}:arbitrum-sepolia::"
+      valueFrom = "${local.facilitator_parameter_arn_prefix}/rpc-testnet/arbitrum-sepolia"
     },
     {
       name      = "RPC_URL_NEAR_TESTNET"
-      valueFrom = "${data.aws_secretsmanager_secret.rpc_testnet.arn}:near::"
+      valueFrom = "${local.facilitator_parameter_arn_prefix}/rpc-testnet/near"
     },
   ]
 
@@ -526,28 +569,28 @@ locals {
   admin_secrets = concat([
     {
       name      = "ERC8004_ADMIN_TOKEN"
-      valueFrom = "${data.aws_secretsmanager_secret.erc8004_admin_token.arn}:token::"
+      valueFrom = "${local.facilitator_parameter_arn_prefix}/erc8004-admin-token/token"
     },
     {
-      # An SSM SecureString on its own KMS key (above), not Secrets Manager.
+      # Created in SSM from the start (above), never a Secrets Manager copy.
       name      = "BAZAAR_ADMIN_TOKEN"
       valueFrom = local.bazaar_admin_token_parameter_arn
     },
     ], var.enable_dx402 ? [
     {
       name      = "DX402_SIGNING_KEY"
-      valueFrom = "${data.aws_secretsmanager_secret.dx402_signing_key[0].arn}:private_key::"
+      valueFrom = "${local.facilitator_parameter_arn_prefix}/dx402-signing-key/private_key"
     },
     {
       name      = "DX402_ADMIN_TOKEN"
-      valueFrom = "${data.aws_secretsmanager_secret.dx402_admin_token[0].arn}:token::"
+      valueFrom = "${local.facilitator_parameter_arn_prefix}/dx402-admin-token/token"
     },
     ] : [], var.enable_dx402 && var.dx402_storage_backend == "ipfs" ? [
     {
       # The JWT alone -- it is what the v3 upload API takes, and its payload
       # already embeds the api key and secret, so nothing else needs to travel.
       name      = "DX402_PINATA_JWT"
-      valueFrom = "${data.aws_secretsmanager_secret.dx402_pinata[0].arn}:jwt::"
+      valueFrom = "${local.facilitator_parameter_arn_prefix}/dx402-pinata/jwt"
     },
   ] : [])
 
@@ -561,24 +604,27 @@ locals {
   stack_key_digest_secrets = concat([
     {
       name      = "UVD_STACK_KEY_SHA256_EXECUTION_MARKET"
-      valueFrom = "${data.aws_secretsmanager_secret.stack_key_digest_execution_market.arn}:sha256::"
+      valueFrom = "${local.facilitator_parameter_arn_prefix}/stack-key-digest-execution-market/sha256"
     },
     {
       name      = "UVD_STACK_KEY_SHA256_KARMAKADABRA"
-      valueFrom = "${data.aws_secretsmanager_secret.stack_key_digest_karmakadabra.arn}:sha256::"
+      valueFrom = "${local.facilitator_parameter_arn_prefix}/stack-key-digest-karmakadabra/sha256"
     },
     {
       name      = "UVD_STACK_KEY_SHA256_DESCRIBE_NET"
-      valueFrom = "${data.aws_secretsmanager_secret.stack_key_digest_describe_net.arn}:sha256::"
+      valueFrom = "${local.facilitator_parameter_arn_prefix}/stack-key-digest-describe-net/sha256"
     },
     {
       name      = "UVD_STACK_KEY_SHA256_MESHRELAY"
-      valueFrom = "${data.aws_secretsmanager_secret.stack_key_digest_meshrelay.arn}:sha256::"
+      valueFrom = "${local.facilitator_parameter_arn_prefix}/stack-key-digest-meshrelay/sha256"
     },
     ], var.stack_key_emporium_loaded ? [
     {
+      # Like the four above, read from SSM: before setting stack_key_emporium_loaded,
+      # put the digest in /facilitator/stack-key-digest-emporium/sha256 as well
+      # (variables.tf). That parameter does not exist yet.
       name      = "UVD_STACK_KEY_SHA256_EMPORIUM"
-      valueFrom = "${data.aws_secretsmanager_secret.stack_key_digest_emporium[0].arn}:sha256::"
+      valueFrom = "${local.facilitator_parameter_arn_prefix}/stack-key-digest-emporium/sha256"
     },
   ] : [])
 

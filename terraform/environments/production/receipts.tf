@@ -5,8 +5,9 @@ data "aws_secretsmanager_secret" "facilitator_receipt_key" {
 }
 
 locals {
+  # The SSM copy of the secret's private_key field (secrets.tf, decision 266).
   receipt_secrets = [{
     name      = "RECEIPT_SIGNING_KEY"
-    valueFrom = "${data.aws_secretsmanager_secret.facilitator_receipt_key.arn}:private_key::"
+    valueFrom = "${local.facilitator_parameter_arn_prefix}/receipt-signing-key/private_key"
   }]
 }

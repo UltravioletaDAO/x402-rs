@@ -4014,9 +4014,15 @@ fn negotiate_accepts(
                 _ => serde_json::Map::new(),
             };
 
-            // Add facilitator fields without overwriting merchant-provided ones
+            // Add facilitator fields without overwriting merchant-provided ones.
+            // `nearEscrow` is never added: in /supported it lists every contract
+            // and operator accepted, while in a requirement the same key names
+            // the one contract, operator, msg and payment id that verify reads.
             if let serde_json::Value::Object(fac_obj) = fac_extra {
                 for (k, v) in fac_obj {
+                    if k == "nearEscrow" {
+                        continue;
+                    }
                     if !merged.contains_key(k) {
                         merged.insert(k.clone(), v.clone());
                     }
@@ -23122,6 +23128,44 @@ mod accepts_negotiation_tests {
         assert_eq!(rejected.len(), 2);
         assert_eq!(rejected[0]["index"], 0);
         assert_eq!(rejected[1]["index"], 2);
+    }
+
+    /// The NEAR `escrow` kind's `extra.nearEscrow` lists every contract and
+    /// operator accepted; a requirement's names the one it pays into. The
+    /// merge adds the kind's other fields and never that one, and a merchant's
+    /// own `nearEscrow` comes back as sent.
+    #[test]
+    fn the_plural_near_escrow_of_supported_never_lands_in_a_requirement() {
+        let mut near = kind(Scheme::Escrow, "near-testnet");
+        near.extra = Some(crate::types::SupportedPaymentKindExtra {
+            fee_payer: Some(MixedAddress::Near("facilitator.testnet".to_string())),
+            tokens: None,
+            escrow: None,
+            near_escrow: Some(crate::types::NearEscrowSupportedInfo {
+                contracts: vec!["arras-v1b-1101.testnet".to_string()],
+                operator_ids: vec!["em".to_string(), "kk".to_string()],
+                min_gas_tgas: 38,
+                max_gas_tgas: 100,
+                sender_per_hour: 30,
+            }),
+        });
+        let (matched, rejected) =
+            negotiate_accepts(&[requirement("escrow", "near-testnet")], &[near.clone()]);
+        assert!(rejected.is_empty());
+        assert_eq!(matched[0]["extra"]["feePayer"], "facilitator.testnet");
+        assert!(
+            matched[0]["extra"].get("nearEscrow").is_none(),
+            "{}",
+            matched[0]
+        );
+
+        let own = json!({"contract": "arras-v1b-1101.testnet", "operatorId": "em",
+                         "msg": "{}", "paymentId": "11111111111111111111111111111111"});
+        let mut offer = requirement("escrow", "near-testnet");
+        offer["extra"] = json!({ "nearEscrow": own.clone() });
+        let (matched, _) = negotiate_accepts(&[offer], &[near]);
+        assert_eq!(matched[0]["extra"]["nearEscrow"], own);
+        assert_eq!(matched[0]["extra"]["feePayer"], "facilitator.testnet");
     }
 }
 

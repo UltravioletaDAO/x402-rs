@@ -586,6 +586,22 @@ The `action` field controls the operation:
 
 Escrow contracts deployed on 13 networks. See `/supported` for networks with active PaymentOperator deployments.
 
+**NEAR escrow (scheme `escrow` on `near` / `near-testnet`)** is a path of its own, into the Arras escrow
+contracts: served only while `ENABLE_NEAR_ESCROW` is on and a contract is configured for the network
+(`/supported` then lists an `escrow` kind there). The payload is `{"signedDelegateAction": "<base64 borsh>"}`,
+relayed by NEP-366 like `exact` on NEAR, and the requirements name the one payment in `extra.nearEscrow`:
+- a payment: `{contract, operatorId, msg, paymentId}`. The payer's delegate action calls `ft_transfer_call` on
+  the network's USDC with `contract` as receiver, the required amount (never 0) and `msg` byte for byte.
+- a lifecycle call: `{contract, action}`, `action` one of `release`, `refund`, `reclaim`, `withdraw`,
+  `withdraw_for`, and no amount. The delegate action calls that method on `contract`; who may have it relayed
+  is read from the escrow first (the operator's capturers, the payment's payer, status and deadlines, a
+  claimable balance on an account registered on USDC).
+
+`authorize_from_budget` is validated, not relayed until v2 exposes a budget view
+(`near_escrow_method_not_allowed`). A refusal is `isValid: false` / `success: false` with a `near_escrow_*`
+reason; an outcome that shows no verdict is `502 settlement_unconfirmed` with the hash. A success carries
+`extensions.nearEscrow` (`action`, `contract`, and `paymentId` or `account`).
+
 **Arc and Arc testnet** run the canonical commerce-payments v1.0.0 set -- AuthCaptureEscrow
 `0xBdEA0D1bcC5966192B070Fdf62aB4EF5b4420cff`, ERC-3009 collector `0x0E3dF9510de65469C4518D7843919c0b8C7A7757`,
 PaymentOperatorFactory v1.0.2 `0xc24153B7ED8DC03e551F29DDEeA5CadFe57e2716` -- and a request there must name
@@ -1001,6 +1017,8 @@ Until 2026-09-03 `escrow`, `commerce` and `upto` appeared **only** under CAIP-2 
 
 **Escrow networks (13):** `base`, `ethereum`, `polygon`, `arbitrum`, `celo`, `monad`, `avalanche`, `optimism`, `skale-base`, `arc`, `base-sepolia`, `ethereum-sepolia`, `arc-testnet`.
 Each lists `commerce`, and `escrow` once per PaymentOperator the facilitator declares for it; on `arc` and `arc-testnet` an operator is listed only once it has passed its on-chain self-check.
+
+**NEAR escrow:** `near` / `near-testnet` list an `escrow` kind only while `ENABLE_NEAR_ESCROW` is on and a contract is configured for the network; they are not PaymentOperator networks. Its `extra.nearEscrow` is plural -- `{contracts, operatorIds, minGasTgas, maxGasTgas, senderPerHour}`, every contract and operator accepted -- while a 402 names one of each in its own `extra.nearEscrow` (see `POST /settle`). `POST /accepts` never merges the plural one into a requirement.
 
 **Extensions:** the `extensions` array lists what this deployment actually serves — `bazaar`, and `durable-evidence` **only when DX402 is serviceable** (enabled *and* its store and index are configured), so no client builds against `/dx402/*` routes that would 404.
 

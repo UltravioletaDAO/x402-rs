@@ -1375,6 +1375,126 @@ impl EscrowRuntime {
 }
 
 // ===========================================================================
+// The v2 budget path: authorize_from_budget
+// ===========================================================================
+
+const AUTHORIZE_FROM_BUDGET: &str = "authorize_from_budget";
+/// Gas an `authorize_from_budget` may attach: it writes the payment and the
+/// budget, no cross-contract call.
+const BUDGET_AUTHORIZE_MAX_GAS_TGAS: u64 = 30;
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct BudgetAuthorizeArgs {
+    owner: String,
+    operator_id: String,
+    receiver: String,
+    amount: String,
+    release_deadline: String,
+    reclaim_after: String,
+    dispute_deadline: String,
+    fee_bps_max: u16,
+    terms_hash: String,
+    salt: String,
+}
+
+/// An `authorize_from_budget` that passed [`validate_budget_authorize`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct BudgetAuthorize {
+    pub contract: AccountId,
+    /// The budget's owner: the payment's payer.
+    pub owner: AccountId,
+    pub amount: u128,
+    pub payment_id: String,
+}
+
+/// Whether a delegate action spends a budget on exactly the payment `req`
+/// describes (v2).
+///
+/// One `FunctionCall` of `authorize_from_budget` on one of the network's
+/// escrow contracts (the one `extra.nearEscrow.contract` names), no deposit,
+/// gas under the cap, and arguments that are the requirements' terms: the
+/// amount, then the receiver, the operator and `fee_bps_max` of the canonical
+/// `extra.nearEscrow.msg`, then its deadlines, terms hash and salt; and the
+/// payment id the contract derives from the arguments, with the owner as the
+/// payer, is `extra.nearEscrow.paymentId`. The agent who signs is checked by
+/// the contract against the budget, not here.
+pub(crate) fn validate_budget_authorize(
+    da: &DelegateAction,
+    req: &EscrowRequest,
+    cfg: &NearEscrowConfig,
+) -> Result<BudgetAuthorize, EscrowRejectReason> {
+    use EscrowRejectReason::*;
+    let call = single_function_call(da)?;
+    if call.method_name != AUTHORIZE_FROM_BUDGET {
+        return Err(MethodNotAllowed);
+    }
+    if !cfg.relays_to(req.network, &da.receiver_id) {
+        return Err(ContractNotServed);
+    }
+    if req.extra.contract.as_deref() != Some(da.receiver_id.as_str()) {
+        return Err(ContractMismatch);
+    }
+    if call.deposit.as_yoctonear() != 0 {
+        return Err(WrongDeposit);
+    }
+    if call.gas > Gas::from_teragas(BUDGET_AUTHORIZE_MAX_GAS_TGAS) {
+        return Err(GasOutOfRange);
+    }
+    let args: BudgetAuthorizeArgs =
+        serde_json::from_slice(&call.args).map_err(|_| MalformedArgs)?;
+    let owner = AccountId::from_str(&args.owner).map_err(|_| MalformedArgs)?;
+    let amount = canonical_u128(&args.amount).ok_or(MalformedArgs)?;
+    canonical_u64(&args.dispute_deadline).ok_or(MalformedArgs)?;
+    let signed = Terms {
+        operator_id: args.operator_id.clone(),
+        receiver: AccountId::from_str(&args.receiver).map_err(|_| MalformedArgs)?,
+        release_deadline: canonical_u64(&args.release_deadline).ok_or(MalformedArgs)?,
+        reclaim_after: canonical_u64(&args.reclaim_after).ok_or(MalformedArgs)?,
+        fee_bps_max: args.fee_bps_max,
+        terms_hash: lower_hex::<32>(&args.terms_hash).ok_or(MalformedArgs)?,
+        salt: lower_hex::<16>(&args.salt).ok_or(MalformedArgs)?,
+    };
+    let terms = parse_authorize_msg(req.extra.msg.as_deref().ok_or(MissingExtra)?)?;
+    if req.amount != Some(amount) {
+        return Err(AmountMismatch);
+    }
+    if signed.receiver != terms.receiver {
+        return Err(ReceiverMismatch);
+    }
+    if signed.operator_id != terms.operator_id
+        || req.extra.operator_id.as_deref() != Some(terms.operator_id.as_str())
+    {
+        return Err(OperatorMismatch);
+    }
+    if !cfg.operator_ids.contains(&terms.operator_id) {
+        return Err(OperatorNotServed);
+    }
+    if signed.fee_bps_max != terms.fee_bps_max {
+        return Err(FeeBpsMaxMismatch);
+    }
+    if signed != terms {
+        return Err(TermsMismatch);
+    }
+    let token = usdc(req.network).ok_or(WrongToken)?;
+    let payment_id = compute_payment_id(&signed, token.as_str(), owner.as_str(), amount);
+    if req.extra.payment_id.as_deref() != Some(payment_id.as_str()) {
+        return Err(PaymentIdMismatch);
+    }
+    Ok(BudgetAuthorize {
+        contract: da.receiver_id.clone(),
+        owner,
+        amount,
+        payment_id,
+    })
+}
+
+/// Whether a delegate action calls `authorize_from_budget`.
+fn is_budget_call(da: &DelegateAction) -> bool {
+    matches!(single_function_call(da), Ok(call) if call.method_name == AUTHORIZE_FROM_BUDGET)
+}
+
+// ===========================================================================
 // Verify and settle
 // ===========================================================================
 
@@ -1382,6 +1502,7 @@ impl EscrowRuntime {
 #[derive(Debug, Clone)]
 pub(crate) enum EscrowOp {
     Authorize(EscrowAuthorize),
+    Budget(BudgetAuthorize),
     Lifecycle(LifecycleCall),
 }
 
@@ -1450,8 +1571,11 @@ impl NearProvider {
                 {
                     return refuse(Some(&sender), EscrowRejectReason::InvalidAsset);
                 }
-                let verdict =
-                    validate_escrow_delegate_actions(da, req, cfg).map(EscrowOp::Authorize);
+                let verdict = if is_budget_call(da) {
+                    validate_budget_authorize(da, req, cfg).map(EscrowOp::Budget)
+                } else {
+                    validate_escrow_delegate_actions(da, req, cfg).map(EscrowOp::Authorize)
+                };
                 match verdict {
                     Ok(op) => op,
                     Err(reason) => return refuse(Some(&sender), reason),
@@ -1508,8 +1632,9 @@ impl NearProvider {
                     return refuse(Some(&sender), reason);
                 }
             }
+            EscrowOp::Budget(_) => {}
         }
-        if matches!(op, EscrowOp::Lifecycle(_)) {
+        if matches!(op, EscrowOp::Lifecycle(_) | EscrowOp::Budget(_)) {
             let counted = match phase {
                 Phase::Verify => self.escrow.senders.check(&sender).await,
                 Phase::Settle => self.escrow.senders.take(&sender).await,
@@ -1734,6 +1859,15 @@ impl NearProvider {
             EscrowOp::Authorize(authorize) => {
                 confirm_escrow_authorize(&outcome, authorize, network)
             }
+            EscrowOp::Budget(budget) => confirm_escrow_lifecycle(
+                &outcome,
+                &budget.contract,
+                &ExpectedEvent::Payment {
+                    event: "authorized",
+                    payment_id: budget.payment_id.clone(),
+                },
+                network,
+            ),
             EscrowOp::Lifecycle(call) => confirm_escrow_lifecycle(
                 &outcome,
                 &call.contract,
@@ -1756,6 +1890,11 @@ fn settle_extensions(op: &EscrowOp) -> std::collections::HashMap<String, Value> 
             "action": "authorize",
             "contract": a.contract,
             "paymentId": a.payment_id,
+        }),
+        EscrowOp::Budget(b) => serde_json::json!({
+            "action": AUTHORIZE_FROM_BUDGET,
+            "contract": b.contract,
+            "paymentId": b.payment_id,
         }),
         EscrowOp::Lifecycle(call) => {
             let mut details = serde_json::json!({

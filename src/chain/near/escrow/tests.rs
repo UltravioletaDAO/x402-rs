@@ -1708,12 +1708,15 @@ struct Node {
 }
 
 impl Node {
-    /// V-1 authorized and alive, EM's capturer, the worker owed 870000.
+    /// V-1 authorized and alive (releasable at NOW, not yet reclaimable),
+    /// EM's capturer, the worker owed 870000.
     fn new(outcome: Value) -> Self {
         Self {
             outcome,
             payment: json!({"operator_id": "em", "payer": PAYER, "receiver": WORKER,
-                            "amount": "1000000", "status": "Authorized"}),
+                            "amount": "1000000", "status": "Authorized",
+                            "release_deadline": "1793577600000000000",
+                            "reclaim_after": "1793664000000000000"}),
             operator: json!({"owner": "owner.arras-dev.testnet", "capturers": [CAPTURER],
                              "fee_bps": 1300}),
             claimable: HashMap::from([(WORKER.to_string(), "870000".to_string())]),
@@ -1721,6 +1724,18 @@ impl Node {
             access_nonce: DELEGATE_NONCE - 1,
         }
     }
+
+    /// The same payment past both deadlines: reclaimable at NOW.
+    fn reclaimable(mut self) -> Self {
+        self.payment["release_deadline"] = json!(ns(NOW - 7_200).to_string());
+        self.payment["reclaim_after"] = json!(ns(NOW - 3_600).to_string());
+        self
+    }
+}
+
+/// Unix seconds as the escrow's nanoseconds.
+fn ns(secs: u64) -> u64 {
+    secs * 1_000_000_000
 }
 
 /// A stub node; its URL and the count of `broadcast_tx_commit` calls: every
@@ -2004,7 +2019,6 @@ fn authorization_on(terms: &Terms) -> (SignedDelegateAction, EscrowRequest) {
 #[tokio::test]
 async fn terms_the_escrow_refuses_are_refused_before_spending() {
     assert_eq!(msg_of(&terms_v1()), v1_msg());
-    let ns = |secs: u64| secs * 1_000_000_000;
     let in_a_minute = ns(NOW + 60);
     let v1 = terms_v1();
     let cases: Vec<(Terms, &str)> = vec![
@@ -2246,7 +2260,11 @@ async fn each_lifecycle_method_with_its_receipt_failed_is_success_false() {
     ];
     for (method, sender, call, failed, done) in cases {
         let signed = sign(sender, CONTRACT, vec![call]);
-        let (provider, sent) = escrow_provider(Node::new(failed)).await;
+        let node = |outcome| match method {
+            "reclaim" => Node::new(outcome).reclaimable(),
+            _ => Node::new(outcome),
+        };
+        let (provider, sent) = escrow_provider(node(failed)).await;
         let response = provider
             .settle_escrow(&lifecycle_request(&signed, method))
             .await
@@ -2255,7 +2273,7 @@ async fn each_lifecycle_method_with_its_receipt_failed_is_success_false() {
         assert_eq!(response.transaction, None, "{method}");
         assert_eq!(sent.load(Ordering::SeqCst), 1, "{method}");
 
-        let (provider, _) = escrow_provider(Node::new(done)).await;
+        let (provider, _) = escrow_provider(node(done)).await;
         let response = provider
             .settle_escrow(&lifecycle_request(&signed, method))
             .await
@@ -2438,6 +2456,165 @@ async fn an_unknown_payment_or_operator_is_not_relayed() {
     );
 }
 
+/// The escrow releases, refunds and reclaims only a live payment
+/// (`Authorized` or `PartiallyReleased`); a closed one is not relayed, and a
+/// payment answered without its status relays nothing.
+#[tokio::test]
+async fn a_reclaim_of_a_closed_payment_is_not_relayed() {
+    let reclaim = sign(
+        PAYER,
+        CONTRACT,
+        vec![lifecycle("reclaim", json!({"payment_id": V1_ID}), 30)],
+    );
+    for status in ["Released", "Refunded", "Reclaimed"] {
+        let mut node = Node::new(lifecycle_outcome(PAYER, returns(""), vec![])).reclaimable();
+        node.payment["status"] = json!(status);
+        let (provider, sent) = escrow_provider(node).await;
+        let response = provider
+            .settle_escrow(&lifecycle_request(&reclaim, "reclaim"))
+            .await
+            .unwrap();
+        assert_eq!(
+            refused(&response),
+            "near_escrow_payment_not_open",
+            "{status}"
+        );
+        assert_eq!(sent.load(Ordering::SeqCst), 0, "{status}");
+    }
+    let mut node = Node::new(lifecycle_outcome(PAYER, returns(""), vec![])).reclaimable();
+    node.payment["status"] = json!("PartiallyReleased");
+    let (provider, _) = escrow_provider(node).await;
+    let verdict = provider
+        .verify_escrow(&lifecycle_request(&reclaim, "reclaim"))
+        .await
+        .unwrap();
+    assert_valid(&verdict, PAYER);
+
+    let mut node = Node::new(lifecycle_outcome(PAYER, returns(""), vec![])).reclaimable();
+    node.payment.as_object_mut().unwrap().remove("status");
+    let (provider, sent) = escrow_provider(node).await;
+    assert!(provider
+        .settle_escrow(&lifecycle_request(&reclaim, "reclaim"))
+        .await
+        .is_err());
+    assert_eq!(sent.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn a_release_or_refund_of_a_closed_payment_is_not_relayed() {
+    let refund = lifecycle("refund", json!({"payment_id": V1_ID}), 30);
+    for (method, call) in [("release", release_call()), ("refund", refund)] {
+        let signed = sign(CAPTURER, CONTRACT, vec![call]);
+        for status in ["Released", "Refunded", "Reclaimed"] {
+            let mut node = Node::new(lifecycle_outcome(CAPTURER, returns(""), vec![]));
+            node.payment["status"] = json!(status);
+            let (provider, sent) = escrow_provider(node).await;
+            let response = provider
+                .settle_escrow(&lifecycle_request(&signed, method))
+                .await
+                .unwrap();
+            assert_eq!(
+                refused(&response),
+                "near_escrow_payment_not_open",
+                "{method} {status}"
+            );
+            assert_eq!(sent.load(Ordering::SeqCst), 0, "{method} {status}");
+        }
+        let mut node = Node::new(lifecycle_outcome(CAPTURER, returns(""), vec![]));
+        node.payment["status"] = json!("PartiallyReleased");
+        let (provider, _) = escrow_provider(node).await;
+        let verdict = provider
+            .verify_escrow(&lifecycle_request(&signed, method))
+            .await
+            .unwrap();
+        assert_valid(&verdict, CAPTURER);
+    }
+}
+
+/// The escrow reclaims from `reclaim_after` on, judged at its block's time:
+/// the facilitator relays a reclaim only a minute past it.
+#[tokio::test]
+async fn a_reclaim_before_reclaim_after_is_not_relayed() {
+    let reclaim = sign(
+        PAYER,
+        CONTRACT,
+        vec![lifecycle("reclaim", json!({"payment_id": V1_ID}), 30)],
+    );
+    for reclaim_after in [
+        ns(NOW - 60) + 1,
+        ns(NOW - 59),
+        ns(NOW),
+        1_793_664_000_000_000_000,
+    ] {
+        let mut node = Node::new(lifecycle_outcome(PAYER, returns(""), vec![])).reclaimable();
+        node.payment["reclaim_after"] = json!(reclaim_after.to_string());
+        let (provider, sent) = escrow_provider(node).await;
+        let response = provider
+            .settle_escrow(&lifecycle_request(&reclaim, "reclaim"))
+            .await
+            .unwrap();
+        assert_eq!(
+            refused(&response),
+            "near_escrow_reclaim_not_yet",
+            "{reclaim_after}"
+        );
+        assert_eq!(sent.load(Ordering::SeqCst), 0, "{reclaim_after}");
+    }
+    let mut node = Node::new(lifecycle_outcome(PAYER, returns(""), vec![])).reclaimable();
+    node.payment["reclaim_after"] = json!(ns(NOW - 60).to_string());
+    let (provider, _) = escrow_provider(node).await;
+    let verdict = provider
+        .verify_escrow(&lifecycle_request(&reclaim, "reclaim"))
+        .await
+        .unwrap();
+    assert_valid(&verdict, PAYER);
+}
+
+/// The escrow releases only before `release_deadline`, judged at its block's
+/// time: the facilitator relays a release only with a minute to spare. A
+/// refund has no deadline.
+#[tokio::test]
+async fn a_release_after_its_deadline_is_not_relayed() {
+    let release = sign(CAPTURER, CONTRACT, vec![release_call()]);
+    for release_deadline in [ns(NOW + 60), ns(NOW), ns(NOW - 1)] {
+        let mut node = Node::new(lifecycle_outcome(CAPTURER, returns(""), vec![]));
+        node.payment["release_deadline"] = json!(release_deadline.to_string());
+        let (provider, sent) = escrow_provider(node).await;
+        let response = provider
+            .settle_escrow(&lifecycle_request(&release, "release"))
+            .await
+            .unwrap();
+        assert_eq!(
+            refused(&response),
+            "near_escrow_release_deadline_passed",
+            "{release_deadline}"
+        );
+        assert_eq!(sent.load(Ordering::SeqCst), 0, "{release_deadline}");
+    }
+    let mut node = Node::new(lifecycle_outcome(CAPTURER, returns(""), vec![]));
+    node.payment["release_deadline"] = json!((ns(NOW + 60) + 1).to_string());
+    let (provider, _) = escrow_provider(node).await;
+    let verdict = provider
+        .verify_escrow(&lifecycle_request(&release, "release"))
+        .await
+        .unwrap();
+    assert_valid(&verdict, CAPTURER);
+
+    let refund = sign(
+        CAPTURER,
+        CONTRACT,
+        vec![lifecycle("refund", json!({"payment_id": V1_ID}), 30)],
+    );
+    let (provider, _) =
+        escrow_provider(Node::new(lifecycle_outcome(CAPTURER, returns(""), vec![])).reclaimable())
+            .await;
+    let verdict = provider
+        .verify_escrow(&lifecycle_request(&refund, "refund"))
+        .await
+        .unwrap();
+    assert_valid(&verdict, CAPTURER);
+}
+
 #[tokio::test]
 async fn a_sender_is_relayed_at_most_sender_per_hour_times() {
     let done = lifecycle_outcome(
@@ -2470,13 +2647,13 @@ async fn a_sender_is_relayed_at_most_sender_per_hour_times() {
     assert_eq!(invalid_reason(&verdict), "near_escrow_sender_rate_limited");
     assert_eq!(sent.load(Ordering::SeqCst), 2);
     // Another sender has an hour of its own.
-    let reclaim = sign(
-        PAYER,
+    let withdraw_for = sign(
+        "anyone.testnet",
         CONTRACT,
-        vec![lifecycle("reclaim", json!({"payment_id": V1_ID}), 30)],
+        vec![lifecycle("withdraw_for", json!({"account": WORKER}), 50)],
     );
     let verdict = provider
-        .verify_escrow(&lifecycle_request(&reclaim, "reclaim"))
+        .verify_escrow(&lifecycle_request(&withdraw_for, "withdraw_for"))
         .await
         .unwrap();
     assert!(

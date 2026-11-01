@@ -340,6 +340,21 @@ fn before_release_deadline(release_deadline: u64, now_secs: u64) -> bool {
         < release_deadline
 }
 
+/// Whether a payment reclaimed at `now_secs` (Unix seconds) is past its
+/// `reclaim_after` (ns): the escrow refuses at `now < reclaim_after`, so this
+/// asks for `now >= reclaim_after + margin`.
+fn reclaim_due(reclaim_after: u64, now_secs: u64) -> bool {
+    now_secs.saturating_mul(NANOS_PER_SEC)
+        >= reclaim_after.saturating_add(CLOCK_MARGIN_SECS * NANOS_PER_SEC)
+}
+
+/// Whether a payment's `status` lets the escrow release, refund or reclaim
+/// it (`is_live`): `Authorized` or `PartiallyReleased`. `Released`,
+/// `Refunded` and `Reclaimed` are closed.
+fn is_open(status: &str) -> bool {
+    matches!(status, "Authorized" | "PartiallyReleased")
+}
+
 /// Why a request is not relayed. The token is all that reaches the caller
 /// (`invalidReason` / `errorReason`); the detail stays in the server log.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -381,6 +396,9 @@ pub(crate) enum EscrowRejectReason {
     OperatorNotFound,
     NotCapturer,
     NotPayer,
+    PaymentNotOpen,
+    ReleaseDeadlinePassed,
+    ReclaimNotYet,
     NothingClaimable,
     SenderRateLimited,
     SenderCountUnavailable,
@@ -427,6 +445,9 @@ impl EscrowRejectReason {
             OperatorNotFound => "near_escrow_operator_not_found",
             NotCapturer => "near_escrow_not_capturer",
             NotPayer => "near_escrow_not_payer",
+            PaymentNotOpen => "near_escrow_payment_not_open",
+            ReleaseDeadlinePassed => "near_escrow_release_deadline_passed",
+            ReclaimNotYet => "near_escrow_reclaim_not_yet",
             NothingClaimable => "near_escrow_nothing_claimable",
             SenderRateLimited => "near_escrow_sender_rate_limited",
             SenderCountUnavailable => "near_escrow_sender_count_unavailable",
@@ -1730,13 +1751,21 @@ impl NearProvider {
         }))
     }
 
-    /// Whether the escrow's own state lets `sender` have `call` relayed.
+    /// Whether the escrow's own state lets `sender` have `call` relayed: the
+    /// checks the escrow makes, in its order, on what its views answer, so a
+    /// call that would only fail on the escrow is never paid for by the
+    /// relayer.
     ///
-    /// `release` and `refund`: `sender` is a capturer of the payment's
-    /// operator (`get_operator(get_payment(id).operator_id).capturers`).
-    /// `reclaim`: `sender` is the payment's payer. `withdraw`: `sender` has a
-    /// claimable balance. `withdraw_for`: the named account has one. A call
-    /// that would only fail on the escrow is never paid for by the relayer.
+    /// - `release`: the payment exists, `sender` is a capturer of its operator
+    ///   (`get_operator(get_payment(id).operator_id).capturers`), it is open
+    ///   (`Authorized` or `PartiallyReleased`) and its `release_deadline` is
+    ///   more than [`CLOCK_MARGIN_SECS`] away.
+    /// - `refund`: the same, without the deadline.
+    /// - `reclaim`: the payment exists, `sender` is its payer, its
+    ///   `reclaim_after` passed at least [`CLOCK_MARGIN_SECS`] ago, and it is
+    ///   open.
+    /// - `withdraw`: `sender` has a claimable balance; `withdraw_for`: the
+    ///   named account has one.
     async fn lifecycle_gate(
         &self,
         call: &LifecycleCall,
@@ -1745,6 +1774,7 @@ impl NearProvider {
         use EscrowRejectReason::*;
         let contract = &call.contract;
         let payment_id = call.payment_id.as_deref().unwrap_or_default();
+        let now = self.escrow.now();
         let field = |value: &Value, name: &str, method: &str| {
             value
                 .get(name)
@@ -1756,6 +1786,17 @@ impl NearProvider {
                     ))
                 })
         };
+        // `release_deadline` and `reclaim_after`: a U64, a decimal string of
+        // nanoseconds.
+        let deadline = |payment: &Value, name: &str| -> Result<u64, FacilitatorLocalError> {
+            let raw = field(payment, name, "get_payment")?;
+            canonical_u64(&raw).ok_or_else(|| {
+                FacilitatorLocalError::ContractCall(format!(
+                    "get_payment on {contract} answered a {name} that is not a U64"
+                ))
+            })
+        };
+        let open = |payment: &Value| field(payment, "status", "get_payment").map(|s| is_open(&s));
         match call.method {
             LifecycleMethod::Release | LifecycleMethod::Refund => {
                 let payment = self.get_payment(contract, payment_id).await?;
@@ -1781,25 +1822,37 @@ impl NearProvider {
                             "get_operator on {contract} answered without capturers"
                         ))
                     })?;
-                if capturers
+                if !capturers
                     .iter()
                     .any(|c| c.as_str() == Some(sender.as_str()))
                 {
-                    Ok(Ok(()))
-                } else {
-                    Ok(Err(NotCapturer))
+                    return Ok(Err(NotCapturer));
                 }
+                if !open(&payment)? {
+                    return Ok(Err(PaymentNotOpen));
+                }
+                if call.method == LifecycleMethod::Release
+                    && !before_release_deadline(deadline(&payment, "release_deadline")?, now)
+                {
+                    return Ok(Err(ReleaseDeadlinePassed));
+                }
+                Ok(Ok(()))
             }
             LifecycleMethod::Reclaim => {
                 let payment = self.get_payment(contract, payment_id).await?;
                 if payment.is_null() {
                     return Ok(Err(PaymentNotFound));
                 }
-                if field(&payment, "payer", "get_payment")? == sender.as_str() {
-                    Ok(Ok(()))
-                } else {
-                    Ok(Err(NotPayer))
+                if field(&payment, "payer", "get_payment")? != sender.as_str() {
+                    return Ok(Err(NotPayer));
                 }
+                if !reclaim_due(deadline(&payment, "reclaim_after")?, now) {
+                    return Ok(Err(ReclaimNotYet));
+                }
+                if !open(&payment)? {
+                    return Ok(Err(PaymentNotOpen));
+                }
+                Ok(Ok(()))
             }
             LifecycleMethod::Withdraw | LifecycleMethod::WithdrawFor => {
                 let account = call.account.as_ref().unwrap_or(sender);

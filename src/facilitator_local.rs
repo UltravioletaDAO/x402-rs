@@ -110,6 +110,7 @@ pub(crate) fn escrow_supported_kinds(
             network: network.to_caip2(),
             network_aliases: None,
             extra: Some(SupportedPaymentKindExtra {
+                near_escrow: None,
                 fee_payer: None,
                 tokens: None,
                 escrow: Some(EscrowSupportedInfo {
@@ -739,6 +740,7 @@ mod supported_advertisement_tests {
             network: network.to_string(),
             network_aliases: None,
             extra: Some(SupportedPaymentKindExtra {
+                near_escrow: None,
                 fee_payer: None,
                 tokens: None,
                 escrow: Some(EscrowSupportedInfo {
@@ -932,6 +934,7 @@ mod testnet_chain_id_supported_diff_tests {
     fn stand_in(index: usize) -> SupportedPaymentKindExtra {
         let tag = EvmAddress(Address::left_padding_from(&(index as u64).to_be_bytes()));
         SupportedPaymentKindExtra {
+            near_escrow: None,
             fee_payer: None,
             tokens: None,
             escrow: Some(EscrowSupportedInfo {
@@ -1288,6 +1291,7 @@ mod escrow_supported_tests {
                 // Escrow scheme: per-chain legacy addresses, one entry per deployed operator
                 for &operator in &addrs.payment_operators {
                     let escrow_extra = SupportedPaymentKindExtra {
+                        near_escrow: None,
                         fee_payer: None,
                         tokens: None,
                         escrow: Some(EscrowSupportedInfo {
@@ -1308,6 +1312,7 @@ mod escrow_supported_tests {
 
                 // Commerce scheme: CREATE3 canonical addresses (no operator — merchant-specific)
                 let commerce_extra = SupportedPaymentKindExtra {
+                    near_escrow: None,
                     fee_payer: None,
                     tokens: None,
                     escrow: Some(EscrowSupportedInfo {

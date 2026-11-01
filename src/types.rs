@@ -2447,6 +2447,26 @@ pub struct SupportedPaymentKindExtra {
     /// of extra, matching the format merchants use in paymentRequirements.extra.
     #[serde(flatten)]
     pub escrow: Option<EscrowSupportedInfo>,
+    /// NEAR `escrow` scheme (the Arras contracts): what the facilitator relays
+    /// for. A field of its own, absent from every other kind, so the EVM
+    /// escrow kinds above keep exactly the shape they had.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub near_escrow: Option<NearEscrowSupportedInfo>,
+}
+
+/// `extra.nearEscrow` of the NEAR `escrow` kind in `/supported`: every
+/// contract and operator the facilitator accepts on that network (plural; a
+/// 402 names one of each), and the limits a delegate action is held to.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NearEscrowSupportedInfo {
+    pub contracts: Vec<String>,
+    pub operator_ids: Vec<String>,
+    /// Gas range, in TGas, of an authorization's `ft_transfer_call`.
+    pub min_gas_tgas: u64,
+    pub max_gas_tgas: u64,
+    /// Lifecycle and budget relays one sender gets per UTC hour.
+    pub sender_per_hour: u32,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -2636,6 +2656,7 @@ mod tests {
     #[test]
     fn test_supported_payment_kind_extra_with_tokens() {
         let extra = SupportedPaymentKindExtra {
+            near_escrow: None,
             fee_payer: None,
             tokens: Some(vec![
                 SupportedTokenInfo {
@@ -2670,6 +2691,7 @@ mod tests {
     #[test]
     fn test_supported_payment_kind_extra_empty() {
         let extra = SupportedPaymentKindExtra {
+            near_escrow: None,
             fee_payer: None,
             tokens: None,
             escrow: None,

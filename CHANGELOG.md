@@ -1,5 +1,114 @@
 # Changelog
 
+## [2.53.0] - 2026-11-01
+
+The `escrow` scheme on NEAR: payments into the Arras escrow contracts, relayed
+by NEP-366 like `exact`, behind a switch of its own: off in the code, on in
+production toward the testnet escrow only. And `exact` on NEAR no longer
+relays an amount of 0.
+
+### Added
+
+- **`escrow` on `near` and `near-testnet`** (`src/chain/near/escrow.rs`), only
+  while `ENABLE_NEAR_ESCROW` is on and only toward the contract accounts listed
+  in `NEAR_ESCROW_CONTRACTS_MAINNET` / `NEAR_ESCROW_CONTRACTS_TESTNET`. The payer
+  signs a delegate action that calls `ft_transfer_call` on the network's USDC
+  with the escrow as receiver and the canonical `msg` the 402 carries in
+  `extra.nearEscrow` (`contract`, `operatorId`, `msg`, `paymentId`). Verify
+  holds it to one action, `ft_transfer_call` on USDC, a configured escrow that
+  is the one the 402 names, exactly 1 yoctoNEAR, gas within
+  `NEAR_ESCROW_MIN_GAS_TGAS`..`NEAR_ESCROW_MAX_GAS_TGAS`, the required amount
+  (never 0), a `msg` equal byte for byte to the 402's and canonical, an
+  operator the 402 names and `NEAR_ESCROW_OPERATOR_IDS` lists, terms the
+  escrow accepts without reading anything (a receiver that is neither the
+  payer nor the escrow; `now < release_deadline < reclaim_after`, with `now`
+  taken a minute ahead against the block's clock), and the payment id the contract
+  derives (`base58(sha256(borsh(...)))`, the prescription's vectors V-1..V-3
+  pinned byte for byte) equal to `paymentId`; then the payer's signature,
+  unused delegate nonce and USDC balance, as in `exact`.
+- **Settle confirms the escrow holds the payment**, from `receipts_outcome`,
+  never from the transaction's status: (a) the promise of `ft_transfer_call`
+  resolved on the token to exactly the amount (`ft_resolve_transfer`; `"0"` or
+  any other amount is a refusal the token already refunded: `success: false`),
+  (b) the token's NEP-141 `ft_transfer` event payer -> escrow for the amount,
+  (c) the escrow's `ft_on_transfer` receipt succeeded and logged the `arras`
+  `authorized` event for the payment id. A failed Delegate or `ft_transfer_call`
+  receipt is `success: false`; any other gap is `502 settlement_unconfirmed`
+  with the hash. A success carries `extensions.nearEscrow`
+  (`action`, `contract`, `paymentId`).
+- **The escrow's lifecycle**: `release`, `refund`, `reclaim`, `withdraw` and
+  `withdraw_for` as delegate actions on a configured escrow, no deposit, gas
+  between a floor and a cap per method (the least W-09 measured passing, plus
+  20 %: 3 TGas for `release`/`refund`/`reclaim`, 29 for a withdrawal), when the
+  requirements name the method in `extra.nearEscrow.action` and carry no
+  amount, so such a call never answers a payment requirement. Whether one is
+  relayed is read from the escrow before anything is sent, in the escrow's own
+  order, with no account list configured: `release` and `refund` only for an
+  operator `NEAR_ESCROW_OPERATOR_IDS` lists, from a capturer of it
+  (`get_operator(get_payment(id).operator_id).capturers`), on a live payment
+  (`Authorized` or `PartiallyReleased`), and `release` only more than a minute
+  before `release_deadline`; `reclaim` only from the payment's payer, a minute
+  past `reclaim_after`, on a live payment; `withdraw` and `withdraw_for` only
+  for an account with `get_claimable > 0` that is registered on the network's
+  USDC (`storage_balance_of`), which the escrow pays it in. Each sender is
+  charged `NEAR_ESCROW_SENDER_PER_HOUR` relays per UTC hour: every relay,
+  authorizations and lifecycle calls alike, its slot taken before it is sent
+  (requests in flight together never relay more than the hour allows), counted
+  across tasks in the shared claim store (`NONCE_STORE_TABLE_NAME`). A sender
+  whose hour is full has nothing relayed, and a count that cannot be read
+  relays nothing. Each relay is confirmed by its event (`released`,
+  `refunded`, `reclaimed`, `withdrawn` with `ok: true`); the escrow's receipt
+  in `Failure`, or `withdrawn` with `ok: false`, is `success: false`.
+- **`authorize_from_budget`** (the escrow's v2 budget path) is validated, not
+  relayed until v2 exposes a budget view: no view of the escrow tells whether
+  the agent has budget left, so it answers `near_escrow_method_not_allowed`
+  before anything is read. The validation (its arguments are the 402's terms
+  and derive its `paymentId` with the budget's owner as the payer) stays for
+  when it is.
+- **`/supported`** lists an `escrow` kind on each NEAR network the scheme
+  serves, with `extra.nearEscrow` = `{contracts, operatorIds, minGasTgas,
+  maxGasTgas, senderPerHour}` (plural: every contract and operator accepted; a
+  402 names one of each). It is a field of its own: the EVM `escrow` kinds keep
+  their exact JSON and `EscrowSupportedInfo` is unchanged. `POST /accepts`
+  never merges that plural `nearEscrow` into a requirement, whose own
+  `nearEscrow` names the one payment; `/docs` describes both.
+
+### Fixed
+
+- **`exact` on NEAR refuses an amount of 0** before reading anything
+  (`Amount must be greater than zero`, as on Sui). A requirement of 0 moved
+  nothing and passed the payer's balance check whatever the payer held, so the
+  relayer paid for a meta-transaction that served no payment.
+
+### Configuration
+
+| Variable | Default | |
+|---|---|---|
+| `ENABLE_NEAR_ESCROW` | `false` | `true` or `1` turns it on |
+| `NEAR_ESCROW_CONTRACTS_MAINNET` / `_TESTNET` | empty | comma-separated; one invalid entry discards the list |
+| `NEAR_ESCROW_MIN_GAS_TGAS` / `_MAX_GAS_TGAS` | `38` / `100` | 1..300 TGas; inverted -> both defaults. The floor is the 31 TGas an authorization with Circle's USDC needs (measured in the escrow's sandbox) plus 20 % |
+| `NEAR_ESCROW_SENDER_PER_HOUR` | `30` | 1..3600; every relay, authorizations and lifecycle calls alike |
+| `NEAR_ESCROW_OPERATOR_IDS` | `em,kk` | `[a-z0-9_-]{1,32}` each |
+
+A value that does not parse or is out of range falls back to its default with a
+warning, never an error at startup. Production
+(`terraform/environments/production/main.tf`) sets `ENABLE_NEAR_ESCROW=true`
+and `NEAR_ESCROW_CONTRACTS_TESTNET=arras-v1b-1101.testnet`; mainnet has no
+contract, so nothing is relayed there.
+
+### Notes
+
+- The NEAR cut runs before the `ENABLE_PAYMENT_OPERATOR` gate: the EVM escrow
+  switch never decides whether the NEAR escrow runs.
+- NEAR payloads (`exact` and `escrow`) are not screened yet: the compliance
+  check lets every NEAR payload through (`facilitator_local.rs`, TODO),
+  unchanged by this release.
+- `tests/fixtures/near/escrow/w13_rechazo_e06_usdc_real.json` is the real
+  outcome of an authorization the escrow refuses (E06) against a clone of
+  Circle's testnet USDC, recorded by the escrow repository's near-workspaces
+  test: `ft_resolve_transfer` returns `"0"` and the token refunds the payer.
+  Its `msg` is also held to the canonical form here.
+
 ## [2.52.1] - 2026-10-30
 
 Seven static EIP-712 domains are now the ones their contracts publish: USDT0

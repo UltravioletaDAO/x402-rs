@@ -42,6 +42,9 @@ use crate::types::{
     TransactionHash, VerifyRequest, VerifyResponse, X402Version,
 };
 
+/// The `escrow` scheme: payments into the Arras escrow contract.
+pub mod escrow;
+
 /// Storage deposit amount in yoctoNEAR (0.00125 NEAR = 1.25e21 yoctoNEAR)
 const STORAGE_DEPOSIT_AMOUNT: NearToken = NearToken::from_yoctonear(1_250_000_000_000_000_000_000);
 
@@ -601,6 +604,8 @@ pub struct NearProvider {
     chain: NearChain,
     /// The registrations the relayer may still pay for.
     registrations: Arc<RegistrationBudget>,
+    /// The `escrow` scheme's configuration and per-sender relay count.
+    escrow: Arc<escrow::EscrowRuntime>,
 }
 
 impl Debug for NearProvider {
@@ -642,6 +647,10 @@ impl NearProvider {
             rpc_client: Arc::new(rpc_client),
             chain,
             registrations: Arc::new(RegistrationBudget::new(network)),
+            escrow: Arc::new(escrow::EscrowRuntime::new(
+                network,
+                escrow::NearEscrowConfig::current().clone(),
+            )),
         })
     }
 
@@ -1058,6 +1067,14 @@ impl NearProvider {
             ));
         }
 
+        // An amount of 0 moves nothing and passes any balance check, so the
+        // relayer would pay for it: refused before anything is read.
+        if requirements.max_amount_required.0.is_zero() {
+            return Err(FacilitatorLocalError::DecodingError(
+                "Amount must be greater than zero".to_string(),
+            ));
+        }
+
         // Decode the SignedDelegateAction
         let signed_delegate_action =
             self.decode_signed_delegate_action(&near_payload.signed_delegate_action)?;
@@ -1282,6 +1299,16 @@ impl NearProvider {
         signed_delegate_action: SignedDelegateAction,
         transfer: &ExpectedTransfer,
     ) -> Result<CryptoHash, FacilitatorLocalError> {
+        let outcome = self.relay_delegate(signed_delegate_action).await?;
+        confirm_transfer(&outcome, transfer, self.network())
+    }
+
+    /// Wrap a SignedDelegateAction in a transaction the relayer signs and pays
+    /// for, broadcast it, and hand back its outcome for the caller to judge.
+    async fn relay_delegate(
+        &self,
+        signed_delegate_action: SignedDelegateAction,
+    ) -> Result<FinalExecutionOutcomeView, FacilitatorLocalError> {
         // Get current nonce and block hash for the relayer's account
         let nonce = self.get_nonce().await? + 1;
         let block_hash = self.get_block_hash().await?;
@@ -1312,8 +1339,7 @@ impl NearProvider {
             "Submitting NEP-366 meta-transaction (relayer pays gas)"
         );
 
-        let outcome = self.broadcast(signed_tx).await?;
-        confirm_transfer(&outcome, transfer, self.network())
+        self.broadcast(signed_tx).await
     }
 
     /// `broadcast_tx_commit` of a signed meta-transaction, and its outcome.
@@ -1683,7 +1709,7 @@ impl Facilitator for NearProvider {
     }
 
     async fn supported(&self) -> Result<SupportedPaymentKindsResponse, Self::Error> {
-        let kinds = vec![SupportedPaymentKind {
+        let mut kinds = vec![SupportedPaymentKind {
             network: self.network().to_string(),
             scheme: Scheme::Exact,
             x402_version: X402Version::V1,
@@ -1692,8 +1718,10 @@ impl Facilitator for NearProvider {
                 fee_payer: Some(self.signer_address()),
                 tokens: Some(crate::network::exact_payment_tokens(self.network())),
                 escrow: None,
+                near_escrow: None,
             }),
         }];
+        kinds.extend(self.escrow_supported_kind());
         Ok(SupportedPaymentKindsResponse { kinds })
     }
 }
@@ -2408,11 +2436,16 @@ mod replay_verify_tests {
 
     /// The same transfer, calling `token` instead of USDC.
     fn signed_delegate_action_to(token: &str) -> SignedDelegateAction {
+        signed_transfer(token, AMOUNT)
+    }
+
+    /// A transfer of `amount` of `token` to MERCHANT, signed by PAYER.
+    fn signed_transfer(token: &str, amount: u64) -> SignedDelegateAction {
         let payer: Signer =
             InMemorySigner::from_secret_key(PAYER.parse().unwrap(), PAYER_KEY.clone());
         let transfer = Action::FunctionCall(Box::new(FunctionCallAction {
             method_name: "ft_transfer".to_string(),
-            args: json!({"receiver_id": MERCHANT, "amount": AMOUNT.to_string()})
+            args: json!({"receiver_id": MERCHANT, "amount": amount.to_string()})
                 .to_string()
                 .into_bytes(),
             gas: Gas::from_gas(30_000_000_000_000),
@@ -2439,9 +2472,18 @@ mod replay_verify_tests {
 
     /// AMOUNT of `token` to MERCHANT, with a delegate action that calls `token`.
     fn request_paying(token: &str) -> VerifyRequest {
+        request_for(token, AMOUNT)
+    }
+
+    /// `amount` of USDC to MERCHANT, asked and signed alike.
+    pub(super) fn request_of(amount: u64) -> VerifyRequest {
+        request_for(USDC, amount)
+    }
+
+    fn request_for(token: &str, amount: u64) -> VerifyRequest {
         let encoded = base64::Engine::encode(
             &base64::engine::general_purpose::STANDARD,
-            borsh::to_vec(&signed_delegate_action_to(token)).unwrap(),
+            borsh::to_vec(&signed_transfer(token, amount)).unwrap(),
         );
         VerifyRequest {
             x402_version: X402Version::V1,
@@ -2456,7 +2498,7 @@ mod replay_verify_tests {
             payment_requirements: PaymentRequirements {
                 scheme: Scheme::Exact,
                 network: Network::NearTestnet,
-                max_amount_required: TokenAmount(alloy::primitives::U256::from(AMOUNT)),
+                max_amount_required: TokenAmount(alloy::primitives::U256::from(amount)),
                 resource: url::Url::parse("https://example.com/paid").unwrap(),
                 description: String::new(),
                 mime_type: "application/json".to_string(),
@@ -2573,13 +2615,31 @@ mod replay_verify_tests {
             );
         }
     }
+
+    /// An amount of 0, asked and signed alike, against a node that answers
+    /// nothing: refused before any read.
+    #[tokio::test]
+    async fn verify_refuses_an_amount_of_zero_before_any_read() {
+        let provider = provider(Node::Down).await;
+
+        let err = provider
+            .verify(&request_of(0))
+            .await
+            .expect_err("an amount of 0 is not a payment");
+        assert!(
+            matches!(&err, FacilitatorLocalError::DecodingError(msg) if msg.contains("greater than zero")),
+            "got {err:?}"
+        );
+    }
 }
 
 /// `settle` end to end against a stub node: the payment is the transfer the
 /// `broadcast_tx_commit` outcome shows, not the transaction's own status.
 #[cfg(test)]
 mod settle_confirms_transfer_tests {
-    use super::replay_verify_tests::{request, AMOUNT, DELEGATE_NONCE, MERCHANT, PAYER, USDC};
+    use super::replay_verify_tests::{
+        request, request_of, AMOUNT, DELEGATE_NONCE, MERCHANT, PAYER, USDC,
+    };
     use super::*;
     use axum::{routing::post, Json, Router};
     use near_crypto::KeyType;
@@ -2772,6 +2832,26 @@ mod settle_confirms_transfer_tests {
             "got {err:?}"
         );
         assert_eq!(sent(&counter), 0, "nothing sent for a used nonce");
+    }
+
+    #[tokio::test]
+    async fn settle_refuses_an_amount_of_zero_before_spending() {
+        // A payer holding nothing: a balance check of 0 would pass it.
+        let (provider, counter) = provider(Chain {
+            payer_balance: r#""0""#,
+            ..chain(recorded())
+        })
+        .await;
+
+        let err = provider
+            .settle(&request_of(0))
+            .await
+            .expect_err("an amount of 0 is refused");
+        assert!(
+            matches!(&err, FacilitatorLocalError::DecodingError(_)),
+            "got {err:?}"
+        );
+        assert_eq!(sent(&counter), 0, "nothing sent for an amount of 0");
     }
 
     #[tokio::test]

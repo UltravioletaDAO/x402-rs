@@ -2217,6 +2217,7 @@ impl Facilitator for SolanaProvider {
             x402_version: X402Version::V1,
             network_aliases: None,
             extra: Some(SupportedPaymentKindExtra {
+                near_escrow: None,
                 fee_payer: Some(self.signer_address()),
                 tokens: Some(crate::network::exact_payment_tokens(self.network())),
                 escrow: None,

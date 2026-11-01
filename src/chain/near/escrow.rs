@@ -341,6 +341,7 @@ pub(crate) enum EscrowRejectReason {
     ContractMismatch,
     WrongDeposit,
     GasOutOfRange,
+    ZeroAmount,
     AmountMismatch,
     MsgMismatch,
     MsgInvalid,
@@ -384,6 +385,7 @@ impl EscrowRejectReason {
             ContractMismatch => "near_escrow_contract_mismatch",
             WrongDeposit => "near_escrow_wrong_deposit",
             GasOutOfRange => "near_escrow_gas_out_of_range",
+            ZeroAmount => "near_escrow_zero_amount",
             AmountMismatch => "near_escrow_amount_mismatch",
             MsgMismatch => "near_escrow_msg_mismatch",
             MsgInvalid => "near_escrow_msg_invalid",
@@ -701,7 +703,7 @@ pub(crate) struct EscrowAuthorize {
 /// One action, a `FunctionCall` of `ft_transfer_call` on the network's USDC,
 /// to one of the network's escrow contracts (the one `extra.nearEscrow.contract`
 /// names), attaching exactly one yoctoNEAR and gas within the configured
-/// range, moving exactly the required amount, with `msg` byte for byte the
+/// range, moving exactly the required amount (never 0), with `msg` byte for byte the
 /// canonical `extra.nearEscrow.msg`, for an operator the facilitator serves,
 /// and producing, by the contract's own derivation, `extra.nearEscrow.paymentId`.
 /// The first condition that fails is the answer.
@@ -734,6 +736,11 @@ pub(crate) fn validate_escrow_delegate_actions(
         return Err(GasOutOfRange);
     }
     let amount = canonical_u128(&args.amount).ok_or(AmountMismatch)?;
+    // Nothing to hold: the escrow refuses it, and a balance check of 0 passes
+    // any payer, so the relayer would pay for it.
+    if amount == 0 {
+        return Err(ZeroAmount);
+    }
     if req.amount != Some(amount) {
         return Err(AmountMismatch);
     }

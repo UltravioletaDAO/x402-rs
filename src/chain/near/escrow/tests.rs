@@ -1908,6 +1908,31 @@ async fn a_payer_short_of_the_amount_is_refused_before_spending() {
     assert_eq!(sent.load(Ordering::SeqCst), 0);
 }
 
+/// An authorization of 0 that is otherwise the 402's own (its payment id
+/// derived for 0), from a payer holding no USDC: refused before any read
+/// (with the delegate nonce used, a read would answer otherwise), nothing
+/// relayed.
+#[tokio::test]
+async fn an_authorization_of_zero_is_refused_before_spending() {
+    let mut call = authorize_call();
+    with_args(&mut call, |args| args["amount"] = json!("0"));
+    let signed = sign(PAYER, USDC_TESTNET, vec![call]);
+    let mut req = request(Some(&signed));
+    req.amount = Some(0);
+    req.extra.payment_id = Some(compute_payment_id(&terms_v1(), USDC_TESTNET, PAYER, 0));
+    for nonce in [DELEGATE_NONCE - 1, DELEGATE_NONCE] {
+        let mut node = Node::new(authorized_outcome());
+        node.balance = r#""0""#;
+        node.access_nonce = nonce;
+        let (provider, sent) = escrow_provider(node).await;
+        let verdict = provider.verify_escrow(&req).await.unwrap();
+        assert_eq!(invalid_reason(&verdict), "near_escrow_zero_amount");
+        let response = provider.settle_escrow(&req).await.unwrap();
+        assert_eq!(refused(&response), "near_escrow_zero_amount");
+        assert_eq!(sent.load(Ordering::SeqCst), 0);
+    }
+}
+
 #[tokio::test]
 async fn a_delegate_action_whose_nonce_was_used_is_refused_before_spending() {
     let mut node = Node::new(authorized_outcome());

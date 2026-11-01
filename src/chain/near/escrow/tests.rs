@@ -1701,6 +1701,8 @@ struct Node {
     operator: Value,
     /// `get_claimable`, per account (absent: "0").
     claimable: HashMap<String, String>,
+    /// The accounts `storage_balance_of` finds on USDC (the rest: `null`).
+    registered: Vec<String>,
     /// `ft_balance_of` on USDC, raw.
     balance: &'static str,
     /// Every access key's nonce (the delegate actions carry DELEGATE_NONCE).
@@ -1709,7 +1711,7 @@ struct Node {
 
 impl Node {
     /// V-1 authorized and alive (releasable at NOW, not yet reclaimable),
-    /// EM's capturer, the worker owed 870000.
+    /// EM's capturer, the worker owed 870000 and registered on USDC.
     fn new(outcome: Value) -> Self {
         Self {
             outcome,
@@ -1720,6 +1722,7 @@ impl Node {
             operator: json!({"owner": "owner.arras-dev.testnet", "capturers": [CAPTURER],
                              "fee_bps": 1300}),
             claimable: HashMap::from([(WORKER.to_string(), "870000".to_string())]),
+            registered: vec![WORKER.to_string()],
             balance: r#""1000000""#,
             access_nonce: DELEGATE_NONCE - 1,
         }
@@ -1783,6 +1786,16 @@ async fn stub(node: Node) -> (String, Arc<AtomicUsize>) {
                     }),
                     Some("query") if call(USDC_TESTNET, "ft_balance_of") => {
                         view(node.balance.as_bytes().to_vec())
+                    }
+                    Some("query") if call(USDC_TESTNET, "storage_balance_of") => {
+                        let known = args["account_id"]
+                            .as_str()
+                            .is_some_and(|a| node.registered.iter().any(|r| r == a));
+                        view(if known {
+                            br#"{"total":"1250000000000000000000","available":"0"}"#.to_vec()
+                        } else {
+                            b"null".to_vec()
+                        })
                     }
                     Some("query")
                         if call(CONTRACT, "get_payment") && args["payment_id"] == V1_ID =>
@@ -2424,6 +2437,68 @@ async fn a_withdrawal_with_nothing_claimable_is_not_relayed() {
         matches!(verdict, VerifyResponse::Valid { .. }),
         "{verdict:?}"
     );
+}
+
+/// The escrow pays a withdrawal with an `ft_transfer` on USDC, which fails
+/// for an account the token does not know (`withdrawn` with `ok: false`,
+/// every time): such a withdrawal is not relayed, for the account itself or
+/// for anyone on its behalf.
+#[tokio::test]
+async fn a_withdrawal_to_an_account_the_token_does_not_know_is_not_relayed() {
+    const NEWCOMER: &str = "newcomer.testnet";
+    let mut node = Node::new(withdraw_outcome(
+        NEWCOMER,
+        NEWCOMER,
+        true,
+        returns("\"500000\""),
+    ));
+    node.claimable
+        .insert(NEWCOMER.to_string(), "500000".to_string());
+    let (provider, sent) = escrow_provider(node.clone()).await;
+    for (sender, method, call) in [
+        (NEWCOMER, "withdraw", lifecycle("withdraw", json!({}), 50)),
+        // Signed by an account the token knows: the one paid is what counts.
+        (
+            WORKER,
+            "withdraw_for",
+            lifecycle("withdraw_for", json!({ "account": NEWCOMER }), 50),
+        ),
+    ] {
+        let signed = sign(sender, CONTRACT, vec![call]);
+        let response = provider
+            .settle_escrow(&lifecycle_request(&signed, method))
+            .await
+            .unwrap();
+        assert_eq!(
+            refused(&response),
+            "near_escrow_account_not_registered",
+            "{method}"
+        );
+        let verdict = provider
+            .verify_escrow(&lifecycle_request(&signed, method))
+            .await
+            .unwrap();
+        assert_eq!(
+            invalid_reason(&verdict),
+            "near_escrow_account_not_registered",
+            "{method}"
+        );
+    }
+    assert_eq!(sent.load(Ordering::SeqCst), 0);
+    // Registered, the same withdrawal is relayed.
+    node.registered.push(NEWCOMER.to_string());
+    let (provider, sent) = escrow_provider(node).await;
+    let signed = sign(
+        NEWCOMER,
+        CONTRACT,
+        vec![lifecycle("withdraw", json!({}), 50)],
+    );
+    let response = provider
+        .settle_escrow(&lifecycle_request(&signed, "withdraw"))
+        .await
+        .unwrap();
+    assert!(response.success, "{response:?}");
+    assert_eq!(sent.load(Ordering::SeqCst), 1);
 }
 
 #[tokio::test]

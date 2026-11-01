@@ -400,6 +400,7 @@ pub(crate) enum EscrowRejectReason {
     ReleaseDeadlinePassed,
     ReclaimNotYet,
     NothingClaimable,
+    AccountNotRegistered,
     SenderRateLimited,
     SenderCountUnavailable,
 }
@@ -449,6 +450,7 @@ impl EscrowRejectReason {
             ReleaseDeadlinePassed => "near_escrow_release_deadline_passed",
             ReclaimNotYet => "near_escrow_reclaim_not_yet",
             NothingClaimable => "near_escrow_nothing_claimable",
+            AccountNotRegistered => "near_escrow_account_not_registered",
             SenderRateLimited => "near_escrow_sender_rate_limited",
             SenderCountUnavailable => "near_escrow_sender_count_unavailable",
         }
@@ -1766,7 +1768,9 @@ impl NearProvider {
     ///   `reclaim_after` passed at least [`CLOCK_MARGIN_SECS`] ago, and it is
     ///   open.
     /// - `withdraw`: `sender` has a claimable balance; `withdraw_for`: the
-    ///   named account has one.
+    ///   named account has one. Either way the account is registered on the
+    ///   network's USDC (`storage_balance_of` not null): the escrow pays it
+    ///   with an `ft_transfer` that fails otherwise, every time.
     async fn lifecycle_gate(
         &self,
         call: &LifecycleCall,
@@ -1860,11 +1864,16 @@ impl NearProvider {
             }
             LifecycleMethod::Withdraw | LifecycleMethod::WithdrawFor => {
                 let account = call.account.as_ref().unwrap_or(sender);
-                if self.claimable(contract, account).await? > 0 {
-                    Ok(Ok(()))
-                } else {
-                    Ok(Err(NothingClaimable))
+                if self.claimable(contract, account).await? == 0 {
+                    return Ok(Err(NothingClaimable));
                 }
+                let token = usdc(self.network()).ok_or_else(|| {
+                    FacilitatorLocalError::ContractCall(format!("no USDC on {}", self.network()))
+                })?;
+                if !self.is_account_registered(&token, account).await? {
+                    return Ok(Err(AccountNotRegistered));
+                }
+                Ok(Ok(()))
             }
         }
     }

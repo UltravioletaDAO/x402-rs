@@ -205,6 +205,7 @@ python scripts/compare_usdc_contracts.py
 **src/chain/**: Chain-specific payment logic
 - `chain/evm.rs` - EIP-3009 payment verification and settlement for EVM chains
 - `chain/near.rs`, `chain/stellar.rs`, `chain/sui.rs`, `chain/algorand.rs`, `chain/xrpl.rs` - the other chain families
+- `chain/near/escrow.rs` - the NEAR `escrow` scheme (Arras contracts), OFF unless `ENABLE_NEAR_ESCROW`; routed from `post_verify`/`post_settle` BEFORE the `ENABLE_PAYMENT_OPERATOR` gate. A relayed meta-transaction is judged only from `receipts_outcome` and the escrow's `arras` NEP-297 events, never from the transaction status (its Delegate receipt succeeds even when the inner call fails). Lifecycle relays are gated by the escrow's own state (capturers, payer, claimable), never by an account list in config. Tests use outcomes built to the NEP-141 shape plus the real refused authorization the escrow repo recorded (`tests/fixtures/near/escrow/w13_rechazo_e06_usdc_real.json`, a direct sandbox call: the tests insert the Delegate receipt a relay adds)
 - `chain/solana.rs` - Solana token transfer authorization support
   - **Smart wallet support** (v1.36.0): Two-path verification for Squads, Crossmint, SWIG wallets
     - Path 1: Top-level TransferChecked (standard wallets, unchanged)

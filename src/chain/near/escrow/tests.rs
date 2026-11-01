@@ -2130,35 +2130,22 @@ async fn terms_the_escrow_refuses_are_refused_before_spending() {
     assert_valid(&provider.verify_escrow(&req).await.unwrap(), PAYER);
 }
 
-/// An authorization that ends `success: false` counts against its sender's
-/// hour; one the escrow took does not; and a sender whose hour is full has
-/// its authorization refused before anything is sent.
+/// Every relay counts against its sender's hour, an authorization the escrow
+/// took as much as one it refused: with room for one, the next authorization
+/// is refused before anything is sent.
 #[tokio::test]
-async fn an_authorization_that_ends_success_false_counts_against_its_sender() {
+async fn every_authorization_relayed_counts_against_its_sender() {
     let one = NearEscrowConfig {
         sender_per_hour: 1,
         ..cfg()
     };
     let signed = sign(PAYER, USDC_TESTNET, vec![authorize_call()]);
-    let (provider, sent) = escrow_provider_with(Node::new(authorized_outcome()), one.clone()).await;
-    for _ in 0..2 {
-        let response = provider
-            .settle_escrow(&request(Some(&signed)))
-            .await
-            .unwrap();
-        assert!(response.success, "{response:?}");
-    }
-    assert_eq!(sent.load(Ordering::SeqCst), 2);
-
-    // W-13: the escrow refused it, and that fills the hour.
-    let refusing = Node::new(w13_relayed(USDC_TESTNET, PAYER, CONTRACT));
-    let (provider, sent) = escrow_provider_with(refusing, one).await;
+    let (provider, sent) = escrow_provider_with(Node::new(authorized_outcome()), one).await;
     let response = provider
         .settle_escrow(&request(Some(&signed)))
         .await
         .unwrap();
-    assert!(!response.success, "{response:?}");
-    assert_eq!(sent.load(Ordering::SeqCst), 1);
+    assert!(response.success, "{response:?}");
     let verdict = provider
         .verify_escrow(&request(Some(&signed)))
         .await
@@ -2168,6 +2155,42 @@ async fn an_authorization_that_ends_success_false_counts_against_its_sender() {
         .settle_escrow(&request(Some(&signed)))
         .await
         .unwrap();
+    assert_eq!(refused(&response), "near_escrow_sender_rate_limited");
+    assert_eq!(sent.load(Ordering::SeqCst), 1);
+}
+
+/// Authorizations in flight together are counted before any is relayed:
+/// with room for one relay this hour, three at once (W-13, which the escrow
+/// refuses) relay one, and the other two, and a fourth after them, are
+/// refused before anything is sent.
+#[tokio::test]
+async fn an_authorization_burst_never_relays_more_than_the_hour_allows() {
+    let one = NearEscrowConfig {
+        sender_per_hour: 1,
+        ..cfg()
+    };
+    let refusing = Node::new(w13_relayed(USDC_TESTNET, PAYER, CONTRACT));
+    let (provider, sent) = escrow_provider_with(refusing, one).await;
+    let signed = sign(PAYER, USDC_TESTNET, vec![authorize_call()]);
+    let req = request(Some(&signed));
+    let (a, b, c) = tokio::join!(
+        provider.settle_escrow(&req),
+        provider.settle_escrow(&req),
+        provider.settle_escrow(&req),
+    );
+    let limited = [a.unwrap(), b.unwrap(), c.unwrap()]
+        .iter()
+        .filter(|response| {
+            matches!(
+                &response.error_reason,
+                Some(FacilitatorErrorReason::FreeForm(token))
+                    if token == "near_escrow_sender_rate_limited"
+            )
+        })
+        .count();
+    assert_eq!(limited, 2);
+    assert_eq!(sent.load(Ordering::SeqCst), 1);
+    let response = provider.settle_escrow(&req).await.unwrap();
     assert_eq!(refused(&response), "near_escrow_sender_rate_limited");
     assert_eq!(sent.load(Ordering::SeqCst), 1);
 }

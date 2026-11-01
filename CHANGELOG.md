@@ -51,11 +51,12 @@ relays an amount of 0.
   past `reclaim_after`, on a live payment; `withdraw` and `withdraw_for` only
   for an account with `get_claimable > 0` that is registered on the network's
   USDC (`storage_balance_of`), which the escrow pays it in. Each sender is
-  charged `NEAR_ESCROW_SENDER_PER_HOUR` relays per UTC hour: every lifecycle
-  call and every authorization that ends `success: false`, counted across tasks
-  in the shared claim store (`NONCE_STORE_TABLE_NAME`). A sender whose hour is
-  full has nothing relayed, an authorization included, and a count that cannot
-  be read relays nothing. Each relay is confirmed by its event (`released`,
+  charged `NEAR_ESCROW_SENDER_PER_HOUR` relays per UTC hour: every relay,
+  authorizations and lifecycle calls alike, its slot taken before it is sent
+  (requests in flight together never relay more than the hour allows), counted
+  across tasks in the shared claim store (`NONCE_STORE_TABLE_NAME`). A sender
+  whose hour is full has nothing relayed, and a count that cannot be read
+  relays nothing. Each relay is confirmed by its event (`released`,
   `refunded`, `reclaimed`, `withdrawn` with `ok: true`); the escrow's receipt
   in `Failure`, or `withdrawn` with `ok: false`, is `success: false`.
 - **`authorize_from_budget`** (the escrow's v2 budget path) is validated, not
@@ -86,7 +87,7 @@ relays an amount of 0.
 | `ENABLE_NEAR_ESCROW` | `false` | `true` or `1` turns it on |
 | `NEAR_ESCROW_CONTRACTS_MAINNET` / `_TESTNET` | empty | comma-separated; one invalid entry discards the list |
 | `NEAR_ESCROW_MIN_GAS_TGAS` / `_MAX_GAS_TGAS` | `38` / `100` | 1..300 TGas; inverted -> both defaults. The floor is the 31 TGas an authorization with Circle's USDC needs (measured in the escrow's sandbox) plus 20 % |
-| `NEAR_ESCROW_SENDER_PER_HOUR` | `30` | 1..3600; lifecycle relays plus authorizations that end `success: false` |
+| `NEAR_ESCROW_SENDER_PER_HOUR` | `30` | 1..3600; every relay, authorizations and lifecycle calls alike |
 | `NEAR_ESCROW_OPERATOR_IDS` | `em,kk` | `[a-z0-9_-]{1,32}` each |
 
 A value that does not parse or is out of range falls back to its default with a

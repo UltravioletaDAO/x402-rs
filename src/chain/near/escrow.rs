@@ -63,8 +63,8 @@ pub const ENV_CONTRACTS_TESTNET: &str = "NEAR_ESCROW_CONTRACTS_TESTNET";
 pub const ENV_MIN_GAS_TGAS: &str = "NEAR_ESCROW_MIN_GAS_TGAS";
 /// Most gas, in TGas, an authorization's `ft_transfer_call` may attach.
 pub const ENV_MAX_GAS_TGAS: &str = "NEAR_ESCROW_MAX_GAS_TGAS";
-/// Most relays one `sender_id` is charged for per UTC hour: lifecycle calls,
-/// and authorizations that end `success: false`.
+/// Most relays one `sender_id` is charged for per UTC hour: every relay,
+/// authorizations and lifecycle calls alike.
 pub const ENV_SENDER_PER_HOUR: &str = "NEAR_ESCROW_SENDER_PER_HOUR";
 /// Comma-separated operator ids (`[a-z0-9_-]{1,32}`) the facilitator relays for.
 pub const ENV_OPERATOR_IDS: &str = "NEAR_ESCROW_OPERATOR_IDS";
@@ -1339,8 +1339,8 @@ enum SenderRefusal {
     Unavailable,
 }
 
-/// The relays each `sender_id` is charged for, per UTC hour (every lifecycle
-/// call, and every authorization that ends `success: false`),
+/// The relays each `sender_id` is charged for, per UTC hour (every relay,
+/// authorizations and lifecycle calls alike, taken before it is sent),
 /// counted across every task in the claim store the service shares, the way
 /// `RegistrationBudget` counts registrations: slot `i` of a sender's hour is a
 /// key taken with the store's conditional put, so no two tasks take the same
@@ -1629,8 +1629,8 @@ impl NearProvider {
     /// Whether this provider relays `req`, and what it relays.
     ///
     /// The outer error is the chain not answering (no verdict on the request);
-    /// the inner one is a verdict. Verify only reads; settle also takes a
-    /// lifecycle call's relay slot.
+    /// the inner one is a verdict. Verify only reads; settle also takes the
+    /// sender's relay slot.
     async fn check_escrow(&self, req: &EscrowRequest, phase: Phase) -> Checking {
         let cfg = &self.escrow.config;
         let refuse = |sender: Option<&AccountId>, reason: EscrowRejectReason| -> Checking {
@@ -1729,13 +1729,13 @@ impl NearProvider {
                 }
             }
         }
-        // A sender whose hour is full has nothing relayed, an authorization
-        // included. Settle takes a lifecycle call's slot before relaying it; an
-        // authorization takes one only when it ends `success: false`
-        // (`settle_escrow`).
-        let counted = match (&op, phase) {
-            (EscrowOp::Lifecycle(_), Phase::Settle) => self.escrow.senders.take(&sender).await,
-            _ => self.escrow.senders.check(&sender).await,
+        // A sender whose hour is full has nothing relayed. Settle takes the
+        // slot before relaying, an authorization as much as a lifecycle call,
+        // so requests in flight together never relay more than the hour
+        // allows; the slot is kept whatever the relay ends in.
+        let counted = match phase {
+            Phase::Settle => self.escrow.senders.take(&sender).await,
+            Phase::Verify => self.escrow.senders.check(&sender).await,
         };
         match counted {
             Ok(()) => {}
@@ -2009,16 +2009,6 @@ impl NearProvider {
         let mut response = settle_outcome(confirmed, payer, network)?;
         if response.success {
             response.extensions = Some(settle_extensions(&checked.op));
-        } else if matches!(checked.op, EscrowOp::Authorize(_)) {
-            // A lifecycle call took its slot before it was relayed.
-            if let Err(refusal) = self.escrow.senders.take(&checked.sender).await {
-                tracing::warn!(
-                    %network,
-                    sender = %checked.sender,
-                    ?refusal,
-                    "NEAR escrow authorization that ended success:false not counted"
-                );
-            }
         }
         Ok(response)
     }

@@ -597,6 +597,10 @@ relayed by NEP-366 like `exact` on NEAR, and the requirements name the one payme
   is read from the escrow first (the operator's capturers, the payment's payer, status and deadlines, a
   claimable balance on an account registered on USDC).
 
+Every relay counts against its sender's hour, authorizations and lifecycle calls alike: settle takes the slot
+before sending (`NEAR_ESCROW_SENDER_PER_HOUR`, published as `senderPerHour`), and a sender whose hour is full is
+refused with `near_escrow_sender_rate_limited` before anything is sent.
+
 `authorize_from_budget` is validated, not relayed until v2 exposes a budget view
 (`near_escrow_method_not_allowed`). A refusal is `isValid: false` / `success: false` with a `near_escrow_*`
 reason; an outcome that shows no verdict is `502 settlement_unconfirmed` with the hash. A success carries

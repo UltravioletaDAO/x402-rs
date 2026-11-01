@@ -2441,8 +2441,9 @@ async fn an_unknown_payment_or_operator_is_not_relayed() {
         .unwrap();
     assert_eq!(refused(&response), "near_escrow_payment_not_found");
 
+    // An operator the facilitator serves that the escrow does not know.
     let mut node = Node::new(lifecycle_outcome(CAPTURER, returns(""), vec![]));
-    node.payment["operator_id"] = json!("gone");
+    node.payment["operator_id"] = json!("kk");
     let (provider, sent_too) = escrow_provider(node).await;
     let signed = sign(CAPTURER, CONTRACT, vec![release_call()]);
     let response = provider
@@ -2454,6 +2455,58 @@ async fn an_unknown_payment_or_operator_is_not_relayed() {
         sent.load(Ordering::SeqCst) + sent_too.load(Ordering::SeqCst),
         0
     );
+}
+
+/// `NEAR_ESCROW_OPERATOR_IDS` is the facilitator's scope for the lifecycle
+/// too: the capturer of an operator it does not serve has no release or
+/// refund relayed, before the operator is even read.
+#[tokio::test]
+async fn a_lifecycle_call_for_an_operator_not_served_is_refused() {
+    let done = lifecycle_outcome(
+        CAPTURER,
+        returns(""),
+        vec![arras("released", json!({"payment_id": V1_ID}))],
+    );
+    let kk_only = NearEscrowConfig {
+        operator_ids: vec!["kk".to_string()],
+        ..cfg()
+    };
+    let (provider, sent) = escrow_provider_with(Node::new(done.clone()), kk_only).await;
+    let refund = lifecycle("refund", json!({"payment_id": V1_ID}), 30);
+    for (method, call) in [("release", release_call()), ("refund", refund)] {
+        let signed = sign(CAPTURER, CONTRACT, vec![call]);
+        let response = provider
+            .settle_escrow(&lifecycle_request(&signed, method))
+            .await
+            .unwrap();
+        assert_eq!(
+            refused(&response),
+            "near_escrow_operator_not_served",
+            "{method}"
+        );
+        let verdict = provider
+            .verify_escrow(&lifecycle_request(&signed, method))
+            .await
+            .unwrap();
+        assert_eq!(
+            invalid_reason(&verdict),
+            "near_escrow_operator_not_served",
+            "{method}"
+        );
+    }
+    assert_eq!(sent.load(Ordering::SeqCst), 0);
+    // The operator unknown to the escrow is not served either: refused
+    // without asking the escrow for it.
+    let mut node = Node::new(done);
+    node.payment["operator_id"] = json!("gone");
+    let (provider, sent) = escrow_provider(node).await;
+    let signed = sign(CAPTURER, CONTRACT, vec![release_call()]);
+    let response = provider
+        .settle_escrow(&lifecycle_request(&signed, "release"))
+        .await
+        .unwrap();
+    assert_eq!(refused(&response), "near_escrow_operator_not_served");
+    assert_eq!(sent.load(Ordering::SeqCst), 0);
 }
 
 /// The escrow releases, refunds and reclaims only a live payment

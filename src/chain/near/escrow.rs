@@ -1756,7 +1756,8 @@ impl NearProvider {
     /// call that would only fail on the escrow is never paid for by the
     /// relayer.
     ///
-    /// - `release`: the payment exists, `sender` is a capturer of its operator
+    /// - `release`: the payment exists, its operator is one the facilitator
+    ///   serves (`NEAR_ESCROW_OPERATOR_IDS`), `sender` is a capturer of it
     ///   (`get_operator(get_payment(id).operator_id).capturers`), it is open
     ///   (`Authorized` or `PartiallyReleased`) and its `release_deadline` is
     ///   more than [`CLOCK_MARGIN_SECS`] away.
@@ -1804,6 +1805,9 @@ impl NearProvider {
                     return Ok(Err(PaymentNotFound));
                 }
                 let operator_id = field(&payment, "operator_id", "get_payment")?;
+                if !self.escrow.config.operator_ids.contains(&operator_id) {
+                    return Ok(Err(OperatorNotServed));
+                }
                 let operator = self
                     .escrow_view(
                         contract,

@@ -1868,6 +1868,16 @@ async fn escrow_provider_with(
     node: Node,
     config: NearEscrowConfig,
 ) -> (NearProvider, Arc<AtomicUsize>) {
+    escrow_provider_on(node, config, Arc::new(MemoryNonceStore::new())).await
+}
+
+/// A provider whose sender hours are counted in `store`: providers given the
+/// same store share the count, as tasks share the claim store.
+async fn escrow_provider_on(
+    node: Node,
+    config: NearEscrowConfig,
+    store: Arc<dyn NonceStore>,
+) -> (NearProvider, Arc<AtomicUsize>) {
     let (url, sent) = stub(node).await;
     let provider = NearProvider::try_new(
         SecretKey::from_random(KeyType::ED25519),
@@ -1876,7 +1886,7 @@ async fn escrow_provider_with(
         Network::NearTestnet,
     )
     .unwrap()
-    .with_escrow(config, Arc::new(MemoryNonceStore::new()), Arc::new(|| NOW));
+    .with_escrow(config, store, Arc::new(|| NOW));
     (provider, sent)
 }
 
@@ -2913,6 +2923,80 @@ async fn verify_takes_no_relay_slot() {
         .await
         .unwrap();
     assert!(response.success, "{response:?}");
+}
+
+/// The same for an authorization: with room for one relay, three verifies
+/// are valid and the settle after them is relayed.
+#[tokio::test]
+async fn verify_of_an_authorization_takes_no_relay_slot() {
+    let one = NearEscrowConfig {
+        sender_per_hour: 1,
+        ..cfg()
+    };
+    let (provider, sent) = escrow_provider_with(Node::new(authorized_outcome()), one).await;
+    let signed = sign(PAYER, USDC_TESTNET, vec![authorize_call()]);
+    for _ in 0..3 {
+        let verdict = provider
+            .verify_escrow(&request(Some(&signed)))
+            .await
+            .unwrap();
+        assert_valid(&verdict, PAYER);
+    }
+    let response = provider
+        .settle_escrow(&request(Some(&signed)))
+        .await
+        .unwrap();
+    assert!(response.success, "{response:?}");
+    assert_eq!(sent.load(Ordering::SeqCst), 1);
+}
+
+/// A request refused on what the chain answers takes no slot: settle takes
+/// it after every read. With room for one relay this hour, PAYER's reclaim
+/// the gate refuses (before `reclaim_after`), its delegate whose nonce was
+/// used and its authorization without the USDC to pay each leave the hour to
+/// the authorization that follows. The last three run on three providers
+/// sharing one claim store, as tasks do.
+#[tokio::test]
+async fn a_request_refused_after_reading_takes_no_slot() {
+    let one = NearEscrowConfig {
+        sender_per_hour: 1,
+        ..cfg()
+    };
+    let authorization = request(Some(&sign(PAYER, USDC_TESTNET, vec![authorize_call()])));
+
+    let (provider, sent) = escrow_provider_with(Node::new(authorized_outcome()), one.clone()).await;
+    let reclaim = sign(
+        PAYER,
+        CONTRACT,
+        vec![lifecycle("reclaim", json!({"payment_id": V1_ID}), 30)],
+    );
+    let response = provider
+        .settle_escrow(&lifecycle_request(&reclaim, "reclaim"))
+        .await
+        .unwrap();
+    assert_eq!(refused(&response), "near_escrow_reclaim_not_yet");
+    let response = provider.settle_escrow(&authorization).await.unwrap();
+    assert!(response.success, "{response:?}");
+    assert_eq!(sent.load(Ordering::SeqCst), 1);
+
+    let store: Arc<dyn NonceStore> = Arc::new(MemoryNonceStore::new());
+    let mut used = Node::new(authorized_outcome());
+    used.access_nonce = DELEGATE_NONCE;
+    let mut empty = Node::new(authorized_outcome());
+    empty.balance = r#""0""#;
+    for (node, reason) in [
+        (used, "near_escrow_delegate_not_executable"),
+        (empty, "insufficient_funds"),
+    ] {
+        let (provider, sent) = escrow_provider_on(node, one.clone(), store.clone()).await;
+        let response = provider.settle_escrow(&authorization).await.unwrap();
+        assert_eq!(refused(&response), reason);
+        assert_eq!(sent.load(Ordering::SeqCst), 0);
+    }
+    let (provider, sent) = escrow_provider_on(Node::new(authorized_outcome()), one, store).await;
+    let response = provider.settle_escrow(&authorization).await.unwrap();
+    assert!(response.success, "{response:?}");
+    assert_eq!(sent.load(Ordering::SeqCst), 1);
 }
 
 /// A claim store that cannot be read or written.

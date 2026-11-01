@@ -1451,6 +1451,7 @@ impl Facilitator for XrplProvider {
             x402_version: X402Version::V1,
             network_aliases: None,
             extra: Some(SupportedPaymentKindExtra {
+                near_escrow: None,
                 fee_payer: self.facilitator_address(),
                 tokens: Some(tokens),
                 escrow: None,

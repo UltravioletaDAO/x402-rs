@@ -2145,6 +2145,7 @@ where
             None
         } else {
             Some(SupportedPaymentKindExtra {
+                near_escrow: None,
                 fee_payer: None, // Set at FacilitatorLocal level
                 tokens: Some(tokens),
                 escrow: None,

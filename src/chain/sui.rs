@@ -1086,6 +1086,7 @@ impl Facilitator for SuiProvider {
             network: network_string.to_string(),
             network_aliases: None,
             extra: Some(SupportedPaymentKindExtra {
+                near_escrow: None,
                 fee_payer: Some(self.signer_address()),
                 tokens: Some(crate::network::exact_payment_tokens(self.network)),
                 escrow: None,

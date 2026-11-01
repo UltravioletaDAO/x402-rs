@@ -1701,7 +1701,7 @@ impl Facilitator for NearProvider {
     }
 
     async fn supported(&self) -> Result<SupportedPaymentKindsResponse, Self::Error> {
-        let kinds = vec![SupportedPaymentKind {
+        let mut kinds = vec![SupportedPaymentKind {
             network: self.network().to_string(),
             scheme: Scheme::Exact,
             x402_version: X402Version::V1,
@@ -1710,8 +1710,10 @@ impl Facilitator for NearProvider {
                 fee_payer: Some(self.signer_address()),
                 tokens: Some(crate::network::exact_payment_tokens(self.network())),
                 escrow: None,
+                near_escrow: None,
             }),
         }];
+        kinds.extend(self.escrow_supported_kind());
         Ok(SupportedPaymentKindsResponse { kinds })
     }
 }

@@ -44,7 +44,8 @@ use crate::network::{Network, USDCDeployment};
 use crate::nonce_store::{NonceStore, NonceStoreError};
 use crate::provider_cache::{HasProviderMap, ProviderMap};
 use crate::types::{
-    FacilitatorErrorReason, MixedAddress, SettleResponse, TransactionHash, VerifyResponse,
+    FacilitatorErrorReason, MixedAddress, NearEscrowSupportedInfo, Scheme, SettleResponse,
+    SupportedPaymentKind, SupportedPaymentKindExtra, TransactionHash, VerifyResponse, X402Version,
 };
 
 // ===========================================================================
@@ -1880,6 +1881,40 @@ impl NearProvider {
             response.extensions = Some(settle_extensions(&checked.op));
         }
         Ok(response)
+    }
+
+    /// The `escrow` kind `/supported` lists for this network, when the
+    /// scheme is on and has a contract here. `extra.nearEscrow` (plural:
+    /// every contract and operator accepted) is a field of its own, so the
+    /// EVM `escrow` kinds keep their exact shape.
+    pub(super) fn escrow_supported_kind(&self) -> Option<SupportedPaymentKind> {
+        let cfg = &self.escrow.config;
+        let network = self.network();
+        if !cfg.serves(network) {
+            return None;
+        }
+        Some(SupportedPaymentKind {
+            network: network.to_string(),
+            scheme: Scheme::Escrow,
+            x402_version: X402Version::V1,
+            network_aliases: None,
+            extra: Some(SupportedPaymentKindExtra {
+                fee_payer: Some(self.signer_address()),
+                tokens: Some(crate::network::exact_payment_tokens(network)),
+                escrow: None,
+                near_escrow: Some(NearEscrowSupportedInfo {
+                    contracts: cfg
+                        .contracts(network)
+                        .iter()
+                        .map(|c| c.to_string())
+                        .collect(),
+                    operator_ids: cfg.operator_ids.clone(),
+                    min_gas_tgas: cfg.min_gas.as_gas() / 1_000_000_000_000,
+                    max_gas_tgas: cfg.max_gas.as_gas() / 1_000_000_000_000,
+                    sender_per_hour: cfg.sender_per_hour,
+                }),
+            }),
+        })
     }
 }
 

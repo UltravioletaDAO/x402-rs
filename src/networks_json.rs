@@ -562,6 +562,7 @@ mod tests {
                     network: v1_id(network),
                     network_aliases: None,
                     extra: Some(SupportedPaymentKindExtra {
+                        near_escrow: None,
                         fee_payer: None,
                         tokens: Some(served_token_infos(network)),
                         escrow: None,

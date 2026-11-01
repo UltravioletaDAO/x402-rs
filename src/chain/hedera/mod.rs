@@ -722,6 +722,7 @@ impl Facilitator for HederaProvider {
                 network: self.config.network.to_caip2(),
                 network_aliases: Some(vec![self.config.network.to_caip2()]),
                 extra: Some(SupportedPaymentKindExtra {
+                    near_escrow: None,
                     fee_payer: Some(self.signer_address()),
                     tokens: Some(tokens),
                     escrow: None,

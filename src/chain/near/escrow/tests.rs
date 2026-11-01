@@ -2195,6 +2195,45 @@ async fn an_authorization_burst_never_relays_more_than_the_hour_allows() {
     assert_eq!(sent.load(Ordering::SeqCst), 1);
 }
 
+/// With room for two relays this hour, `req` relayed against `node`, whose
+/// outcome ends `success: false`, takes one slot and not two: it is relayed a
+/// second time, and the third is refused before anything is sent.
+async fn a_relay_that_ends_success_false_takes_one_slot(node: Node, req: &EscrowRequest) {
+    let two = NearEscrowConfig {
+        sender_per_hour: 2,
+        ..cfg()
+    };
+    let (provider, sent) = escrow_provider_with(node, two).await;
+    for relayed in 1..=2 {
+        let response = provider.settle_escrow(req).await.unwrap();
+        assert!(!response.success, "{response:?}");
+        assert_eq!(sent.load(Ordering::SeqCst), relayed);
+    }
+    let response = provider.settle_escrow(req).await.unwrap();
+    assert_eq!(refused(&response), "near_escrow_sender_rate_limited");
+    assert_eq!(sent.load(Ordering::SeqCst), 2);
+}
+
+#[tokio::test]
+async fn an_authorization_that_ends_success_false_takes_one_slot() {
+    let signed = sign(PAYER, USDC_TESTNET, vec![authorize_call()]);
+    a_relay_that_ends_success_false_takes_one_slot(
+        Node::new(w13_relayed(USDC_TESTNET, PAYER, CONTRACT)),
+        &request(Some(&signed)),
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn a_lifecycle_call_that_ends_success_false_takes_one_slot() {
+    let release = sign(CAPTURER, CONTRACT, vec![release_call()]);
+    a_relay_that_ends_success_false_takes_one_slot(
+        Node::new(lifecycle_outcome(CAPTURER, panicked("ARRAS_E23"), vec![])),
+        &lifecycle_request(&release, "release"),
+    )
+    .await;
+}
+
 #[tokio::test]
 async fn a_delegate_action_whose_nonce_was_used_is_refused_before_spending() {
     let mut node = Node::new(authorized_outcome());

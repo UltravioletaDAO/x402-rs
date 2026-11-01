@@ -63,7 +63,8 @@ pub const ENV_CONTRACTS_TESTNET: &str = "NEAR_ESCROW_CONTRACTS_TESTNET";
 pub const ENV_MIN_GAS_TGAS: &str = "NEAR_ESCROW_MIN_GAS_TGAS";
 /// Most gas, in TGas, an authorization's `ft_transfer_call` may attach.
 pub const ENV_MAX_GAS_TGAS: &str = "NEAR_ESCROW_MAX_GAS_TGAS";
-/// Most lifecycle relays one `sender_id` gets per UTC hour.
+/// Most relays one `sender_id` is charged for per UTC hour: lifecycle calls,
+/// and authorizations that end `success: false`.
 pub const ENV_SENDER_PER_HOUR: &str = "NEAR_ESCROW_SENDER_PER_HOUR";
 /// Comma-separated operator ids (`[a-z0-9_-]{1,32}`) the facilitator relays for.
 pub const ENV_OPERATOR_IDS: &str = "NEAR_ESCROW_OPERATOR_IDS";
@@ -321,6 +322,24 @@ const FT_TRANSFER_CALL: &str = "ft_transfer_call";
 /// NEP-141 asserts exactly one yoctoNEAR on `ft_transfer_call`.
 const AUTHORIZE_DEPOSIT: NearToken = NearToken::from_yoctonear(1);
 
+/// How far the facilitator's clock may be from the block timestamp the escrow
+/// judges its deadlines by (nanoseconds, `env::block_timestamp()`). A deadline
+/// check passes only with this much to spare on the side where the escrow
+/// accepts, so a call the escrow could refuse at its block's time is never
+/// relayed.
+const CLOCK_MARGIN_SECS: u64 = 60;
+const NANOS_PER_SEC: u64 = 1_000_000_000;
+
+/// Whether a payment released at `now_secs` (Unix seconds) still beats its
+/// `release_deadline` (ns): the escrow refuses at `now >= release_deadline`,
+/// so this asks for `now + margin < release_deadline`.
+fn before_release_deadline(release_deadline: u64, now_secs: u64) -> bool {
+    now_secs
+        .saturating_add(CLOCK_MARGIN_SECS)
+        .saturating_mul(NANOS_PER_SEC)
+        < release_deadline
+}
+
 /// Why a request is not relayed. The token is all that reaches the caller
 /// (`invalidReason` / `errorReason`); the detail stays in the server log.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -348,6 +367,8 @@ pub(crate) enum EscrowRejectReason {
     MsgNotCanonical,
     OperatorMismatch,
     OperatorNotServed,
+    ReceiverInvalid,
+    DeadlinesInvalid,
     PaymentIdMismatch,
     ReceiverMismatch,
     FeeBpsMaxMismatch,
@@ -392,6 +413,8 @@ impl EscrowRejectReason {
             MsgNotCanonical => "near_escrow_msg_not_canonical",
             OperatorMismatch => "near_escrow_operator_mismatch",
             OperatorNotServed => "near_escrow_operator_not_served",
+            ReceiverInvalid => "near_escrow_receiver_invalid",
+            DeadlinesInvalid => "near_escrow_deadlines_invalid",
             PaymentIdMismatch => "near_escrow_payment_id_mismatch",
             ReceiverMismatch => "near_escrow_receiver_mismatch",
             FeeBpsMaxMismatch => "near_escrow_fee_bps_max_mismatch",
@@ -705,12 +728,16 @@ pub(crate) struct EscrowAuthorize {
 /// names), attaching exactly one yoctoNEAR and gas within the configured
 /// range, moving exactly the required amount (never 0), with `msg` byte for byte the
 /// canonical `extra.nearEscrow.msg`, for an operator the facilitator serves,
-/// and producing, by the contract's own derivation, `extra.nearEscrow.paymentId`.
-/// The first condition that fails is the answer.
+/// on terms the escrow accepts without reading anything (a receiver that is
+/// neither the payer nor the escrow, E15; `now < release_deadline <
+/// reclaim_after`, E11, `now` taken [`CLOCK_MARGIN_SECS`] ahead), and
+/// producing, by the contract's own derivation, `extra.nearEscrow.paymentId`.
+/// `now` is Unix seconds. The first condition that fails is the answer.
 pub(crate) fn validate_escrow_delegate_actions(
     da: &DelegateAction,
     req: &EscrowRequest,
     cfg: &NearEscrowConfig,
+    now: u64,
 ) -> Result<EscrowAuthorize, EscrowRejectReason> {
     use EscrowRejectReason::*;
     let call = single_function_call(da)?;
@@ -754,6 +781,14 @@ pub(crate) fn validate_escrow_delegate_actions(
     }
     if !cfg.operator_ids.contains(&terms.operator_id) {
         return Err(OperatorNotServed);
+    }
+    if terms.receiver == da.sender_id || terms.receiver == contract {
+        return Err(ReceiverInvalid);
+    }
+    if terms.release_deadline >= terms.reclaim_after
+        || !before_release_deadline(terms.release_deadline, now)
+    {
+        return Err(DeadlinesInvalid);
     }
     let expected_id = req.extra.payment_id.as_deref().ok_or(MissingExtra)?;
     let payment_id = compute_payment_id(&terms, token.as_str(), da.sender_id.as_str(), amount);
@@ -1263,7 +1298,8 @@ enum SenderRefusal {
     Unavailable,
 }
 
-/// The lifecycle relays of each `sender_id`, per UTC hour,
+/// The relays each `sender_id` is charged for, per UTC hour (every lifecycle
+/// call, and every authorization that ends `success: false`),
 /// counted across every task in the claim store the service shares, the way
 /// `RegistrationBudget` counts registrations: slot `i` of a sender's hour is a
 /// key taken with the store's conditional put, so no two tasks take the same
@@ -1380,6 +1416,11 @@ impl EscrowRuntime {
     pub(crate) fn new(network: Network, config: NearEscrowConfig) -> Self {
         let senders = SenderBudget::new(network, config.sender_per_hour);
         Self { config, senders }
+    }
+
+    /// Unix seconds, on the clock the sender hours run on.
+    fn now(&self) -> u64 {
+        (self.senders.clock)()
     }
 }
 
@@ -1547,8 +1588,8 @@ impl NearProvider {
     /// Whether this provider relays `req`, and what it relays.
     ///
     /// The outer error is the chain not answering (no verdict on the request);
-    /// the inner one is a verdict. Verify only reads; settle also takes the
-    /// sender's relay slot.
+    /// the inner one is a verdict. Verify only reads; settle also takes a
+    /// lifecycle call's relay slot.
     async fn check_escrow(&self, req: &EscrowRequest, phase: Phase) -> Checking {
         let cfg = &self.escrow.config;
         let refuse = |sender: Option<&AccountId>, reason: EscrowRejectReason| -> Checking {
@@ -1590,7 +1631,7 @@ impl NearProvider {
                 // has budget left. It is refused here as every method but
                 // `ft_transfer_call` is: `near_escrow_method_not_allowed`,
                 // before any read.
-                match validate_escrow_delegate_actions(da, req, cfg) {
+                match validate_escrow_delegate_actions(da, req, cfg, self.escrow.now()) {
                     Ok(authorize) => EscrowOp::Authorize(authorize),
                     Err(reason) => return refuse(Some(&sender), reason),
                 }
@@ -1647,19 +1688,21 @@ impl NearProvider {
                 }
             }
         }
-        if matches!(op, EscrowOp::Lifecycle(_)) {
-            let counted = match phase {
-                Phase::Verify => self.escrow.senders.check(&sender).await,
-                Phase::Settle => self.escrow.senders.take(&sender).await,
-            };
-            match counted {
-                Ok(()) => {}
-                Err(SenderRefusal::Full) => {
-                    return refuse(Some(&sender), EscrowRejectReason::SenderRateLimited)
-                }
-                Err(SenderRefusal::Unavailable) => {
-                    return refuse(Some(&sender), EscrowRejectReason::SenderCountUnavailable)
-                }
+        // A sender whose hour is full has nothing relayed, an authorization
+        // included. Settle takes a lifecycle call's slot before relaying it; an
+        // authorization takes one only when it ends `success: false`
+        // (`settle_escrow`).
+        let counted = match (&op, phase) {
+            (EscrowOp::Lifecycle(_), Phase::Settle) => self.escrow.senders.take(&sender).await,
+            _ => self.escrow.senders.check(&sender).await,
+        };
+        match counted {
+            Ok(()) => {}
+            Err(SenderRefusal::Full) => {
+                return refuse(Some(&sender), EscrowRejectReason::SenderRateLimited)
+            }
+            Err(SenderRefusal::Unavailable) => {
+                return refuse(Some(&sender), EscrowRejectReason::SenderCountUnavailable)
             }
         }
         Ok(Ok(Checked {
@@ -1882,6 +1925,16 @@ impl NearProvider {
         let mut response = settle_outcome(confirmed, payer, network)?;
         if response.success {
             response.extensions = Some(settle_extensions(&checked.op));
+        } else if matches!(checked.op, EscrowOp::Authorize(_)) {
+            // A lifecycle call took its slot before it was relayed.
+            if let Err(refusal) = self.escrow.senders.take(&checked.sender).await {
+                tracing::warn!(
+                    %network,
+                    sender = %checked.sender,
+                    ?refusal,
+                    "NEAR escrow authorization that ended success:false not counted"
+                );
+            }
         }
         Ok(response)
     }

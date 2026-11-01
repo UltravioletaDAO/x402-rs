@@ -31,6 +31,9 @@ const CONTRACT_V2: &str = "v2.arras-dev.testnet";
 const RELAYER: &str = "facilitator.testnet";
 const AMOUNT: u128 = 1_000_000;
 const DELEGATE_NONCE: u64 = 42;
+/// The tests' clock, Unix seconds: 2026-11-01T00:00:00Z, a day before V-1's
+/// `release_deadline` and two before its `reclaim_after`.
+const NOW: u64 = 1_793_491_200;
 
 /// Section 7 of the escrow prescription, recomputed there byte for byte.
 const V1_PREIMAGE: &str = "0102000000656d40000000336532323130653131383462343562363463386134333463306137653762323363633034656137656237613663336333323532306430336434616663623861661200000070617965722d64656d6f2e746573746e657413000000776f726b65722d64656d6f2e746573746e657440420f000000000000000000000000000000190d5311e4180000689ee75fe4181405000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000";
@@ -424,7 +427,7 @@ fn authorization(edit: impl FnOnce(&mut FunctionCallAction)) -> DelegateAction {
 }
 
 fn validate(da: &DelegateAction) -> Result<EscrowAuthorize, EscrowRejectReason> {
-    validate_escrow_delegate_actions(da, &request(None), &cfg())
+    validate_escrow_delegate_actions(da, &request(None), &cfg(), NOW)
 }
 
 fn with_args(call: &mut FunctionCallAction, edit: impl FnOnce(&mut Value)) {
@@ -584,7 +587,7 @@ fn a_non_canonical_msg_is_refused_even_when_the_402_carries_it() {
     let mut req = request(None);
     req.extra.msg = Some(spaced);
     assert_eq!(
-        validate_escrow_delegate_actions(&da, &req, &cfg()),
+        validate_escrow_delegate_actions(&da, &req, &cfg(), NOW),
         Err(EscrowRejectReason::MsgNotCanonical)
     );
 }
@@ -594,7 +597,7 @@ fn an_operator_other_than_the_402_names_is_refused() {
     let mut req = request(None);
     req.extra.operator_id = Some("kk".to_string());
     assert_eq!(
-        validate_escrow_delegate_actions(&authorization(|_| {}), &req, &cfg()),
+        validate_escrow_delegate_actions(&authorization(|_| {}), &req, &cfg(), NOW),
         Err(EscrowRejectReason::OperatorMismatch)
     );
 }
@@ -606,7 +609,7 @@ fn an_operator_the_facilitator_does_not_serve_is_refused() {
         ..cfg()
     };
     assert_eq!(
-        validate_escrow_delegate_actions(&authorization(|_| {}), &request(None), &config),
+        validate_escrow_delegate_actions(&authorization(|_| {}), &request(None), &config, NOW),
         Err(EscrowRejectReason::OperatorNotServed)
     );
 }
@@ -616,7 +619,7 @@ fn another_payment_id_is_refused() {
     let mut req = request(None);
     req.extra.payment_id = Some(V2_ID.to_string());
     assert_eq!(
-        validate_escrow_delegate_actions(&authorization(|_| {}), &req, &cfg()),
+        validate_escrow_delegate_actions(&authorization(|_| {}), &req, &cfg(), NOW),
         Err(EscrowRejectReason::PaymentIdMismatch)
     );
     // Same terms, another payer: another id.
@@ -633,12 +636,14 @@ fn an_extra_missing_its_fields_is_refused() {
     ] {
         let mut req = request(None);
         edit(&mut req.extra);
-        assert!(validate_escrow_delegate_actions(&authorization(|_| {}), &req, &cfg()).is_err());
+        assert!(
+            validate_escrow_delegate_actions(&authorization(|_| {}), &req, &cfg(), NOW).is_err()
+        );
     }
     let mut req = request(None);
     req.extra.msg = None;
     assert_eq!(
-        validate_escrow_delegate_actions(&authorization(|_| {}), &req, &cfg()),
+        validate_escrow_delegate_actions(&authorization(|_| {}), &req, &cfg(), NOW),
         Err(EscrowRejectReason::MissingExtra)
     );
 }
@@ -1778,11 +1783,7 @@ async fn escrow_provider_with(
         Network::NearTestnet,
     )
     .unwrap()
-    .with_escrow(
-        config,
-        Arc::new(MemoryNonceStore::new()),
-        Arc::new(|| 1_793_577_600),
-    );
+    .with_escrow(config, Arc::new(MemoryNonceStore::new()), Arc::new(|| NOW));
     (provider, sent)
 }
 
@@ -1931,6 +1932,152 @@ async fn an_authorization_of_zero_is_refused_before_spending() {
         assert_eq!(refused(&response), "near_escrow_zero_amount");
         assert_eq!(sent.load(Ordering::SeqCst), 0);
     }
+}
+
+/// The canonical msg of `terms`.
+fn msg_of(terms: &Terms) -> String {
+    serde_json::to_string(&AuthorizeMsg {
+        v: 1,
+        action: "authorize".to_string(),
+        operator_id: terms.operator_id.clone(),
+        receiver: terms.receiver.to_string(),
+        release_deadline: terms.release_deadline.to_string(),
+        reclaim_after: terms.reclaim_after.to_string(),
+        fee_bps_max: terms.fee_bps_max,
+        terms_hash: hex::encode(terms.terms_hash),
+        salt: hex::encode(terms.salt),
+    })
+    .unwrap()
+}
+
+/// PAYER's authorization of AMOUNT on `terms` and the 402 that asks for it,
+/// its payment id derived: the two agree, whatever the terms say.
+fn authorization_on(terms: &Terms) -> (SignedDelegateAction, EscrowRequest) {
+    let msg = msg_of(terms);
+    let args = json!({"receiver_id": CONTRACT, "amount": AMOUNT.to_string(), "msg": msg});
+    let call = function_call("ft_transfer_call", args.to_string().into_bytes(), 100, 1);
+    let signed = sign(PAYER, USDC_TESTNET, vec![call]);
+    let mut req = request(Some(&signed));
+    req.extra.msg = Some(msg);
+    req.extra.payment_id = Some(compute_payment_id(terms, USDC_TESTNET, PAYER, AMOUNT));
+    (signed, req)
+}
+
+/// What the escrow refuses on the msg's terms alone is refused before any
+/// read (with the delegate nonce used, a read would answer otherwise): E15, a
+/// receiver that is the payer or the escrow; E11, `now < release_deadline <
+/// reclaim_after` failing with `now` taken a minute ahead. A release deadline
+/// one nanosecond past that minute passes.
+#[tokio::test]
+async fn terms_the_escrow_refuses_are_refused_before_spending() {
+    assert_eq!(msg_of(&terms_v1()), v1_msg());
+    let ns = |secs: u64| secs * 1_000_000_000;
+    let in_a_minute = ns(NOW + 60);
+    let v1 = terms_v1();
+    let cases: Vec<(Terms, &str)> = vec![
+        (
+            Terms {
+                receiver: account(PAYER),
+                ..terms_v1()
+            },
+            "near_escrow_receiver_invalid",
+        ),
+        (
+            Terms {
+                receiver: account(CONTRACT),
+                ..terms_v1()
+            },
+            "near_escrow_receiver_invalid",
+        ),
+        (
+            Terms {
+                release_deadline: ns(NOW - 1),
+                ..terms_v1()
+            },
+            "near_escrow_deadlines_invalid",
+        ),
+        (
+            Terms {
+                release_deadline: in_a_minute,
+                ..terms_v1()
+            },
+            "near_escrow_deadlines_invalid",
+        ),
+        (
+            Terms {
+                reclaim_after: v1.release_deadline,
+                ..terms_v1()
+            },
+            "near_escrow_deadlines_invalid",
+        ),
+        (
+            Terms {
+                reclaim_after: v1.release_deadline - 1,
+                ..terms_v1()
+            },
+            "near_escrow_deadlines_invalid",
+        ),
+    ];
+    let mut node = Node::new(authorized_outcome());
+    node.access_nonce = DELEGATE_NONCE;
+    let (provider, sent) = escrow_provider(node).await;
+    for (terms, reason) in &cases {
+        let (_, req) = authorization_on(terms);
+        let verdict = provider.verify_escrow(&req).await.unwrap();
+        assert_eq!(invalid_reason(&verdict), *reason, "{terms:?}");
+        let response = provider.settle_escrow(&req).await.unwrap();
+        assert_eq!(refused(&response), *reason, "{terms:?}");
+    }
+    assert_eq!(sent.load(Ordering::SeqCst), 0);
+
+    let (provider, _) = escrow_provider(Node::new(authorized_outcome())).await;
+    let (_, req) = authorization_on(&Terms {
+        release_deadline: in_a_minute + 1,
+        ..terms_v1()
+    });
+    assert_valid(&provider.verify_escrow(&req).await.unwrap(), PAYER);
+}
+
+/// An authorization that ends `success: false` counts against its sender's
+/// hour; one the escrow took does not; and a sender whose hour is full has
+/// its authorization refused before anything is sent.
+#[tokio::test]
+async fn an_authorization_that_ends_success_false_counts_against_its_sender() {
+    let one = NearEscrowConfig {
+        sender_per_hour: 1,
+        ..cfg()
+    };
+    let signed = sign(PAYER, USDC_TESTNET, vec![authorize_call()]);
+    let (provider, sent) = escrow_provider_with(Node::new(authorized_outcome()), one.clone()).await;
+    for _ in 0..2 {
+        let response = provider
+            .settle_escrow(&request(Some(&signed)))
+            .await
+            .unwrap();
+        assert!(response.success, "{response:?}");
+    }
+    assert_eq!(sent.load(Ordering::SeqCst), 2);
+
+    // W-13: the escrow refused it, and that fills the hour.
+    let refusing = Node::new(w13_relayed(USDC_TESTNET, PAYER, CONTRACT));
+    let (provider, sent) = escrow_provider_with(refusing, one).await;
+    let response = provider
+        .settle_escrow(&request(Some(&signed)))
+        .await
+        .unwrap();
+    assert!(!response.success, "{response:?}");
+    assert_eq!(sent.load(Ordering::SeqCst), 1);
+    let verdict = provider
+        .verify_escrow(&request(Some(&signed)))
+        .await
+        .unwrap();
+    assert_eq!(invalid_reason(&verdict), "near_escrow_sender_rate_limited");
+    let response = provider
+        .settle_escrow(&request(Some(&signed)))
+        .await
+        .unwrap();
+    assert_eq!(refused(&response), "near_escrow_sender_rate_limited");
+    assert_eq!(sent.load(Ordering::SeqCst), 1);
 }
 
 #[tokio::test]
@@ -2370,10 +2517,17 @@ async fn an_unreadable_relay_count_relays_nothing() {
         Network::NearTestnet,
     )
     .unwrap()
-    .with_escrow(cfg(), Arc::new(Unreachable), Arc::new(|| 1_793_577_600));
+    .with_escrow(cfg(), Arc::new(Unreachable), Arc::new(|| NOW));
     let release = sign(CAPTURER, CONTRACT, vec![release_call()]);
     let response = provider
         .settle_escrow(&lifecycle_request(&release, "release"))
+        .await
+        .unwrap();
+    assert_eq!(refused(&response), "near_escrow_sender_count_unavailable");
+    // An authorization too: whether its sender's hour is full is unknown.
+    let signed = sign(PAYER, USDC_TESTNET, vec![authorize_call()]);
+    let response = provider
+        .settle_escrow(&request(Some(&signed)))
         .await
         .unwrap();
     assert_eq!(refused(&response), "near_escrow_sender_count_unavailable");

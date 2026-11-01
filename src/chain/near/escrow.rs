@@ -21,9 +21,16 @@
 use std::str::FromStr;
 use std::sync::OnceLock;
 
+use near_primitives::action::delegate::DelegateAction;
+use near_primitives::transaction::{Action, FunctionCallAction};
 use near_primitives::types::{AccountId, Gas};
+use near_token::NearToken;
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
+use sha2::{Digest, Sha256};
 
-use crate::network::Network;
+use crate::network::{Network, USDCDeployment};
+use crate::types::{FacilitatorErrorReason, MixedAddress};
 
 // ===========================================================================
 // Configuration
@@ -285,4 +292,455 @@ fn is_operator_id(s: &str) -> bool {
     (1..=32).contains(&s.len())
         && s.bytes()
             .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_' || b == b'-')
+}
+
+// ===========================================================================
+// The authorization: msg, payment_id and the delegate action
+// ===========================================================================
+
+/// The NEP-297 `standard` the escrow logs its events under.
+pub(crate) const ARRAS_STANDARD: &str = "arras";
+const FT_TRANSFER_CALL: &str = "ft_transfer_call";
+/// NEP-141 asserts exactly one yoctoNEAR on `ft_transfer_call`.
+const AUTHORIZE_DEPOSIT: NearToken = NearToken::from_yoctonear(1);
+
+/// Why a request is not relayed. The token is all that reaches the caller
+/// (`invalidReason` / `errorReason`); the detail stays in the server log.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum EscrowRejectReason {
+    Disabled,
+    MalformedRequest,
+    SchemeMismatch,
+    NetworkMismatch,
+    InvalidSignature,
+    InvalidAsset,
+    MissingExtra,
+    ActionsNotOne,
+    NotFunctionCall,
+    MethodNotAllowed,
+    WrongToken,
+    MalformedArgs,
+    ContractNotServed,
+    ContractMismatch,
+    WrongDeposit,
+    GasOutOfRange,
+    AmountMismatch,
+    MsgMismatch,
+    MsgInvalid,
+    MsgNotCanonical,
+    OperatorMismatch,
+    OperatorNotServed,
+    PaymentIdMismatch,
+    ReceiverMismatch,
+    FeeBpsMaxMismatch,
+    TermsMismatch,
+    ActionMismatch,
+    LifecycleWithAmount,
+    DelegateNotExecutable,
+    InsufficientFunds,
+    PaymentNotFound,
+    OperatorNotFound,
+    NotCapturer,
+    NotPayer,
+    NothingClaimable,
+    SenderRateLimited,
+    SenderCountUnavailable,
+}
+
+impl EscrowRejectReason {
+    pub(crate) fn as_str(self) -> &'static str {
+        use EscrowRejectReason::*;
+        match self {
+            Disabled => "near_escrow_disabled",
+            MalformedRequest => "near_escrow_malformed_request",
+            SchemeMismatch => "near_escrow_scheme_mismatch",
+            NetworkMismatch => "near_escrow_network_mismatch",
+            InvalidSignature => "near_escrow_invalid_signature",
+            InvalidAsset => "near_escrow_invalid_asset",
+            MissingExtra => "near_escrow_missing_extra",
+            ActionsNotOne => "near_escrow_actions_not_one",
+            NotFunctionCall => "near_escrow_not_function_call",
+            MethodNotAllowed => "near_escrow_method_not_allowed",
+            WrongToken => "near_escrow_wrong_token",
+            MalformedArgs => "near_escrow_malformed_args",
+            ContractNotServed => "near_escrow_contract_not_served",
+            ContractMismatch => "near_escrow_contract_mismatch",
+            WrongDeposit => "near_escrow_wrong_deposit",
+            GasOutOfRange => "near_escrow_gas_out_of_range",
+            AmountMismatch => "near_escrow_amount_mismatch",
+            MsgMismatch => "near_escrow_msg_mismatch",
+            MsgInvalid => "near_escrow_msg_invalid",
+            MsgNotCanonical => "near_escrow_msg_not_canonical",
+            OperatorMismatch => "near_escrow_operator_mismatch",
+            OperatorNotServed => "near_escrow_operator_not_served",
+            PaymentIdMismatch => "near_escrow_payment_id_mismatch",
+            ReceiverMismatch => "near_escrow_receiver_mismatch",
+            FeeBpsMaxMismatch => "near_escrow_fee_bps_max_mismatch",
+            TermsMismatch => "near_escrow_terms_mismatch",
+            ActionMismatch => "near_escrow_action_mismatch",
+            LifecycleWithAmount => "near_escrow_lifecycle_with_amount",
+            DelegateNotExecutable => "near_escrow_delegate_not_executable",
+            InsufficientFunds => "insufficient_funds",
+            PaymentNotFound => "near_escrow_payment_not_found",
+            OperatorNotFound => "near_escrow_operator_not_found",
+            NotCapturer => "near_escrow_not_capturer",
+            NotPayer => "near_escrow_not_payer",
+            NothingClaimable => "near_escrow_nothing_claimable",
+            SenderRateLimited => "near_escrow_sender_rate_limited",
+            SenderCountUnavailable => "near_escrow_sender_count_unavailable",
+        }
+    }
+}
+
+impl From<EscrowRejectReason> for FacilitatorErrorReason {
+    fn from(reason: EscrowRejectReason) -> Self {
+        FacilitatorErrorReason::FreeForm(reason.as_str().to_string())
+    }
+}
+
+/// The `msg` of `ft_transfer_call`, field for field, in the canonical order.
+/// Serialized back, it is the canonical text: those keys, that order, no
+/// whitespace.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AuthorizeMsg {
+    v: u8,
+    action: String,
+    operator_id: String,
+    receiver: String,
+    release_deadline: String,
+    reclaim_after: String,
+    fee_bps_max: u16,
+    terms_hash: String,
+    salt: String,
+}
+
+/// The terms of an escrow payment, decoded.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Terms {
+    pub operator_id: String,
+    pub receiver: AccountId,
+    pub release_deadline: u64,
+    pub reclaim_after: u64,
+    pub fee_bps_max: u16,
+    pub terms_hash: [u8; 32],
+    pub salt: [u8; 16],
+}
+
+/// A decimal with no sign, no leading zero and no padding.
+fn canonical_u128(s: &str) -> Option<u128> {
+    let n = s.parse::<u128>().ok()?;
+    (n.to_string() == s).then_some(n)
+}
+
+fn canonical_u64(s: &str) -> Option<u64> {
+    let n = s.parse::<u64>().ok()?;
+    (n.to_string() == s).then_some(n)
+}
+
+/// Lowercase hex of exactly `N` bytes.
+fn lower_hex<const N: usize>(s: &str) -> Option<[u8; N]> {
+    if s.len() != 2 * N || !s.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f')) {
+        return None;
+    }
+    let mut out = [0u8; N];
+    hex::decode_to_slice(s, &mut out).ok()?;
+    Some(out)
+}
+
+/// The terms of a canonical `authorize` msg.
+///
+/// The text has to be canonical as well as valid: a parser that reads the
+/// same fields out of a different text is a difference between our reading
+/// and the contract's waiting to happen, so only one text per terms passes.
+pub(crate) fn parse_authorize_msg(msg: &str) -> Result<Terms, EscrowRejectReason> {
+    use EscrowRejectReason::{MsgInvalid, MsgNotCanonical};
+    let parsed: AuthorizeMsg = serde_json::from_str(msg).map_err(|_| MsgInvalid)?;
+    if parsed.v != 1 || parsed.action != "authorize" || !is_operator_id(&parsed.operator_id) {
+        return Err(MsgInvalid);
+    }
+    let terms = Terms {
+        operator_id: parsed.operator_id.clone(),
+        receiver: AccountId::from_str(&parsed.receiver).map_err(|_| MsgInvalid)?,
+        release_deadline: canonical_u64(&parsed.release_deadline).ok_or(MsgInvalid)?,
+        reclaim_after: canonical_u64(&parsed.reclaim_after).ok_or(MsgInvalid)?,
+        fee_bps_max: parsed.fee_bps_max,
+        terms_hash: lower_hex::<32>(&parsed.terms_hash).ok_or(MsgInvalid)?,
+        salt: lower_hex::<16>(&parsed.salt).ok_or(MsgInvalid)?,
+    };
+    let canonical = serde_json::to_string(&parsed).map_err(|_| MsgInvalid)?;
+    if canonical != msg {
+        return Err(MsgNotCanonical);
+    }
+    Ok(terms)
+}
+
+/// The borsh preimage of a payment id: `v` u8 (1), `operator_id`, `token`,
+/// `payer` and `receiver` as borsh strings (u32 LE length, then the bytes),
+/// `amount` u128 LE, `release_deadline` and `reclaim_after` u64 LE,
+/// `fee_bps_max` u16 LE, `terms_hash` 32 bytes, `salt` 16 bytes.
+pub(crate) fn payment_id_preimage(
+    terms: &Terms,
+    token: &str,
+    payer: &str,
+    amount: u128,
+) -> Vec<u8> {
+    fn string(out: &mut Vec<u8>, s: &str) {
+        out.extend_from_slice(&(s.len() as u32).to_le_bytes());
+        out.extend_from_slice(s.as_bytes());
+    }
+    let mut out = vec![1u8];
+    string(&mut out, &terms.operator_id);
+    string(&mut out, token);
+    string(&mut out, payer);
+    string(&mut out, terms.receiver.as_str());
+    out.extend_from_slice(&amount.to_le_bytes());
+    out.extend_from_slice(&terms.release_deadline.to_le_bytes());
+    out.extend_from_slice(&terms.reclaim_after.to_le_bytes());
+    out.extend_from_slice(&terms.fee_bps_max.to_le_bytes());
+    out.extend_from_slice(&terms.terms_hash);
+    out.extend_from_slice(&terms.salt);
+    out
+}
+
+/// `base58(sha256(preimage))`: the base58 of 32 bytes, which runs from 32 to
+/// 44 characters (each leading zero byte is one `1`). Never judge it by length.
+pub(crate) fn compute_payment_id(terms: &Terms, token: &str, payer: &str, amount: u128) -> String {
+    let digest = Sha256::digest(payment_id_preimage(terms, token, payer, amount));
+    bs58::encode(digest).into_string()
+}
+
+/// A payment id as the escrow writes it: the base58 of 32 bytes, canonical.
+fn is_payment_id(s: &str) -> bool {
+    bs58::decode(s)
+        .into_vec()
+        .map(|bytes| bytes.len() == 32 && bs58::encode(&bytes).into_string() == s)
+        .unwrap_or(false)
+}
+
+/// The network's USDC contract: the one token the escrow holds.
+fn usdc(network: Network) -> Option<AccountId> {
+    match USDCDeployment::by_network(network)?.address() {
+        MixedAddress::Near(account) => AccountId::from_str(&account).ok(),
+        _ => None,
+    }
+}
+
+/// `extra.nearEscrow` of the payment requirements.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct NearEscrowExtra {
+    #[serde(default)]
+    pub contract: Option<String>,
+    #[serde(default)]
+    pub operator_id: Option<String>,
+    #[serde(default)]
+    pub msg: Option<String>,
+    #[serde(default)]
+    pub payment_id: Option<String>,
+    /// Absent or `authorize`: a payment. A lifecycle method name: that call.
+    #[serde(default)]
+    pub action: Option<String>,
+}
+
+/// What a NEAR escrow `/verify` or `/settle` carries, read out of the x402
+/// v1 or v2 body.
+#[derive(Debug, Clone)]
+pub(crate) struct EscrowRequest {
+    pub network: Network,
+    /// Base64 borsh `SignedDelegateAction`.
+    pub signed_delegate_action: String,
+    pub asset: Option<String>,
+    /// `maxAmountRequired` (v1) or `amount` (v2), atomic units.
+    pub amount: Option<u128>,
+    pub extra: NearEscrowExtra,
+}
+
+/// `near` / `near-testnet` / `near:mainnet` / `near:testnet`, or `None`.
+pub(crate) fn near_network(name: &str) -> Option<Network> {
+    let network = Network::from_caip2(name).or_else(|| Network::from_str(name).ok())?;
+    matches!(network, Network::Near | Network::NearTestnet).then_some(network)
+}
+
+impl EscrowRequest {
+    /// The request in `body`. The requirements are the seller's
+    /// `paymentRequirements` when present, else the `accepted` copy.
+    pub(crate) fn parse(body: &str) -> Result<Self, EscrowRejectReason> {
+        use EscrowRejectReason::{MalformedRequest, MissingExtra, NetworkMismatch, SchemeMismatch};
+        let json: Value = serde_json::from_str(body).map_err(|_| MalformedRequest)?;
+        let payment_payload = json.get("paymentPayload");
+        let requirements = json
+            .get("paymentRequirements")
+            .or_else(|| json.get("accepted"))
+            .or_else(|| payment_payload.and_then(|p| p.get("accepted")))
+            .or_else(|| payment_payload.and_then(|p| p.get("paymentRequirements")))
+            .filter(|r| r.is_object())
+            .ok_or(MalformedRequest)?;
+        if let Some(scheme) = requirements.get("scheme") {
+            if scheme.as_str() != Some("escrow") {
+                return Err(SchemeMismatch);
+            }
+        }
+        let network = requirements
+            .get("network")
+            .and_then(Value::as_str)
+            .and_then(near_network)
+            .ok_or(MalformedRequest)?;
+        for elsewhere in [
+            payment_payload.and_then(|p| p.get("network")),
+            payment_payload.and_then(|p| p.get("accepted").and_then(|a| a.get("network"))),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            if elsewhere.as_str().and_then(near_network) != Some(network) {
+                return Err(NetworkMismatch);
+            }
+        }
+        let payload = payment_payload
+            .and_then(|p| p.get("payload"))
+            .or_else(|| json.get("payload"))
+            .ok_or(MalformedRequest)?;
+        let signed_delegate_action = payload
+            .get("signedDelegateAction")
+            .and_then(Value::as_str)
+            .filter(|s| !s.is_empty())
+            .ok_or(MalformedRequest)?
+            .to_string();
+        let amount_of = |key: &str| -> Result<Option<u128>, EscrowRejectReason> {
+            match requirements.get(key) {
+                None | Some(Value::Null) => Ok(None),
+                Some(Value::String(s)) => canonical_u128(s).map(Some).ok_or(MalformedRequest),
+                Some(Value::Number(n)) => {
+                    n.as_u64().map(|n| Some(n as u128)).ok_or(MalformedRequest)
+                }
+                Some(_) => Err(MalformedRequest),
+            }
+        };
+        let amount = match (amount_of("maxAmountRequired")?, amount_of("amount")?) {
+            (Some(a), Some(b)) if a != b => return Err(MalformedRequest),
+            (a, b) => a.or(b),
+        };
+        let extra = requirements
+            .get("extra")
+            .and_then(|e| e.get("nearEscrow"))
+            .ok_or(MissingExtra)?;
+        let extra: NearEscrowExtra =
+            serde_json::from_value(extra.clone()).map_err(|_| MissingExtra)?;
+        Ok(Self {
+            network,
+            signed_delegate_action,
+            asset: requirements
+                .get("asset")
+                .and_then(Value::as_str)
+                .map(str::to_string),
+            amount,
+            extra,
+        })
+    }
+}
+
+/// NEP-141 `ft_transfer_call` arguments. `memo` is standard and harmless;
+/// any other key is refused.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct FtTransferCallArgs {
+    receiver_id: String,
+    amount: String,
+    msg: String,
+    #[serde(default)]
+    #[allow(dead_code)]
+    memo: Option<String>,
+}
+
+/// The single function call of a delegate action.
+fn single_function_call(da: &DelegateAction) -> Result<FunctionCallAction, EscrowRejectReason> {
+    if da.actions.len() != 1 {
+        return Err(EscrowRejectReason::ActionsNotOne);
+    }
+    match Action::from(da.actions[0].clone()) {
+        Action::FunctionCall(call) => Ok(*call),
+        _ => Err(EscrowRejectReason::NotFunctionCall),
+    }
+}
+
+/// An authorization that passed [`validate_escrow_delegate_actions`]: what the
+/// outcome of its settlement has to show.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct EscrowAuthorize {
+    /// The escrow contract, `args.receiver_id`.
+    pub contract: AccountId,
+    /// The network's USDC, the delegate action's receiver.
+    pub token: AccountId,
+    /// The delegate action's sender.
+    pub payer: AccountId,
+    pub amount: u128,
+    /// The id the contract will give the payment.
+    pub payment_id: String,
+}
+
+/// Whether a delegate action authorizes exactly the payment `req` describes.
+///
+/// One action, a `FunctionCall` of `ft_transfer_call` on the network's USDC,
+/// to one of the network's escrow contracts (the one `extra.nearEscrow.contract`
+/// names), attaching exactly one yoctoNEAR and gas within the configured
+/// range, moving exactly the required amount, with `msg` byte for byte the
+/// canonical `extra.nearEscrow.msg`, for an operator the facilitator serves,
+/// and producing, by the contract's own derivation, `extra.nearEscrow.paymentId`.
+/// The first condition that fails is the answer.
+pub(crate) fn validate_escrow_delegate_actions(
+    da: &DelegateAction,
+    req: &EscrowRequest,
+    cfg: &NearEscrowConfig,
+) -> Result<EscrowAuthorize, EscrowRejectReason> {
+    use EscrowRejectReason::*;
+    let call = single_function_call(da)?;
+    if call.method_name != FT_TRANSFER_CALL {
+        return Err(MethodNotAllowed);
+    }
+    let token = usdc(req.network).ok_or(WrongToken)?;
+    if da.receiver_id != token {
+        return Err(WrongToken);
+    }
+    let args: FtTransferCallArgs = serde_json::from_slice(&call.args).map_err(|_| MalformedArgs)?;
+    let contract = AccountId::from_str(&args.receiver_id).map_err(|_| ContractNotServed)?;
+    if !cfg.relays_to(req.network, &contract) {
+        return Err(ContractNotServed);
+    }
+    if req.extra.contract.as_deref() != Some(contract.as_str()) {
+        return Err(ContractMismatch);
+    }
+    if call.deposit != AUTHORIZE_DEPOSIT {
+        return Err(WrongDeposit);
+    }
+    if call.gas < cfg.min_gas || call.gas > cfg.max_gas {
+        return Err(GasOutOfRange);
+    }
+    let amount = canonical_u128(&args.amount).ok_or(AmountMismatch)?;
+    if req.amount != Some(amount) {
+        return Err(AmountMismatch);
+    }
+    let expected_msg = req.extra.msg.as_deref().ok_or(MissingExtra)?;
+    if args.msg.as_bytes() != expected_msg.as_bytes() {
+        return Err(MsgMismatch);
+    }
+    let terms = parse_authorize_msg(&args.msg)?;
+    if req.extra.operator_id.as_deref() != Some(terms.operator_id.as_str()) {
+        return Err(OperatorMismatch);
+    }
+    if !cfg.operator_ids.contains(&terms.operator_id) {
+        return Err(OperatorNotServed);
+    }
+    let expected_id = req.extra.payment_id.as_deref().ok_or(MissingExtra)?;
+    let payment_id = compute_payment_id(&terms, token.as_str(), da.sender_id.as_str(), amount);
+    if payment_id != expected_id {
+        return Err(PaymentIdMismatch);
+    }
+    Ok(EscrowAuthorize {
+        contract,
+        token,
+        payer: da.sender_id.clone(),
+        amount,
+        payment_id,
+    })
 }

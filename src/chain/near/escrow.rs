@@ -1916,6 +1916,22 @@ impl NearProvider {
             }),
         })
     }
+
+    /// The same provider with an escrow configuration, claim store and clock
+    /// of the test's choosing.
+    #[cfg(test)]
+    pub(crate) fn with_escrow(
+        mut self,
+        config: NearEscrowConfig,
+        store: Arc<dyn NonceStore>,
+        clock: Clock,
+    ) -> Self {
+        let mut runtime = EscrowRuntime::new(self.network(), config);
+        runtime.senders.store = Some(store);
+        runtime.senders.clock = clock;
+        self.escrow = Arc::new(runtime);
+        self
+    }
 }
 
 /// `extensions.nearEscrow` of a successful settlement.
@@ -2026,3 +2042,6 @@ where
         }),
     }
 }
+
+#[cfg(test)]
+mod tests;

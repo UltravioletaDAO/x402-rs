@@ -21,16 +21,27 @@
 use std::str::FromStr;
 use std::sync::OnceLock;
 
-use near_primitives::action::delegate::DelegateAction;
+use near_primitives::action::delegate::{DelegateAction, SignedDelegateAction};
+use near_primitives::hash::CryptoHash;
 use near_primitives::transaction::{Action, FunctionCallAction};
 use near_primitives::types::{AccountId, Gas};
+use near_primitives::views::{
+    ExecutionOutcomeWithIdView, ExecutionStatusView, FinalExecutionOutcomeView,
+};
 use near_token::NearToken;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
+use super::{
+    logs_transfer, parse_ft_balance, settle_outcome, ExpectedTransfer, NearProvider, Nep297Event,
+};
+use crate::chain::{FacilitatorLocalError, NetworkProvider, NetworkProviderOps};
 use crate::network::{Network, USDCDeployment};
-use crate::types::{FacilitatorErrorReason, MixedAddress};
+use crate::provider_cache::{HasProviderMap, ProviderMap};
+use crate::types::{
+    FacilitatorErrorReason, MixedAddress, SettleResponse, TransactionHash, VerifyResponse,
+};
 
 // ===========================================================================
 // Configuration
@@ -743,4 +754,506 @@ pub(crate) fn validate_escrow_delegate_actions(
         amount,
         payment_id,
     })
+}
+
+// ===========================================================================
+// Reading an authorization's outcome
+// ===========================================================================
+
+/// What an outcome says about the escrow effect a relay was for.
+#[derive(Debug)]
+enum Verdict {
+    /// The effect did not happen, and that is final: `success: false`.
+    NotPaid(String),
+    /// The outcome does not show the effect, nor that it failed. It may still
+    /// have happened: the hash travels as `SettlementUnconfirmed`.
+    NoVerdict(String),
+}
+
+fn verdict_error(verdict: Verdict, tx_hash: CryptoHash, network: Network) -> FacilitatorLocalError {
+    match verdict {
+        Verdict::NotPaid(why) => FacilitatorLocalError::ContractCall(format!(
+            "Meta-transaction {tx_hash} executed without the escrow effect: {why}"
+        )),
+        Verdict::NoVerdict(why) => {
+            tracing::warn!(%tx_hash, why, "NEAR escrow meta-transaction executed, effect not confirmed yet");
+            FacilitatorLocalError::SettlementUnconfirmed(TransactionHash::Near(tx_hash.0), network)
+        }
+    }
+}
+
+fn no_verdict(why: &str) -> Verdict {
+    Verdict::NoVerdict(why.to_string())
+}
+
+fn receipt_by_id<'a>(
+    outcome: &'a FinalExecutionOutcomeView,
+    id: &CryptoHash,
+) -> Option<&'a ExecutionOutcomeWithIdView> {
+    outcome.receipts_outcome.iter().find(|r| r.id == *id)
+}
+
+/// The receipts `parent` created that `account` executed.
+fn children_on<'a>(
+    outcome: &'a FinalExecutionOutcomeView,
+    parent: &ExecutionOutcomeWithIdView,
+    account: &AccountId,
+) -> Vec<&'a ExecutionOutcomeWithIdView> {
+    parent
+        .outcome
+        .receipt_ids
+        .iter()
+        .filter_map(|id| receipt_by_id(outcome, id))
+        .filter(|r| r.outcome.executor_id == *account)
+        .collect()
+}
+
+/// The one receipt the Delegate action created on `account`, the same way
+/// `confirm_transfer` finds the `ft_transfer`: the transaction's own status
+/// is the Delegate receipt's, which succeeds as soon as it has created the
+/// inner one.
+fn delegate_child_on<'a>(
+    outcome: &'a FinalExecutionOutcomeView,
+    account: &AccountId,
+) -> Result<&'a ExecutionOutcomeWithIdView, Verdict> {
+    let delegate = match &outcome.transaction_outcome.outcome.status {
+        ExecutionStatusView::SuccessReceiptId(id) => receipt_by_id(outcome, id)
+            .ok_or_else(|| no_verdict("Delegate receipt missing from the outcome"))?,
+        _ => return Err(no_verdict("transaction not converted to a receipt")),
+    };
+    match &delegate.outcome.status {
+        ExecutionStatusView::Failure(e) => {
+            return Err(Verdict::NotPaid(format!("Delegate action failed: {e:?}")))
+        }
+        ExecutionStatusView::Unknown => return Err(no_verdict("Delegate receipt not executed")),
+        ExecutionStatusView::SuccessValue(_) | ExecutionStatusView::SuccessReceiptId(_) => {}
+    }
+    match children_on(outcome, delegate, account).as_slice() {
+        [] => Err(no_verdict(
+            "no receipt of the Delegate action on its receiver",
+        )),
+        [only] => Ok(*only),
+        _ => Err(no_verdict(
+            "more than one receipt of the Delegate action on its receiver",
+        )),
+    }
+}
+
+/// The `data` entries of the `arras` events named `name` in `logs`.
+fn arras_events<'a>(logs: impl IntoIterator<Item = &'a String>, name: &str) -> Vec<Value> {
+    logs.into_iter()
+        .filter_map(|log| log.strip_prefix("EVENT_JSON:"))
+        .filter_map(|json| serde_json::from_str::<Nep297Event>(json).ok())
+        .filter(|event| event.standard == ARRAS_STANDARD && event.event == name)
+        .filter_map(|event| match event.data {
+            Value::Array(entries) => Some(entries),
+            _ => None,
+        })
+        .flatten()
+        .collect()
+}
+
+/// Whether `logs` carry the `arras` event `name` for `payment_id`.
+fn logs_payment_event<'a>(
+    logs: impl IntoIterator<Item = &'a String>,
+    name: &str,
+    payment_id: &str,
+) -> bool {
+    arras_events(logs, name)
+        .iter()
+        .any(|data| data.get("payment_id").and_then(Value::as_str) == Some(payment_id))
+}
+
+/// The `ok` of the `withdrawn` event for `account` in `logs`: `Some(true)` if
+/// one says the transfer went out, `Some(false)` if one says it came back.
+fn logs_withdrawn<'a>(
+    logs: impl IntoIterator<Item = &'a String>,
+    account: &AccountId,
+) -> Option<bool> {
+    let oks: Vec<Option<bool>> = arras_events(logs, "withdrawn")
+        .iter()
+        .filter(|data| data.get("account").and_then(Value::as_str) == Some(account.as_str()))
+        .map(|data| data.get("ok").and_then(Value::as_bool))
+        .collect();
+    if oks.contains(&Some(true)) {
+        Some(true)
+    } else if oks.contains(&Some(false)) {
+        Some(false)
+    } else {
+        None
+    }
+}
+
+/// Whether a relayed authorization put the payment in escrow.
+///
+/// `ft_transfer_call` runs on the token, which logs the NEP-141 transfer and
+/// calls `ft_on_transfer` on the escrow; the escrow keeps what it accepts and
+/// logs `authorized`; `ft_resolve_transfer` back on the token refunds the rest
+/// and returns what was used, which becomes the call's own value. None of it
+/// shows in the transaction's status. So the payment is in escrow only when
+/// the outcome shows all three:
+///
+/// - (a) the receipt the call's promise resolved to, on the token
+///   (`ft_resolve_transfer`), returned exactly the amount. Any other amount,
+///   `"0"` included, is a refusal the token already refunded: not paid.
+/// - (b) the token logged the NEP-141 `ft_transfer` of the amount from the
+///   payer to the escrow, in the `ft_transfer_call` receipt.
+/// - (c) the escrow's `ft_on_transfer` receipt succeeded and logged the
+///   `arras` `authorized` event for this payment id.
+///
+/// A failed Delegate or `ft_transfer_call` receipt is final: not paid. Any
+/// other gap is no verdict, answered as `SettlementUnconfirmed` with the hash.
+pub(crate) fn confirm_escrow_authorize(
+    outcome: &FinalExecutionOutcomeView,
+    expected: &EscrowAuthorize,
+    network: Network,
+) -> Result<CryptoHash, FacilitatorLocalError> {
+    let tx_hash = outcome.transaction.hash;
+    let read = || -> Result<(), Verdict> {
+        let call = delegate_child_on(outcome, &expected.token)?;
+        let resolve = match &call.outcome.status {
+            ExecutionStatusView::Failure(e) => {
+                return Err(Verdict::NotPaid(format!("ft_transfer_call failed: {e:?}")))
+            }
+            ExecutionStatusView::Unknown => {
+                return Err(no_verdict("ft_transfer_call receipt not executed"))
+            }
+            ExecutionStatusView::SuccessValue(_) => {
+                return Err(no_verdict("ft_transfer_call returned no promise"))
+            }
+            ExecutionStatusView::SuccessReceiptId(id) => {
+                receipt_by_id(outcome, id).ok_or_else(|| {
+                    no_verdict("ft_resolve_transfer receipt missing from the outcome")
+                })?
+            }
+        };
+        if resolve.outcome.executor_id != expected.token {
+            return Err(no_verdict(
+                "the promise of ft_transfer_call is not on the token",
+            ));
+        }
+        // (a)
+        let used = match &resolve.outcome.status {
+            ExecutionStatusView::SuccessValue(value) => parse_ft_balance(value)
+                .map_err(|_| no_verdict("ft_resolve_transfer did not return an amount"))?,
+            _ => return Err(no_verdict("ft_resolve_transfer did not return an amount")),
+        };
+        if used != expected.amount {
+            return Err(Verdict::NotPaid(format!(
+                "ft_resolve_transfer used {used} of {}: the escrow refused the payment and the token refunded it",
+                expected.amount
+            )));
+        }
+        // (b)
+        let moved = ExpectedTransfer {
+            token: expected.token.clone(),
+            payer: expected.payer.clone(),
+            receiver: expected.contract.to_string(),
+            amount: expected.amount.to_string(),
+        };
+        if !logs_transfer(&call.outcome.logs, &moved) {
+            return Err(no_verdict(
+                "ft_transfer_call without the NEP-141 event of this payment",
+            ));
+        }
+        // (c)
+        let on_transfer = match children_on(outcome, call, &expected.contract).as_slice() {
+            [only] => *only,
+            [] => return Err(no_verdict("no ft_on_transfer receipt on the escrow")),
+            _ => {
+                return Err(no_verdict(
+                    "more than one ft_on_transfer receipt on the escrow",
+                ))
+            }
+        };
+        if !matches!(
+            on_transfer.outcome.status,
+            ExecutionStatusView::SuccessValue(_)
+        ) {
+            return Err(no_verdict("ft_on_transfer did not succeed"));
+        }
+        if !logs_payment_event(
+            &on_transfer.outcome.logs,
+            "authorized",
+            &expected.payment_id,
+        ) {
+            return Err(no_verdict("no arras authorized event for this payment id"));
+        }
+        Ok(())
+    };
+    read()
+        .map(|()| tx_hash)
+        .map_err(|verdict| verdict_error(verdict, tx_hash, network))
+}
+
+// ===========================================================================
+// Verify and settle
+// ===========================================================================
+
+/// The escrow scheme's state on a provider.
+pub(crate) struct EscrowRuntime {
+    config: NearEscrowConfig,
+}
+
+impl EscrowRuntime {
+    pub(crate) fn new(_network: Network, config: NearEscrowConfig) -> Self {
+        Self { config }
+    }
+}
+
+/// What a checked request relays.
+#[derive(Debug, Clone)]
+pub(crate) enum EscrowOp {
+    Authorize(EscrowAuthorize),
+}
+
+/// A request that may be relayed.
+#[derive(Debug)]
+pub(crate) struct Checked {
+    pub sender: AccountId,
+    pub signed_delegate_action: SignedDelegateAction,
+    pub op: EscrowOp,
+}
+
+/// A request that is not relayed, and who signed it when that is known.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Rejected {
+    pub sender: Option<AccountId>,
+    pub reason: EscrowRejectReason,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Phase {
+    Verify,
+    Settle,
+}
+
+type Checking = Result<Result<Checked, Rejected>, FacilitatorLocalError>;
+
+impl NearProvider {
+    /// Whether this provider relays `req`, and what it relays.
+    ///
+    /// The outer error is the chain not answering (no verdict on the request);
+    /// the inner one is a verdict.
+    async fn check_escrow(&self, req: &EscrowRequest, _phase: Phase) -> Checking {
+        let cfg = &self.escrow.config;
+        let refuse = |sender: Option<&AccountId>, reason: EscrowRejectReason| -> Checking {
+            tracing::warn!(
+                network = %self.network(),
+                sender = ?sender.map(|s| s.as_str()),
+                reason = reason.as_str(),
+                "NEAR escrow request refused"
+            );
+            Ok(Err(Rejected {
+                sender: sender.cloned(),
+                reason,
+            }))
+        };
+        if !cfg.enabled {
+            return refuse(None, EscrowRejectReason::Disabled);
+        }
+        if req.network != self.network() {
+            return refuse(None, EscrowRejectReason::NetworkMismatch);
+        }
+        let signed = match self.decode_signed_delegate_action(&req.signed_delegate_action) {
+            Ok(signed) => signed,
+            Err(_) => return refuse(None, EscrowRejectReason::MalformedRequest),
+        };
+        let sender = signed.delegate_action.sender_id.clone();
+        if !signed.verify() {
+            return refuse(Some(&sender), EscrowRejectReason::InvalidSignature);
+        }
+        let da = &signed.delegate_action;
+        let op = match req.extra.action.as_deref() {
+            None | Some("authorize") => {
+                let token = usdc(self.network());
+                if req.asset.is_none() || req.asset.as_deref() != token.as_ref().map(|t| t.as_str())
+                {
+                    return refuse(Some(&sender), EscrowRejectReason::InvalidAsset);
+                }
+                let verdict =
+                    validate_escrow_delegate_actions(da, req, cfg).map(EscrowOp::Authorize);
+                match verdict {
+                    Ok(op) => op,
+                    Err(reason) => return refuse(Some(&sender), reason),
+                }
+            }
+            Some(_) => return refuse(Some(&sender), EscrowRejectReason::MethodNotAllowed),
+        };
+
+        let timeout = crate::chain::rpc_http_timeout();
+        match self.check_delegate_nonce_unused(&signed, timeout).await {
+            Ok(()) => {}
+            Err(FacilitatorLocalError::Other(why)) => {
+                tracing::warn!(%sender, why, "NEAR escrow delegate action cannot execute");
+                return refuse(Some(&sender), EscrowRejectReason::DelegateNotExecutable);
+            }
+            Err(e) => return Err(e),
+        }
+        match &op {
+            EscrowOp::Authorize(authorize) => {
+                match self
+                    .check_payer_balance(
+                        da,
+                        alloy::primitives::U256::from(authorize.amount),
+                        timeout,
+                    )
+                    .await
+                {
+                    Ok(()) => {}
+                    Err(FacilitatorLocalError::InsufficientFunds(_)) => {
+                        return refuse(Some(&sender), EscrowRejectReason::InsufficientFunds)
+                    }
+                    Err(e) => return Err(e),
+                }
+            }
+        }
+        Ok(Ok(Checked {
+            sender,
+            signed_delegate_action: signed,
+            op,
+        }))
+    }
+
+    /// `/verify` of a NEAR escrow request.
+    pub(crate) async fn verify_escrow(
+        &self,
+        req: &EscrowRequest,
+    ) -> Result<VerifyResponse, FacilitatorLocalError> {
+        Ok(match self.check_escrow(req, Phase::Verify).await? {
+            Ok(checked) => VerifyResponse::valid(MixedAddress::Near(checked.sender.to_string())),
+            Err(rejected) => VerifyResponse::invalid(
+                rejected.sender.map(|s| MixedAddress::Near(s.to_string())),
+                rejected.reason.into(),
+            ),
+        })
+    }
+
+    /// `/settle` of a NEAR escrow request: checked again, relayed, and
+    /// answered from the outcome.
+    pub(crate) async fn settle_escrow(
+        &self,
+        req: &EscrowRequest,
+    ) -> Result<SettleResponse, FacilitatorLocalError> {
+        let network = self.network();
+        let checked = match self.check_escrow(req, Phase::Settle).await? {
+            Ok(checked) => checked,
+            Err(rejected) => {
+                return Ok(SettleResponse {
+                    success: false,
+                    error_reason: Some(rejected.reason.into()),
+                    payer: MixedAddress::Near(
+                        rejected.sender.map(|s| s.to_string()).unwrap_or_default(),
+                    ),
+                    transaction: None,
+                    network,
+                    proof_of_payment: None,
+                    extensions: None,
+                })
+            }
+        };
+        let payer = MixedAddress::Near(checked.sender.to_string());
+        let relayed = self.relay_delegate(checked.signed_delegate_action).await;
+        let confirmed = relayed.and_then(|outcome| match &checked.op {
+            EscrowOp::Authorize(authorize) => {
+                confirm_escrow_authorize(&outcome, authorize, network)
+            }
+        });
+        let mut response = settle_outcome(confirmed, payer, network)?;
+        if response.success {
+            response.extensions = Some(settle_extensions(&checked.op));
+        }
+        Ok(response)
+    }
+}
+
+/// `extensions.nearEscrow` of a successful settlement.
+fn settle_extensions(op: &EscrowOp) -> std::collections::HashMap<String, Value> {
+    let details = match op {
+        EscrowOp::Authorize(a) => serde_json::json!({
+            "action": "authorize",
+            "contract": a.contract,
+            "paymentId": a.payment_id,
+        }),
+    };
+    std::collections::HashMap::from([("nearEscrow".to_string(), details)])
+}
+
+/// The NEAR provider `facilitator` holds for `network`.
+fn near_provider<F>(
+    facilitator: &F,
+    network: Network,
+) -> Result<&NearProvider, FacilitatorLocalError>
+where
+    F: HasProviderMap,
+    F::Map: ProviderMap<Value = NetworkProvider>,
+{
+    match facilitator.provider_map().by_network(network) {
+        Some(NetworkProvider::Near(provider)) => Ok(provider),
+        _ => Err(FacilitatorLocalError::UnsupportedNetwork(None)),
+    }
+}
+
+/// The NEAR provider for `network` and the request in `body`, or the answer
+/// to give instead: the scheme switched off on that provider, or a body that
+/// does not parse.
+fn routed<'a, F>(
+    body: &str,
+    network: Network,
+    facilitator: &'a F,
+) -> Result<Result<(&'a NearProvider, EscrowRequest), EscrowRejectReason>, FacilitatorLocalError>
+where
+    F: HasProviderMap,
+    F::Map: ProviderMap<Value = NetworkProvider>,
+{
+    let provider = near_provider(facilitator, network)?;
+    if !provider.escrow.config.enabled {
+        tracing::warn!(%network, "NEAR escrow requested but ENABLE_NEAR_ESCROW is not set to true");
+        return Ok(Err(EscrowRejectReason::Disabled));
+    }
+    let request = EscrowRequest::parse(body)
+        .map_err(|reason| FacilitatorLocalError::DecodingError(reason.as_str().to_string()))?;
+    Ok(Ok((provider, request)))
+}
+
+/// `/verify` of a body the handler routed here: scheme `escrow` on `network`,
+/// a NEAR network.
+pub async fn verify<F>(
+    body: &str,
+    network: Network,
+    facilitator: &F,
+) -> Result<VerifyResponse, FacilitatorLocalError>
+where
+    F: HasProviderMap,
+    F::Map: ProviderMap<Value = NetworkProvider>,
+{
+    match routed(body, network, facilitator)? {
+        Ok((provider, request)) => provider.verify_escrow(&request).await,
+        Err(reason) => Ok(VerifyResponse::invalid(None, reason.into())),
+    }
+}
+
+/// `/settle` of a body the handler routed here: scheme `escrow` on `network`,
+/// a NEAR network.
+pub async fn settle<F>(
+    body: &str,
+    network: Network,
+    facilitator: &F,
+) -> Result<SettleResponse, FacilitatorLocalError>
+where
+    F: HasProviderMap,
+    F::Map: ProviderMap<Value = NetworkProvider>,
+{
+    match routed(body, network, facilitator)? {
+        Ok((provider, request)) => provider.settle_escrow(&request).await,
+        Err(reason) => Ok(SettleResponse {
+            success: false,
+            error_reason: Some(reason.into()),
+            payer: MixedAddress::Near(String::new()),
+            transaction: None,
+            network,
+            proof_of_payment: None,
+            extensions: None,
+        }),
+    }
 }

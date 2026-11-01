@@ -604,6 +604,8 @@ pub struct NearProvider {
     chain: NearChain,
     /// The registrations the relayer may still pay for.
     registrations: Arc<RegistrationBudget>,
+    /// The `escrow` scheme's configuration and per-sender relay count.
+    escrow: Arc<escrow::EscrowRuntime>,
 }
 
 impl Debug for NearProvider {
@@ -645,6 +647,10 @@ impl NearProvider {
             rpc_client: Arc::new(rpc_client),
             chain,
             registrations: Arc::new(RegistrationBudget::new(network)),
+            escrow: Arc::new(escrow::EscrowRuntime::new(
+                network,
+                escrow::NearEscrowConfig::current().clone(),
+            )),
         })
     }
 
@@ -1285,6 +1291,16 @@ impl NearProvider {
         signed_delegate_action: SignedDelegateAction,
         transfer: &ExpectedTransfer,
     ) -> Result<CryptoHash, FacilitatorLocalError> {
+        let outcome = self.relay_delegate(signed_delegate_action).await?;
+        confirm_transfer(&outcome, transfer, self.network())
+    }
+
+    /// Wrap a SignedDelegateAction in a transaction the relayer signs and pays
+    /// for, broadcast it, and hand back its outcome for the caller to judge.
+    async fn relay_delegate(
+        &self,
+        signed_delegate_action: SignedDelegateAction,
+    ) -> Result<FinalExecutionOutcomeView, FacilitatorLocalError> {
         // Get current nonce and block hash for the relayer's account
         let nonce = self.get_nonce().await? + 1;
         let block_hash = self.get_block_hash().await?;
@@ -1315,8 +1331,7 @@ impl NearProvider {
             "Submitting NEP-366 meta-transaction (relayer pays gas)"
         );
 
-        let outcome = self.broadcast(signed_tx).await?;
-        confirm_transfer(&outcome, transfer, self.network())
+        self.broadcast(signed_tx).await
     }
 
     /// `broadcast_tx_commit` of a signed meta-transaction, and its outcome.

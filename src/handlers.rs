@@ -4449,6 +4449,43 @@ where
         } else {
             None
         };
+
+        // NEAR escrow (the Arras contracts) has its own switch,
+        // ENABLE_NEAR_ESCROW, held by the NEAR provider, and its own path, cut
+        // BEFORE the PaymentOperator gate: whether the EVM escrow is on never
+        // decides whether the NEAR one runs.
+        let near_escrow = escrow_scheme
+            .and(fields.network.as_deref())
+            .and_then(crate::chain::near::escrow::near_network);
+        if let Some(network) = near_escrow {
+            info!(%network, "Detected NEAR escrow scheme, routing to the Arras escrow path");
+            return Some(
+                match crate::chain::near::escrow::verify(body_str, network, &facilitator).await {
+                    Ok(response) => {
+                        let (ok, payer) = match &response {
+                            VerifyResponse::Valid { payer } => (true, Some(payer.to_string())),
+                            VerifyResponse::Invalid { payer, .. } => {
+                                (false, payer.as_ref().map(|p| p.to_string()))
+                            }
+                        };
+                        let mut d = detail(ok, escrow_scheme, None);
+                        d.payer = payer;
+                        AltSchemeOutcome {
+                            response: (StatusCode::OK, Json(response)).into_response(),
+                            detail: d,
+                        }
+                    }
+                    Err(e) => {
+                        error!(error = %e, "NEAR escrow verification failed");
+                        AltSchemeOutcome {
+                            response: e.into_response(),
+                            detail: detail(false, escrow_scheme, Some("near_escrow_error")),
+                        }
+                    }
+                },
+            );
+        }
+
         if escrow_scheme.is_some() {
             if !crate::payment_operator::is_enabled() {
                 warn!(
@@ -5453,6 +5490,47 @@ where
         } else {
             None
         };
+
+        // NEAR escrow: same cut as in `post_verify`, before the PaymentOperator gate.
+        let near_escrow = escrow_scheme
+            .and(fields.network.as_deref())
+            .and_then(crate::chain::near::escrow::near_network);
+        if let Some(network) = near_escrow {
+            info!(%network, "Detected NEAR escrow scheme, routing to the Arras escrow path");
+            return Some(
+                match crate::chain::near::escrow::settle(body_str, network, &facilitator).await {
+                    Ok(response) => {
+                        let mut d = detail(response.success, escrow_scheme, None);
+                        d.network = response.network.to_string();
+                        d.tx = response.transaction.as_ref().map(|t| t.to_string());
+                        d.payer = Some(response.payer.to_string());
+                        cache_typed_settle_success(
+                            idempotency_key.as_ref(),
+                            request_hash.as_ref(),
+                            &response,
+                        );
+                        AltSchemeOutcome {
+                            response: (StatusCode::OK, Json(response)).into_response(),
+                            detail: d,
+                        }
+                    }
+                    Err(e) => {
+                        error!(error = %e, "NEAR escrow settlement failed");
+                        let category = match &e {
+                            FacilitatorLocalError::SettlementUnconfirmed(..) => {
+                                "settlement_unconfirmed"
+                            }
+                            _ => "near_escrow_error",
+                        };
+                        AltSchemeOutcome {
+                            response: e.into_response(),
+                            detail: detail(false, escrow_scheme, Some(category)),
+                        }
+                    }
+                },
+            );
+        }
+
         if escrow_scheme.is_some() {
             if !crate::payment_operator::is_enabled() {
                 warn!("Escrow scheme settlement requested but ENABLE_PAYMENT_OPERATOR is not set to true");

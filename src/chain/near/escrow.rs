@@ -1048,6 +1048,15 @@ const LIFECYCLE_MAX_GAS_TGAS: u64 = 30;
 /// figure for `withdraw_for`; W-09 measured ~6.7 TGas burnt, 24 TGas prepaid
 /// the least that passes).
 const WITHDRAW_MAX_GAS_TGAS: u64 = 50;
+/// The least gas a `release`, `refund` or `reclaim` may attach: the 2 TGas
+/// prepaid W-09 measured as the least that passes, plus 20 % (2.4), rounded
+/// up, as `DEFAULT_MIN_GAS_TGAS` is for the authorization. With less the call
+/// runs out of gas on the escrow, and the relayer pays for it.
+const LIFECYCLE_MIN_GAS_TGAS: u64 = 3;
+/// The least gas a `withdraw` or `withdraw_for` may attach: the 24 TGas W-09
+/// measured, plus 20 % (28.8), rounded up. The escrow attaches 10 TGas to the
+/// `ft_transfer` and 10 to `on_withdraw`; with less, the call fails.
+const WITHDRAW_MIN_GAS_TGAS: u64 = 29;
 /// Promise hops followed from a relayed call before giving up on a verdict.
 const MAX_PROMISE_HOPS: usize = 4;
 
@@ -1089,6 +1098,15 @@ impl LifecycleMethod {
                 Gas::from_teragas(LIFECYCLE_MAX_GAS_TGAS)
             }
             Self::Withdraw | Self::WithdrawFor => Gas::from_teragas(WITHDRAW_MAX_GAS_TGAS),
+        }
+    }
+
+    fn min_gas(self) -> Gas {
+        match self {
+            Self::Release | Self::Refund | Self::Reclaim => {
+                Gas::from_teragas(LIFECYCLE_MIN_GAS_TGAS)
+            }
+            Self::Withdraw | Self::WithdrawFor => Gas::from_teragas(WITHDRAW_MIN_GAS_TGAS),
         }
     }
 }
@@ -1160,8 +1178,8 @@ impl LifecycleCall {
 /// Whether a delegate action is a lifecycle call the facilitator relays.
 ///
 /// One `FunctionCall` on one of the network's escrow contracts, of a lifecycle
-/// method, attaching no deposit and no more gas than that method's cap, with
-/// exactly that method's arguments.
+/// method, attaching no deposit and gas between that method's floor and cap,
+/// with exactly that method's arguments.
 pub(crate) fn validate_escrow_lifecycle_actions(
     da: &DelegateAction,
     cfg: &NearEscrowConfig,
@@ -1176,7 +1194,7 @@ pub(crate) fn validate_escrow_lifecycle_actions(
     if call.deposit.as_yoctonear() != 0 {
         return Err(WrongDeposit);
     }
-    if call.gas > method.max_gas() {
+    if call.gas < method.min_gas() || call.gas > method.max_gas() {
         return Err(GasOutOfRange);
     }
     let (payment_id, account) = match method {

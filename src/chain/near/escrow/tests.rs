@@ -1258,6 +1258,39 @@ fn a_lifecycle_call_over_its_gas_cap_is_refused() {
 }
 
 #[test]
+fn a_lifecycle_call_under_its_gas_floor_is_refused() {
+    // W-09: release, refund and reclaim pass with 2 TGas prepaid, a withdrawal
+    // with 24; each floor is that plus 20 %, rounded up.
+    for (method, args, measured, floor) in [
+        ("release", json!({"payment_id": V1_ID}), 2, 3),
+        ("refund", json!({"payment_id": V1_ID}), 2, 3),
+        ("reclaim", json!({"payment_id": V1_ID}), 2, 3),
+        ("withdraw", json!({}), 24, 29),
+        ("withdraw_for", json!({"account": WORKER}), 24, 29),
+    ] {
+        assert_eq!(floor, (measured * 12u64).div_ceil(10), "{method}");
+        let call = lifecycle(method, args.clone(), floor);
+        assert!(
+            lifecycle_check(call.clone()).is_ok(),
+            "{method} at its floor"
+        );
+        for gas in [
+            Gas::from_gas(Gas::from_teragas(floor).as_gas() - 1),
+            Gas::from_teragas(floor - 1),
+            Gas::from_teragas(0),
+        ] {
+            let mut under = call.clone();
+            under.gas = gas;
+            assert_eq!(
+                lifecycle_check(under),
+                Err(EscrowRejectReason::GasOutOfRange),
+                "{method} with {gas:?}"
+            );
+        }
+    }
+}
+
+#[test]
 fn a_lifecycle_call_with_other_arguments_is_refused() {
     for call in [
         lifecycle(

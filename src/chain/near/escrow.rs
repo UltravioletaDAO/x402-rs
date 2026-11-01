@@ -19,12 +19,14 @@
 //! accounts.
 
 use std::str::FromStr;
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock};
 
+use near_jsonrpc_client::methods;
+use near_jsonrpc_primitives::types::query::QueryResponseKind;
 use near_primitives::action::delegate::{DelegateAction, SignedDelegateAction};
 use near_primitives::hash::CryptoHash;
 use near_primitives::transaction::{Action, FunctionCallAction};
-use near_primitives::types::{AccountId, Gas};
+use near_primitives::types::{AccountId, BlockReference, Finality, Gas};
 use near_primitives::views::{
     ExecutionOutcomeWithIdView, ExecutionStatusView, FinalExecutionOutcomeView,
 };
@@ -34,10 +36,12 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 
 use super::{
-    logs_transfer, parse_ft_balance, settle_outcome, ExpectedTransfer, NearProvider, Nep297Event,
+    logs_transfer, parse_ft_balance, settle_outcome, wall_clock, Clock, ExpectedTransfer,
+    NearProvider, Nep297Event, REGISTRATION_STORE,
 };
 use crate::chain::{FacilitatorLocalError, NetworkProvider, NetworkProviderOps};
 use crate::network::{Network, USDCDeployment};
+use crate::nonce_store::{NonceStore, NonceStoreError};
 use crate::provider_cache::{HasProviderMap, ProviderMap};
 use crate::types::{
     FacilitatorErrorReason, MixedAddress, SettleResponse, TransactionHash, VerifyResponse,
@@ -987,24 +991,398 @@ pub(crate) fn confirm_escrow_authorize(
 }
 
 // ===========================================================================
-// Verify and settle
+// The lifecycle: release, refund, reclaim, withdraw, withdraw_for
 // ===========================================================================
+
+/// Gas a `release`, `refund` or `reclaim` may attach: each writes the
+/// payment and credits balances, no cross-contract call (what the escrow's
+/// testnet runbook attaches to `release`; W-09 measured ~2.6 TGas burnt and
+/// 2 TGas prepaid enough).
+const LIFECYCLE_MAX_GAS_TGAS: u64 = 30;
+/// Gas a `withdraw` or `withdraw_for` may attach: an `ft_transfer` (10 TGas)
+/// and its `on_withdraw` callback (10 TGas) on top of the call (the runbook's
+/// figure for `withdraw_for`; W-09 measured ~6.7 TGas burnt, 24 TGas prepaid
+/// the least that passes).
+const WITHDRAW_MAX_GAS_TGAS: u64 = 50;
+/// Promise hops followed from a relayed call before giving up on a verdict.
+const MAX_PROMISE_HOPS: usize = 4;
+
+/// The escrow methods the facilitator relays besides the authorization.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum LifecycleMethod {
+    Release,
+    Refund,
+    Reclaim,
+    Withdraw,
+    WithdrawFor,
+}
+
+impl LifecycleMethod {
+    fn parse(name: &str) -> Option<Self> {
+        match name {
+            "release" => Some(Self::Release),
+            "refund" => Some(Self::Refund),
+            "reclaim" => Some(Self::Reclaim),
+            "withdraw" => Some(Self::Withdraw),
+            "withdraw_for" => Some(Self::WithdrawFor),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::Release => "release",
+            Self::Refund => "refund",
+            Self::Reclaim => "reclaim",
+            Self::Withdraw => "withdraw",
+            Self::WithdrawFor => "withdraw_for",
+        }
+    }
+
+    fn max_gas(self) -> Gas {
+        match self {
+            Self::Release | Self::Refund | Self::Reclaim => {
+                Gas::from_teragas(LIFECYCLE_MAX_GAS_TGAS)
+            }
+            Self::Withdraw | Self::WithdrawFor => Gas::from_teragas(WITHDRAW_MAX_GAS_TGAS),
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ReleaseArgs {
+    payment_id: String,
+    #[serde(default)]
+    amount: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PaymentIdArgs {
+    payment_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct WithdrawForArgs {
+    account: String,
+}
+
+/// A lifecycle call that passed [`validate_escrow_lifecycle_actions`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct LifecycleCall {
+    pub contract: AccountId,
+    pub method: LifecycleMethod,
+    /// `release`, `refund`, `reclaim`.
+    pub payment_id: Option<String>,
+    /// `withdraw_for`.
+    pub account: Option<AccountId>,
+}
+
+/// The event a relayed escrow call has to log.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum ExpectedEvent {
+    /// `released`, `refunded`, `reclaimed` or `authorized`, for this payment.
+    Payment {
+        event: &'static str,
+        payment_id: String,
+    },
+    /// `withdrawn` for this account, with `ok: true`.
+    Withdrawn { account: AccountId },
+}
+
+impl LifecycleCall {
+    /// What the call's outcome has to log, `sender` being who signed it.
+    fn expected(&self, sender: &AccountId) -> ExpectedEvent {
+        let payment = |event| ExpectedEvent::Payment {
+            event,
+            payment_id: self.payment_id.clone().unwrap_or_default(),
+        };
+        match self.method {
+            LifecycleMethod::Release => payment("released"),
+            LifecycleMethod::Refund => payment("refunded"),
+            LifecycleMethod::Reclaim => payment("reclaimed"),
+            LifecycleMethod::Withdraw => ExpectedEvent::Withdrawn {
+                account: sender.clone(),
+            },
+            LifecycleMethod::WithdrawFor => ExpectedEvent::Withdrawn {
+                account: self.account.clone().unwrap_or_else(|| sender.clone()),
+            },
+        }
+    }
+}
+
+/// Whether a delegate action is a lifecycle call the facilitator relays.
+///
+/// One `FunctionCall` on one of the network's escrow contracts, of a lifecycle
+/// method, attaching no deposit and no more gas than that method's cap, with
+/// exactly that method's arguments.
+pub(crate) fn validate_escrow_lifecycle_actions(
+    da: &DelegateAction,
+    cfg: &NearEscrowConfig,
+    network: Network,
+) -> Result<LifecycleCall, EscrowRejectReason> {
+    use EscrowRejectReason::*;
+    let call = single_function_call(da)?;
+    if !cfg.relays_to(network, &da.receiver_id) {
+        return Err(ContractNotServed);
+    }
+    let method = LifecycleMethod::parse(&call.method_name).ok_or(MethodNotAllowed)?;
+    if call.deposit.as_yoctonear() != 0 {
+        return Err(WrongDeposit);
+    }
+    if call.gas > method.max_gas() {
+        return Err(GasOutOfRange);
+    }
+    let (payment_id, account) = match method {
+        LifecycleMethod::Release => {
+            let args: ReleaseArgs =
+                serde_json::from_slice(&call.args).map_err(|_| MalformedArgs)?;
+            if let Some(amount) = &args.amount {
+                canonical_u128(amount)
+                    .filter(|a| *a > 0)
+                    .ok_or(MalformedArgs)?;
+            }
+            (Some(args.payment_id), None)
+        }
+        LifecycleMethod::Refund | LifecycleMethod::Reclaim => {
+            let args: PaymentIdArgs =
+                serde_json::from_slice(&call.args).map_err(|_| MalformedArgs)?;
+            (Some(args.payment_id), None)
+        }
+        LifecycleMethod::Withdraw => {
+            if !(call.args.is_empty() || call.args == b"{}") {
+                return Err(MalformedArgs);
+            }
+            (None, None)
+        }
+        LifecycleMethod::WithdrawFor => {
+            let args: WithdrawForArgs =
+                serde_json::from_slice(&call.args).map_err(|_| MalformedArgs)?;
+            let account = AccountId::from_str(&args.account).map_err(|_| MalformedArgs)?;
+            (None, Some(account))
+        }
+    };
+    if let Some(id) = &payment_id {
+        if !is_payment_id(id) {
+            return Err(MalformedArgs);
+        }
+    }
+    Ok(LifecycleCall {
+        contract: da.receiver_id.clone(),
+        method,
+        payment_id,
+        account,
+    })
+}
+
+/// Whether a relayed escrow call had its effect.
+///
+/// The Delegate action's one receipt on the escrow, and the promises it
+/// returned while they stay on the escrow (`withdraw` returns the transfer's
+/// `on_withdraw` callback), have to end in `SuccessValue`, and between them log
+/// `expected`. A failure anywhere on that path is final: the call did not take
+/// effect (`success: false`), and so is a `withdrawn` event with `ok: false`.
+/// A missing event, a receipt not executed or not in the outcome is no
+/// verdict, answered as `SettlementUnconfirmed` with the hash, like
+/// `confirm_transfer`.
+pub(crate) fn confirm_escrow_lifecycle(
+    outcome: &FinalExecutionOutcomeView,
+    contract: &AccountId,
+    expected: &ExpectedEvent,
+    network: Network,
+) -> Result<CryptoHash, FacilitatorLocalError> {
+    let tx_hash = outcome.transaction.hash;
+    let read = || -> Result<(), Verdict> {
+        let mut receipt = delegate_child_on(outcome, contract)?;
+        let mut path = vec![receipt];
+        let mut hops = 0;
+        loop {
+            if receipt.outcome.executor_id != *contract {
+                return Err(no_verdict("the call's promise left the escrow"));
+            }
+            match &receipt.outcome.status {
+                ExecutionStatusView::Failure(e) => {
+                    return Err(Verdict::NotPaid(format!("the escrow call failed: {e:?}")))
+                }
+                ExecutionStatusView::Unknown => {
+                    return Err(no_verdict("the escrow call was not executed"))
+                }
+                ExecutionStatusView::SuccessValue(_) => break,
+                ExecutionStatusView::SuccessReceiptId(id) => {
+                    hops += 1;
+                    if hops > MAX_PROMISE_HOPS {
+                        return Err(no_verdict("the escrow call's promises go on too long"));
+                    }
+                    receipt = receipt_by_id(outcome, id)
+                        .ok_or_else(|| no_verdict("the escrow call's promise is missing"))?;
+                    path.push(receipt);
+                }
+            }
+        }
+        let logs = || path.iter().flat_map(|r| r.outcome.logs.iter());
+        match expected {
+            ExpectedEvent::Payment { event, payment_id } => {
+                if logs_payment_event(logs(), event, payment_id) {
+                    Ok(())
+                } else {
+                    Err(no_verdict("the escrow call succeeded without its event"))
+                }
+            }
+            ExpectedEvent::Withdrawn { account } => match logs_withdrawn(logs(), account) {
+                Some(true) => Ok(()),
+                Some(false) => Err(Verdict::NotPaid(
+                    "withdrawn ok:false: the transfer failed and the balance went back to claimable"
+                        .to_string(),
+                )),
+                None => Err(no_verdict("the withdrawal logged no withdrawn event")),
+            },
+        }
+    };
+    read()
+        .map(|()| tx_hash)
+        .map_err(|verdict| verdict_error(verdict, tx_hash, network))
+}
+
+/// Why a sender's relay is not counted in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SenderRefusal {
+    /// [`NearEscrowConfig::sender_per_hour`] reached this UTC hour.
+    Full,
+    /// The shared count could not be read or written: not room for one more.
+    Unavailable,
+}
+
+/// The lifecycle and budget relays of each `sender_id`, per UTC hour,
+/// counted across every task in the claim store the service shares, the way
+/// `RegistrationBudget` counts registrations: slot `i` of a sender's hour is a
+/// key taken with the store's conditional put, so no two tasks take the same
+/// slot and an hour never holds more than the cap. Taken slots are a prefix,
+/// so the hour is full exactly when its last slot is taken.
+pub(crate) struct SenderBudget {
+    network: Network,
+    cap: u32,
+    /// `None`: the process-wide claim store.
+    store: Option<Arc<dyn NonceStore>>,
+    clock: Clock,
+}
+
+impl SenderBudget {
+    fn new(network: Network, cap: u32) -> Self {
+        Self {
+            network,
+            cap,
+            store: None,
+            clock: Arc::new(wall_clock),
+        }
+    }
+
+    async fn store(&self) -> Arc<dyn NonceStore> {
+        match &self.store {
+            Some(store) => store.clone(),
+            None => REGISTRATION_STORE
+                .get_or_init(|| async {
+                    let store = crate::nonce_store::create_nonce_store().await;
+                    if store.store_type() == "memory" {
+                        tracing::warn!(
+                            "NEAR relay counts are per task: no shared store (NONCE_STORE_TABLE_NAME)"
+                        );
+                    }
+                    store
+                })
+                .await
+                .clone(),
+        }
+    }
+
+    fn key(&self, sender: &AccountId, hour: u64, slot: u32) -> String {
+        format!(
+            "near-escrow-sender#{}#{}#h{}#{}",
+            self.network, sender, hour, slot
+        )
+    }
+
+    /// Whether `sender` has room for one more relay this hour (verify).
+    async fn check(&self, sender: &AccountId) -> Result<(), SenderRefusal> {
+        if self.cap == 0 {
+            return Err(SenderRefusal::Full);
+        }
+        let hour = (self.clock)() / 3_600;
+        match self
+            .store()
+            .await
+            .is_used(&self.key(sender, hour, self.cap - 1))
+            .await
+        {
+            Ok(false) => Ok(()),
+            Ok(true) => Err(SenderRefusal::Full),
+            Err(e) => {
+                tracing::warn!(network = %self.network, error = %e, "NEAR escrow sender count unreadable");
+                Err(SenderRefusal::Unavailable)
+            }
+        }
+    }
+
+    /// Take one of `sender`'s relays this hour (settle). A slot is kept
+    /// whatever the relay does next.
+    async fn take(&self, sender: &AccountId) -> Result<(), SenderRefusal> {
+        let hour = (self.clock)() / 3_600;
+        let store = self.store().await;
+        let (mut low, mut high) = (0, self.cap);
+        while low < high {
+            let middle = low + (high - low) / 2;
+            match store.is_used(&self.key(sender, hour, middle)).await {
+                Ok(true) => low = middle + 1,
+                Ok(false) => high = middle,
+                Err(e) => {
+                    tracing::warn!(network = %self.network, error = %e, "NEAR escrow sender count unreadable");
+                    return Err(SenderRefusal::Unavailable);
+                }
+            }
+        }
+        let mut slot = low;
+        loop {
+            if slot >= self.cap {
+                return Err(SenderRefusal::Full);
+            }
+            match store
+                .check_and_mark_used(&self.key(sender, hour, slot), 2 * 3_600)
+                .await
+            {
+                Ok(()) => return Ok(()),
+                Err(NonceStoreError::NonceAlreadyUsed(_)) => slot += 1,
+                Err(e) => {
+                    tracing::warn!(network = %self.network, error = %e, "NEAR escrow sender count unwritable");
+                    return Err(SenderRefusal::Unavailable);
+                }
+            }
+        }
+    }
+}
 
 /// The escrow scheme's state on a provider.
 pub(crate) struct EscrowRuntime {
     config: NearEscrowConfig,
+    senders: SenderBudget,
 }
 
 impl EscrowRuntime {
-    pub(crate) fn new(_network: Network, config: NearEscrowConfig) -> Self {
-        Self { config }
+    pub(crate) fn new(network: Network, config: NearEscrowConfig) -> Self {
+        let senders = SenderBudget::new(network, config.sender_per_hour);
+        Self { config, senders }
     }
 }
+
+// ===========================================================================
+// Verify and settle
+// ===========================================================================
 
 /// What a checked request relays.
 #[derive(Debug, Clone)]
 pub(crate) enum EscrowOp {
     Authorize(EscrowAuthorize),
+    Lifecycle(LifecycleCall),
 }
 
 /// A request that may be relayed.
@@ -1034,8 +1412,9 @@ impl NearProvider {
     /// Whether this provider relays `req`, and what it relays.
     ///
     /// The outer error is the chain not answering (no verdict on the request);
-    /// the inner one is a verdict.
-    async fn check_escrow(&self, req: &EscrowRequest, _phase: Phase) -> Checking {
+    /// the inner one is a verdict. Verify only reads; settle also takes the
+    /// sender's relay slot.
+    async fn check_escrow(&self, req: &EscrowRequest, phase: Phase) -> Checking {
         let cfg = &self.escrow.config;
         let refuse = |sender: Option<&AccountId>, reason: EscrowRejectReason| -> Checking {
             tracing::warn!(
@@ -1078,7 +1457,24 @@ impl NearProvider {
                     Err(reason) => return refuse(Some(&sender), reason),
                 }
             }
-            Some(_) => return refuse(Some(&sender), EscrowRejectReason::MethodNotAllowed),
+            Some(action) => {
+                if req.amount.unwrap_or(0) != 0 {
+                    return refuse(Some(&sender), EscrowRejectReason::LifecycleWithAmount);
+                }
+                let call = match validate_escrow_lifecycle_actions(da, cfg, self.network()) {
+                    Ok(call) => call,
+                    Err(reason) => return refuse(Some(&sender), reason),
+                };
+                if call.method.as_str() != action {
+                    return refuse(Some(&sender), EscrowRejectReason::ActionMismatch);
+                }
+                if let Some(contract) = &req.extra.contract {
+                    if contract.as_str() != call.contract.as_str() {
+                        return refuse(Some(&sender), EscrowRejectReason::ContractMismatch);
+                    }
+                }
+                EscrowOp::Lifecycle(call)
+            }
         };
 
         let timeout = crate::chain::rpc_http_timeout();
@@ -1107,12 +1503,192 @@ impl NearProvider {
                     Err(e) => return Err(e),
                 }
             }
+            EscrowOp::Lifecycle(call) => {
+                if let Err(reason) = self.lifecycle_gate(call, &sender).await? {
+                    return refuse(Some(&sender), reason);
+                }
+            }
+        }
+        if matches!(op, EscrowOp::Lifecycle(_)) {
+            let counted = match phase {
+                Phase::Verify => self.escrow.senders.check(&sender).await,
+                Phase::Settle => self.escrow.senders.take(&sender).await,
+            };
+            match counted {
+                Ok(()) => {}
+                Err(SenderRefusal::Full) => {
+                    return refuse(Some(&sender), EscrowRejectReason::SenderRateLimited)
+                }
+                Err(SenderRefusal::Unavailable) => {
+                    return refuse(Some(&sender), EscrowRejectReason::SenderCountUnavailable)
+                }
+            }
         }
         Ok(Ok(Checked {
             sender,
             signed_delegate_action: signed,
             op,
         }))
+    }
+
+    /// Whether the escrow's own state lets `sender` have `call` relayed.
+    ///
+    /// `release` and `refund`: `sender` is a capturer of the payment's
+    /// operator (`get_operator(get_payment(id).operator_id).capturers`).
+    /// `reclaim`: `sender` is the payment's payer. `withdraw`: `sender` has a
+    /// claimable balance. `withdraw_for`: the named account has one. A call
+    /// that would only fail on the escrow is never paid for by the relayer.
+    async fn lifecycle_gate(
+        &self,
+        call: &LifecycleCall,
+        sender: &AccountId,
+    ) -> Result<Result<(), EscrowRejectReason>, FacilitatorLocalError> {
+        use EscrowRejectReason::*;
+        let contract = &call.contract;
+        let payment_id = call.payment_id.as_deref().unwrap_or_default();
+        let field = |value: &Value, name: &str, method: &str| {
+            value
+                .get(name)
+                .and_then(Value::as_str)
+                .map(str::to_string)
+                .ok_or_else(|| {
+                    FacilitatorLocalError::ContractCall(format!(
+                        "{method} on {contract} answered without {name}"
+                    ))
+                })
+        };
+        match call.method {
+            LifecycleMethod::Release | LifecycleMethod::Refund => {
+                let payment = self.get_payment(contract, payment_id).await?;
+                if payment.is_null() {
+                    return Ok(Err(PaymentNotFound));
+                }
+                let operator_id = field(&payment, "operator_id", "get_payment")?;
+                let operator = self
+                    .escrow_view(
+                        contract,
+                        "get_operator",
+                        serde_json::json!({ "operator_id": operator_id }),
+                    )
+                    .await?;
+                if operator.is_null() {
+                    return Ok(Err(OperatorNotFound));
+                }
+                let capturers = operator
+                    .get("capturers")
+                    .and_then(Value::as_array)
+                    .ok_or_else(|| {
+                        FacilitatorLocalError::ContractCall(format!(
+                            "get_operator on {contract} answered without capturers"
+                        ))
+                    })?;
+                if capturers
+                    .iter()
+                    .any(|c| c.as_str() == Some(sender.as_str()))
+                {
+                    Ok(Ok(()))
+                } else {
+                    Ok(Err(NotCapturer))
+                }
+            }
+            LifecycleMethod::Reclaim => {
+                let payment = self.get_payment(contract, payment_id).await?;
+                if payment.is_null() {
+                    return Ok(Err(PaymentNotFound));
+                }
+                if field(&payment, "payer", "get_payment")? == sender.as_str() {
+                    Ok(Ok(()))
+                } else {
+                    Ok(Err(NotPayer))
+                }
+            }
+            LifecycleMethod::Withdraw | LifecycleMethod::WithdrawFor => {
+                let account = call.account.as_ref().unwrap_or(sender);
+                if self.claimable(contract, account).await? > 0 {
+                    Ok(Ok(()))
+                } else {
+                    Ok(Err(NothingClaimable))
+                }
+            }
+        }
+    }
+
+    /// A view call on the escrow, its JSON answer.
+    async fn escrow_view(
+        &self,
+        contract: &AccountId,
+        method: &str,
+        args: Value,
+    ) -> Result<Value, FacilitatorLocalError> {
+        let request = methods::query::RpcQueryRequest {
+            block_reference: BlockReference::Finality(Finality::None),
+            request: near_primitives::views::QueryRequest::CallFunction {
+                account_id: contract.clone(),
+                method_name: method.to_string(),
+                args: near_primitives::types::FunctionArgs::from(args.to_string().into_bytes()),
+            },
+        };
+        let timeout = crate::chain::rpc_http_timeout();
+        let response = match tokio::time::timeout(timeout, self.rpc_client.call(request)).await {
+            Ok(Ok(response)) => response,
+            Ok(Err(e)) => {
+                return Err(FacilitatorLocalError::ContractCall(format!(
+                    "Failed to call {method} on {contract}: {}",
+                    crate::redact::scrub_urls(&e.to_string())
+                )))
+            }
+            Err(_) => {
+                return Err(FacilitatorLocalError::ContractCall(format!(
+                    "{method} on {contract} timed out after {}ms",
+                    timeout.as_millis()
+                )))
+            }
+        };
+        match response.kind {
+            QueryResponseKind::CallResult(result) => serde_json::from_slice(&result.result)
+                .map_err(|_| {
+                    FacilitatorLocalError::ContractCall(format!(
+                        "{method} on {contract} did not answer JSON"
+                    ))
+                }),
+            _ => Err(FacilitatorLocalError::ContractCall(format!(
+                "Unexpected query response kind for {method}"
+            ))),
+        }
+    }
+
+    /// `get_payment(payment_id)` on the escrow: the payment, or `null`.
+    async fn get_payment(
+        &self,
+        contract: &AccountId,
+        payment_id: &str,
+    ) -> Result<Value, FacilitatorLocalError> {
+        self.escrow_view(
+            contract,
+            "get_payment",
+            serde_json::json!({ "payment_id": payment_id }),
+        )
+        .await
+    }
+
+    /// `get_claimable(account)` on the escrow.
+    async fn claimable(
+        &self,
+        contract: &AccountId,
+        account: &AccountId,
+    ) -> Result<u128, FacilitatorLocalError> {
+        let answer = self
+            .escrow_view(
+                contract,
+                "get_claimable",
+                serde_json::json!({ "account": account }),
+            )
+            .await?;
+        answer.as_str().and_then(canonical_u128).ok_or_else(|| {
+            FacilitatorLocalError::ContractCall(format!(
+                "get_claimable on {contract} did not answer an amount"
+            ))
+        })
     }
 
     /// `/verify` of a NEAR escrow request.
@@ -1158,6 +1734,12 @@ impl NearProvider {
             EscrowOp::Authorize(authorize) => {
                 confirm_escrow_authorize(&outcome, authorize, network)
             }
+            EscrowOp::Lifecycle(call) => confirm_escrow_lifecycle(
+                &outcome,
+                &call.contract,
+                &call.expected(&checked.sender),
+                network,
+            ),
         });
         let mut response = settle_outcome(confirmed, payer, network)?;
         if response.success {
@@ -1175,6 +1757,19 @@ fn settle_extensions(op: &EscrowOp) -> std::collections::HashMap<String, Value> 
             "contract": a.contract,
             "paymentId": a.payment_id,
         }),
+        EscrowOp::Lifecycle(call) => {
+            let mut details = serde_json::json!({
+                "action": call.method.as_str(),
+                "contract": call.contract,
+            });
+            if let Some(id) = &call.payment_id {
+                details["paymentId"] = Value::from(id.clone());
+            }
+            if let Some(account) = &call.account {
+                details["account"] = Value::from(account.to_string());
+            }
+            details
+        }
     };
     std::collections::HashMap::from([("nearEscrow".to_string(), details)])
 }

@@ -1111,6 +1111,38 @@ fn an_ft_transfer_call_with_no_promise_or_unexecuted_is_no_verdict() {
     }
 }
 
+/// Two receipts of `ft_transfer_call` on the escrow, one of them the accepted
+/// authorization, whichever comes first: the outcome is not the one NEP-141
+/// produces, and neither is read as (c).
+#[test]
+fn two_ft_on_transfer_receipts_on_the_escrow_are_no_verdict() {
+    let (call, on, other, resolve) = (rid("call"), rid("on"), rid("other"), rid("resolve"));
+    let accepted = receipt(
+        &on,
+        CONTRACT,
+        returns("\"0\""),
+        &[],
+        &[authorized_event(V1_ID)],
+    );
+    let second = receipt(&other, CONTRACT, returns("\"0\""), &[], &[]);
+    for children in [[&on, &other], [&other, &on]] {
+        let outcome = outcome_with(vec![
+            receipt(DELEGATE_RECEIPT, PAYER, returns(""), &[&call], &[]),
+            receipt(
+                &call,
+                USDC_TESTNET,
+                promise(&resolve),
+                &[children[0], children[1], &resolve],
+                &[nep141(PAYER, CONTRACT, "1000000")],
+            ),
+            accepted.clone(),
+            second.clone(),
+            receipt(&resolve, USDC_TESTNET, returns("\"1000000\""), &[], &[]),
+        ]);
+        assert_no_verdict(confirm(&outcome));
+    }
+}
+
 #[test]
 fn a_receipt_the_delegate_did_not_create_does_not_count() {
     // Two receipts on the token, or none, under the Delegate action.
@@ -2340,7 +2372,8 @@ async fn a_release_from_someone_not_a_capturer_is_not_relayed() {
         vec![arras("released", json!({"payment_id": V1_ID}))],
     );
     let (provider, sent) = escrow_provider(Node::new(done)).await;
-    for sender in [WORKER, PAYER, "thief.testnet"] {
+    // The receiver, the payer, the operator's owner and a third party.
+    for sender in [WORKER, PAYER, "owner.arras-dev.testnet", "thief.testnet"] {
         let signed = sign(sender, CONTRACT, vec![release_call()]);
         let response = provider
             .settle_escrow(&lifecycle_request(&signed, "release"))

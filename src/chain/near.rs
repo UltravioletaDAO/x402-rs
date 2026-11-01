@@ -1067,6 +1067,14 @@ impl NearProvider {
             ));
         }
 
+        // An amount of 0 moves nothing and passes any balance check, so the
+        // relayer would pay for it: refused before anything is read.
+        if requirements.max_amount_required.0.is_zero() {
+            return Err(FacilitatorLocalError::DecodingError(
+                "Amount must be greater than zero".to_string(),
+            ));
+        }
+
         // Decode the SignedDelegateAction
         let signed_delegate_action =
             self.decode_signed_delegate_action(&near_payload.signed_delegate_action)?;
@@ -2428,11 +2436,16 @@ mod replay_verify_tests {
 
     /// The same transfer, calling `token` instead of USDC.
     fn signed_delegate_action_to(token: &str) -> SignedDelegateAction {
+        signed_transfer(token, AMOUNT)
+    }
+
+    /// A transfer of `amount` of `token` to MERCHANT, signed by PAYER.
+    fn signed_transfer(token: &str, amount: u64) -> SignedDelegateAction {
         let payer: Signer =
             InMemorySigner::from_secret_key(PAYER.parse().unwrap(), PAYER_KEY.clone());
         let transfer = Action::FunctionCall(Box::new(FunctionCallAction {
             method_name: "ft_transfer".to_string(),
-            args: json!({"receiver_id": MERCHANT, "amount": AMOUNT.to_string()})
+            args: json!({"receiver_id": MERCHANT, "amount": amount.to_string()})
                 .to_string()
                 .into_bytes(),
             gas: Gas::from_gas(30_000_000_000_000),
@@ -2459,9 +2472,18 @@ mod replay_verify_tests {
 
     /// AMOUNT of `token` to MERCHANT, with a delegate action that calls `token`.
     fn request_paying(token: &str) -> VerifyRequest {
+        request_for(token, AMOUNT)
+    }
+
+    /// `amount` of USDC to MERCHANT, asked and signed alike.
+    pub(super) fn request_of(amount: u64) -> VerifyRequest {
+        request_for(USDC, amount)
+    }
+
+    fn request_for(token: &str, amount: u64) -> VerifyRequest {
         let encoded = base64::Engine::encode(
             &base64::engine::general_purpose::STANDARD,
-            borsh::to_vec(&signed_delegate_action_to(token)).unwrap(),
+            borsh::to_vec(&signed_transfer(token, amount)).unwrap(),
         );
         VerifyRequest {
             x402_version: X402Version::V1,
@@ -2476,7 +2498,7 @@ mod replay_verify_tests {
             payment_requirements: PaymentRequirements {
                 scheme: Scheme::Exact,
                 network: Network::NearTestnet,
-                max_amount_required: TokenAmount(alloy::primitives::U256::from(AMOUNT)),
+                max_amount_required: TokenAmount(alloy::primitives::U256::from(amount)),
                 resource: url::Url::parse("https://example.com/paid").unwrap(),
                 description: String::new(),
                 mime_type: "application/json".to_string(),
@@ -2593,13 +2615,31 @@ mod replay_verify_tests {
             );
         }
     }
+
+    /// An amount of 0, asked and signed alike, against a node that answers
+    /// nothing: refused before any read.
+    #[tokio::test]
+    async fn verify_refuses_an_amount_of_zero_before_any_read() {
+        let provider = provider(Node::Down).await;
+
+        let err = provider
+            .verify(&request_of(0))
+            .await
+            .expect_err("an amount of 0 is not a payment");
+        assert!(
+            matches!(&err, FacilitatorLocalError::DecodingError(msg) if msg.contains("greater than zero")),
+            "got {err:?}"
+        );
+    }
 }
 
 /// `settle` end to end against a stub node: the payment is the transfer the
 /// `broadcast_tx_commit` outcome shows, not the transaction's own status.
 #[cfg(test)]
 mod settle_confirms_transfer_tests {
-    use super::replay_verify_tests::{request, AMOUNT, DELEGATE_NONCE, MERCHANT, PAYER, USDC};
+    use super::replay_verify_tests::{
+        request, request_of, AMOUNT, DELEGATE_NONCE, MERCHANT, PAYER, USDC,
+    };
     use super::*;
     use axum::{routing::post, Json, Router};
     use near_crypto::KeyType;
@@ -2792,6 +2832,26 @@ mod settle_confirms_transfer_tests {
             "got {err:?}"
         );
         assert_eq!(sent(&counter), 0, "nothing sent for a used nonce");
+    }
+
+    #[tokio::test]
+    async fn settle_refuses_an_amount_of_zero_before_spending() {
+        // A payer holding nothing: a balance check of 0 would pass it.
+        let (provider, counter) = provider(Chain {
+            payer_balance: r#""0""#,
+            ..chain(recorded())
+        })
+        .await;
+
+        let err = provider
+            .settle(&request_of(0))
+            .await
+            .expect_err("an amount of 0 is refused");
+        assert!(
+            matches!(&err, FacilitatorLocalError::DecodingError(_)),
+            "got {err:?}"
+        );
+        assert_eq!(sent(&counter), 0, "nothing sent for an amount of 0");
     }
 
     #[tokio::test]

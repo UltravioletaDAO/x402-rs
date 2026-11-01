@@ -58,6 +58,13 @@ by NEP-366 like `exact`, behind a switch of its own that is off.
   402 names one of each). It is a field of its own: the EVM `escrow` kinds keep
   their exact JSON and `EscrowSupportedInfo` is unchanged.
 
+### Fixed
+
+- **`exact` on NEAR refuses an amount of 0** before reading anything
+  (`Amount must be greater than zero`, as on Sui). A requirement of 0 moved
+  nothing and passed the payer's balance check whatever the payer held, so the
+  relayer paid for a meta-transaction that served no payment.
+
 ### Configuration
 
 | Variable | Default | |

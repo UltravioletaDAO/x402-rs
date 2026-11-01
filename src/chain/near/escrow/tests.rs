@@ -2064,63 +2064,36 @@ async fn each_lifecycle_method_with_its_receipt_failed_is_success_false() {
     }
 }
 
+/// v2's budget path is validated but not relayed until v2 exposes a budget
+/// view: an `authorize_from_budget` that answers the 402 exactly, against an
+/// escrow that would log `authorized`, is refused before any read (the node
+/// says the delegate nonce is used, so a read would answer otherwise).
 #[tokio::test]
-async fn authorize_from_budget_with_its_receipt_failed_is_success_false() {
-    let signed = sign(AGENT, CONTRACT, vec![budget_call(|_| {})]);
-    let (provider, sent) = escrow_provider(Node::new(lifecycle_outcome(
-        AGENT,
-        panicked("ARRAS_E51_TOPE_DIARIO"),
-        vec![],
-    )))
-    .await;
-    let response = provider
-        .settle_escrow(&request(Some(&signed)))
-        .await
-        .unwrap();
-    assert!(!response.success, "{response:?}");
-    assert_eq!(sent.load(Ordering::SeqCst), 1);
-
+async fn an_authorize_from_budget_is_not_relayed() {
     let done = lifecycle_outcome(AGENT, returns(""), vec![authorized_event(V1_ID)]);
-    let (provider, _) = escrow_provider(Node::new(done)).await;
-    let response = provider
-        .settle_escrow(&request(Some(&signed)))
-        .await
-        .unwrap();
-    assert!(response.success, "{response:?}");
-    assert_eq!(
-        response.extensions.unwrap()["nearEscrow"],
-        json!({"action": "authorize_from_budget", "contract": CONTRACT, "paymentId": V1_ID})
-    );
-}
-
-#[tokio::test]
-async fn authorize_from_budget_off_the_402_is_not_relayed() {
-    let (provider, sent) = escrow_provider(Node::new(lifecycle_outcome(
-        AGENT,
-        returns(""),
-        vec![authorized_event(V1_ID)],
-    )))
-    .await;
-    for (field, value, reason) in [
-        ("amount", json!("2000000"), "near_escrow_amount_mismatch"),
-        (
-            "receiver",
-            json!("thief.testnet"),
-            "near_escrow_receiver_mismatch",
-        ),
-    ] {
-        let signed = sign(
-            AGENT,
-            CONTRACT,
-            vec![budget_call(|a| a[field] = value.clone())],
-        );
+    for nonce in [DELEGATE_NONCE - 1, DELEGATE_NONCE] {
+        let mut node = Node::new(done.clone());
+        node.access_nonce = nonce;
+        let (provider, sent) = escrow_provider(node).await;
+        let signed = sign(AGENT, CONTRACT, vec![budget_call(|_| {})]);
+        assert!(validate_budget_authorize(
+            &signed.delegate_action,
+            &request(Some(&signed)),
+            &cfg()
+        )
+        .is_ok());
+        let verdict = provider
+            .verify_escrow(&request(Some(&signed)))
+            .await
+            .unwrap();
+        assert_eq!(invalid_reason(&verdict), "near_escrow_method_not_allowed");
         let response = provider
             .settle_escrow(&request(Some(&signed)))
             .await
             .unwrap();
-        assert_eq!(refused(&response), reason, "{field}");
+        assert_eq!(refused(&response), "near_escrow_method_not_allowed");
+        assert_eq!(sent.load(Ordering::SeqCst), 0);
     }
-    assert_eq!(sent.load(Ordering::SeqCst), 0);
 }
 
 #[tokio::test]

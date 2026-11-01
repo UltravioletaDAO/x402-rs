@@ -6,8 +6,9 @@
 //! it like an `exact` payment, and then reads the outcome for the three things
 //! that prove the escrow holds the payment (see [`confirm_escrow_authorize`]).
 //! The escrow's lifecycle (`release`, `refund`, `reclaim`, `withdraw`,
-//! `withdraw_for`) and the v2 budget path (`authorize_from_budget`) are relayed
-//! the same way, each confirmed by the event the contract logs for it.
+//! `withdraw_for`) is relayed the same way, each call confirmed by the event
+//! the contract logs for it. The v2 budget path (`authorize_from_budget`) is
+//! validated, not relayed until v2 exposes a budget view.
 //!
 //! Everything here is off unless `ENABLE_NEAR_ESCROW` is true, and it only
 //! relays to the contract accounts configured for the network: never to an
@@ -62,7 +63,7 @@ pub const ENV_CONTRACTS_TESTNET: &str = "NEAR_ESCROW_CONTRACTS_TESTNET";
 pub const ENV_MIN_GAS_TGAS: &str = "NEAR_ESCROW_MIN_GAS_TGAS";
 /// Most gas, in TGas, an authorization's `ft_transfer_call` may attach.
 pub const ENV_MAX_GAS_TGAS: &str = "NEAR_ESCROW_MAX_GAS_TGAS";
-/// Most lifecycle and budget relays one `sender_id` gets per UTC hour.
+/// Most lifecycle relays one `sender_id` gets per UTC hour.
 pub const ENV_SENDER_PER_HOUR: &str = "NEAR_ESCROW_SENDER_PER_HOUR";
 /// Comma-separated operator ids (`[a-z0-9_-]{1,32}`) the facilitator relays for.
 pub const ENV_OPERATOR_IDS: &str = "NEAR_ESCROW_OPERATOR_IDS";
@@ -1255,7 +1256,7 @@ enum SenderRefusal {
     Unavailable,
 }
 
-/// The lifecycle and budget relays of each `sender_id`, per UTC hour,
+/// The lifecycle relays of each `sender_id`, per UTC hour,
 /// counted across every task in the claim store the service shares, the way
 /// `RegistrationBudget` counts registrations: slot `i` of a sender's hour is a
 /// key taken with the store's conditional put, so no two tasks take the same
@@ -1377,13 +1378,22 @@ impl EscrowRuntime {
 
 // ===========================================================================
 // The v2 budget path: authorize_from_budget
+//
+// Validated, not relayed until v2 exposes a budget view: `check_escrow`
+// answers `near_escrow_method_not_allowed` before any read. What follows is
+// what relaying it will check; before turning it on, the gate also needs the
+// budget view, an amount above zero and the terms checks the authorization
+// makes (`validate_escrow_delegate_actions`).
 // ===========================================================================
 
+#[cfg_attr(not(test), allow(dead_code))]
 const AUTHORIZE_FROM_BUDGET: &str = "authorize_from_budget";
 /// Gas an `authorize_from_budget` may attach: it writes the payment and the
 /// budget, no cross-contract call.
+#[cfg_attr(not(test), allow(dead_code))]
 const BUDGET_AUTHORIZE_MAX_GAS_TGAS: u64 = 30;
 
+#[cfg_attr(not(test), allow(dead_code))]
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct BudgetAuthorizeArgs {
@@ -1400,6 +1410,7 @@ struct BudgetAuthorizeArgs {
 }
 
 /// An `authorize_from_budget` that passed [`validate_budget_authorize`].
+#[cfg_attr(not(test), allow(dead_code))]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct BudgetAuthorize {
     pub contract: AccountId,
@@ -1420,6 +1431,7 @@ pub(crate) struct BudgetAuthorize {
 /// payment id the contract derives from the arguments, with the owner as the
 /// payer, is `extra.nearEscrow.paymentId`. The agent who signs is checked by
 /// the contract against the budget, not here.
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn validate_budget_authorize(
     da: &DelegateAction,
     req: &EscrowRequest,
@@ -1490,11 +1502,6 @@ pub(crate) fn validate_budget_authorize(
     })
 }
 
-/// Whether a delegate action calls `authorize_from_budget`.
-fn is_budget_call(da: &DelegateAction) -> bool {
-    matches!(single_function_call(da), Ok(call) if call.method_name == AUTHORIZE_FROM_BUDGET)
-}
-
 // ===========================================================================
 // Verify and settle
 // ===========================================================================
@@ -1503,7 +1510,6 @@ fn is_budget_call(da: &DelegateAction) -> bool {
 #[derive(Debug, Clone)]
 pub(crate) enum EscrowOp {
     Authorize(EscrowAuthorize),
-    Budget(BudgetAuthorize),
     Lifecycle(LifecycleCall),
 }
 
@@ -1572,13 +1578,13 @@ impl NearProvider {
                 {
                     return refuse(Some(&sender), EscrowRejectReason::InvalidAsset);
                 }
-                let verdict = if is_budget_call(da) {
-                    validate_budget_authorize(da, req, cfg).map(EscrowOp::Budget)
-                } else {
-                    validate_escrow_delegate_actions(da, req, cfg).map(EscrowOp::Authorize)
-                };
-                match verdict {
-                    Ok(op) => op,
+                // `authorize_from_budget` (v2) is not relayed until v2 exposes
+                // a budget view: no view of the escrow tells whether the agent
+                // has budget left. It is refused here as every method but
+                // `ft_transfer_call` is: `near_escrow_method_not_allowed`,
+                // before any read.
+                match validate_escrow_delegate_actions(da, req, cfg) {
+                    Ok(authorize) => EscrowOp::Authorize(authorize),
                     Err(reason) => return refuse(Some(&sender), reason),
                 }
             }
@@ -1633,9 +1639,8 @@ impl NearProvider {
                     return refuse(Some(&sender), reason);
                 }
             }
-            EscrowOp::Budget(_) => {}
         }
-        if matches!(op, EscrowOp::Lifecycle(_) | EscrowOp::Budget(_)) {
+        if matches!(op, EscrowOp::Lifecycle(_)) {
             let counted = match phase {
                 Phase::Verify => self.escrow.senders.check(&sender).await,
                 Phase::Settle => self.escrow.senders.take(&sender).await,
@@ -1860,15 +1865,6 @@ impl NearProvider {
             EscrowOp::Authorize(authorize) => {
                 confirm_escrow_authorize(&outcome, authorize, network)
             }
-            EscrowOp::Budget(budget) => confirm_escrow_lifecycle(
-                &outcome,
-                &budget.contract,
-                &ExpectedEvent::Payment {
-                    event: "authorized",
-                    payment_id: budget.payment_id.clone(),
-                },
-                network,
-            ),
             EscrowOp::Lifecycle(call) => confirm_escrow_lifecycle(
                 &outcome,
                 &call.contract,
@@ -1941,11 +1937,6 @@ fn settle_extensions(op: &EscrowOp) -> std::collections::HashMap<String, Value> 
             "action": "authorize",
             "contract": a.contract,
             "paymentId": a.payment_id,
-        }),
-        EscrowOp::Budget(b) => serde_json::json!({
-            "action": AUTHORIZE_FROM_BUDGET,
-            "contract": b.contract,
-            "paymentId": b.payment_id,
         }),
         EscrowOp::Lifecycle(call) => {
             let mut details = serde_json::json!({

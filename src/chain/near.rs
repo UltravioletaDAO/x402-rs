@@ -42,6 +42,9 @@ use crate::types::{
     TransactionHash, VerifyRequest, VerifyResponse, X402Version,
 };
 
+/// The `escrow` scheme: payments into the Arras escrow contract.
+pub mod escrow;
+
 /// Storage deposit amount in yoctoNEAR (0.00125 NEAR = 1.25e21 yoctoNEAR)
 const STORAGE_DEPOSIT_AMOUNT: NearToken = NearToken::from_yoctonear(1_250_000_000_000_000_000_000);
 

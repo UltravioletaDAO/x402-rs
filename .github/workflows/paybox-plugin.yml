@@ -1,0 +1,67 @@
+name: PayBox plugin
+
+# The facilitator's PayBox plugin (paybox-plugin/) is a Node package that never enters the image
+# (the final stage copies the binary, config/ and static/ only). It runs only when its own files
+# change, and it never builds Rust and never deploys: owner's rule of 2026-09-11, every workflow runs
+# only when what it processes changes. ci.yaml's path union does not include paybox-plugin/, so a
+# change here does not start it either.
+#
+# The catalog the plugin lists (paybox-plugin/src/catalogo.generated.ts) is written by src/mcp.rs from
+# the facilitator's own tools/list, and the Rust suite in ci.yaml compares it byte for byte
+# (mcp::tests::the_paybox_plugin_relays_exactly_the_reads_of_tools_list) whenever src/ changes. Here
+# the plugin's own tests hold the catalog to the facilitator's whole tools/list it was generated with.
+#
+# No conformance run here: the starter's sample call is a live read of the production facilitator,
+# which a pull request has no business making. scripts/reproducible-build.sh runs it.
+
+on:
+  push:
+    branches: ['main']
+    paths:
+      - 'paybox-plugin/**'
+      - '.github/workflows/paybox-plugin.yml'
+  pull_request:
+    branches: ['main']
+    paths:
+      - 'paybox-plugin/**'
+      - '.github/workflows/paybox-plugin.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: paybox-plugin-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  test:
+    name: PayBox plugin (Node 24.21.0, pnpm 11.11.0)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: paybox-plugin
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24.21.0'
+      - name: pnpm 11.11.0 (the starter's)
+        run: npm install --global pnpm@11.11.0
+      - name: Install from the starter's lockfile
+        run: pnpm install --frozen-lockfile
+      - name: Typecheck
+        run: pnpm run typecheck
+      - name: Build twice, the same bytes
+        run: |
+          set -euo pipefail
+          pnpm run build
+          first=$(sha256sum dist/plugin.mjs | cut -d' ' -f1)
+          pnpm run build
+          second=$(sha256sum dist/plugin.mjs | cut -d' ' -f1)
+          echo "dist/plugin.mjs sha256 $first"
+          test "$first" = "$second"
+      - name: Unit tests (no network; a fake MCP on 127.0.0.1)
+        run: pnpm run test:unit
+      - name: Bundle size, sha256 and no AJV
+        run: pnpm run check:bundle

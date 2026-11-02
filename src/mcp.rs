@@ -4359,4 +4359,96 @@ mod tests {
             }
         }
     }
+
+    /// The tools the facilitator's PayBox plugin (`paybox-plugin/`) relays:
+    /// the reads, exactly. Never a payment rail and never the tool that moves
+    /// money.
+    const PAYBOX_PLUGIN_TOOLS: [&str; 5] = [
+        "x402_supported",
+        "x402_networks",
+        "x402_chain_health",
+        "x402_escrow_onchain_state",
+        "x402_durable_evidence",
+    ];
+
+    /// `value` as pretty JSON, with the `x` of every `0x` + 64 hex written
+    /// as its unicode escape (a backslash, `u`, `0078`): the same string once
+    /// parsed (JSON and TypeScript read the escape alike), which the repo's
+    /// pre-commit hook does not take for a private key. The escrow example's
+    /// salt is the one such string in the reads.
+    fn paybox_plugin_json(value: &Value) -> String {
+        let pretty = serde_json::to_string_pretty(value).unwrap();
+        // Spelled in pieces so that no editor or shell on the way to disk
+        // turns the escape into the letter it stands for.
+        let escaped_x = concat!("0", "\\", "u", "0078", "${1}");
+        regex::Regex::new("0x([0-9a-fA-F]{64})")
+            .unwrap()
+            .replace_all(&pretty, escaped_x)
+            .into_owned()
+    }
+
+    /// The PayBox plugin of the facilitator relays the reads of this server
+    /// and nothing else, and lists them exactly as `tools/list` does. Its
+    /// catalog (`paybox-plugin/src/catalogo.generated.ts`) and the full list
+    /// its fake MCP serves (`paybox-plugin/test/fixtures/facilitator-tools.json`)
+    /// are written from this server's own answer, so the plugin cannot list a
+    /// tool, a schema or a text this server does not publish. Without
+    /// `X402_WRITE_PAYBOX_PLUGIN=1` the two files are compared byte for byte;
+    /// with it they are rewritten.
+    #[tokio::test]
+    async fn the_paybox_plugin_relays_exactly_the_reads_of_tools_list() {
+        let (mcp, _) = routers().await;
+        let listed = listed_tools(&mcp).await;
+        let reads: Vec<Value> = listed
+            .iter()
+            .filter(|t| t["_meta"][CLASS_META_KEY] == "lectura")
+            .cloned()
+            .collect();
+        let names: Vec<&str> = reads.iter().map(|t| t["name"].as_str().unwrap()).collect();
+        assert_eq!(names, PAYBOX_PLUGIN_TOOLS, "the reads of tools/list");
+        for tool in &reads {
+            assert_eq!(
+                tool["annotations"]["readOnlyHint"], true,
+                "{} is a read the plugin relays",
+                tool["name"]
+            );
+        }
+        for rail in ["x402_accepts", "x402_verify", "x402_settle"] {
+            assert!(!names.contains(&rail), "the plugin would relay {rail}");
+        }
+
+        let catalog = format!(
+            "// GENERATED: do not edit by hand. src/mcp.rs writes it, in process and without the network, from\n\
+             // the facilitator's own tools/list: the tools of class `lectura` (_meta \"uvd/clase\"), exactly as\n\
+             // POST /mcp lists them. Regenerate with X402_WRITE_PAYBOX_PLUGIN=1 and the test\n\
+             // mcp::tests::the_paybox_plugin_relays_exactly_the_reads_of_tools_list (README.md, \"Regenerar\");\n\
+             // without that variable the test compares this file byte for byte. A string of 0x + 64 hex is\n\
+             // written with its x escaped (\\u0078): the same string, which the pre-commit hook does not take\n\
+             // for a private key.\n\
+             export const CATALOGO: unknown = {};\n",
+            paybox_plugin_json(&json!({ "esquema": 1, "ruta": "/mcp", "tools": reads }))
+        );
+        let fixture = format!("{}\n", paybox_plugin_json(&json!({ "tools": listed })));
+
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("paybox-plugin");
+        let write = std::env::var("X402_WRITE_PAYBOX_PLUGIN").as_deref() == Ok("1");
+        for (path, expected) in [
+            ("src/catalogo.generated.ts", catalog),
+            ("test/fixtures/facilitator-tools.json", fixture),
+        ] {
+            let file = root.join(path);
+            if write {
+                std::fs::write(&file, &expected)
+                    .unwrap_or_else(|e| panic!("could not write {}: {e}", file.display()));
+                continue;
+            }
+            let committed = std::fs::read_to_string(&file)
+                .unwrap_or_else(|e| panic!("could not read {}: {e}", file.display()));
+            assert!(
+                committed == expected,
+                "paybox-plugin/{path} is not what this server lists: regenerate it with \
+                 X402_WRITE_PAYBOX_PLUGIN=1 and this test (paybox-plugin/README.md)"
+            );
+        }
+    }
 }

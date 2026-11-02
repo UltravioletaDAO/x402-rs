@@ -1,0 +1,3 @@
+# The starter's files are checked byte for byte against starter-manifest.json, and the bundle must
+# build to the same bytes on every machine: LF everywhere, whatever core.autocrlf says.
+* text eol=lf

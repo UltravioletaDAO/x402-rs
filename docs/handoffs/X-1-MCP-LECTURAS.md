@@ -133,6 +133,9 @@ Rojos de base: ninguno.
    `x402_chain_health {"network":"base"}`, `x402_durable_evidence` con un `paymentId` real de
    `/dx402/stats` si lo hay. El escrow no necesita humo (su lectura exige un `paymentInfo` real).
 3. EMP-1 refresca `catalogo/contratos/facilitador.json` (hoy 2.40.0) contra el MCP vivo y EMP-2 agrega las filas.
+4. El plugin de PayBox del facilitador (§7): c0der lo empaqueta desde el commit mergeado con
+   `scripts/reproducible-build.sh` y el dueño lo sube **después** de la tanda 2.54.0. Antes de la tanda,
+   cuatro de sus cinco tools contestan `unknown tool`.
 
 ## 6. Filas de HARD-STOPS propuestas (no escritas)
 
@@ -144,3 +147,65 @@ Rojos de base: ninguno.
 - **Emporium relevando el MCP del facilitador.** Antes de EMP-2 contra producción, confirmar que el digest de la
   stack key de Emporium está cargado (`var.stack_key_emporium_loaded`); sin ella, todo su relevo comparte el balde
   `verify-settle` de una IP.
+- **Plugin de PayBox del facilitador, sólo lecturas.** `paybox-plugin/` releva exactamente las tools de clase
+  `lectura` de `POST /mcp`; una tool entra al plugin cambiando su clase en `src/mcp.rs` y regenerando el
+  catálogo, nunca a mano. Ningún riel de pago (`x402_accepts`, `x402_verify`, `x402_settle`) entra al plugin.
+
+## 7. El plugin de PayBox del facilitador (AVISO de c0der, 2026-11-02 04:35Z)
+
+> Decisión del dueño: además de que emp0rium exponga estas lecturas como `pay_*`, el facilitador tiene su propio
+> plugin de PayBox. Va en la misma rama, sin push. **Paquete listo para que c0der lo empaquete y el dueño lo
+> suba; no lo subí.**
+
+**QUÉ:** `paybox-plugin/`, un cascarón de PayBox de un solo host (`facilitator.ultravioletadao.xyz`) que releva
+las cinco lecturas del MCP del facilitador con sus mismos nombres y definiciones: `x402_supported`,
+`x402_networks`, `x402_chain_health`, `x402_escrow_onchain_state` y `x402_durable_evidence`.
+**POR QUÉ:** el dueño eligió también un plugin propio; el molde es el cascarón de Emporium (relevo con
+presupuesto de tiempo, sin lógica propia ni firmas), no el de EM.
+**RIESGO:** que el plugin listara un riel de pago o una definición que el facilitador no publica. Lo cierran
+tres cosas: el catálogo lo escribe `src/mcp.rs` desde su propio `tools/list` (sólo clase `lectura`) y la suite
+de Rust lo compara byte a byte; el plugin rechaza al arrancar cualquier tool que no sea `lectura` +
+`readOnlyHint`; y un nombre que no lista no sale nunca (error JSON-RPC, cero requests).
+
+### Qué es, archivo por archivo
+
+El molde de `emporium/paybox-plugin` (starter 1.0.4 de PayBox), con estas diferencias:
+
+| | Emporium | Facilitador |
+|---|---|---|
+| Catálogo | `cargo run --bin plugin_catalogo` desde `catalogo/plugin.toml` | el test `mcp::tests::the_paybox_plugin_relays_exactly_the_reads_of_tools_list` con `X402_WRITE_PAYBOX_PLUGIN=1`, desde el `tools/list` real |
+| Tools | 42 por propósito + la guía local | las 5 lecturas, mismos nombres; **sin guía**: el AVISO pide exactamente las lecturas |
+| Llamada de muestra de la conformidad | la guía (sin red) | `x402_supported` (una lectura real a producción, pública) |
+| Al arrancar | forma del catálogo | forma + cada tool `lectura` y `readOnlyHint`, si no, no arranca |
+| Datos de error | quita `tools_validas` | quita `tools` (el facilitador lista ahí sus 8 tools, rieles incluidos) |
+| Pruebas extra | marcas de lo de abajo | un MCP falso en `127.0.0.1` con las 8 tools reales (`test/fake-mcp.test.ts`), y la marca de la DAO (`brand.test.ts`) |
+
+Nombre `ultravioleta-facilitator`, título `Ultravioleta DAO x402 Facilitator`, user agent
+`uvd-facilitator-paybox-plugin/0.1.0`, `instructions` de 7 líneas y menos de 1.000 caracteres (ASCII; un test
+las ata a las tools listadas). Sin variables ni secretos. Archivos del starter byte a byte contra su manifiesto
+oficial (`9c663d57…5373ea5`); `src/paybox.ts` (los armadores de propuestas) queda afuera.
+
+`test/fixtures/facilitator-tools.json` es el `tools/list` entero del facilitador (8), generado con el catálogo:
+el test del plugin comprueba que el catálogo es exactamente sus lecturas, así que una edición a mano de cualquiera
+de los dos se pone roja en el CI del plugin aunque el de Rust no corra. Una cadena de `0x` + 64 hex (la `salt` del
+ejemplo del escrow) se escribe con la `x` como escape unicode: la misma cadena una vez leída, que el hook
+pre-commit no toma por una llave.
+
+### El CI
+
+`.github/workflows/paybox-plugin.yml`: `push` a `main` y `pull_request`, los dos con `paths:` `paybox-plugin/**` y
+el propio workflow. Corre tipos, dos builds con los mismos bytes, las pruebas y el bundle, en Node 24.21.0 y pnpm
+11.11.0. No compila Rust ni despliega, y `ci.yaml` no tiene `paybox-plugin/` en su unión de paths, así que un
+cambio sólo del plugin no lo arranca. No corre la conformidad: su llamada de muestra es una lectura real de
+producción. El comparador de Rust corre en `ci.yaml` cuando cambia `src/`.
+
+### Para empaquetar (c0der) y subir (el dueño)
+
+1. Desde el commit mergeado: `bash paybox-plugin/scripts/reproducible-build.sh <commit> <carpeta>` (necesita Docker;
+   usa `node:24.21.0` por digest). Imprime el reporte del starter con `artifact.sha256` y copia `plugin.mjs`.
+2. Subir **después** de la tanda 2.54.0. Contra 2.53.0 (producción hoy) las cuatro lecturas nuevas contestan
+   `unknown tool`; el plugin lo muestra como error sin la lista de tools del facilitador.
+3. Host de red: `facilitator.ultravioletadao.xyz`. Sin variables ni secretos.
+4. Límite: el facilitador cuenta `POST /mcp` en el balde de `/verify` y `/settle` por IP (una ficha cada 2 s,
+   ráfaga 30). Todas las llamadas que salgan de una misma IP de PayBox lo comparten; las IPs de salida de PayBox:
+   [SIN MEDIR]. Un `429` se le muestra al agente como «esperá un minuto».

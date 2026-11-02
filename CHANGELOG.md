@@ -25,6 +25,15 @@ to sign or sends a transaction.
   answers the public router's generic 404.
 - Each read is class `lectura` with `readOnlyHint`, publishes an
   `outputSchema` and answers in `structuredContent`.
+- **The facilitator's own PayBox plugin** (`paybox-plugin/`, 0.1.0, not
+  uploaded): a shell on one host that relays the five reads of `POST /mcp`
+  (`x402_supported` and the four above) and nothing else, never
+  `x402_accepts`, `x402_verify` or `x402_settle`. Its catalog is written by
+  `src/mcp.rs` from the server's own `tools/list` (the tools of class
+  `lectura`) and compared byte for byte by
+  `the_paybox_plugin_relays_exactly_the_reads_of_tools_list`. Its CI is
+  `.github/workflows/paybox-plugin.yml`, filtered to `paybox-plugin/`: it
+  builds no Rust and deploys nothing.
 
 ### Changed
 

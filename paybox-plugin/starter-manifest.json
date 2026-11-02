@@ -1,0 +1,22 @@
+{
+  "version": "1.0.4",
+  "protocolVersion": "2026-07-28",
+  "node": "24.21.0",
+  "pnpm": "11.11.0",
+  "files": {
+    ".gitignore": "58aea3d6b4b0f8799c1e00c3b023898516997f6369ee8e13d8d4b4215f70a62b",
+    "package.json": "1e6758e283b97ceef5da989fd162ca5583dfeee7d3027d7a5c2875daf1b6e0aa",
+    "paybox-plugin.json": "a8c8dcfd675ba3f97e3e56e16341c9b09b154dcea2006a50ee9dc4e635f48239",
+    "pnpm-lock.yaml": "613025d23512c1e81917ef9384bf7634ff3f48278ec2c1477fd0f85754b84287",
+    "pnpm-workspace.yaml": "dad6d0d0c2a58fce70bb566123424ef6c566169cdaacee163c3059d66a2a006e",
+    "tsconfig.json": "0eeb98e5e27493fddec3d7a290cb26e2f2b1c9e5312445be812b37c8f7705b10",
+    "src/plugin.ts": "b1c6ba20b7217b2088abbc2cc9c6a5931cbc29fb585ea22cca0fb895dbb45537",
+    "src/paybox.ts": "65608cd3253131c24ba0993b1988f0794b6e1ae4aa9ee988e2317178a69058ca",
+    "scripts/conformance.mjs": "c562913acfce45ab56ef18678420e4ebadec351a72059d3d96d37cea7c744445",
+    "scripts/test.mjs": "6cbccaacd119bd5c4833d4ab7831da8fa43bd0929f3b54f4d0e1ac3f425b4656",
+    "scripts/process.mjs": "097a0e57b10ce5ae7fb3a796c85b4960572cd3394378c3a406370a221fb177e6",
+    "scripts/report.mjs": "3a4483776ba3faac2d86d703de8e1ba4895fb9bc879f7be35b5b9fce4fc29502",
+    "scripts/schema.mjs": "22d76374e6c4ef0dca0615f418c477dd67151f6e3e09b316c75a5a9c91b26bfa",
+    "starter-version.json": "0e8b5f5b929ccece3c7c2d4337e21594b26a0979356b3a8b19a7c26d119cf9bc"
+  }
+}

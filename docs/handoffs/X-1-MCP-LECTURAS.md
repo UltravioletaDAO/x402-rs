@@ -106,9 +106,23 @@ Emporium conviene algo como `pay_escrow_onchain`, fijado junto con el de EM.
 | `every_document_that_lists_the_mcp_tools_names_all_of_them` | los 9 documentos nombran las 8; ninguno dice «four tools» ni «cuatro herramientas» |
 | `the_server_card_describes_the_server_that_answers` (ampliado) | además, cada entrada de la card con el `title` de `tools/list` |
 
-## 4. Verificación
+## 4. Verificación (local, 2026-11-02)
 
-Ver la tabla del PR (se completa con la corrida final sobre la unión con `origin/main`).
+WSL Ubuntu 24.04, rustc 1.99.1, `CARGO_INCREMENTAL=0`, features del CI, árbol del commit exportado en LF a ext4,
+red cerrada. `origin/main` = `c1248eca` al verificar, así que la unión con la base es el propio HEAD.
+
+| Paso | Resultado |
+|---|---|
+| Línea base (`origin/main`, misma suite) | 0 fallos: lib 2090, bin 2159 |
+| `cargo test --locked -p x402-rs --features <CI> --no-fail-fast -- --test-threads=1` | 0 fallos: lib 2090, bin 2180 (+21 nuevos; los tests de `mcp` viven en el binario) |
+| `cargo test --locked -p x402-axum -p x402-reqwest -p x402-compliance -- --test-threads=1` | 0 fallos |
+| `cargo clippy --locked -p x402-rs --features <CI> --all-targets` | exit 0; 0 warnings en `src/mcp.rs` y `src/main.rs` |
+| `verify_landing_canonical.py --offline` · `frontend-capabilities` (Node 22) | `[OK]` · 19/19 |
+| Tests Python del job (balances, ERC-8004, drift gate, deploy-job) · `terraform test` 1.9.8 | ok · 26/26 |
+| `no-account-id.yml` (su `run:` literal) · `preci.py --ejecutar` | OK · verde |
+| Mutaciones M1..M17 (una por guarda) | 17/17 matadas; M17 sobrevivía y de ahí salió `tools_list_publishes_the_schemas_the_tests_validate` |
+
+Rojos de base: ninguno.
 
 ## 5. Lo que queda después del merge (c0der)
 

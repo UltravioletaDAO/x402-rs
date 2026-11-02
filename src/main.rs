@@ -666,18 +666,34 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with_state(axum_state.clone())
         .layer(policy.layer(&verify_settle_config));
 
+    // `/health/ready`'s state: ONE per process. Its cache and its single
+    // background prober are what keep the route from amplifying RPC traffic,
+    // so the public route below and the MCP `x402_chain_health` tool share
+    // this `Arc` instead of each building its own.
+    let readiness_state = Arc::new(
+        readiness::ReadinessState::new(
+            Arc::clone(&provider_cache),
+            readiness::ReadinessConfig::from_env(),
+        )
+        .with_sanctions_list(compliance_checker),
+    );
+
     // The MCP server, under the SAME bucket, not a second one built from the
     // same numbers: a `Bucket` holds one `SharedRateLimiter`, so mounting it
     // twice shares the token bucket. An MCP `x402_settle` and a `POST /settle`
     // from one IP therefore draw on one budget -- which is the point, because
     // they cost the chain the same thing -- and both answer with the same
     // `RateLimit-Policy` name, which is how a client learns it. Mounted on the
-    // `mcp` door, so the interop manifest publishes the limit there too.
+    // `mcp` door, so the interop manifest publishes the limit there too. Its
+    // read tools dispatch to the same `/health/ready` state and the same DX402
+    // service the public routes below are mounted with.
     let mcp = mcp::mcp_routes(
         axum_state.clone(),
         Arc::clone(&discovery_registry),
         Arc::clone(&event_bus),
         Arc::clone(&transaction_store),
+        Arc::clone(&readiness_state),
+        dx402_service.clone(),
     )
     .layer(policy.layer_on(&verify_settle_config, rate_policy::Door::Mcp));
 
@@ -723,13 +739,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         // runtime, so its age is what says it went unregenerated.
         .merge(
             readiness::routes()
-                .with_state(Arc::new(
-                    readiness::ReadinessState::new(
-                        Arc::clone(&provider_cache),
-                        readiness::ReadinessConfig::from_env(),
-                    )
-                    .with_sanctions_list(compliance_checker),
-                ))
+                .with_state(readiness_state)
                 .layer(policy.layer(&secondary_read_config)),
         )
         // `GET /config`: the policy in force, for an operator or a stack

@@ -45,6 +45,26 @@
       "name": "x402_settle",
       "title": "Settle a payment on-chain (irreversible)",
       "description": "Broadcast the payer's authorization as a blockchain transaction. Moves real funds and cannot be undone."
+    },
+    {
+      "name": "x402_networks",
+      "title": "Network directory: names, explorers, tokens",
+      "description": "How to present each network this facilitator settles on: display name, chain id, testnet flag, explorer URL templates and tokens. Takes no arguments; reads only."
+    },
+    {
+      "name": "x402_chain_health",
+      "title": "Settlement health per chain",
+      "description": "Whether this facilitator can settle right now, chain by chain: RPC reachability and signer gas, graded ok, degraded or down. Optional network; reads only."
+    },
+    {
+      "name": "x402_escrow_onchain_state",
+      "title": "On-chain escrow state (read-only)",
+      "description": "What one x402r escrow payment holds on-chain (collected, capturable, refundable), read from its AuthCaptureEscrow contract with a view call. No transaction, no gas."
+    },
+    {
+      "name": "x402_durable_evidence",
+      "title": "DX402 durable evidence of a payment",
+      "description": "The DX402 evidence anchored for a settled payment, or its signed receipt alone. Served where /supported lists durable-evidence; reads only, never the sealed bytes."
     }
   ],
   "discovery": {

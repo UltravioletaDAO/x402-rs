@@ -651,7 +651,7 @@ its `RateLimit-Policy` carries.
 
 ---
 
-## 10. MCP: the same four calls, as tools
+## 10. MCP: the same calls, as tools, plus the buyer's reads
 
 This facilitator is also an MCP server. Same host, same rate limit, same
 handlers -- an MCP tool call is dispatched through the very same code path as
@@ -677,10 +677,19 @@ could answer a different truth.
 | `x402_accepts` | `POST /accepts` | no |
 | `x402_verify` | `POST /verify` | no |
 | `x402_settle` | `POST /settle` | **yes, irreversibly** |
+| `x402_networks` | `GET /networks.json` | no |
+| `x402_chain_health` | `GET /health/ready` | no |
+| `x402_escrow_onchain_state` | `POST /escrow/state` | no |
+| `x402_durable_evidence` | `GET /dx402/evidence/{paymentId}` (or `/receipt/`) | no |
 
-The arguments of each tool are the JSON body of the request it stands for, and
-the result is that request's response body verbatim, in a single text content
-block.
+The arguments of each tool are the JSON body of the request it stands for (for
+the GET reads, its path and query), and the result is that request's response
+body verbatim, in a single text content block. The last four only read: how to
+present each network, whether a chain can settle right now (a `down` reading is
+the result, not an error), what an escrow contract holds for one payment (a
+view call, `network` CAIP-2 only), and the DX402 evidence anchored for a payment
+(`document: "receipt"` for the signed receipt alone). The `/mcp` guide has the
+details.
 
 **The body is the only channel — a tool call cannot set headers.** The parity
 with HTTP is one of *privilege*, not of capability: nothing here can move funds

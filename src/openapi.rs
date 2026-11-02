@@ -3779,11 +3779,18 @@ and the HTTP call it stands for cannot answer differently):
 | `x402_accepts` | `POST /accepts` | no |
 | `x402_verify` | `POST /verify` | no |
 | `x402_settle` | `POST /settle` | yes, irreversibly |
+| `x402_networks` | `GET /networks.json` | no |
+| `x402_chain_health` | `GET /health/ready` | no |
+| `x402_escrow_onchain_state` | `POST /escrow/state` | no |
+| `x402_durable_evidence` | `GET /dx402/evidence/{paymentId}` or `/dx402/receipt/{paymentId}` | no |
 
-A tool's `arguments` are the JSON body of the request it stands for; its result is
-that request's response body verbatim in one text content block. A non-2xx answer
-comes back as `isError: true` carrying the facilitator's own message, not as a
-JSON-RPC error.
+A tool's `arguments` are the JSON body of the request it stands for (for the GET
+reads, its path and query, percent-encoded); its result is that request's response
+body verbatim in one text content block. A non-2xx answer comes back as
+`isError: true` carrying the facilitator's own message, not as a JSON-RPC error --
+except a `GET /health/ready` reading of a chain that is down, which is
+`x402_chain_health`'s result. The reads (`x402_supported` and the last four) move
+and sign nothing and also answer in `structuredContent`.
 
 The body is the only channel: a tool call cannot set headers. The one exception is
 `x402_settle`, which takes an optional `idempotencyKey` argument that is lifted out

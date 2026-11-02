@@ -1,5 +1,47 @@
 # Changelog
 
+## [2.54.0] - 2026-11-02
+
+Four buyer reads join the MCP server at `POST /mcp`, each dispatched through
+the REST route it names. None takes a signed authorization, returns anything
+to sign or sends a transaction.
+
+### Added
+
+- **`x402_networks`** = `GET /networks.json`: how to present each network
+  `/supported` names (display name, chain id, testnet flag, explorer URL
+  templates, tokens with their EIP-712 domain). No arguments.
+- **`x402_chain_health`** = `GET /health/ready`, optional `network` in either
+  spelling. A reading of a chain that is `down` (the route's `503` with its
+  document) is the tool's result, not a tool error; the `503` with no reading
+  (`probe_failed`) still is one. It reads the process's one readiness state,
+  the same `Arc` the public route is mounted with, so it adds no RPC probes.
+- **`x402_escrow_onchain_state`** = `POST /escrow/state`: what one x402r escrow
+  payment holds on-chain, from the AuthCaptureEscrow contract with a view call.
+  Its input schema is the `EscrowStateQuery` type's, with a worked example the
+  type parses (`network` is CAIP-2 only, `maxAmount` a decimal string).
+- **`x402_durable_evidence`** = `GET /dx402/evidence/{paymentId}`, or with
+  `document: "receipt"` `GET /dx402/receipt/{paymentId}`. Where DX402 is off it
+  answers the public router's generic 404.
+- Each read is class `lectura` with `readOnlyHint`, publishes an
+  `outputSchema` and answers in `structuredContent`.
+
+### Changed
+
+- `TOOL_NAMES` is a closed list of eight (`tools_list_is_exactly_the_eight`).
+  The internal router mounts the reads route by route, never a whole public
+  router, and a test walks the DX402 writes, `/register`, `/feedback*`, the
+  bazaar admin and the ERC-8004 reads through it: all 404.
+- A GET read percent-encodes its arguments into the path or the query (a
+  `paymentId` holding `/`, `?` or `..` stays in its segment) and refuses an
+  argument it does not declare (`-32602`). `x402_supported` keeps ignoring
+  extras, as before.
+- The server card, `ard.json`, both agent cards, `llms.txt` (and
+  `llms-full.txt`), `index.md`, `skill.md` section 10, the `/mcp` guide in both
+  representations, the landing's and `/x402`'s MCP strings and the `/docs`
+  description of `POST /mcp` name all eight tools or no count at all;
+  `every_document_that_lists_the_mcp_tools_names_all_of_them` holds them.
+
 ## [2.53.0] - 2026-11-01
 
 The `escrow` scheme on NEAR: payments into the Arras escrow contracts, relayed

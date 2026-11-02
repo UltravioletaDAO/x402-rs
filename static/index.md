@@ -25,7 +25,9 @@ Base URL: `https://facilitator.ultravioletadao.xyz/`
 - `GET /supported` — every (scheme, network) pair accepted, with its supported protocol version and identifiers (Hedera is v2 only)
 - `POST /accepts` — negotiate payment requirements (Faremeter-compatible)
 - `POST /mcp` — MCP server (Streamable HTTP, stateless): `x402_supported`,
-  `x402_accepts`, `x402_verify`, `x402_settle`, over the same handlers
+  `x402_accepts`, `x402_verify`, `x402_settle`, and the reads `x402_networks`,
+  `x402_chain_health`, `x402_escrow_onchain_state`, `x402_durable_evidence`,
+  over the same handlers
 - `GET /mcp` — the MCP guide for a reader (HTML, or Markdown with
   `Accept: text/markdown`)
 - `GET /health` — `{"status":"healthy"}`

@@ -4,12 +4,12 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title data-i18n="title">x402 facilitator - MCP server</title>
-<meta name="description" data-i18n-content="meta.description" content="The x402 facilitator as an MCP server: one stateless Streamable HTTP endpoint, four tools, no install and no API key. Transports, the tool contract, the errors and the measured traps.">
+<meta name="description" data-i18n-content="meta.description" content="The x402 facilitator as an MCP server: one stateless Streamable HTTP endpoint, the x402 calls plus read-only lookups as tools, no install and no API key. Transports, the tool contract, the errors and the measured traps.">
 <meta property="og:type" content="website">
 <meta property="og:url" content="https://facilitator.ultravioletadao.xyz/mcp">
 <link rel="canonical" href="https://facilitator.ultravioletadao.xyz/mcp">
 <meta property="og:title" content="x402 facilitator · MCP server">
-<meta property="og:description" content="Four tools over one stateless Streamable HTTP endpoint. Same handlers as the REST routes, so a tool and a curl cannot disagree.">
+<meta property="og:description" content="The x402 calls and read-only lookups as tools over one stateless Streamable HTTP endpoint. Same handlers as the REST routes, so a tool and a curl cannot disagree.">
 <meta property="og:image" content="https://facilitator.ultravioletadao.xyz/logo.png">
 <link rel="icon" href="/favicon.ico">
 <link rel="stylesheet" href="/uv.css?v=20260909">
@@ -154,9 +154,33 @@ x402_settle(payload, reqs)  <span class="muted">← broadcast. real funds. irrev
 <td data-i18n="tools.args.settle">the same three, plus the optional <code>idempotencyKey</code></td>
 <td data-i18n="tools.yes" style="color:var(--amber)">yes, irreversibly</td>
 </tr>
+<tr>
+<td><code>x402_networks</code></td>
+<td><code>GET /networks.json</code></td>
+<td data-i18n="tools.args.none">none</td>
+<td class="muted" data-i18n="tools.no">no</td>
+</tr>
+<tr>
+<td><code>x402_chain_health</code></td>
+<td><code>GET /health/ready</code></td>
+<td data-i18n="tools.args.health">optional <code>network</code></td>
+<td class="muted" data-i18n="tools.no">no</td>
+</tr>
+<tr>
+<td><code>x402_escrow_onchain_state</code></td>
+<td><code>POST /escrow/state</code></td>
+<td><code>paymentInfo</code>, <code>payer</code>, <code>network</code>, <code>extra</code></td>
+<td class="muted" data-i18n="tools.no">no</td>
+</tr>
+<tr>
+<td><code>x402_durable_evidence</code></td>
+<td><code>GET /dx402/evidence/{paymentId}</code></td>
+<td data-i18n="tools.args.evidence"><code>paymentId</code>, optional <code>document</code> (<code>evidence</code> or <code>receipt</code>)</td>
+<td class="muted" data-i18n="tools.no">no</td>
+</tr>
 </tbody>
 </table>
-</div><p data-i18n="tools.p1">The arguments of each tool <em>are</em> the JSON body of the request it stands for, and the result is that request's response body verbatim, in a single text content block. Nothing is reshaped on the way through, so everything written about <code>/verify</code> and <code>/settle</code> in the agent manual is true over MCP too.</p><h3 data-i18n="tools.h.supported">x402_supported — start here</h3>
+</div><p data-i18n="tools.p1">The arguments of each tool <em>are</em> the JSON body of the request it stands for — or, for the GET reads, its path and query — and the result is that request's response body verbatim, in a single text content block. Nothing is reshaped on the way through, so everything written about <code>/verify</code> and <code>/settle</code> in the agent manual is true over MCP too.</p><p data-i18n="tools.reads">The reads are <code>x402_supported</code> and the last four: no signed authorization goes in, nothing to sign comes out and no transaction is sent. Each also answers in <code>structuredContent</code>, described by its <code>outputSchema</code>. <code>x402_chain_health</code> returns a chain that reads <code>down</code> as its result, not as an error; <code>x402_escrow_onchain_state</code> is the escrow contract's own view of one payment, not a marketplace's record of a task; <code>x402_durable_evidence</code> answers only where <code>x402_supported</code> lists <code>durable-evidence</code>, and the generic 404 elsewhere.</p><h3 data-i18n="tools.h.supported">x402_supported — start here</h3>
 <pre><code>curl -sS https://facilitator.ultravioletadao.xyz/mcp \
   -H 'content-type: application/json' \
   -H 'accept: application/json, text/event-stream' \
@@ -173,7 +197,9 @@ x402_settle(payload, reqs)  <span class="muted">← broadcast. real funds. irrev
      variant of untagged enum VerifyRequestEnvelope\",
     \"code\":\"invalid_request_body\",\"hint\":\"...\"}"}]}}</code></pre><p data-i18n="errors.p2">A JSON-RPC error is reserved for what never reached a tool at all — an unroutable call:</p><pre><code>{"jsonrpc":"2.0","id":8,"error":{"code":-32601,
   "message":"unknown tool: nope",
-  "data":{"tools":["x402_supported","x402_accepts","x402_verify","x402_settle"]}}}</code></pre></div></details>
+  "data":{"tools":["x402_supported","x402_accepts","x402_verify","x402_settle",
+    "x402_networks","x402_chain_health","x402_escrow_onchain_state",
+    "x402_durable_evidence"]}}}</code></pre></div></details>
 <details class="product-detail" id="limit">
 <summary><h2 data-i18n="h.limit">Rate limits</h2>
 </summary>
@@ -273,7 +299,7 @@ const I18N = {
     "next.x402": "x402",
     "next.x402.why": "what each tool does underneath",
     "title": "x402 facilitator - MCP server",
-    "meta.description": "The x402 facilitator as an MCP server: one stateless Streamable HTTP endpoint, four tools, no install and no API key. Transports, the tool contract, the errors and the measured traps.",
+    "meta.description": "The x402 facilitator as an MCP server: one stateless Streamable HTTP endpoint, the x402 calls plus read-only lookups as tools, no install and no API key. Transports, the tool contract, the errors and the measured traps.",
     "nav.card": "server card",
     "lead": "One MCP endpoint for checking supported networks, matching payment options, verifying authorizations, and submitting signed payments.",
     "fact.endpoint": "Endpoint",
@@ -308,9 +334,12 @@ const I18N = {
     "tools.th.money": "Moves money",
     "tools.args.none": "none",
     "tools.args.settle": "the same three, plus the optional <code>idempotencyKey</code>",
+    "tools.args.health": "optional <code>network</code>",
+    "tools.args.evidence": "<code>paymentId</code>, optional <code>document</code> (<code>evidence</code> or <code>receipt</code>)",
     "tools.no": "no",
     "tools.yes": "yes, irreversibly",
-    "tools.p1": "The arguments of each tool <em>are</em> the JSON body of the request it stands for, and the result is that request's response body verbatim, in a single text content block. Nothing is reshaped on the way through, so everything written about <code>/verify</code> and <code>/settle</code> in the agent manual is true over MCP too.",
+    "tools.p1": "The arguments of each tool <em>are</em> the JSON body of the request it stands for — or, for the GET reads, its path and query — and the result is that request's response body verbatim, in a single text content block. Nothing is reshaped on the way through, so everything written about <code>/verify</code> and <code>/settle</code> in the agent manual is true over MCP too.",
+    "tools.reads": "The reads are <code>x402_supported</code> and the last four: no signed authorization goes in, nothing to sign comes out and no transaction is sent. Each also answers in <code>structuredContent</code>, described by its <code>outputSchema</code>. <code>x402_chain_health</code> returns a chain that reads <code>down</code> as its result, not as an error; <code>x402_escrow_onchain_state</code> is the escrow contract's own view of one payment, not a marketplace's record of a task; <code>x402_durable_evidence</code> answers only where <code>x402_supported</code> lists <code>durable-evidence</code>, and the generic 404 elsewhere.",
     "tools.h.supported": "x402_supported — start here",
     "tools.supportedText": "<code>result.content[0].text</code> contains the live <code>GET /supported</code> response: versions, schemes, networks, aliases, tokens and network-specific fee payers. Arc supports direct EOA USDC/EURC exact v1/v2. Hedera uses <code>hedera:mainnet</code> or <code>hedera:testnet</code>, native v2/exact only. Read the native envelope in <a href=\"/skill.md\">the agent manual</a>; legacy names are not universal.",
     "tools.h.settle": "x402_settle — the one that spends",
@@ -375,7 +404,7 @@ const I18N = {
     "next.x402": "x402",
     "next.x402.why": "qué hace cada tool por debajo",
     "title": "Facilitador x402 - servidor MCP",
-    "meta.description": "El facilitador x402 como servidor MCP: un endpoint Streamable HTTP sin estado, cuatro herramientas, sin instalación y sin API key. Transportes, el contrato de las herramientas, los errores y las trampas medidas.",
+    "meta.description": "El facilitador x402 como servidor MCP: un endpoint Streamable HTTP sin estado, las llamadas x402 más consultas de solo lectura como herramientas, sin instalación y sin API key. Transportes, el contrato de las herramientas, los errores y las trampas medidas.",
     "nav.card": "server card",
     "lead": "Un endpoint MCP para consultar redes, elegir opciones de pago, verificar autorizaciones y enviar pagos firmados.",
     "fact.endpoint": "Endpoint",
@@ -410,9 +439,12 @@ const I18N = {
     "tools.th.money": "Mueve dinero",
     "tools.args.none": "ninguno",
     "tools.args.settle": "los mismos tres, más el opcional <code>idempotencyKey</code>",
+    "tools.args.health": "<code>network</code> opcional",
+    "tools.args.evidence": "<code>paymentId</code>, <code>document</code> opcional (<code>evidence</code> o <code>receipt</code>)",
     "tools.no": "no",
     "tools.yes": "sí, y es irreversible",
-    "tools.p1": "Los argumentos de cada herramienta <em>son</em> el cuerpo JSON de la petición que representa, y el resultado es el cuerpo de respuesta de esa petición tal cual, en un solo bloque de texto. Nada se reescribe en el camino, así que todo lo que dice el manual del agente sobre <code>/verify</code> y <code>/settle</code> vale también por MCP.",
+    "tools.p1": "Los argumentos de cada herramienta <em>son</em> el cuerpo JSON de la petición que representa — o, en las lecturas por GET, su ruta y su query — y el resultado es el cuerpo de respuesta de esa petición tal cual, en un solo bloque de texto. Nada se reescribe en el camino, así que todo lo que dice el manual del agente sobre <code>/verify</code> y <code>/settle</code> vale también por MCP.",
+    "tools.reads": "Las lecturas son <code>x402_supported</code> y las cuatro últimas: no entra ninguna autorización firmada, no sale nada para firmar y no se envía ninguna transacción. Cada una contesta también en <code>structuredContent</code>, descrito por su <code>outputSchema</code>. <code>x402_chain_health</code> devuelve una cadena que lee <code>down</code> como su resultado, no como un error; <code>x402_escrow_onchain_state</code> es la vista del propio contrato de escrow sobre un pago, no el registro de una tarea en un marketplace; <code>x402_durable_evidence</code> contesta solo donde <code>x402_supported</code> lista <code>durable-evidence</code>, y el 404 genérico en el resto.",
     "tools.h.supported": "x402_supported — se empieza acá",
     "tools.supportedText": "<code>result.content[0].text</code> contiene la respuesta actual de <code>GET /supported</code>: versiones, esquemas, redes, alias, tokens y fee payers por red. Arc admite USDC/EURC exact de EOA en v1/v2. Hedera usa <code>hedera:mainnet</code> o <code>hedera:testnet</code>, solo v2/exact nativo. Consulta el formato nativo en <a href=\"/skill.md\">el manual para agentes</a>; los nombres anteriores no son universales.",
     "tools.h.settle": "x402_settle — la que gasta",

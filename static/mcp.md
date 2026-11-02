@@ -1,13 +1,14 @@
-# Give your agent four tools that pay for things
+# Give your agent the tools that pay for things
 
 *This document is English only, on purpose: it is an agent surface. The same
 guide for a human reader, in English or Spanish, is the HTML at
 <https://facilitator.ultravioletadao.xyz/mcp>.*
 
-This facilitator answers MCP on the same URL it answers HTTP. Four tools, one
-stateless endpoint, nothing to install and no API key. A tool call is dispatched
-through the very same REST router as the request it names, so a tool and a curl
-cannot disagree about anything.
+This facilitator answers MCP on the same URL it answers HTTP. The four x402
+calls, plus the reads a buyer needs around a payment, as tools: one stateless
+endpoint, nothing to install and no API key. A tool call is dispatched through
+the very same REST router as the request it names, so a tool and a curl cannot
+disagree about anything.
 
 | | |
 |---|---|
@@ -110,7 +111,7 @@ x402_settle(payload, reqs)  <- broadcast. real funds. irreversible.
                                send idempotencyKey on every retry.
 ```
 
-## The four tools, and only four
+## The tools, and only these
 
 | Tool | Is | Arguments | Moves money |
 |---|---|---|---|
@@ -118,16 +119,40 @@ x402_settle(payload, reqs)  <- broadcast. real funds. irreversible.
 | `x402_accepts` | `POST /accepts` | `accepts`, `x402Version`, `error` | no |
 | `x402_verify` | `POST /verify` | `x402Version`, `paymentPayload`, `paymentRequirements` | no |
 | `x402_settle` | `POST /settle` | the same three, plus optional `idempotencyKey` | **yes, irreversibly** |
+| `x402_networks` | `GET /networks.json` | none | no |
+| `x402_chain_health` | `GET /health/ready` | optional `network` | no |
+| `x402_escrow_onchain_state` | `POST /escrow/state` | `paymentInfo`, `payer`, `network`, `extra` | no |
+| `x402_durable_evidence` | `GET /dx402/evidence/{paymentId}` | `paymentId`, optional `document` (`evidence` or `receipt`) | no |
 
-The arguments of each tool *are* the JSON body of the request it stands for, and
-the result is that request's response body verbatim, in a single text content
-block. Everything `/skill.md` says about `/verify` and `/settle` is true here.
+The arguments of each tool *are* the JSON body of the request it stands for --
+or, for the GET reads, its path and query, percent-encoded -- and the result is
+that request's response body verbatim, in a single text content block.
+Everything `/skill.md` says about `/verify` and `/settle` is true here. A GET
+read refuses an argument it does not declare (`-32602`) rather than answer a
+question you did not ask.
 
-`x402_supported` is the one read, and it also answers in `structuredContent`
-with the same document, described by the `outputSchema` it publishes in
-`tools/list`. Every tool names its class in `_meta["uvd/clase"]`:
-`x402_supported` is `lectura`, `x402_accepts` and `x402_verify` are
-`riel_de_pago`, and `x402_settle` is `mueve_dinero`.
+The reads are `x402_supported` and the last four. They take no signed
+authorization, return nothing to sign and send no transaction, and each also
+answers in `structuredContent` with the same document, described by the
+`outputSchema` it publishes in `tools/list`. Every tool names its class in
+`_meta["uvd/clase"]`: the reads are `lectura`, `x402_accepts` and `x402_verify`
+are `riel_de_pago`, and `x402_settle` is `mueve_dinero`.
+
+- `x402_networks` -- how to present each network `x402_supported` names:
+  display name, chain id, testnet flag, explorer URL templates, tokens with
+  their EIP-712 domain. One row per chain, never more or fewer.
+- `x402_chain_health` -- whether this facilitator can settle right now, chain by
+  chain (`ok`, `degraded`, `down`, with a bounded reason). A chain that reads
+  `down` comes back as the result -- the route answers it with HTTP 503 -- not
+  as a tool error.
+- `x402_escrow_onchain_state` -- what one x402r escrow payment holds on-chain
+  (collected, capturable, refundable), read from the AuthCaptureEscrow contract
+  with a view call. It is the chain's answer, not any marketplace's record of a
+  task. `network` is CAIP-2 only.
+- `x402_durable_evidence` -- the DX402 evidence anchored for a payment, or with
+  `document: "receipt"` the signed receipt alone. `404` is "nothing anchored",
+  `410` is "anchored and expired". Served only where `x402_supported` lists
+  `durable-evidence` in `extensions`; elsewhere it answers the generic `404`.
 
 ```bash
 curl -sS https://facilitator.ultravioletadao.xyz/mcp \
@@ -170,7 +195,9 @@ reached a tool:
 ```json
 {"jsonrpc":"2.0","id":8,"error":{"code":-32601,
   "message":"unknown tool: nope",
-  "data":{"tools":["x402_supported","x402_accepts","x402_verify","x402_settle"]}}}
+  "data":{"tools":["x402_supported","x402_accepts","x402_verify","x402_settle",
+    "x402_networks","x402_chain_health","x402_escrow_onchain_state",
+    "x402_durable_evidence"]}}}
 ```
 
 ## The rate limit is shared with /verify and /settle

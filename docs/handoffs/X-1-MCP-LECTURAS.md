@@ -209,3 +209,68 @@ producción. El comparador de Rust corre en `ci.yaml` cuando cambia `src/`.
 4. Límite: el facilitador cuenta `POST /mcp` en el balde de `/verify` y `/settle` por IP (una ficha cada 2 s,
    ráfaga 30). Todas las llamadas que salgan de una misma IP de PayBox lo comparten; las IPs de salida de PayBox:
    [SIN MEDIR]. Un `429` se le muestra al agente como «esperá un minuto».
+
+**El artefacto, construido desde el commit `1079c387`** con `scripts/reproducible-build.sh` (export limpio con
+`git archive`, `node:24.21.0` por digest, linux x64, pnpm 11.11.0, starter 1.0.4): `dist/plugin.mjs` de
+**264.857 bytes**, sha256 **`7c1616a2ba22ba5cb9bbc266097c6251dbeb03f504f65bc6960585fc62daee14`**. Salió igual
+en todas las construcciones que hice: desde la copia del árbol, antes y después de escapar la `salt` (esbuild
+minifica el escape a la misma cadena), y las dos desde el commit con `reproducible-build.sh`. Si algo de `paybox-plugin/src` cambia antes del merge, el sha cambia; se
+vuelve a sacar del commit mergeado.
+
+### Verificación del plugin (local, 2026-11-02)
+
+| Paso | Resultado |
+|---|---|
+| `pnpm run typecheck` (Node 24.21.0 por digest, `--network none`) | exit 0 |
+| Dos builds seguidos | los mismos bytes (sha256 de arriba) |
+| `pnpm run test:unit` (sin red; el MCP falso escucha en `127.0.0.1`) | 43/43, 0 saltados |
+| `pnpm run check:bundle` | 264.857 ≤ 500.000 bytes, sin AJV |
+| Conformidad del starter (`pnpm test`) | `passed`, `discoveredToolCount: 5`; la llamada de muestra hizo UNA lectura real de `x402_supported` a producción (2.53.0) y su `structuredContent` validó contra el `outputSchema` |
+| `reproducible-build.sh 1079c387` | exit 0, el mismo sha256 |
+| `the_paybox_plugin_relays_exactly_the_reads_of_tools_list` | escribe y compara; `src/mcp.rs` limpio con rustfmt |
+| Suite del CI sobre `1079c387` (`cargo test --locked -p x402-rs --features <CI> --no-fail-fast -- --test-threads=1`) | 0 fallos: lib 2090, bin 2181 (+1, el comparador) |
+| `cargo clippy --locked -p x402-rs --features <CI> --all-targets` | exit 0; 0 warnings en `src/mcp.rs` |
+| `preci.py --ejecutar` (WSL, Node 24.21.0 y pnpm 11.11.0 en el PATH) | verde: los tests ERC-8004, y del job del plugin pnpm, `pnpm install` y typecheck |
+| YAML del workflow | parsea; `push` y `pull_request` con `paths: [paybox-plugin/**, .github/workflows/paybox-plugin.yml]` |
+
+**Auto-refutación del plugin.** Una mutación por guarda, cada una revertida desde el original:
+
+| # | Mutación | Resultado | La mata |
+|---|---|---|---|
+| P1 | un nombre que el plugin no lista sale igual al facilitador | matada | `a payment rail never reaches the fake…`, `a tool this plugin does not list is a JSON-RPC error…` |
+| P2 | el catálogo no exige la clase `lectura` | matada | `a broken catalog fails at startup…` |
+| P3 | el catálogo no exige `readOnlyHint` | matada | ídem |
+| P4 | el error del facilitador conserva su lista de tools | matada | `the facilitator's list of its own tools never reaches the agent…` |
+| P5 | `Accept` sin `text/event-stream` | matada | el MCP falso contesta 406, como rmcp: 3 tests |
+| P6 | las `instructions` nombran `x402_settle` | matada | `every name in the instructions is a listed tool…`, `the source … names no payment rail` |
+| P7 | una descripción del catálogo editada a mano | matada | `the catalog is exactly the reads of the facilitator's tools/list…`, el del MCP falso |
+| P8 | el facilitador recibe 10 s | matada | `the facilitator gets at most the 6 s PayBox leaves` |
+| P9 | sigue redirecciones | matada | `one POST to the facilitator's MCP…` |
+| P10 | el título con otra marca | matada | `server/discover names the DAO's facilitator`, `the source … no other plugin` |
+| R1 | el generador releva todo lo que no mueve dinero (entran `x402_accepts` y `x402_verify`) | matada | la aserción de nombres del comparador |
+| R2 | el generador deja la `salt` cruda | matada | la comparación byte a byte |
+| R3 | una lectura cambia su descripción en `src/mcp.rs` y el catálogo no se regenera | matada | la comparación byte a byte |
+
+Controles sin mutar (P0, R0): verdes. 13/13 matadas. Refutador adversarial propio (regla 5c): no lanzado; el plugin
+sólo lee y no toca dinero ni credenciales.
+
+### Decisiones que tomé (reversibles antes del merge)
+
+1. **Sin tool de guía.** El de Emporium tiene una local; el AVISO pide exactamente las lecturas, y un
+   `tools/list` de 5 es la verificación que pide.
+2. **Muestra de la conformidad = `x402_supported`.** Es la única de las cinco que existe en producción antes de la
+   tanda, y hace la conformidad una prueba real del `outputSchema` contra el facilitador vivo.
+3. **Mismos nombres que el MCP** (`x402_*`), no nombres por propósito: el plugin releva por el mismo nombre.
+4. **El escape de la `x`** en los archivos generados, en vez de cortar el ejemplo: la definición queda idéntica a la
+   que publica `tools/list`.
+5. **Nombre y título:** `ultravioleta-facilitator` / `Ultravioleta DAO x402 Facilitator`.
+6. **`.dockerignore` sin tocar.** `COPY . ./` del builder ya mete `paybox-plugin/` en la etapa de compilación (no en
+   la imagen final, que sólo copia el binario, `config/` y `static/`). Propuesta: sumar `paybox-plugin/` al
+   `.dockerignore` para que un `node_modules` local no infle el contexto de `fast-build.sh`. Toca un archivo del
+   deploy y no hace falta para esto, así que no lo hice.
+7. **`scripts/reproducible-build.sh` devuelve la propiedad de los archivos** que el contenedor escribe como root:
+   sin eso, en Linux (WSL, CI) el `trap` no podía borrar el temporal y el script salía con 1 aunque el build
+   estuviera bien. La misma línea del script de Emporium tiene ese defecto en Linux (en la Mac, Docker Desktop
+   lo tapa); no lo toqué.
+8. **El pre-push ahora corre el job del plugin** (pnpm, `pnpm install`, typecheck): pushear con Node 24.21.0 y pnpm
+   11.11.0 primeros en el PATH (`ESTADO-c0der.md`). Con el Node 20 del sistema de la WSL daría rojo.

@@ -953,7 +953,8 @@ fn chain_health_output_schema() -> Value {
 /// rather than written as a literal so this file never carries `0x` + 64 hex
 /// (the salt), which the pre-commit hook refuses.
 fn escrow_state_input_schema() -> Value {
-    let address = |what: &str| json!({ "type": "string", "description": format!("{what}, 0x + 40 hex.") });
+    let address =
+        |what: &str| json!({ "type": "string", "description": format!("{what}, 0x + 40 hex.") });
     let example = json!({
         "paymentInfo": {
             "operator": "0x1111111111111111111111111111111111111111",
@@ -1565,11 +1566,7 @@ impl ServerHandler for FacilitatorMcp {
         // only in a non-HTTP transport, which this server does not mount.
         let outer = context.extensions.get::<axum::http::request::Parts>();
         let (status, body) = self
-            .call_rest(
-                rest,
-                outer.map(|p| &p.headers),
-                idempotency_key.as_deref(),
-            )
+            .call_rest(rest, outer.map(|p| &p.headers), idempotency_key.as_deref())
             .await?;
 
         // The REST status decides. A 4xx/5xx becomes a tool-level error the
@@ -1890,7 +1887,9 @@ mod tests {
     /// readiness state, as in `main.rs`. The one thing these tests cannot
     /// exercise is the chain, which is why the live `curl` transcript in the
     /// handoff exists.
-    async fn routers_with(dx402: Option<Arc<crate::dx402::service::Dx402Service>>) -> (Router, Router) {
+    async fn routers_with(
+        dx402: Option<Arc<crate::dx402::service::Dx402Service>>,
+    ) -> (Router, Router) {
         let state = StubFacilitator::new();
         let discovery_registry = Arc::new(DiscoveryRegistry::new());
         let event_bus = Arc::new(crate::events::EventBus::from_env());
@@ -3605,7 +3604,11 @@ mod tests {
     /// The tool result is the REST answer: the same body, byte for byte, and a
     /// tool error exactly when the route answered non-2xx.
     fn assert_same_answer(doc: &Value, (status, body): &(StatusCode, String), what: &str) {
-        assert_eq!(&tool_text(doc), body, "{what}: the tool and the route disagree");
+        assert_eq!(
+            &tool_text(doc),
+            body,
+            "{what}: the tool and the route disagree"
+        );
         assert_eq!(
             doc["result"]["isError"] == true,
             !status.is_success(),
@@ -3635,13 +3638,19 @@ mod tests {
     async fn assert_structured_matches_schema(mcp: &Router, name: &str, doc: &Value) {
         let structured = &doc["result"]["structuredContent"];
         let text: Value = serde_json::from_str(&tool_text(doc)).unwrap();
-        assert_eq!(structured, &text, "{name}: structuredContent is not the text block");
+        assert_eq!(
+            structured, &text,
+            "{name}: structuredContent is not the text block"
+        );
         let schema = declared_output_schema(mcp, name).await;
         let errors: Vec<String> = validator_for(&schema)
             .iter_errors(structured)
             .map(|e| e.to_string())
             .collect();
-        assert!(errors.is_empty(), "{name} breaks its outputSchema: {errors:#?}");
+        assert!(
+            errors.is_empty(),
+            "{name} breaks its outputSchema: {errors:#?}"
+        );
     }
 
     /// The JSON of a `/health/ready` body without `ageSecs`, the one field
@@ -3794,8 +3803,7 @@ mod tests {
             let (status, body) = rest_answer(&inner, Method::GET, &uri, None).await;
             assert_eq!(status, StatusCode::OK, "{uri}: {body}");
         }
-        let (status, _) =
-            rest_answer(&inner, Method::POST, "/escrow/state", Some(json!({}))).await;
+        let (status, _) = rest_answer(&inner, Method::POST, "/escrow/state", Some(json!({}))).await;
         assert!(
             status != StatusCode::NOT_FOUND && status != StatusCode::METHOD_NOT_ALLOWED,
             "POST /escrow/state is not mounted: {status}"
@@ -3843,8 +3851,7 @@ mod tests {
     #[test]
     fn the_networks_output_schema_describes_a_production_document() {
         let supported: Value =
-            serde_json::from_str(include_str!("../tests/fixtures/supported-2.40.0.json"))
-                .unwrap();
+            serde_json::from_str(include_str!("../tests/fixtures/supported-2.40.0.json")).unwrap();
         let catalog = crate::networks_json::CATALOG
             .as_ref()
             .expect("config/supported_tokens.json parses");
@@ -3853,17 +3860,25 @@ mod tests {
             catalog,
             "https://facilitator.ultravioletadao.xyz",
         );
-        assert!(document["networks"].as_array().is_some_and(|n| n.len() > 20));
+        assert!(document["networks"]
+            .as_array()
+            .is_some_and(|n| n.len() > 20));
         let validator = validator_for(&networks_output_schema());
         let errors: Vec<String> = validator
             .iter_errors(&document)
             .map(|e| e.to_string())
             .collect();
-        assert!(errors.is_empty(), "a production document breaks the schema: {errors:#?}");
+        assert!(
+            errors.is_empty(),
+            "a production document breaks the schema: {errors:#?}"
+        );
 
         let mut broken = document.clone();
         broken.as_object_mut().unwrap().remove("networks");
-        assert!(!validator.is_valid(&broken), "a document without networks validates");
+        assert!(
+            !validator.is_valid(&broken),
+            "a document without networks validates"
+        );
         let mut broken = document.clone();
         broken["networks"][0]["testnet"] = json!("false");
         assert!(!validator.is_valid(&broken), "a string testnet validates");
@@ -3874,8 +3889,14 @@ mod tests {
             .iter_mut()
             .find(|row| row["tokens"].as_array().is_some_and(|t| !t.is_empty()))
             .expect("a row with tokens");
-        token["tokens"][0].as_object_mut().unwrap().remove("decimals");
-        assert!(!validator.is_valid(&broken), "a token without decimals validates");
+        token["tokens"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("decimals");
+        assert!(
+            !validator.is_valid(&broken),
+            "a token without decimals validates"
+        );
     }
 
     /// `x402_chain_health` returns the body of `GET /health/ready`, valid
@@ -3976,7 +3997,8 @@ mod tests {
         let example = escrow_state_input_schema()["examples"][0].clone();
         for body in [example, json!({}), json!({ "network": "base" })] {
             let doc = call(&mcp, "x402_escrow_onchain_state", body.clone()).await;
-            let over_rest = rest_answer(&rest, Method::POST, "/escrow/state", Some(body.clone())).await;
+            let over_rest =
+                rest_answer(&rest, Method::POST, "/escrow/state", Some(body.clone())).await;
             assert_same_answer(&doc, &over_rest, &body.to_string());
         }
     }
@@ -4098,7 +4120,8 @@ mod tests {
         let (mcp, rest) = routers_with(Some(svc)).await;
 
         let doc = call(&mcp, "x402_durable_evidence", json!({ "paymentId": id })).await;
-        let over_rest = rest_answer(&rest, Method::GET, &format!("/dx402/evidence/{id}"), None).await;
+        let over_rest =
+            rest_answer(&rest, Method::GET, &format!("/dx402/evidence/{id}"), None).await;
         assert_eq!(over_rest.0, StatusCode::OK, "{}", over_rest.1);
         assert_same_answer(&doc, &over_rest, "evidence");
         assert_structured_matches_schema(&mcp, "x402_durable_evidence", &doc).await;
@@ -4110,13 +4133,19 @@ mod tests {
             json!({ "paymentId": id, "document": "receipt" }),
         )
         .await;
-        let over_rest = rest_answer(&rest, Method::GET, &format!("/dx402/receipt/{id}"), None).await;
+        let over_rest =
+            rest_answer(&rest, Method::GET, &format!("/dx402/receipt/{id}"), None).await;
         assert_eq!(over_rest.0, StatusCode::OK, "{}", over_rest.1);
         assert_same_answer(&doc, &over_rest, "receipt");
         assert_structured_matches_schema(&mcp, "x402_durable_evidence", &doc).await;
 
         let shouted = format!("0X{}", id.trim_start_matches("0x").to_ascii_uppercase());
-        let doc = call(&mcp, "x402_durable_evidence", json!({ "paymentId": shouted })).await;
+        let doc = call(
+            &mcp,
+            "x402_durable_evidence",
+            json!({ "paymentId": shouted }),
+        )
+        .await;
         assert_eq!(doc["result"]["structuredContent"], evidence, "{doc}");
 
         // Not a schema that accepts anything: evidence without its authority
@@ -4124,7 +4153,10 @@ mod tests {
         let validator = validator_for(&durable_evidence_output_schema());
         let mut broken = evidence;
         broken.as_object_mut().unwrap().remove("verified");
-        assert!(!validator.is_valid(&broken), "evidence without `verified` validates");
+        assert!(
+            !validator.is_valid(&broken),
+            "evidence without `verified` validates"
+        );
     }
 
     /// A `paymentId` stays inside its path segment whatever it holds: each of
@@ -4135,7 +4167,10 @@ mod tests {
         let (svc, _) = dx402_with_one_anchor().await;
         let (mcp, rest) = routers_with(Some(svc)).await;
         for (id, encoded) in [
-            (format!("0x{}", "22".repeat(32)), format!("0x{}", "22".repeat(32))),
+            (
+                format!("0x{}", "22".repeat(32)),
+                format!("0x{}", "22".repeat(32)),
+            ),
             ("../../settle".to_string(), "..%2F..%2Fsettle".to_string()),
             ("a/b?c#d".to_string(), "a%2Fb%3Fc%23d".to_string()),
             ("x%2Fy".to_string(), "x%252Fy".to_string()),
@@ -4143,8 +4178,13 @@ mod tests {
             ("\u{00f1}".to_string(), "%C3%B1".to_string()),
         ] {
             let doc = call(&mcp, "x402_durable_evidence", json!({ "paymentId": id })).await;
-            let over_rest =
-                rest_answer(&rest, Method::GET, &format!("/dx402/evidence/{encoded}"), None).await;
+            let over_rest = rest_answer(
+                &rest,
+                Method::GET,
+                &format!("/dx402/evidence/{encoded}"),
+                None,
+            )
+            .await;
             assert_same_answer(&doc, &over_rest, &id);
             assert!(
                 tool_text(&doc).contains("dx402_unknown_payment"),
@@ -4309,7 +4349,12 @@ mod tests {
         ];
         for (path, text) in counted {
             let lower = text.to_lowercase();
-            for stale in ["four tools", "the four tools", "only four", "cuatro herramientas"] {
+            for stale in [
+                "four tools",
+                "the four tools",
+                "only four",
+                "cuatro herramientas",
+            ] {
                 assert!(!lower.contains(stale), "{path} still says `{stale}`");
             }
         }

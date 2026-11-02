@@ -3741,7 +3741,7 @@ async fn path_agent_skills_index() {}
     path = "/.well-known/mcp/server-card.json",
     tag = "Agentic",
     summary = "MCP server card",
-    description = "Where the MCP server lives and what it can do: `transport.endpoint` is `POST /mcp`, and the `tools` array is the same four names `tools/list` returns. `serverInfo.version` is stamped at runtime from the running release, so it cannot go stale.",
+    description = "Where the MCP server lives and what it can do: `transport.endpoint` is `POST /mcp`, and the `tools` array names every tool `tools/list` returns. `serverInfo.version` is stamped at runtime from the running release, so it cannot go stale.",
     responses(
         (status = 200, description = "MCP server card", body = Object)
     )

@@ -3989,8 +3989,10 @@ mod tests {
         }
     }
 
-    /// `x402_escrow_onchain_state` sends its arguments as the body of `POST
-    /// /escrow/state` and returns that route's answer, whatever it is.
+    /// `x402_escrow_onchain_state` returns the answer of `POST /escrow/state`,
+    /// whatever it is. Without `ENABLE_PAYMENT_OPERATOR` that route answers
+    /// every body alike, so this cannot tell the arguments from an empty body:
+    /// `the_escrow_read_sends_its_arguments_as_the_body` pins that.
     #[tokio::test]
     async fn escrow_state_over_mcp_is_the_answer_of_post_escrow_state() {
         let (mcp, rest) = routers().await;
@@ -4001,6 +4003,35 @@ mod tests {
                 rest_answer(&rest, Method::POST, "/escrow/state", Some(body.clone())).await;
             assert_same_answer(&doc, &over_rest, &body.to_string());
         }
+    }
+
+    /// The escrow read is the one read that reaches the chain (view calls on a
+    /// premium RPC), so what it sends is pinned at the dispatch: `POST
+    /// /escrow/state` with the tool's arguments, untouched, as the body.
+    #[test]
+    fn the_escrow_read_sends_its_arguments_as_the_body() {
+        let example = escrow_state_input_schema()["examples"][0]
+            .as_object()
+            .cloned()
+            .expect("the escrow example is an object");
+        let request = rest_request("x402_escrow_onchain_state", example.clone()).unwrap();
+        assert_eq!(request.method, Method::POST);
+        assert_eq!(request.uri, "/escrow/state");
+        assert_eq!(request.body, Some(example));
+    }
+
+    /// `x402_supported` keeps its contract from before the reads: a GET with
+    /// no body that ignores whatever arguments come with it, where the new
+    /// reads refuse an argument they do not declare.
+    #[test]
+    fn the_supported_tool_still_ignores_an_extra_argument() {
+        let mut extra = JsonObject::new();
+        extra.insert("network".to_string(), json!("base"));
+        extra.insert("anything".to_string(), json!(1));
+        let request = rest_request("x402_supported", extra).unwrap();
+        assert_eq!(request.method, Method::GET);
+        assert_eq!(request.uri, "/supported");
+        assert_eq!(request.body, None);
     }
 
     /// The input schema is the type's, not a guess: its example deserialises
@@ -4346,6 +4377,7 @@ mod tests {
             ("static/llms.txt", include_str!("../static/llms.txt")),
             ("static/index.html", include_str!("../static/index.html")),
             ("static/x402.html", include_str!("../static/x402.html")),
+            ("src/openapi.rs", include_str!("openapi.rs")),
         ];
         for (path, text) in counted {
             let lower = text.to_lowercase();
@@ -4354,6 +4386,7 @@ mod tests {
                 "the four tools",
                 "only four",
                 "cuatro herramientas",
+                "four names",
             ] {
                 assert!(!lower.contains(stale), "{path} still says `{stale}`");
             }

@@ -44,7 +44,7 @@
     {
       "id": "mcp-tools",
       "name": "MCP server (Streamable HTTP)",
-      "description": "The same verify / settle / supported / accepts calls exposed as MCP tools at POST /mcp: x402_supported, x402_accepts, x402_verify, x402_settle. Stateless transport, no authentication, and every tool dispatched through the REST handler it names. Server card: /.well-known/mcp/server-card.json."
+      "description": "The same verify / settle / supported / accepts calls exposed as MCP tools at POST /mcp: x402_supported, x402_accepts, x402_verify, x402_settle; plus four reads that move and sign nothing: x402_networks, x402_chain_health, x402_escrow_onchain_state, x402_durable_evidence. Stateless transport, no authentication, and every tool dispatched through the REST handler it names. Server card: /.well-known/mcp/server-card.json."
     }
   ],
   "skills": [

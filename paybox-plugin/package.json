@@ -1,0 +1,31 @@
+{
+  "name": "uvd-facilitator-paybox-plugin",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": "24.x",
+    "pnpm": "11.11.0"
+  },
+  "packageManager": "pnpm@11.11.0",
+  "scripts": {
+    "dev": "tsx src/plugin.ts",
+    "build": "esbuild src/plugin.ts --bundle --platform=node --format=esm --target=node24 --minify --alias:@modelcontextprotocol/server/_shims=./src/sdk-shims.ts --outfile=dist/plugin.mjs",
+    "conformance": "node scripts/conformance.mjs",
+    "test": "node scripts/test.mjs",
+    "test:unit": "node --import tsx --test \"test/*.test.ts\"",
+    "check:bundle": "node scripts/check-bundle.mjs",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/server": "2.0.0",
+    "zod": "4.4.3"
+  },
+  "devDependencies": {
+    "@types/node": "24.12.2",
+    "esbuild": "0.28.2",
+    "tsx": "4.23.12",
+    "typescript": "5.9.3",
+    "ajv": "8.20.0"
+  }
+}

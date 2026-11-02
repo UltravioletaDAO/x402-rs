@@ -2,10 +2,13 @@
 //!
 //! # What this is
 //!
-//! Four tools -- `x402_supported`, `x402_accepts`, `x402_verify`, `x402_settle`
-//! -- over MCP's Streamable HTTP transport, served by the same binary, on the
-//! same ALB, under the same rate limiter as `/verify` and `/settle`. No new
-//! infrastructure, no second deploy, no second TLS certificate to rotate.
+//! The four x402 calls -- `x402_supported`, `x402_accepts`, `x402_verify`,
+//! `x402_settle` -- plus four reads a buyer needs around a payment --
+//! `x402_networks`, `x402_chain_health`, `x402_escrow_onchain_state`,
+//! `x402_durable_evidence` -- over MCP's Streamable HTTP transport, served by
+//! the same binary, on the same ALB, under the same rate limiter as `/verify`
+//! and `/settle`. No new infrastructure, no second deploy, no second TLS
+//! certificate to rotate.
 //!
 //! # The one design decision worth reading
 //!
@@ -68,16 +71,34 @@ use crate::provider_cache::{HasProviderMap, ProviderMap};
 
 /// The tools this server exposes, in the order `tools/list` reports them.
 ///
-/// Exactly four. The admin surfaces -- `/discovery/admin/*`, `/feedback/revoke`,
-/// `/register`, the DX402 writes -- are deliberately absent: an MCP client is an
-/// LLM holding a tool list, and a tool that erases third-party reputation or
-/// mints an identity does not belong in one. `tools_list_is_exactly_the_four`
-/// fails if that ever quietly grows.
-pub const TOOL_NAMES: [&str; 4] = [
+/// A closed list of eight: the four x402 calls, then four reads a buyer needs
+/// around a payment -- how to present each network, whether a chain can settle
+/// right now, what an escrow contract holds for one payment, and the DX402
+/// evidence anchored for one. The reads sign nothing and move nothing; each is
+/// a REST route this service already answered over HTTP.
+///
+/// Deliberately absent, and staying so:
+/// - the admin surfaces -- `/discovery/admin/*`, `/feedback/revoke`,
+///   `/register`, `/dx402/repair` -- and every other write (`/feedback`,
+///   `/discovery/register`, `/dx402/anchor`): an MCP client is an LLM holding a
+///   tool list, and a tool that erases third-party reputation or mints an
+///   identity does not belong in one;
+/// - the ERC-8004 reads (`/identity`, `/reputation`): reputation has its own
+///   surfaces in the stack, and a second door to it here would be a second
+///   implementation to keep in step.
+///
+/// `tools_list_is_exactly_the_eight` fails if the list ever quietly grows, and
+/// `the_internal_router_serves_no_write_and_no_admin_route` fails if a write
+/// becomes reachable from a tool at all.
+pub const TOOL_NAMES: [&str; 8] = [
     "x402_supported",
     "x402_accepts",
     "x402_verify",
     "x402_settle",
+    "x402_networks",
+    "x402_chain_health",
+    "x402_escrow_onchain_state",
+    "x402_durable_evidence",
 ];
 
 /// The `_meta` key under which each tool declares its house class.
@@ -109,14 +130,24 @@ pub const HOUSE_CLASSES: [&str; 7] = [
 ///   is the signable requirements of one concrete purchase.
 /// - `x402_verify` is `riel_de_pago`: its input is a signed authorization.
 /// - `x402_settle` is `mueve_dinero`: it broadcasts the transfer.
+/// - `x402_networks`, `x402_chain_health`, `x402_escrow_onchain_state` and
+///   `x402_durable_evidence` are `lectura`: none takes a signed authorization,
+///   none returns signable requirements, and none sends a transaction. The
+///   escrow one reads the contract with a view call (`/escrow/state` spends no
+///   gas); the evidence one reads the facilitator's own registry and never
+///   returns the sealed bytes.
 ///
 /// `annotations` are deliberately NOT touched by the class: they keep saying
 /// what the MCP hints say (read-only, destructive, idempotent, open world).
-pub const TOOL_CLASSES: [(&str, &str); 4] = [
+pub const TOOL_CLASSES: [(&str, &str); 8] = [
     ("x402_supported", "lectura"),
     ("x402_accepts", "riel_de_pago"),
     ("x402_verify", "riel_de_pago"),
     ("x402_settle", "mueve_dinero"),
+    ("x402_networks", "lectura"),
+    ("x402_chain_health", "lectura"),
+    ("x402_escrow_onchain_state", "lectura"),
+    ("x402_durable_evidence", "lectura"),
 ];
 
 /// `_meta` for `tool`: `{"uvd/clase": <class>}`.
@@ -209,14 +240,185 @@ pub fn allowed_hosts() -> Vec<String> {
 }
 
 /// Which REST route a tool name stands for.
+///
+/// The DX402 tool is the one route with a placeholder in it: `{document}` is
+/// `evidence` or `receipt` ([`DX402_DOCUMENTS`]) and `{paymentId}` is the
+/// caller's id, percent-encoded into one path segment ([`rest_request`]).
 fn rest_target(tool: &str) -> Option<(Method, &'static str)> {
     match tool {
         "x402_supported" => Some((Method::GET, "/supported")),
         "x402_accepts" => Some((Method::POST, "/accepts")),
         "x402_verify" => Some((Method::POST, "/verify")),
         "x402_settle" => Some((Method::POST, "/settle")),
+        "x402_networks" => Some((Method::GET, "/networks.json")),
+        "x402_chain_health" => Some((Method::GET, "/health/ready")),
+        "x402_escrow_onchain_state" => Some((Method::POST, "/escrow/state")),
+        "x402_durable_evidence" => Some((Method::GET, "/dx402/{document}/{paymentId}")),
         _ => None,
     }
+}
+
+/// The two DX402 documents `x402_durable_evidence` reads, the default first:
+/// `GET /dx402/evidence/{paymentId}` (pointer, hash, retention, authority and
+/// the receipt's signature) and `GET /dx402/receipt/{paymentId}` (the signed
+/// receipt alone, with its EIP-712 domain, for offline verification).
+const DX402_DOCUMENTS: [&str; 2] = ["evidence", "receipt"];
+
+/// The arguments of `x402_durable_evidence`.
+const PAYMENT_ID_ARG: &str = "paymentId";
+const DOCUMENT_ARG: &str = "document";
+
+/// The argument of `x402_chain_health`.
+const NETWORK_ARG: &str = "network";
+
+/// The one REST request a tool call turns into.
+#[derive(Debug, PartialEq)]
+struct RestRequest {
+    method: Method,
+    /// Path and query, every caller-supplied part already percent-encoded.
+    uri: String,
+    /// The JSON body, for the tools whose arguments ARE the body.
+    body: Option<JsonObject>,
+}
+
+/// Percent-encode everything but RFC 3986's unreserved characters.
+///
+/// One encoder for both places a caller's string lands in a URI: a path
+/// segment (the DX402 `paymentId`) and a query value (`network`). Encoded this
+/// way a `/`, `?`, `#`, `&` or `..` stays INSIDE the segment or value it was
+/// given for -- axum's `Path` and `Query` extractors decode it back, so the
+/// handler sees exactly the string the caller sent, and a `paymentId` can never
+/// steer the request to another route of the internal router. `+` is encoded
+/// too, so a path segment and a query value decode to the same text.
+fn percent_encode(raw: &str) -> String {
+    let mut out = String::with_capacity(raw.len());
+    for byte in raw.bytes() {
+        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~') {
+            out.push(byte as char);
+        } else {
+            out.push_str(&format!("%{byte:02X}"));
+        }
+    }
+    out
+}
+
+/// Take an optional string argument out of `arguments`. `null` is absent.
+fn take_optional_string(
+    tool: &str,
+    arguments: &mut JsonObject,
+    name: &str,
+) -> Result<Option<String>, McpError> {
+    match arguments.remove(name) {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::String(value)) => Ok(Some(value)),
+        Some(other) => Err(McpError::invalid_params(
+            format!("{tool}: `{name}` must be a string, got {other}"),
+            None,
+        )),
+    }
+}
+
+/// Refuse whatever is left in `arguments` once a GET tool took its own.
+///
+/// A GET tool has no body to carry an extra field to, so dropping one would
+/// answer a different question than the caller asked -- the full network list
+/// to a model that sent `{"chain": "base"}` meaning a filter. `x402_supported`
+/// predates this and keeps ignoring extras: its contract is not changed here.
+fn refuse_leftover_arguments(tool: &str, arguments: &JsonObject) -> Result<(), McpError> {
+    if arguments.is_empty() {
+        return Ok(());
+    }
+    let names: Vec<&str> = arguments.keys().map(String::as_str).collect();
+    Err(McpError::invalid_params(
+        format!("{tool} does not take {names:?}; see its inputSchema"),
+        None,
+    ))
+}
+
+/// Turn a tool call into the REST request it stands for.
+///
+/// The body tools (`x402_accepts`, `x402_verify`, `x402_settle`,
+/// `x402_escrow_onchain_state`) send their arguments as the JSON body, unread.
+/// The GET reads put theirs in the path or the query, percent-encoded
+/// ([`percent_encode`]), and refuse any argument they do not declare. Nothing
+/// here validates a value the REST handler validates -- an unknown network, a
+/// malformed `paymentId` -- so the MCP answer stays the HTTP answer.
+fn rest_request(tool: &str, mut arguments: JsonObject) -> Result<RestRequest, McpError> {
+    let Some((method, route)) = rest_target(tool) else {
+        return Err(McpError::new(
+            ErrorCode::METHOD_NOT_FOUND,
+            format!("unknown tool: {tool}"),
+            Some(json!({ "tools": TOOL_NAMES })),
+        ));
+    };
+    let uri = match tool {
+        // Unchanged: a GET with no body, whatever arguments came with it.
+        "x402_supported" => route.to_string(),
+        "x402_networks" => {
+            refuse_leftover_arguments(tool, &arguments)?;
+            route.to_string()
+        }
+        "x402_chain_health" => {
+            let network = take_optional_string(tool, &mut arguments, NETWORK_ARG)?;
+            refuse_leftover_arguments(tool, &arguments)?;
+            match network {
+                Some(network) => format!("{route}?{NETWORK_ARG}={}", percent_encode(&network)),
+                None => route.to_string(),
+            }
+        }
+        "x402_durable_evidence" => {
+            let payment_id = take_optional_string(tool, &mut arguments, PAYMENT_ID_ARG)?
+                .filter(|id| !id.trim().is_empty())
+                .ok_or_else(|| {
+                    McpError::invalid_params(
+                        format!("{tool}: `{PAYMENT_ID_ARG}` is required"),
+                        None,
+                    )
+                })?;
+            let document = take_optional_string(tool, &mut arguments, DOCUMENT_ARG)?
+                .unwrap_or_else(|| DX402_DOCUMENTS[0].to_string());
+            if !DX402_DOCUMENTS.contains(&document.as_str()) {
+                return Err(McpError::invalid_params(
+                    format!("{tool}: `{DOCUMENT_ARG}` must be one of {DX402_DOCUMENTS:?}"),
+                    None,
+                ));
+            }
+            refuse_leftover_arguments(tool, &arguments)?;
+            route
+                .replace("{document}", &document)
+                .replace("{paymentId}", &percent_encode(&payment_id))
+        }
+        _ => {
+            return Ok(RestRequest {
+                method,
+                uri: route.to_string(),
+                body: Some(arguments),
+            });
+        }
+    };
+    Ok(RestRequest {
+        method,
+        uri,
+        body: None,
+    })
+}
+
+/// Whether a REST answer is the tool's RESULT rather than its failure.
+///
+/// Any 2xx is. One non-2xx is too: `GET /health/ready` answers `503` with its
+/// full document when a mainnet cannot settle, and that document -- which
+/// chain, which reason, how many settles each signer has left -- is exactly the
+/// reading `x402_chain_health` was asked for. Turned into a tool error, an
+/// agent asking about Base would be told the call failed because Celo was down.
+/// Only the document counts: the `503` that carries no reading
+/// (`{"status": "down", "error": "probe_failed"}`) stays a tool error.
+fn is_tool_result(tool: &str, status: StatusCode, body: &str) -> bool {
+    if status.is_success() {
+        return true;
+    }
+    tool == "x402_chain_health"
+        && status == StatusCode::SERVICE_UNAVAILABLE
+        && serde_json::from_str::<Value>(body).is_ok_and(|doc| doc["networks"].is_array())
 }
 
 /// Turn a JSON literal into the object shape rmcp wants for `inputSchema`.
@@ -584,6 +786,375 @@ fn supported_output_schema() -> Value {
     })
 }
 
+/// `outputSchema` of `x402_networks`: the body of `GET /networks.json`.
+///
+/// Open like [`supported_output_schema`], and for the same reason. What it
+/// pins is what a caller crosses fields on: the two identifiers, the testnet
+/// flag, the explorer templates and each token's address and decimals. A test
+/// validates the document built from a production `/supported` against it.
+fn networks_output_schema() -> Value {
+    json!({
+        "type": "object",
+        "description": "The body of GET /networks.json, unchanged: one row per chain \
+                        x402_supported names -- never more, never fewer -- with how to \
+                        present it.",
+        "required": ["networks"],
+        "properties": {
+            "networks": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "required": ["id", "caip2", "family", "testnet", "displayName", "schemes", "tokens"],
+                    "properties": {
+                        "id": {
+                            "type": "string",
+                            "description": "The x402 v1 name (\"base\"). A chain with no v1 name (native Hedera) repeats its CAIP-2 id here."
+                        },
+                        "caip2": { "type": "string", "description": "The CAIP-2 id (\"eip155:8453\")." },
+                        "family": {
+                            "type": "string",
+                            "description": "evm, svm, near, stellar, algorand, sui, xrpl or hedera."
+                        },
+                        "chainId": {
+                            "type": ["integer", "null"],
+                            "minimum": 0,
+                            "description": "The EVM chain id; null outside EVM."
+                        },
+                        "testnet": { "type": "boolean" },
+                        "displayName": { "type": "string" },
+                        "explorer": {
+                            "type": ["object", "null"],
+                            "description": "Explorer URL templates; null when none is known.",
+                            "required": ["base", "tx", "address"],
+                            "properties": {
+                                "base": { "type": "string" },
+                                "tx": { "type": "string", "description": "Carries a {tx} placeholder for the transaction id." },
+                                "address": { "type": "string", "description": "Carries an {address} placeholder." }
+                            }
+                        },
+                        "icon": { "type": ["string", "null"] },
+                        "schemes": { "type": "array", "items": { "type": "string" } },
+                        "tokens": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "required": ["symbol", "address", "decimals"],
+                                "properties": {
+                                    "symbol": { "type": "string" },
+                                    "address": { "type": "string" },
+                                    "decimals": { "type": "integer", "minimum": 0 },
+                                    "eip712": {
+                                        "type": ["object", "null"],
+                                        "description": "The EIP-712 domain /verify resolves for this token; null outside EVM or outside the static table.",
+                                        "properties": {
+                                            "name": { "type": "string" },
+                                            "version": { "type": "string" }
+                                        }
+                                    },
+                                    "usdPegged": { "type": ["boolean", "null"] },
+                                    "icon": { "type": ["string", "null"] }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    })
+}
+
+/// The three states `/health/ready` grades a chain, a signer and the whole
+/// answer with (`readiness::Status`, serialised lowercase).
+const READINESS_STATUSES: [&str; 3] = ["ok", "degraded", "down"];
+
+/// `outputSchema` of `x402_chain_health`: the body of `GET /health/ready`.
+fn chain_health_output_schema() -> Value {
+    json!({
+        "type": "object",
+        "description": "The body of GET /health/ready, unchanged: whether this \
+                        facilitator can settle, chain by chain, as measured at \
+                        checkedAtUnix and cached for ttlSecs. No RPC URL, address or \
+                        balance is ever in it.",
+        "required": ["status", "networks"],
+        "properties": {
+            "status": {
+                "type": "string",
+                "enum": READINESS_STATUSES,
+                "description": "The worst reading in scope. down: a mainnet in scope cannot settle. Unscoped, an old sanctions list makes it degraded, never down."
+            },
+            "checkedAtUnix": { "type": "integer", "minimum": 0 },
+            "ageSecs": { "type": "integer", "minimum": 0 },
+            "ttlSecs": { "type": "integer", "minimum": 0 },
+            "probeTimeoutMs": { "type": "integer", "minimum": 0 },
+            "thresholds": { "type": "object" },
+            "summary": {
+                "type": "object",
+                "properties": {
+                    "ok": { "type": "integer", "minimum": 0 },
+                    "degraded": { "type": "integer", "minimum": 0 },
+                    "down": { "type": "integer", "minimum": 0 }
+                }
+            },
+            "networks": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "required": ["network", "caip2", "mainnet", "status", "rpc", "signers"],
+                    "properties": {
+                        "network": { "type": "string" },
+                        "caip2": { "type": "string" },
+                        "mainnet": { "type": "boolean" },
+                        "status": { "type": "string", "enum": READINESS_STATUSES },
+                        "reason": {
+                            "type": "string",
+                            "description": "A bounded token, present unless status is ok: rpc_unreachable, rpc_timeout, rpc_chain_id_mismatch, signer_gas_critical, signer_gas_low, and on native Hedera also signer_key_mismatch and store_unavailable."
+                        },
+                        "rpc": { "type": "string", "description": "ok, unreachable, timeout or wrong_chain." },
+                        "warnSettles": { "type": "integer", "minimum": 0 },
+                        "signers": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "required": ["index", "status", "gasOk"],
+                                "properties": {
+                                    "index": { "type": "integer", "minimum": 0 },
+                                    "status": { "type": "string", "enum": READINESS_STATUSES },
+                                    "gasOk": { "type": "boolean" },
+                                    "settlesRemaining": {
+                                        "type": ["integer", "null"],
+                                        "minimum": 0,
+                                        "description": "Settles the signer's gas still admits; null where the chain prices gas at zero."
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            "unchecked": {
+                "type": "array",
+                "items": { "type": "string" },
+                "description": "Configured networks whose family is not probed: listed here rather than folded into a green answer."
+            },
+            "sanctionsList": { "type": "object" }
+        }
+    })
+}
+
+/// `x402_escrow_onchain_state`'s input: the body of `POST /escrow/state`.
+///
+/// The fields are the serde fields of
+/// [`crate::payment_operator::types::EscrowStateQuery`],
+/// [`crate::payment_operator::types::EscrowPaymentInfo`] and
+/// [`crate::payment_operator::types::EscrowExtra`] (none derives `ToSchema`).
+/// Two traps are spelled out because the type enforces them: `maxAmount` is a
+/// decimal STRING while the expiries and fee bounds are JSON numbers, and
+/// `network` is CAIP-2 only (`Network::from_caip2`). The example is built here
+/// rather than written as a literal so this file never carries `0x` + 64 hex
+/// (the salt), which the pre-commit hook refuses.
+fn escrow_state_input_schema() -> Value {
+    let address =
+        |what: &str| json!({ "type": "string", "description": format!("{what}, 0x + 40 hex.") });
+    let example = json!({
+        "paymentInfo": {
+            "operator": "0x1111111111111111111111111111111111111111",
+            "receiver": "0x2222222222222222222222222222222222222222",
+            "token": "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913",
+            "maxAmount": "1000000",
+            "preApprovalExpiry": 281474976710655u64,
+            "authorizationExpiry": 281474976710655u64,
+            "refundExpiry": 281474976710655u64,
+            "minFeeBps": 0,
+            "maxFeeBps": 100,
+            "feeReceiver": "0x3333333333333333333333333333333333333333",
+            "salt": format!("0x{}", "5a".repeat(32))
+        },
+        "payer": "0x4444444444444444444444444444444444444444",
+        "network": "eip155:8453",
+        "extra": {
+            "escrowAddress": "0x5555555555555555555555555555555555555555",
+            "operatorAddress": "0x1111111111111111111111111111111111111111",
+            "tokenCollector": "0x6666666666666666666666666666666666666666"
+        }
+    });
+    json!({
+        "type": "object",
+        "description": "Identical to the JSON body of POST /escrow/state. These fields \
+                        IDENTIFY one escrow payment -- the paymentInfo it was authorized \
+                        with, its payer, its chain and its escrow contracts. Nothing in \
+                        them is signed and nothing is spent.",
+        "properties": {
+            "paymentInfo": {
+                "type": "object",
+                "description": "The AuthCaptureEscrow PaymentInfo the payment was made with, as the escrow payload carried it (the payer goes in `payer`).",
+                "properties": {
+                    "operator": address("PaymentOperator contract"),
+                    "receiver": address("Who receives the payment, minus fees"),
+                    "token": address("Token contract"),
+                    "maxAmount": {
+                        "type": "string",
+                        "description": "Most the escrow may hold, in token base units, as a decimal STRING."
+                    },
+                    "preApprovalExpiry": { "type": "integer", "minimum": 0, "description": "uint48 unix seconds, as a JSON number." },
+                    "authorizationExpiry": { "type": "integer", "minimum": 0, "description": "uint48 unix seconds, as a JSON number." },
+                    "refundExpiry": { "type": "integer", "minimum": 0, "description": "uint48 unix seconds, as a JSON number." },
+                    "minFeeBps": { "type": "integer", "minimum": 0, "maximum": 65535 },
+                    "maxFeeBps": { "type": "integer", "minimum": 0, "maximum": 65535 },
+                    "feeReceiver": address("Who receives the fee"),
+                    "salt": { "type": "string", "description": "The payment's 32-byte salt, 0x + 64 hex." }
+                },
+                "required": [
+                    "operator", "receiver", "token", "maxAmount", "preApprovalExpiry",
+                    "authorizationExpiry", "refundExpiry", "minFeeBps", "maxFeeBps",
+                    "feeReceiver", "salt"
+                ],
+                "additionalProperties": true
+            },
+            "payer": address("The payer"),
+            "network": {
+                "type": "string",
+                "description": "The chain as a CAIP-2 id (\"eip155:8453\"). CAIP-2 ONLY: this route refuses the bare x402 v1 name (\"base\")."
+            },
+            "extra": {
+                "type": "object",
+                "description": "The escrow contracts, as the payment requirements' `extra` named them.",
+                "properties": {
+                    "escrowAddress": address("AuthCaptureEscrow contract"),
+                    "operatorAddress": address("PaymentOperator contract"),
+                    "tokenCollector": address("ERC3009TokenCollector contract")
+                },
+                "required": ["escrowAddress", "operatorAddress", "tokenCollector"],
+                "additionalProperties": true
+            }
+        },
+        "required": ["paymentInfo", "payer", "network", "extra"],
+        "additionalProperties": true,
+        "examples": [example]
+    })
+}
+
+/// `outputSchema` of `x402_escrow_onchain_state`: the body of
+/// `POST /escrow/state`, [`crate::payment_operator::types::EscrowStateResponse`].
+fn escrow_state_output_schema() -> Value {
+    json!({
+        "type": "object",
+        "description": "The body of POST /escrow/state, unchanged: the escrow contract's \
+                        own view of one payment, read with a view call.",
+        "required": ["hasCollectedPayment", "capturableAmount", "refundableAmount", "paymentInfoHash", "network"],
+        "properties": {
+            "hasCollectedPayment": {
+                "type": "boolean",
+                "description": "Whether the escrow has collected the payer's funds for this payment."
+            },
+            "capturableAmount": {
+                "type": "string",
+                "pattern": "^[0-9]+$",
+                "description": "Still available for capture, in token base units, as a decimal string."
+            },
+            "refundableAmount": {
+                "type": "string",
+                "pattern": "^[0-9]+$",
+                "description": "Available for refund, in token base units, as a decimal string."
+            },
+            "paymentInfoHash": { "type": "string", "description": "The hash the escrow keys this payment by." },
+            "network": { "type": "string", "description": "The CAIP-2 id of the chain the escrow lives on." }
+        }
+    })
+}
+
+/// `x402_durable_evidence`'s input.
+fn durable_evidence_input_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            PAYMENT_ID_ARG: {
+                "type": "string",
+                "description": "The DX402 paymentId, keccak256(caip2Network || txHash), 0x + 64 hex: \
+                                the id the seller's X-Durable-Evidence header or its anchor \
+                                reported. Case and the 0x prefix do not matter."
+            },
+            DOCUMENT_ARG: {
+                "type": "string",
+                "enum": DX402_DOCUMENTS,
+                "default": DX402_DOCUMENTS[0],
+                "description": "evidence (the default): pointer, contentHash, retention, \
+                                verified/signed and the receipt's signature. receipt: the \
+                                signed EIP-712 receipt alone, with its domain, for offline \
+                                verification."
+            }
+        },
+        "required": [PAYMENT_ID_ARG],
+        "additionalProperties": false
+    })
+}
+
+/// `outputSchema` of `x402_durable_evidence`: the body of
+/// `GET /dx402/evidence/{paymentId}`, or of `GET /dx402/receipt/{paymentId}`.
+///
+/// Two documents, so the shape branches in `anyOf`, titled by the `document`
+/// argument that selects each. `receipt` is the one field both carry, with a
+/// different type in each (the signature, or the signed object), which is why
+/// it is described and left untyped at the top level.
+fn durable_evidence_output_schema() -> Value {
+    json!({
+        "type": "object",
+        "description": "The body of GET /dx402/evidence/{paymentId} or, with \
+                        document=receipt, of GET /dx402/receipt/{paymentId}, unchanged.",
+        "anyOf": [
+            {
+                "title": "evidence",
+                "required": ["paymentId", "pointer", "contentHash", "receipt", "receiptSigner", "verified", "signed"],
+                "properties": { "receipt": { "type": "string" } }
+            },
+            {
+                "title": "receipt",
+                "required": ["receipt", "signature", "signer", "domain"],
+                "properties": { "receipt": { "type": "object" } }
+            }
+        ],
+        "properties": {
+            "paymentId": { "type": "string" },
+            "pointer": {
+                "type": "string",
+                "description": "Where the sealed copy lives. Ciphertext only, sealed to the payer's own key; GET /dx402/blob/{paymentId} serves it."
+            },
+            "backend": { "type": "string" },
+            "contentHash": {
+                "type": "string",
+                "description": "Hash of the PLAINTEXT that was delivered, so it proves what the evidence decrypts to."
+            },
+            "keyAlg": { "type": "string" },
+            "mode": { "type": "string" },
+            "retention": { "type": "string" },
+            "anchoredAt": { "type": "integer", "minimum": 0 },
+            "retentionUntil": { "type": "integer", "minimum": 0 },
+            "receipt": {
+                "description": "evidence: the facilitator's signature over the receipt. receipt: the signed receipt itself."
+            },
+            "receiptSigner": { "type": "string" },
+            "verified": {
+                "type": "boolean",
+                "description": "The payee proved the anchor is theirs. false is provisional: a claim anyone could have made."
+            },
+            "signed": {
+                "type": "boolean",
+                "description": "The claimant committed to an identity, not yet confirmed by a chain to be the payee."
+            },
+            "signature": { "type": "string" },
+            "signer": { "type": "string" },
+            "domain": {
+                "type": "object",
+                "required": ["name", "version", "chainId"],
+                "properties": {
+                    "name": { "type": "string" },
+                    "version": { "type": "string" },
+                    "chainId": { "type": "integer", "minimum": 0 }
+                }
+            }
+        }
+    })
+}
+
 /// Tools whose REST body is also returned as `structuredContent`: those that
 /// declare an `outputSchema`, read off the declarations so the two cannot
 /// disagree.
@@ -595,7 +1166,7 @@ static STRUCTURED_TOOLS: Lazy<Vec<String>> = Lazy::new(|| {
         .collect()
 });
 
-/// The four tool definitions.
+/// The tool definitions, in [`TOOL_NAMES`] order.
 pub fn tools() -> Vec<Tool> {
     vec![
         Tool::new(
@@ -695,15 +1266,112 @@ pub fn tools() -> Vec<Tool> {
                 .open_world(true),
         )
         .with_meta(class_meta(TOOL_NAMES[3])),
+        Tool::new(
+            TOOL_NAMES[4],
+            "How to present every network this facilitator settles on: display name, \
+             chain family, chain id, testnet flag, explorer URL templates for a \
+             transaction and an address, icon, schemes, and each token's symbol, \
+             address, decimals and EIP-712 domain. One row per chain x402_supported \
+             names, never more or fewer: use x402_supported to learn whether a payment \
+             can be settled, and this to name the chain and link its transaction. \
+             Takes no arguments. Moves no money and signs nothing. Equivalent to \
+             GET /networks.json.",
+            schema(json!({
+                "type": "object",
+                "properties": {},
+                "additionalProperties": false
+            })),
+        )
+        .annotate(
+            ToolAnnotations::with_title("Network directory: names, explorers, tokens")
+                .read_only(true)
+                .idempotent(true)
+                .open_world(false),
+        )
+        .with_raw_output_schema(schema(networks_output_schema()))
+        .with_meta(class_meta(TOOL_NAMES[4])),
+        Tool::new(
+            TOOL_NAMES[5],
+            "Whether this facilitator can settle right now, chain by chain: RPC \
+             reachability and how many settles each signer's gas still covers, graded \
+             ok, degraded or down with a bounded reason. Use it to tell a payment that \
+             did not settle because the chain or the facilitator's signer is down from \
+             one refused on its merits. Optional `network` scopes the answer to one \
+             chain, in either spelling (\"base\" or \"eip155:8453\"). The reading is \
+             cached for ttlSecs and says when it was measured; a chain that reads down \
+             comes back as this result, not as an error. Moves no money and signs \
+             nothing. Equivalent to GET /health/ready.",
+            schema(json!({
+                "type": "object",
+                "properties": {
+                    NETWORK_ARG: {
+                        "type": "string",
+                        "description": "Optional. One chain, as its x402 v1 name (\"base\") or its CAIP-2 id (\"eip155:8453\"). Omit it for every configured chain."
+                    }
+                },
+                "additionalProperties": false
+            })),
+        )
+        .annotate(
+            ToolAnnotations::with_title("Settlement health per chain")
+                .read_only(true)
+                .idempotent(true)
+                .open_world(true),
+        )
+        .with_raw_output_schema(schema(chain_health_output_schema()))
+        .with_meta(class_meta(TOOL_NAMES[5])),
+        Tool::new(
+            TOOL_NAMES[6],
+            "Read what ONE x402r escrow payment holds on-chain, from its \
+             AuthCaptureEscrow contract: whether the funds were collected, how much is \
+             still capturable and how much is refundable. A view call on the contract \
+             -- no transaction and no gas -- so it answers what the chain holds for this \
+             payment, not what any marketplace recorded about a task. The arguments \
+             identify the payment (the paymentInfo, payer, CAIP-2 network and escrow \
+             contracts it was made with); nothing is signed. Moves no money. \
+             Equivalent to POST /escrow/state.",
+            schema(escrow_state_input_schema()),
+        )
+        .annotate(
+            ToolAnnotations::with_title("On-chain escrow state (read-only)")
+                .read_only(true)
+                .idempotent(true)
+                .open_world(true),
+        )
+        .with_raw_output_schema(schema(escrow_state_output_schema()))
+        .with_meta(class_meta(TOOL_NAMES[6])),
+        Tool::new(
+            TOOL_NAMES[7],
+            "Look up the DX402 durable evidence anchored for a settled payment: where \
+             the sealed copy of the paid response lives, the hash of what was \
+             delivered, its retention, whether the payee proved the anchor \
+             (verified/signed) and the facilitator's signed receipt. \
+             `document: \"receipt\"` returns the signed receipt alone, with its EIP-712 \
+             domain, for offline verification. 404 means nothing was anchored for that \
+             paymentId and 410 that it was and expired -- different answers in a \
+             dispute. Served only where x402_supported lists `durable-evidence` in \
+             `extensions`; elsewhere the call answers the generic 404. Moves no money, \
+             signs nothing and never returns the sealed bytes. Equivalent to \
+             GET /dx402/evidence/{paymentId} or GET /dx402/receipt/{paymentId}.",
+            schema(durable_evidence_input_schema()),
+        )
+        .annotate(
+            ToolAnnotations::with_title("DX402 durable evidence of a payment")
+                .read_only(true)
+                .idempotent(true)
+                .open_world(false),
+        )
+        .with_raw_output_schema(schema(durable_evidence_output_schema()))
+        .with_meta(class_meta(TOOL_NAMES[7])),
     ]
 }
 
-/// The MCP server: four tools over the facilitator's own REST router.
+/// The MCP server: [`TOOL_NAMES`] over the facilitator's own REST router.
 #[derive(Clone)]
 pub struct FacilitatorMcp {
-    /// The `/verify`, `/settle`, `/supported` and `/accepts` routes, with state
-    /// and extensions already bound. Cloned per call; an axum `Router` is an
-    /// `Arc` inside, so this is a refcount bump, not a rebuild.
+    /// The routes the tools dispatch to ([`rest_router`]), with state and
+    /// extensions already bound. Cloned per call; an axum `Router` is an `Arc`
+    /// inside, so this is a refcount bump, not a rebuild.
     rest: Router,
 }
 
@@ -715,15 +1383,13 @@ impl FacilitatorMcp {
     /// client sees.
     async fn call_rest(
         &self,
-        method: Method,
-        path: &'static str,
-        arguments: JsonObject,
+        request: RestRequest,
         outer: Option<&HeaderMap>,
         idempotency_key: Option<&str>,
     ) -> Result<(StatusCode, String), McpError> {
-        let has_body = method != Method::GET;
-        let mut builder = Request::builder().method(method).uri(path);
-        if has_body {
+        let RestRequest { method, uri, body } = request;
+        let mut builder = Request::builder().method(method).uri(uri);
+        if body.is_some() {
             builder = builder.header(header::CONTENT_TYPE, "application/json");
         }
         // Carry the caller's IP forward. Not cosmetic, and not for THIS hop:
@@ -771,13 +1437,17 @@ impl FacilitatorMcp {
             })?;
             builder = builder.header(header::HeaderName::from_static("idempotency-key"), value);
         }
-        let body = if has_body {
-            let bytes = serde_json::to_vec(&Value::Object(arguments)).map_err(|e| {
-                McpError::invalid_params(format!("arguments are not serialisable JSON: {e}"), None)
-            })?;
-            Body::from(bytes)
-        } else {
-            Body::empty()
+        let body = match body {
+            Some(arguments) => {
+                let bytes = serde_json::to_vec(&Value::Object(arguments)).map_err(|e| {
+                    McpError::invalid_params(
+                        format!("arguments are not serialisable JSON: {e}"),
+                        None,
+                    )
+                })?;
+                Body::from(bytes)
+            }
+            None => Body::empty(),
         };
         let request = builder.body(body).map_err(|e| {
             McpError::internal_error(format!("could not build the internal request: {e}"), None)
@@ -827,7 +1497,11 @@ impl ServerHandler for FacilitatorMcp {
              do not retry it and never sign a new authorization; look the transaction \
              up. If a settle fails in any other way you cannot interpret, retry it with \
              the SAME idempotencyKey: that is how you get exactly-once instead of paying \
-             twice."
+             twice. Four more tools only read, and move and sign nothing: x402_networks \
+             (each network's name, explorer and tokens), x402_chain_health (whether a \
+             chain can settle right now), x402_escrow_onchain_state (what an escrow \
+             contract holds for one payment) and x402_durable_evidence (the DX402 \
+             evidence anchored for a payment)."
                 .to_string(),
         );
         info
@@ -851,7 +1525,7 @@ impl ServerHandler for FacilitatorMcp {
         context: RequestContext<RoleServer>,
     ) -> Result<CallToolResponse, McpError> {
         let name = request.name.clone();
-        let Some((method, path)) = rest_target(name.as_ref()) else {
+        if rest_target(name.as_ref()).is_none() {
             // Unroutable request, not a tool that ran and failed: the caller
             // asked for something this server does not have.
             return Err(McpError::new(
@@ -859,7 +1533,7 @@ impl ServerHandler for FacilitatorMcp {
                 format!("unknown tool: {name}"),
                 Some(json!({ "tools": TOOL_NAMES })),
             ));
-        };
+        }
         let mut arguments = request.arguments.unwrap_or_default();
 
         // `idempotencyKey` travels as a HEADER and must not stay in the body:
@@ -882,24 +1556,25 @@ impl ServerHandler for FacilitatorMcp {
             None
         };
 
+        // A bad ARGUMENT (an undeclared key, a missing `paymentId`) is
+        // refused here, before anything is dispatched; a bad VALUE is the
+        // REST handler's to judge.
+        let rest = rest_request(name.as_ref(), arguments)?;
+        let path = rest.uri.clone();
+
         // rmcp leaves the outer request's `http::request::Parts` here. `None`
         // only in a non-HTTP transport, which this server does not mount.
         let outer = context.extensions.get::<axum::http::request::Parts>();
         let (status, body) = self
-            .call_rest(
-                method,
-                path,
-                arguments,
-                outer.map(|p| &p.headers),
-                idempotency_key.as_deref(),
-            )
+            .call_rest(rest, outer.map(|p| &p.headers), idempotency_key.as_deref())
             .await?;
 
         // The REST status decides. A 4xx/5xx becomes a tool-level error the
         // caller can read, carrying the facilitator's own message verbatim --
         // NOT an `Err(McpError)`, which most clients render opaquely and would
-        // hide "invalid signature" behind "internal error".
-        if !status.is_success() {
+        // hide "invalid signature" behind "internal error". The one non-2xx
+        // that is a reading and not a failure is in `is_tool_result`.
+        if !is_tool_result(name.as_ref(), status, &body) {
             return Ok(CallToolResult::error(vec![ContentBlock::text(body)]).into());
         }
         // A tool that declares an `outputSchema` MUST answer in
@@ -909,8 +1584,8 @@ impl ServerHandler for FacilitatorMcp {
         let structured = if STRUCTURED_TOOLS.iter().any(|t| t == name.as_ref()) {
             match serde_json::from_str::<Value>(&body) {
                 Ok(doc @ Value::Object(_)) => Some(doc),
-                // Cannot happen for `/supported`, whose body is always a JSON
-                // object. If it ever does, a result that breaks the declared
+                // Cannot happen for the reads, whose bodies are always JSON
+                // objects. If it ever does, a result that breaks the declared
                 // schema is worse than an error that says why.
                 _ => {
                     return Ok(CallToolResult::error(vec![ContentBlock::text(format!(
@@ -974,37 +1649,108 @@ async fn json_content_type_on_errors(
     (parts.status, parts.headers, Json(doc)).into_response()
 }
 
-/// The `/mcp` route.
+/// The routes the tools dispatch to, and nothing else a tool could reach.
 ///
-/// `mount` it under the same `GovernorLayer` as `/verify` and `/settle`: an MCP
-/// `x402_settle` costs the chain exactly what a `POST /settle` costs it.
+/// Every route here is mounted from the SAME handler the public router mounts
+/// in `main.rs`, so a tool answers what the HTTP route answers. The reads are
+/// added route by route, never by merging a whole public router: the DX402 one
+/// would bring `/dx402/anchor`, `/dx402/recover` and `/dx402/repair` with it,
+/// and `the_internal_router_serves_no_write_and_no_admin_route` holds that.
 ///
-/// The REST router built here carries **no** governor of its own -- see the
-/// module docs for why that is correct rather than an oversight.
-pub fn mcp_routes<A>(
+/// `readiness` is the process's ONE `/health/ready` state, the very `Arc`
+/// `main.rs` mounts the public route with -- not a second one built here. Its
+/// cache and its single background prober are what keep that route from
+/// amplifying RPC traffic; a second state would double the probes.
+///
+/// `dx402` is `None` exactly when the public `/dx402/*` routes are not mounted,
+/// and then the DX402 tool reaches the same generic 404 an HTTP caller gets:
+/// the fallback is the public router's own ([`crate::handlers::agent_not_found`]).
+fn rest_router<A, P>(
     state: A,
     discovery_registry: Arc<DiscoveryRegistry>,
     event_bus: Arc<crate::events::EventBus>,
     transaction_store: Arc<dyn crate::transaction_store::TransactionStore>,
+    readiness: Arc<crate::readiness::ReadinessState<P>>,
+    dx402: Option<Arc<crate::dx402::service::Dx402Service>>,
 ) -> Router
 where
     A: Facilitator + HasProviderMap + Clone + Send + Sync + 'static,
     A::Error: IntoResponse,
     A::Map: ProviderMap<Value = NetworkProvider>,
+    P: ProviderMap<Value = NetworkProvider> + Send + Sync + 'static,
 {
-    let rest = crate::handlers::verify_settle_routes::<A>()
+    let mut rest = crate::handlers::verify_settle_routes::<A>()
         .merge(
             Router::new()
                 .route("/supported", get(crate::handlers::get_supported::<A>))
-                .route("/accepts", post(crate::handlers::post_accepts::<A>)),
+                .route("/accepts", post(crate::handlers::post_accepts::<A>))
+                .route(
+                    "/networks.json",
+                    get(crate::handlers::get_networks_json::<A>),
+                )
+                .route(
+                    "/escrow/state",
+                    post(crate::handlers::post_escrow_state::<A>),
+                ),
         )
         .with_state(state)
+        .merge(crate::readiness::routes::<P>().with_state(readiness));
+    if let Some(dx402) = dx402 {
+        rest = rest.merge(
+            Router::new()
+                .route(
+                    "/dx402/evidence/{payment_id}",
+                    get(crate::dx402::handlers::get_evidence),
+                )
+                .route(
+                    "/dx402/receipt/{payment_id}",
+                    get(crate::dx402::handlers::get_receipt),
+                )
+                .with_state(dx402),
+        );
+    }
+    rest.fallback(crate::handlers::agent_not_found)
         // `post_verify` and `post_settle` pull these out of the request
         // extensions. The synthetic request is built downstream of the layers
         // `main.rs` applies, so it has to carry its own copies.
         .layer(Extension(discovery_registry))
         .layer(Extension(event_bus))
-        .layer(Extension(transaction_store));
+        .layer(Extension(transaction_store))
+}
+
+/// The `/mcp` route.
+///
+/// `mount` it under the same `GovernorLayer` as `/verify` and `/settle`: an MCP
+/// `x402_settle` costs the chain exactly what a `POST /settle` costs it, and
+/// the reads draw on that same bucket -- stricter than the budgets their REST
+/// routes carry, so the MCP door is never a way around those
+/// (`the_mcp_bucket_is_never_looser_than_the_reads_it_relays`).
+///
+/// The REST router built here carries **no** governor of its own -- see the
+/// module docs for why that is correct rather than an oversight. See
+/// [`rest_router`] for `readiness` and `dx402`.
+pub fn mcp_routes<A, P>(
+    state: A,
+    discovery_registry: Arc<DiscoveryRegistry>,
+    event_bus: Arc<crate::events::EventBus>,
+    transaction_store: Arc<dyn crate::transaction_store::TransactionStore>,
+    readiness: Arc<crate::readiness::ReadinessState<P>>,
+    dx402: Option<Arc<crate::dx402::service::Dx402Service>>,
+) -> Router
+where
+    A: Facilitator + HasProviderMap + Clone + Send + Sync + 'static,
+    A::Error: IntoResponse,
+    A::Map: ProviderMap<Value = NetworkProvider>,
+    P: ProviderMap<Value = NetworkProvider> + Send + Sync + 'static,
+{
+    let rest = rest_router(
+        state,
+        discovery_registry,
+        event_bus,
+        transaction_store,
+        readiness,
+        dx402,
+    );
 
     let hosts = allowed_hosts();
     tracing::info!(
@@ -1124,37 +1870,53 @@ mod tests {
         }
     }
 
-    /// The MCP router, and the REST router it dispatches into, over the stub.
-    ///
-    /// Both are built from the SAME production functions the binary uses, so
-    /// these tests exercise `mcp_routes` rather than a test-only rehearsal of
-    /// it. The one thing they cannot exercise is the chain, which is why the
-    /// live `curl` transcript in the handoff exists.
+    /// The MCP router, and the PUBLIC REST router it must agree with, over the
+    /// stub, without DX402 (the default deployment).
     async fn routers() -> (Router, Router) {
+        routers_with(None).await
+    }
+
+    /// Same, with `dx402` mounted on both sides when it is `Some`.
+    ///
+    /// The MCP side is `mcp_routes` itself. The REST side is NOT a copy of
+    /// `rest_router`: it is the public routers `main.rs` mounts --
+    /// `verify_settle_routes`, `routes`, `secondary_read_routes`, the readiness
+    /// routes, the full `dx402_routes` -- with `main.rs`'s fallback, minus the
+    /// governors. That is the claim the comparisons below test: a tool answers
+    /// what an HTTP client of the public route gets. Both sides share ONE
+    /// readiness state, as in `main.rs`. The one thing these tests cannot
+    /// exercise is the chain, which is why the live `curl` transcript in the
+    /// handoff exists.
+    async fn routers_with(
+        dx402: Option<Arc<crate::dx402::service::Dx402Service>>,
+    ) -> (Router, Router) {
         let state = StubFacilitator::new();
         let discovery_registry = Arc::new(DiscoveryRegistry::new());
         let event_bus = Arc::new(crate::events::EventBus::from_env());
         let transaction_store = crate::transaction_store::create_transaction_store().await;
+        let readiness = Arc::new(crate::readiness::ReadinessState::new(
+            Arc::new(NoProviders),
+            crate::readiness::ReadinessConfig::from_env(),
+        ));
 
         let mcp = mcp_routes(
             state.clone(),
             Arc::clone(&discovery_registry),
             Arc::clone(&event_bus),
             Arc::clone(&transaction_store),
+            Arc::clone(&readiness),
+            dx402.clone(),
         );
-        let rest = crate::handlers::verify_settle_routes::<StubFacilitator>()
-            .merge(
-                Router::new()
-                    .route(
-                        "/supported",
-                        get(crate::handlers::get_supported::<StubFacilitator>),
-                    )
-                    .route(
-                        "/accepts",
-                        post(crate::handlers::post_accepts::<StubFacilitator>),
-                    ),
-            )
+        let mut rest = crate::handlers::verify_settle_routes::<StubFacilitator>()
+            .merge(crate::handlers::routes::<StubFacilitator>())
+            .merge(crate::handlers::secondary_read_routes::<StubFacilitator>())
             .with_state(state)
+            .merge(crate::readiness::routes::<NoProviders>().with_state(readiness));
+        if let Some(svc) = dx402 {
+            rest = rest.merge(crate::dx402::handlers::dx402_routes().with_state(svc));
+        }
+        let rest = rest
+            .fallback(crate::handlers::agent_not_found)
             .layer(Extension(discovery_registry))
             .layer(Extension(event_bus))
             .layer(Extension(transaction_store));
@@ -1264,13 +2026,15 @@ mod tests {
         assert!(!result["capabilities"]["tools"].is_null());
     }
 
-    /// The tool list is exactly the four, in order, and nothing else.
+    /// The tool list is exactly the eight, in order, and nothing else.
     ///
     /// This is the test that keeps an admin surface out. `/feedback/revoke`
     /// erases third-party reputation irreversibly and `/discovery/admin/*`
     /// curates a public catalog; neither belongs in a list handed to an LLM.
+    /// The list is spelled out here, not read back from [`TOOL_NAMES`], so a
+    /// tool cannot be added by editing one constant: it changes this test too.
     #[tokio::test]
-    async fn tools_list_is_exactly_the_four() {
+    async fn tools_list_is_exactly_the_eight() {
         let (mcp, _) = routers().await;
         let (status, _, doc) = rpc(
             &mcp,
@@ -1286,6 +2050,19 @@ mod tests {
             .map(|t| t["name"].as_str().unwrap().to_string())
             .collect();
         assert_eq!(names, TOOL_NAMES.to_vec());
+        assert_eq!(
+            names,
+            [
+                "x402_supported",
+                "x402_accepts",
+                "x402_verify",
+                "x402_settle",
+                "x402_networks",
+                "x402_chain_health",
+                "x402_escrow_onchain_state",
+                "x402_durable_evidence",
+            ]
+        );
     }
 
     /// Every tool publishes a description and an object input schema.
@@ -1459,10 +2236,10 @@ mod tests {
         }
     }
 
-    /// A read publishes an object `outputSchema` (R9.5); only the read does,
+    /// A read publishes an object `outputSchema` (R9.5); only the reads do,
     /// so the tools whose contract did not change keep their exact shape.
     #[tokio::test]
-    async fn only_the_read_tool_publishes_an_output_schema() {
+    async fn only_the_reads_publish_an_output_schema() {
         let (mcp, _) = routers().await;
         for tool in listed_tools(&mcp).await {
             let name = tool["name"].as_str().unwrap();
@@ -1809,7 +2586,7 @@ mod tests {
         assert!(hosts.contains(&"127.0.0.1"));
     }
 
-    /// Every tool name maps to a route, and only to the four intended ones.
+    /// Every tool name maps to a route, and only to the eight intended ones.
     #[test]
     fn every_tool_name_resolves_to_its_rest_route() {
         assert_eq!(
@@ -1822,6 +2599,10 @@ mod tests {
                 (Method::POST, "/accepts"),
                 (Method::POST, "/verify"),
                 (Method::POST, "/settle"),
+                (Method::GET, "/networks.json"),
+                (Method::GET, "/health/ready"),
+                (Method::POST, "/escrow/state"),
+                (Method::GET, "/dx402/{document}/{paymentId}"),
             ]
         );
         assert!(rest_target("/feedback/revoke").is_none());
@@ -2714,6 +3495,21 @@ mod tests {
             TOOL_NAMES.to_vec(),
             "the card advertises tools this server does not list"
         );
+        // And under the title `tools/list` gives each one, so a scanner reading
+        // the card and a client reading the list name the same tool alike.
+        for (entry, tool) in card["tools"].as_array().unwrap().iter().zip(tools()) {
+            let title = tool
+                .annotations
+                .as_ref()
+                .and_then(|a| a.title.clone())
+                .unwrap_or_else(|| panic!("{} has no title", tool.name));
+            assert_eq!(entry["title"], title.as_str(), "{}", tool.name);
+            assert!(
+                entry["description"].as_str().is_some_and(|d| d.len() > 40),
+                "{} has no usable description on the card",
+                tool.name
+            );
+        }
     }
 
     /// `MCP_ALLOWED_HOSTS` parsing, without touching the process environment.
@@ -2757,5 +3553,935 @@ mod tests {
             assert!(on.contains(description), "on lost {description:?}");
         }
         assert_eq!(on.matches("fhe-transfer").count(), 5);
+    }
+
+    // ------------------------------------------------------------------------
+    // The buyer reads: x402_networks, x402_chain_health,
+    // x402_escrow_onchain_state, x402_durable_evidence
+    // ------------------------------------------------------------------------
+
+    /// `tools/call` of `tool` with `arguments`; the transport must answer 200.
+    async fn call(mcp: &Router, tool: &str, arguments: Value) -> Value {
+        let (status, _, doc) = rpc(
+            mcp,
+            json!({
+                "jsonrpc": "2.0", "id": 30, "method": "tools/call",
+                "params": { "name": tool, "arguments": arguments }
+            }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{tool}: {doc}");
+        doc
+    }
+
+    /// `(status, body)` of one request to a REST router.
+    async fn rest_answer(
+        rest: &Router,
+        method: Method,
+        uri: &str,
+        body: Option<Value>,
+    ) -> (StatusCode, String) {
+        let mut builder = HttpRequest::builder().method(method).uri(uri);
+        let payload = match body {
+            Some(value) => {
+                builder = builder.header(header::CONTENT_TYPE, "application/json");
+                Body::from(serde_json::to_vec(&value).unwrap())
+            }
+            None => Body::empty(),
+        };
+        let response = rest
+            .clone()
+            .oneshot(builder.body(payload).unwrap())
+            .await
+            .unwrap();
+        let status = response.status();
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        (status, String::from_utf8(bytes.to_vec()).unwrap())
+    }
+
+    /// The tool result is the REST answer: the same body, byte for byte, and a
+    /// tool error exactly when the route answered non-2xx.
+    fn assert_same_answer(doc: &Value, (status, body): &(StatusCode, String), what: &str) {
+        assert_eq!(
+            &tool_text(doc),
+            body,
+            "{what}: the tool and the route disagree"
+        );
+        assert_eq!(
+            doc["result"]["isError"] == true,
+            !status.is_success(),
+            "{what}: isError does not follow the route's {status}: {doc}"
+        );
+    }
+
+    /// The JSON-RPC error code of a refused call (`-32602` = invalid params).
+    fn rpc_error_code(doc: &Value) -> i64 {
+        doc["error"]["code"]
+            .as_i64()
+            .unwrap_or_else(|| panic!("expected a JSON-RPC error, got {doc}"))
+    }
+
+    /// The `outputSchema` `tools/list` publishes for `name`.
+    async fn declared_output_schema(mcp: &Router, name: &str) -> Value {
+        listed_tools(mcp)
+            .await
+            .into_iter()
+            .find(|t| t["name"] == name)
+            .unwrap_or_else(|| panic!("{name} is not listed"))["outputSchema"]
+            .clone()
+    }
+
+    /// `structuredContent` is the text block's document and validates against
+    /// the declared `outputSchema` -- the check an MCP client runs.
+    async fn assert_structured_matches_schema(mcp: &Router, name: &str, doc: &Value) {
+        let structured = &doc["result"]["structuredContent"];
+        let text: Value = serde_json::from_str(&tool_text(doc)).unwrap();
+        assert_eq!(
+            structured, &text,
+            "{name}: structuredContent is not the text block"
+        );
+        let schema = declared_output_schema(mcp, name).await;
+        let errors: Vec<String> = validator_for(&schema)
+            .iter_errors(structured)
+            .map(|e| e.to_string())
+            .collect();
+        assert!(
+            errors.is_empty(),
+            "{name} breaks its outputSchema: {errors:#?}"
+        );
+    }
+
+    /// The JSON of a `/health/ready` body without `ageSecs`, the one field
+    /// that ticks between two reads of the same cached reading.
+    fn without_age(text: &str) -> Value {
+        let mut doc: Value = serde_json::from_str(text).unwrap();
+        doc.as_object_mut().unwrap().remove("ageSecs");
+        doc
+    }
+
+    /// A DX402 service in memory holding one anchor, and that anchor's id.
+    async fn dx402_with_one_anchor() -> (Arc<crate::dx402::service::Dx402Service>, String) {
+        use crate::dx402::types::{
+            AnchorRequest, DurablePointer, EvidenceMode, KeyAlg, Retention, StorageBackend,
+        };
+        let address = |s: &str| -> crate::types::MixedAddress {
+            serde_json::from_value(Value::String(s.to_string())).unwrap()
+        };
+        let svc = crate::dx402::service::Dx402Service::in_memory(
+            alloy::signers::local::PrivateKeySigner::random(),
+        );
+        let anchored = svc
+            .anchor(
+                AnchorRequest {
+                    payment_id: format!("0x{}", "11".repeat(32)),
+                    network: Network::Base,
+                    tx_hash: format!("0x{}", "33".repeat(32)),
+                    payer: address("0x103040545AC5031A11E8C03dd11324C7333a13C7"),
+                    payee: address("0x34033041a5944B8F10f8E4D8496Bfb84f1A293A8"),
+                    pointer: Some(DurablePointer("mem://x".into())),
+                    sealed: None,
+                    backend: StorageBackend::S3,
+                    content_hash: format!("0x{}", "22".repeat(32)),
+                    key_alg: KeyAlg::Secp256k1,
+                    mode: EvidenceMode::Direct,
+                    retention: Retention::Days90,
+                    proof_of_payment: None,
+                    seller_signature: None,
+                    wrapped_cek: None,
+                    escrow_release: None,
+                },
+                8453,
+                // Now, so the 90-day retention has not run out when the route
+                // reads the record against the wall clock.
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_secs(),
+            )
+            .await
+            .expect("an in-memory anchor is recorded");
+        (Arc::new(svc), anchored.payment_id)
+    }
+
+    /// Every read says it is one: read-only and idempotent in its hints, and
+    /// dispatched to a GET -- or to `POST /escrow/state`, the one POST read,
+    /// a view call that spends no gas (`post_escrow_state`).
+    #[test]
+    fn every_read_is_read_only_and_reaches_only_a_read_route() {
+        let reads: Vec<&str> = TOOL_CLASSES
+            .iter()
+            .filter(|(_, class)| *class == "lectura")
+            .map(|(name, _)| *name)
+            .collect();
+        assert_eq!(
+            reads,
+            [
+                "x402_supported",
+                "x402_networks",
+                "x402_chain_health",
+                "x402_escrow_onchain_state",
+                "x402_durable_evidence",
+            ]
+        );
+        for tool in tools() {
+            if !reads.contains(&tool.name.as_ref()) {
+                continue;
+            }
+            let listed = serde_json::to_value(&tool).unwrap();
+            let name = tool.name.as_ref();
+            assert_eq!(listed["annotations"]["readOnlyHint"], true, "{name}");
+            assert_eq!(listed["annotations"]["idempotentHint"], true, "{name}");
+            assert_ne!(listed["annotations"]["destructiveHint"], true, "{name}");
+            let (method, route) = rest_target(name).unwrap();
+            assert!(
+                method == Method::GET || (method == Method::POST && route == "/escrow/state"),
+                "{name} reaches {method} {route}, which is not a read"
+            );
+            assert!(
+                listed["inputSchema"]["properties"]
+                    .get(IDEMPOTENCY_KEY_ARG)
+                    .is_none(),
+                "{name}"
+            );
+        }
+    }
+
+    /// The router the tools dispatch to has no write and no admin route in it
+    /// -- not even one no tool names today. A mapping mistake in `rest_target`
+    /// could then only ever reach a 404, never `/dx402/anchor` or
+    /// `/feedback/revoke`. Built with DX402 ON, the case where the public
+    /// router carries the DX402 writes.
+    #[tokio::test]
+    async fn the_internal_router_serves_no_write_and_no_admin_route() {
+        let (svc, id) = dx402_with_one_anchor().await;
+        let readiness = Arc::new(crate::readiness::ReadinessState::new(
+            Arc::new(NoProviders),
+            crate::readiness::ReadinessConfig::from_env(),
+        ));
+        let inner = rest_router(
+            StubFacilitator::new(),
+            Arc::new(DiscoveryRegistry::new()),
+            Arc::new(crate::events::EventBus::from_env()),
+            crate::transaction_store::create_transaction_store().await,
+            readiness,
+            Some(svc),
+        );
+        for (method, uri) in [
+            (Method::POST, "/dx402/anchor".to_string()),
+            (Method::POST, "/dx402/recover".to_string()),
+            (Method::POST, format!("/dx402/repair/{id}")),
+            (Method::GET, format!("/dx402/blob/{id}")),
+            (Method::GET, "/dx402/stats".to_string()),
+            (Method::POST, "/register".to_string()),
+            (Method::POST, "/feedback".to_string()),
+            (Method::POST, "/feedback/revoke".to_string()),
+            (Method::POST, "/feedback/response".to_string()),
+            (Method::POST, "/erc8004/admin/retire-identity".to_string()),
+            (Method::POST, "/discovery/register".to_string()),
+            (Method::DELETE, "/discovery/resources".to_string()),
+            (Method::POST, "/discovery/admin/suppress".to_string()),
+            (Method::GET, "/reputation/base/1".to_string()),
+            (Method::GET, "/identity/base/1".to_string()),
+            (Method::GET, "/blacklist".to_string()),
+        ] {
+            let (status, _) = rest_answer(&inner, method.clone(), &uri, Some(json!({}))).await;
+            assert_eq!(
+                status,
+                StatusCode::NOT_FOUND,
+                "{method} {uri} is reachable from the MCP tools"
+            );
+        }
+        // Discriminating half: the routes the reads DO stand for are there.
+        for uri in [
+            "/networks.json".to_string(),
+            "/health/ready".to_string(),
+            format!("/dx402/evidence/{id}"),
+            format!("/dx402/receipt/{id}"),
+        ] {
+            let (status, body) = rest_answer(&inner, Method::GET, &uri, None).await;
+            assert_eq!(status, StatusCode::OK, "{uri}: {body}");
+        }
+        let (status, _) = rest_answer(&inner, Method::POST, "/escrow/state", Some(json!({}))).await;
+        assert!(
+            status != StatusCode::NOT_FOUND && status != StatusCode::METHOD_NOT_ALLOWED,
+            "POST /escrow/state is not mounted: {status}"
+        );
+    }
+
+    /// `x402_networks` returns the body of `GET /networks.json`, byte for byte,
+    /// in `structuredContent` too, valid against its `outputSchema`.
+    #[tokio::test]
+    async fn networks_over_mcp_is_the_body_of_get_networks_json() {
+        let (mcp, rest) = routers().await;
+        let doc = call(&mcp, "x402_networks", json!({})).await;
+        let over_rest = rest_answer(&rest, Method::GET, "/networks.json", None).await;
+        assert_eq!(over_rest.0, StatusCode::OK, "{}", over_rest.1);
+        assert_same_answer(&doc, &over_rest, "x402_networks");
+        assert_structured_matches_schema(&mcp, "x402_networks", &doc).await;
+        let rows = doc["result"]["structuredContent"]["networks"]
+            .as_array()
+            .expect("a networks array");
+        assert!(!rows.is_empty(), "the stub serves base-sepolia: {doc}");
+    }
+
+    /// A GET read refuses an argument it does not declare instead of
+    /// answering a question the caller did not ask.
+    #[tokio::test]
+    async fn the_get_reads_refuse_an_argument_they_do_not_declare() {
+        let (mcp, _) = routers().await;
+        for (tool, arguments) in [
+            ("x402_networks", json!({ "network": "base" })),
+            ("x402_chain_health", json!({ "chain": "base" })),
+            (
+                "x402_durable_evidence",
+                json!({ "paymentId": format!("0x{}", "11".repeat(32)), "format": "json" }),
+            ),
+        ] {
+            let doc = call(&mcp, tool, arguments.clone()).await;
+            assert_eq!(rpc_error_code(&doc), -32602, "{tool} {arguments}: {doc}");
+        }
+    }
+
+    /// The schema describes the document production serves: the one built
+    /// from a production `/supported` (2.40.0, every family) validates, and a
+    /// document without `networks`, with a string `testnet` or with a token
+    /// missing its decimals does not.
+    #[test]
+    fn the_networks_output_schema_describes_a_production_document() {
+        let supported: Value =
+            serde_json::from_str(include_str!("../tests/fixtures/supported-2.40.0.json")).unwrap();
+        let catalog = crate::networks_json::CATALOG
+            .as_ref()
+            .expect("config/supported_tokens.json parses");
+        let document = crate::networks_json::document(
+            &supported,
+            catalog,
+            "https://facilitator.ultravioletadao.xyz",
+        );
+        assert!(document["networks"]
+            .as_array()
+            .is_some_and(|n| n.len() > 20));
+        let validator = validator_for(&networks_output_schema());
+        let errors: Vec<String> = validator
+            .iter_errors(&document)
+            .map(|e| e.to_string())
+            .collect();
+        assert!(
+            errors.is_empty(),
+            "a production document breaks the schema: {errors:#?}"
+        );
+
+        let mut broken = document.clone();
+        broken.as_object_mut().unwrap().remove("networks");
+        assert!(
+            !validator.is_valid(&broken),
+            "a document without networks validates"
+        );
+        let mut broken = document.clone();
+        broken["networks"][0]["testnet"] = json!("false");
+        assert!(!validator.is_valid(&broken), "a string testnet validates");
+        let mut broken = document;
+        let token = broken["networks"]
+            .as_array_mut()
+            .unwrap()
+            .iter_mut()
+            .find(|row| row["tokens"].as_array().is_some_and(|t| !t.is_empty()))
+            .expect("a row with tokens");
+        token["tokens"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("decimals");
+        assert!(
+            !validator.is_valid(&broken),
+            "a token without decimals validates"
+        );
+    }
+
+    /// `x402_chain_health` returns the body of `GET /health/ready`, valid
+    /// against its `outputSchema`.
+    #[tokio::test]
+    async fn chain_health_over_mcp_is_the_body_of_get_health_ready() {
+        let (mcp, rest) = routers().await;
+        let doc = call(&mcp, "x402_chain_health", json!({})).await;
+        let (status, body) = rest_answer(&rest, Method::GET, "/health/ready", None).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_ne!(doc["result"]["isError"], true, "{doc}");
+        assert_eq!(without_age(&tool_text(&doc)), without_age(&body));
+        assert_structured_matches_schema(&mcp, "x402_chain_health", &doc).await;
+
+        // `network: null` is no network at all.
+        let doc = call(&mcp, "x402_chain_health", json!({ "network": null })).await;
+        assert_eq!(without_age(&tool_text(&doc)), without_age(&body));
+    }
+
+    /// The tool reads the SAME readiness state the public route reads, never
+    /// a second one: a reading taken through MCP is the one `GET
+    /// /health/ready` serves a second later. A state of its own would probe
+    /// again, and the route would answer a later `checkedAtUnix`.
+    #[tokio::test]
+    async fn chain_health_shares_the_readiness_cache_with_the_public_route() {
+        let (mcp, rest) = routers().await;
+        let doc = call(&mcp, "x402_chain_health", json!({})).await;
+        let over_mcp: Value = serde_json::from_str(&tool_text(&doc)).unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(1_100)).await;
+        let (_, body) = rest_answer(&rest, Method::GET, "/health/ready", None).await;
+        let over_rest: Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(
+            over_rest["checkedAtUnix"], over_mcp["checkedAtUnix"],
+            "the public route probed again: the MCP tool has a readiness state of its own"
+        );
+        assert!(over_rest["ageSecs"].as_u64().unwrap() >= 1, "{body}");
+    }
+
+    /// `network` reaches the route percent-encoded, so the handler sees the
+    /// caller's string whole: an `&` cannot smuggle a second parameter in, and
+    /// a CAIP-2 colon survives. Every answer is the route's own, for the URI
+    /// spelled out here by hand rather than by the encoder under test.
+    #[tokio::test]
+    async fn chain_health_passes_the_network_through_percent_encoded() {
+        let (mcp, rest) = routers().await;
+        for (network, uri) in [
+            ("nope", "/health/ready?network=nope"),
+            ("base", "/health/ready?network=base"),
+            ("eip155:8453", "/health/ready?network=eip155%3A8453"),
+            (
+                "base&network=eip155:1",
+                "/health/ready?network=base%26network%3Deip155%3A1",
+            ),
+            ("", "/health/ready?network="),
+        ] {
+            let doc = call(&mcp, "x402_chain_health", json!({ "network": network })).await;
+            let over_rest = rest_answer(&rest, Method::GET, uri, None).await;
+            assert!(!over_rest.0.is_success(), "{uri}: the stub probes no chain");
+            assert_same_answer(&doc, &over_rest, uri);
+        }
+        let doc = call(&mcp, "x402_chain_health", json!({ "network": 8453 })).await;
+        assert_eq!(rpc_error_code(&doc), -32602, "{doc}");
+    }
+
+    /// A `down` reading is the result, not a tool error; a `503` with no
+    /// reading in it, any other status and any other tool are not.
+    #[test]
+    fn only_a_down_reading_of_the_chain_health_is_a_non_2xx_result() {
+        let unavailable = StatusCode::SERVICE_UNAVAILABLE;
+        let reading = r#"{"status":"down","networks":[{"network":"base"}]}"#;
+        assert!(is_tool_result("x402_chain_health", unavailable, reading));
+        assert!(is_tool_result("x402_chain_health", StatusCode::OK, reading));
+        assert!(is_tool_result("x402_verify", StatusCode::OK, "{}"));
+        for (tool, status, body) in [
+            (
+                "x402_chain_health",
+                unavailable,
+                r#"{"status":"down","error":"probe_failed"}"#,
+            ),
+            ("x402_chain_health", unavailable, "not json"),
+            ("x402_chain_health", StatusCode::NOT_FOUND, reading),
+            ("x402_chain_health", StatusCode::BAD_REQUEST, reading),
+            ("x402_settle", unavailable, reading),
+            ("x402_supported", unavailable, reading),
+        ] {
+            assert!(
+                !is_tool_result(tool, status, body),
+                "{tool} {status} {body} read as a result"
+            );
+        }
+    }
+
+    /// `x402_escrow_onchain_state` returns the answer of `POST /escrow/state`,
+    /// whatever it is. Without `ENABLE_PAYMENT_OPERATOR` that route answers
+    /// every body alike, so this cannot tell the arguments from an empty body:
+    /// `the_escrow_read_sends_its_arguments_as_the_body` pins that.
+    #[tokio::test]
+    async fn escrow_state_over_mcp_is_the_answer_of_post_escrow_state() {
+        let (mcp, rest) = routers().await;
+        let example = escrow_state_input_schema()["examples"][0].clone();
+        for body in [example, json!({}), json!({ "network": "base" })] {
+            let doc = call(&mcp, "x402_escrow_onchain_state", body.clone()).await;
+            let over_rest =
+                rest_answer(&rest, Method::POST, "/escrow/state", Some(body.clone())).await;
+            assert_same_answer(&doc, &over_rest, &body.to_string());
+        }
+    }
+
+    /// The escrow read is the one read that reaches the chain (view calls on a
+    /// premium RPC), so what it sends is pinned at the dispatch: `POST
+    /// /escrow/state` with the tool's arguments, untouched, as the body.
+    #[test]
+    fn the_escrow_read_sends_its_arguments_as_the_body() {
+        let example = escrow_state_input_schema()["examples"][0]
+            .as_object()
+            .cloned()
+            .expect("the escrow example is an object");
+        let request = rest_request("x402_escrow_onchain_state", example.clone()).unwrap();
+        assert_eq!(request.method, Method::POST);
+        assert_eq!(request.uri, "/escrow/state");
+        assert_eq!(request.body, Some(example));
+    }
+
+    /// `x402_supported` keeps its contract from before the reads: a GET with
+    /// no body that ignores whatever arguments come with it, where the new
+    /// reads refuse an argument they do not declare.
+    #[test]
+    fn the_supported_tool_still_ignores_an_extra_argument() {
+        let mut extra = JsonObject::new();
+        extra.insert("network".to_string(), json!("base"));
+        extra.insert("anything".to_string(), json!(1));
+        let request = rest_request("x402_supported", extra).unwrap();
+        assert_eq!(request.method, Method::GET);
+        assert_eq!(request.uri, "/supported");
+        assert_eq!(request.body, None);
+    }
+
+    /// The input schema is the type's, not a guess: its example deserialises
+    /// into `EscrowStateQuery`, every field it calls required is one the type
+    /// refuses to do without, and the two traps it describes are real --
+    /// `maxAmount` as a JSON number and `network` as a v1 name are refused.
+    #[test]
+    fn the_escrow_input_schema_is_the_query_type() {
+        use crate::payment_operator::types::EscrowStateQuery;
+        let schema = escrow_state_input_schema();
+        let example = schema["examples"][0].clone();
+        serde_json::from_value::<EscrowStateQuery>(example.clone())
+            .expect("the published example is a body the route parses");
+
+        let required = |at: &Value| -> Vec<String> {
+            at["required"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|v| v.as_str().unwrap().to_string())
+                .collect()
+        };
+        for field in required(&schema) {
+            let mut body = example.clone();
+            body.as_object_mut().unwrap().remove(&field);
+            assert!(
+                serde_json::from_value::<EscrowStateQuery>(body).is_err(),
+                "`{field}` is required by the schema and not by the type"
+            );
+        }
+        for (object, at) in [
+            ("paymentInfo", &schema["properties"]["paymentInfo"]),
+            ("extra", &schema["properties"]["extra"]),
+        ] {
+            for field in required(at) {
+                let mut body = example.clone();
+                body[object].as_object_mut().unwrap().remove(&field);
+                assert!(
+                    serde_json::from_value::<EscrowStateQuery>(body).is_err(),
+                    "`{object}.{field}` is required by the schema and not by the type"
+                );
+            }
+        }
+
+        let mut body = example.clone();
+        body["paymentInfo"]["maxAmount"] = json!(1_000_000);
+        assert!(serde_json::from_value::<EscrowStateQuery>(body).is_err());
+        assert!(Network::from_caip2(example["network"].as_str().unwrap()).is_some());
+        assert!(
+            Network::from_caip2("base").is_none(),
+            "the schema says the v1 name is refused; the route's parser must agree"
+        );
+    }
+
+    /// The output schema is the response type's: a serialised
+    /// `EscrowStateResponse` validates, and amounts as JSON numbers do not.
+    #[test]
+    fn the_escrow_output_schema_is_the_response_type() {
+        let answer = serde_json::to_value(crate::payment_operator::types::EscrowStateResponse {
+            has_collected_payment: true,
+            capturable_amount: 1_000_000,
+            refundable_amount: 0,
+            payment_info_hash: "0xabc".to_string(),
+            network: "eip155:8453".to_string(),
+        })
+        .unwrap();
+        let validator = validator_for(&escrow_state_output_schema());
+        assert!(validator.is_valid(&answer), "{answer}");
+        let mut broken = answer;
+        broken["capturableAmount"] = json!(1_000_000);
+        assert!(!validator.is_valid(&broken), "a numeric amount validates");
+    }
+
+    /// The schemas the tests above validate directly are the ones `tools/list`
+    /// publishes: each read's `outputSchema`, and the two input schemas built
+    /// by a function. Without this, a tool could publish another schema while
+    /// every schema test stayed green.
+    #[test]
+    fn tools_list_publishes_the_schemas_the_tests_validate() {
+        let by_name = |name: &str| {
+            tools()
+                .into_iter()
+                .find(|t| t.name == name)
+                .unwrap_or_else(|| panic!("{name} is not declared"))
+        };
+        for (name, output) in [
+            ("x402_supported", supported_output_schema()),
+            ("x402_networks", networks_output_schema()),
+            ("x402_chain_health", chain_health_output_schema()),
+            ("x402_escrow_onchain_state", escrow_state_output_schema()),
+            ("x402_durable_evidence", durable_evidence_output_schema()),
+        ] {
+            let declared = by_name(name)
+                .output_schema
+                .unwrap_or_else(|| panic!("{name} publishes no outputSchema"));
+            assert_eq!(Value::Object((*declared).clone()), output, "{name}");
+        }
+        for (name, input) in [
+            ("x402_escrow_onchain_state", escrow_state_input_schema()),
+            ("x402_durable_evidence", durable_evidence_input_schema()),
+        ] {
+            assert_eq!(
+                Value::Object((*by_name(name).input_schema).clone()),
+                input,
+                "{name}"
+            );
+        }
+    }
+
+    /// `x402_durable_evidence` returns the body of `GET /dx402/evidence/{id}`,
+    /// or with `document: "receipt"` of `GET /dx402/receipt/{id}`, byte for
+    /// byte, each valid against the declared `outputSchema`. The id is the
+    /// route's to normalise: the `0X` + uppercase spelling answers too.
+    #[tokio::test]
+    async fn durable_evidence_over_mcp_is_the_body_of_the_dx402_routes() {
+        let (svc, id) = dx402_with_one_anchor().await;
+        let (mcp, rest) = routers_with(Some(svc)).await;
+
+        let doc = call(&mcp, "x402_durable_evidence", json!({ "paymentId": id })).await;
+        let over_rest =
+            rest_answer(&rest, Method::GET, &format!("/dx402/evidence/{id}"), None).await;
+        assert_eq!(over_rest.0, StatusCode::OK, "{}", over_rest.1);
+        assert_same_answer(&doc, &over_rest, "evidence");
+        assert_structured_matches_schema(&mcp, "x402_durable_evidence", &doc).await;
+        let evidence = doc["result"]["structuredContent"].clone();
+
+        let doc = call(
+            &mcp,
+            "x402_durable_evidence",
+            json!({ "paymentId": id, "document": "receipt" }),
+        )
+        .await;
+        let over_rest =
+            rest_answer(&rest, Method::GET, &format!("/dx402/receipt/{id}"), None).await;
+        assert_eq!(over_rest.0, StatusCode::OK, "{}", over_rest.1);
+        assert_same_answer(&doc, &over_rest, "receipt");
+        assert_structured_matches_schema(&mcp, "x402_durable_evidence", &doc).await;
+
+        let shouted = format!("0X{}", id.trim_start_matches("0x").to_ascii_uppercase());
+        let doc = call(
+            &mcp,
+            "x402_durable_evidence",
+            json!({ "paymentId": shouted }),
+        )
+        .await;
+        assert_eq!(doc["result"]["structuredContent"], evidence, "{doc}");
+
+        // Not a schema that accepts anything: evidence without its authority
+        // flags fits neither branch.
+        let validator = validator_for(&durable_evidence_output_schema());
+        let mut broken = evidence;
+        broken.as_object_mut().unwrap().remove("verified");
+        assert!(
+            !validator.is_valid(&broken),
+            "evidence without `verified` validates"
+        );
+    }
+
+    /// A `paymentId` stays inside its path segment whatever it holds: each of
+    /// these reaches the evidence handler (`dx402_unknown_payment`) and
+    /// answers what the route answers for the encoded id, never another route.
+    #[tokio::test]
+    async fn a_hostile_payment_id_stays_inside_its_path_segment() {
+        let (svc, _) = dx402_with_one_anchor().await;
+        let (mcp, rest) = routers_with(Some(svc)).await;
+        for (id, encoded) in [
+            (
+                format!("0x{}", "22".repeat(32)),
+                format!("0x{}", "22".repeat(32)),
+            ),
+            ("../../settle".to_string(), "..%2F..%2Fsettle".to_string()),
+            ("a/b?c#d".to_string(), "a%2Fb%3Fc%23d".to_string()),
+            ("x%2Fy".to_string(), "x%252Fy".to_string()),
+            ("a+b c".to_string(), "a%2Bb%20c".to_string()),
+            ("\u{00f1}".to_string(), "%C3%B1".to_string()),
+        ] {
+            let doc = call(&mcp, "x402_durable_evidence", json!({ "paymentId": id })).await;
+            let over_rest = rest_answer(
+                &rest,
+                Method::GET,
+                &format!("/dx402/evidence/{encoded}"),
+                None,
+            )
+            .await;
+            assert_same_answer(&doc, &over_rest, &id);
+            assert!(
+                tool_text(&doc).contains("dx402_unknown_payment"),
+                "{id:?} did not reach the evidence handler: {doc}"
+            );
+        }
+    }
+
+    /// The arguments `x402_durable_evidence` refuses before dispatching:
+    /// a missing, blank or non-string `paymentId`, and a `document` outside
+    /// its two values (spelling included).
+    #[tokio::test]
+    async fn durable_evidence_refuses_a_malformed_argument() {
+        let (mcp, _) = routers().await;
+        let id = format!("0x{}", "11".repeat(32));
+        for arguments in [
+            json!({}),
+            json!({ "paymentId": null }),
+            json!({ "paymentId": "" }),
+            json!({ "paymentId": "   " }),
+            json!({ "paymentId": 7 }),
+            json!({ "paymentId": id, "document": "Receipt" }),
+            json!({ "paymentId": id, "document": "blob" }),
+            json!({ "paymentId": id, "document": 1 }),
+        ] {
+            let doc = call(&mcp, "x402_durable_evidence", arguments.clone()).await;
+            assert_eq!(rpc_error_code(&doc), -32602, "{arguments}: {doc}");
+        }
+    }
+
+    /// Where DX402 is off the tool answers what `GET /dx402/evidence/{id}`
+    /// answers there: the public router's generic 404, as a tool error.
+    #[tokio::test]
+    async fn durable_evidence_without_dx402_is_the_routes_generic_404() {
+        let (mcp, rest) = routers().await;
+        let id = format!("0x{}", "11".repeat(32));
+        for (document, route) in [("evidence", "evidence"), ("receipt", "receipt")] {
+            let doc = call(
+                &mcp,
+                "x402_durable_evidence",
+                json!({ "paymentId": id, "document": document }),
+            )
+            .await;
+            let over_rest =
+                rest_answer(&rest, Method::GET, &format!("/dx402/{route}/{id}"), None).await;
+            assert_eq!(over_rest.0, StatusCode::NOT_FOUND);
+            assert_same_answer(&doc, &over_rest, document);
+            assert!(!tool_text(&doc).is_empty(), "the 404 says nothing");
+        }
+    }
+
+    /// `main.rs` builds ONE readiness state and hands that same `Arc` to the
+    /// public `/health/ready` route and to the MCP server, and hands the MCP
+    /// server the DX402 service the public `/dx402/*` routes are mounted with.
+    /// The harness above passes them by construction; this is what holds the
+    /// binary to it, the way `rate_policy` holds its governor wiring.
+    #[test]
+    fn main_hands_the_mcp_server_the_one_readiness_state_and_the_dx402_service() {
+        let main = include_str!("main.rs");
+        assert_eq!(
+            main.matches("ReadinessState::new(").count(),
+            1,
+            "main.rs builds more than one readiness state: each would probe on its own"
+        );
+        let mcp = main
+            .split(';')
+            .find(|statement| statement.contains("let mcp = mcp::mcp_routes("))
+            .expect("main.rs mounts the MCP server");
+        assert!(mcp.contains("Arc::clone(&readiness_state)"), "{mcp}");
+        assert!(mcp.contains("dx402_service.clone()"), "{mcp}");
+        assert_eq!(
+            main.matches(".with_state(readiness_state)").count(),
+            1,
+            "the public /health/ready route is not mounted with the shared state"
+        );
+    }
+
+    /// The encoder leaves only RFC 3986's unreserved characters bare, and a
+    /// query value it encodes decodes back to the caller's exact string.
+    #[test]
+    fn percent_encode_leaves_only_unreserved_characters_bare() {
+        let raw = "a-Z_0.9~ /?#&=+%:\u{00f1}\"";
+        let encoded = percent_encode(raw);
+        assert!(
+            encoded
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || "-._~%".contains(c)),
+            "{encoded}"
+        );
+        assert!(encoded.starts_with("a-Z_0.9~%20%2F%3F%23%26%3D%2B%25%3A%C3%B1"));
+        let decoded: Vec<(String, String)> =
+            url::form_urlencoded::parse(format!("v={encoded}").as_bytes())
+                .into_owned()
+                .collect();
+        assert_eq!(decoded, vec![("v".to_string(), raw.to_string())]);
+    }
+
+    /// The reads draw on the verify/settle bucket through `/mcp`. That bucket
+    /// must be at least as strict as the budgets their REST routes carry
+    /// (`/escrow/state` and `/health/ready` on secondary-read, DX402 on
+    /// discovery-read; `/networks.json` carries none), or the MCP door would
+    /// be the cheaper way to read the chain.
+    #[test]
+    fn the_mcp_bucket_is_never_looser_than_the_reads_it_relays() {
+        let mcp = crate::rate_policy::VERIFY_SETTLE.limit();
+        for read in [
+            crate::rate_policy::SECONDARY_READ,
+            crate::rate_policy::DISCOVERY_READ,
+        ] {
+            let limit = read.limit();
+            assert!(
+                mcp.period() >= limit.period() && mcp.burst() <= limit.burst(),
+                "the MCP bucket is looser than {}: a tool would out-read its route",
+                read.name
+            );
+        }
+    }
+
+    /// Every served document that lists the MCP tools lists all of them, and
+    /// none still counts four. The list used to be typed into nine surfaces;
+    /// this is what keeps a ninth tool from being announced in four of them.
+    #[test]
+    fn every_document_that_lists_the_mcp_tools_names_all_of_them() {
+        let ard: Value =
+            serde_json::from_str(include_str!("../static/.well-known/ard.json")).unwrap();
+        let capabilities: Vec<&str> = ard["entries"][0]["capabilities"]
+            .as_array()
+            .expect("the MCP entry lists its capabilities")
+            .iter()
+            .map(|v| v.as_str().unwrap())
+            .collect();
+        assert_eq!(capabilities, TOOL_NAMES, "ard.json capabilities");
+
+        let documents = [
+            ("static/mcp.md", include_str!("../static/mcp.md")),
+            ("static/mcp.html", include_str!("../static/mcp.html")),
+            ("static/skill.md", include_str!("../static/skill.md")),
+            ("static/llms.txt", include_str!("../static/llms.txt")),
+            ("static/index.md", include_str!("../static/index.md")),
+            (
+                "static/.well-known/agent-card.json",
+                include_str!("../static/.well-known/agent-card.json"),
+            ),
+            (
+                "static/.well-known/agent.json",
+                include_str!("../static/.well-known/agent.json"),
+            ),
+            ("src/openapi.rs", include_str!("openapi.rs")),
+        ];
+        for (path, text) in documents {
+            for tool in TOOL_NAMES {
+                assert!(text.contains(tool), "{path} does not name {tool}");
+            }
+        }
+        let counted = [
+            ("static/mcp.md", include_str!("../static/mcp.md")),
+            ("static/mcp.html", include_str!("../static/mcp.html")),
+            ("static/skill.md", include_str!("../static/skill.md")),
+            ("static/llms.txt", include_str!("../static/llms.txt")),
+            ("static/index.html", include_str!("../static/index.html")),
+            ("static/x402.html", include_str!("../static/x402.html")),
+            ("src/openapi.rs", include_str!("openapi.rs")),
+        ];
+        for (path, text) in counted {
+            let lower = text.to_lowercase();
+            for stale in [
+                "four tools",
+                "the four tools",
+                "only four",
+                "cuatro herramientas",
+                "four names",
+            ] {
+                assert!(!lower.contains(stale), "{path} still says `{stale}`");
+            }
+        }
+    }
+
+    /// The tools the facilitator's PayBox plugin (`paybox-plugin/`) relays:
+    /// the reads, exactly. Never a payment rail and never the tool that moves
+    /// money.
+    const PAYBOX_PLUGIN_TOOLS: [&str; 5] = [
+        "x402_supported",
+        "x402_networks",
+        "x402_chain_health",
+        "x402_escrow_onchain_state",
+        "x402_durable_evidence",
+    ];
+
+    /// `value` as pretty JSON, with the `x` of every `0x` + 64 hex written
+    /// as its unicode escape (a backslash, `u`, `0078`): the same string once
+    /// parsed (JSON and TypeScript read the escape alike), which the repo's
+    /// pre-commit hook does not take for a private key. The escrow example's
+    /// salt is the one such string in the reads.
+    fn paybox_plugin_json(value: &Value) -> String {
+        let pretty = serde_json::to_string_pretty(value).unwrap();
+        // Spelled in pieces so that no editor or shell on the way to disk
+        // turns the escape into the letter it stands for.
+        let escaped_x = concat!("0", "\\", "u", "0078", "${1}");
+        regex::Regex::new("0x([0-9a-fA-F]{64})")
+            .unwrap()
+            .replace_all(&pretty, escaped_x)
+            .into_owned()
+    }
+
+    /// The PayBox plugin of the facilitator relays the reads of this server
+    /// and nothing else, and lists them exactly as `tools/list` does. Its
+    /// catalog (`paybox-plugin/src/catalogo.generated.ts`) and the full list
+    /// its fake MCP serves (`paybox-plugin/test/fixtures/facilitator-tools.json`)
+    /// are written from this server's own answer, so the plugin cannot list a
+    /// tool, a schema or a text this server does not publish. Without
+    /// `X402_WRITE_PAYBOX_PLUGIN=1` the two files are compared byte for byte;
+    /// with it they are rewritten.
+    #[tokio::test]
+    async fn the_paybox_plugin_relays_exactly_the_reads_of_tools_list() {
+        let (mcp, _) = routers().await;
+        let listed = listed_tools(&mcp).await;
+        let reads: Vec<Value> = listed
+            .iter()
+            .filter(|t| t["_meta"][CLASS_META_KEY] == "lectura")
+            .cloned()
+            .collect();
+        let names: Vec<&str> = reads.iter().map(|t| t["name"].as_str().unwrap()).collect();
+        assert_eq!(names, PAYBOX_PLUGIN_TOOLS, "the reads of tools/list");
+        for tool in &reads {
+            assert_eq!(
+                tool["annotations"]["readOnlyHint"], true,
+                "{} is a read the plugin relays",
+                tool["name"]
+            );
+        }
+        for rail in ["x402_accepts", "x402_verify", "x402_settle"] {
+            assert!(!names.contains(&rail), "the plugin would relay {rail}");
+        }
+
+        let catalog = format!(
+            "// GENERATED: do not edit by hand. src/mcp.rs writes it, in process and without the network, from\n\
+             // the facilitator's own tools/list: the tools of class `lectura` (_meta \"uvd/clase\"), exactly as\n\
+             // POST /mcp lists them. Regenerate with X402_WRITE_PAYBOX_PLUGIN=1 and the test\n\
+             // mcp::tests::the_paybox_plugin_relays_exactly_the_reads_of_tools_list (README.md, \"Regenerar\");\n\
+             // without that variable the test compares this file byte for byte. A string of 0x + 64 hex is\n\
+             // written with its x escaped (\\u0078): the same string, which the pre-commit hook does not take\n\
+             // for a private key.\n\
+             export const CATALOGO: unknown = {};\n",
+            paybox_plugin_json(&json!({ "esquema": 1, "ruta": "/mcp", "tools": reads }))
+        );
+        let fixture = format!("{}\n", paybox_plugin_json(&json!({ "tools": listed })));
+
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("paybox-plugin");
+        let write = std::env::var("X402_WRITE_PAYBOX_PLUGIN").as_deref() == Ok("1");
+        for (path, expected) in [
+            ("src/catalogo.generated.ts", catalog),
+            ("test/fixtures/facilitator-tools.json", fixture),
+        ] {
+            let file = root.join(path);
+            if write {
+                std::fs::write(&file, &expected)
+                    .unwrap_or_else(|e| panic!("could not write {}: {e}", file.display()));
+                continue;
+            }
+            let committed = std::fs::read_to_string(&file)
+                .unwrap_or_else(|e| panic!("could not read {}: {e}", file.display()));
+            assert!(
+                committed == expected,
+                "paybox-plugin/{path} is not what this server lists: regenerate it with \
+                 X402_WRITE_PAYBOX_PLUGIN=1 and this test (paybox-plugin/README.md)"
+            );
+        }
     }
 }

@@ -30,7 +30,9 @@ else's x402 payment**:
 - You are building a `402` challenge and need to know which networks, tokens
   and schemes can actually be settled today — `GET /supported`, then
   `POST /accepts` to narrow a resource server's offer to what is settleable.
-- You are an MCP client and want the same four calls as tools — `POST /mcp`.
+- You are an MCP client and want the same four calls as tools, plus a buyer's
+  reads around a payment (network directory, chain health, on-chain escrow
+  state, DX402 evidence) — `POST /mcp`.
 - You want to read or write an agent's ERC-8004 identity and reputation without
   paying gas — `/identity/...`, `/reputation/...`, `POST /feedback`.
 - You want to discover x402-priced resources other people published —
@@ -148,11 +150,15 @@ Base URL: `https://facilitator.ultravioletadao.xyz/`
 - `POST /verify` — validate a payment authorization without settling
 - `POST /settle` — settle a verified authorization on-chain
 - `POST /accepts` — negotiate payment requirements (Faremeter-compatible)
-- `POST /mcp` — MCP server (Streamable HTTP, stateless). Four tools:
-  `x402_supported`, `x402_accepts`, `x402_verify`, `x402_settle`. Each one is
-  dispatched through the REST handler it names, so an MCP call and the HTTP call
-  it stands for cannot answer differently. `POST /mcp` shares the per-IP budget
-  of `/verify` and `/settle` — one bucket, not two.
+- `POST /mcp` — MCP server (Streamable HTTP, stateless). The x402 calls
+  `x402_supported`, `x402_accepts`, `x402_verify`, `x402_settle`, and four
+  reads that move and sign nothing: `x402_networks` (`/networks.json`),
+  `x402_chain_health` (`/health/ready`), `x402_escrow_onchain_state`
+  (`POST /escrow/state`, a view call on the escrow contract) and
+  `x402_durable_evidence` (`/dx402/evidence/{paymentId}` or its receipt). Each
+  one is dispatched through the REST handler it names, so an MCP call and the
+  HTTP call it stands for cannot answer differently. `POST /mcp` shares the
+  per-IP budget of `/verify` and `/settle` — one bucket, not two.
 - `GET  /mcp` — the MCP guide, for a reader: transports, the tool contract, the
   errors and the measured traps. HTML, or this same guide as Markdown with
   `Accept: text/markdown`. A caller whose `Accept` names `application/json` or
@@ -224,7 +230,9 @@ Base URL: `https://facilitator.ultravioletadao.xyz/`
 - `GET /supported` — every (scheme, network) pair accepted, with its supported protocol version and identifiers (Hedera is v2 only)
 - `POST /accepts` — negotiate payment requirements (Faremeter-compatible)
 - `POST /mcp` — MCP server (Streamable HTTP, stateless): `x402_supported`,
-  `x402_accepts`, `x402_verify`, `x402_settle`, over the same handlers
+  `x402_accepts`, `x402_verify`, `x402_settle`, and the reads `x402_networks`,
+  `x402_chain_health`, `x402_escrow_onchain_state`, `x402_durable_evidence`,
+  over the same handlers
 - `GET /mcp` — the MCP guide for a reader (HTML, or Markdown with
   `Accept: text/markdown`)
 - `GET /health` — `{"status":"healthy"}`
@@ -976,7 +984,7 @@ its `RateLimit-Policy` carries.
 
 ---
 
-## 10. MCP: the same four calls, as tools
+## 10. MCP: the same calls, as tools, plus the buyer's reads
 
 This facilitator is also an MCP server. Same host, same rate limit, same
 handlers -- an MCP tool call is dispatched through the very same code path as
@@ -1002,10 +1010,19 @@ could answer a different truth.
 | `x402_accepts` | `POST /accepts` | no |
 | `x402_verify` | `POST /verify` | no |
 | `x402_settle` | `POST /settle` | **yes, irreversibly** |
+| `x402_networks` | `GET /networks.json` | no |
+| `x402_chain_health` | `GET /health/ready` | no |
+| `x402_escrow_onchain_state` | `POST /escrow/state` | no |
+| `x402_durable_evidence` | `GET /dx402/evidence/{paymentId}` (or `/receipt/`) | no |
 
-The arguments of each tool are the JSON body of the request it stands for, and
-the result is that request's response body verbatim, in a single text content
-block.
+The arguments of each tool are the JSON body of the request it stands for (for
+the GET reads, its path and query), and the result is that request's response
+body verbatim, in a single text content block. The last four only read: how to
+present each network, whether a chain can settle right now (a `down` reading is
+the result, not an error), what an escrow contract holds for one payment (a
+view call, `network` CAIP-2 only), and the DX402 evidence anchored for a payment
+(`document: "receipt"` for the signed receipt alone). The `/mcp` guide has the
+details.
 
 **The body is the only channel — a tool call cannot set headers.** The parity
 with HTTP is one of *privilege*, not of capability: nothing here can move funds

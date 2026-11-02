@@ -1,0 +1,1499 @@
+{
+  "tools": [
+    {
+      "name": "x402_supported",
+      "description": "List every payment scheme and network this facilitator settles on, in both the x402 v1 (\"base\") and CAIP-2 (\"eip155:8453\") spellings, plus the protocol extensions it serves. Read this before building a payment: it is the only authoritative answer to \"can you settle X on Y\". Takes no arguments. Equivalent to GET /supported.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      },
+      "outputSchema": {
+        "type": "object",
+        "description": "The body of GET /supported, unchanged: every (x402Version, scheme, network) this facilitator settles, the protocol extensions it serves, the fee payer per network where it differs, and what its facilitator receipts cover.",
+        "required": [
+          "kinds"
+        ],
+        "properties": {
+          "kinds": {
+            "type": "array",
+            "description": "One entry per settleable (x402Version, scheme, network). Every chain appears twice, under its x402 v1 name (\"base\") and under its CAIP-2 id (\"eip155:8453\"); `networkAliases` lists both on each entry.",
+            "items": {
+              "type": "object",
+              "required": [
+                "x402Version",
+                "scheme",
+                "network"
+              ],
+              "properties": {
+                "x402Version": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "description": "The x402 protocol version this entry is for."
+                },
+                "scheme": {
+                  "type": "string",
+                  "description": "Payment scheme: exact, upto, escrow or commerce."
+                },
+                "network": {
+                  "type": "string",
+                  "description": "The network, as the x402 version of this entry spells it."
+                },
+                "networkAliases": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  },
+                  "description": "Every identifier of the same chain, this one included."
+                },
+                "extra": {
+                  "type": "object",
+                  "description": "Network-specific settlement details.",
+                  "properties": {
+                    "feePayer": {
+                      "type": "string",
+                      "description": "The account that pays the network fee."
+                    },
+                    "tokens": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "required": [
+                          "token",
+                          "address",
+                          "decimals"
+                        ],
+                        "properties": {
+                          "token": {
+                            "type": "string"
+                          },
+                          "address": {
+                            "type": "string"
+                          },
+                          "decimals": {
+                            "type": "integer",
+                            "minimum": 0
+                          }
+                        }
+                      }
+                    },
+                    "escrowAddress": {
+                      "type": "string"
+                    },
+                    "operatorAddress": {
+                      "type": "string"
+                    },
+                    "tokenCollector": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "extensions": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Protocol extensions this deployment serves."
+          },
+          "signers": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "description": "Fee payer accounts by network, where they differ per network."
+          },
+          "facilitatorReceipts": {
+            "type": "object",
+            "description": "The facilitator receipt capability; see GET /receipts."
+          }
+        }
+      },
+      "annotations": {
+        "title": "Supported networks and schemes",
+        "readOnlyHint": true,
+        "idempotentHint": true,
+        "openWorldHint": false
+      },
+      "_meta": {
+        "uvd/clase": "lectura"
+      }
+    },
+    {
+      "name": "x402_accepts",
+      "description": "Negotiate payment requirements: send the `accepts` array from a 402 response and get back only the entries this facilitator can actually settle, enriched with what it knows (feePayer, token list, escrow addresses). Whatever it could NOT serve comes back in `rejected`, one entry per dropped requirement, each with a `reason` from a closed set (`malformed`, `network_unknown`, `scheme_unknown`, `network_unsupported`, `scheme_unsupported_on_network`) -- read it instead of guessing why a requirement vanished. `rejected` is always present and empty when everything matched, and an empty `accepts` is still a success, not an error. Moves no money and signs nothing. Equivalent to POST /accepts.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "x402Version": {
+            "type": "integer",
+            "description": "x402 protocol version. Defaults to 1 when absent."
+          },
+          "accepts": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": true
+            },
+            "description": "The payment requirements offered by the resource server, as in its 402 body."
+          },
+          "error": {
+            "type": "string",
+            "description": "The `error` field of the 402 body, passed through untouched."
+          }
+        },
+        "required": [
+          "accepts"
+        ],
+        "additionalProperties": true,
+        "description": "Identical to the JSON body of POST /accepts -- the same shape a resource server returns with its HTTP 402."
+      },
+      "annotations": {
+        "title": "Negotiate payment requirements",
+        "readOnlyHint": true,
+        "openWorldHint": false
+      },
+      "_meta": {
+        "uvd/clase": "riel_de_pago"
+      }
+    },
+    {
+      "name": "x402_verify",
+      "description": "Check whether a signed payment authorization would settle: signature, nonce, amount, timestamps, token and network support. Submits NOTHING on-chain and moves no funds -- it is the dry run you should call before x402_settle. Equivalent to POST /verify.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "x402Version": {
+            "type": "integer",
+            "enum": [
+              1,
+              2
+            ],
+            "description": "x402 protocol version of the envelope. 1 unless you are sending the v2 shape."
+          },
+          "paymentPayload": {
+            "type": "object",
+            "description": "The payer-signed authorization. Carries its OWN x402Version at its root -- it is not inherited from the envelope. In x402 v1 it also carries scheme and network; in v2 those live in the top-level `accepted` instead.",
+            "properties": {
+              "x402Version": {
+                "type": "integer",
+                "enum": [
+                  1,
+                  2
+                ]
+              },
+              "scheme": {
+                "type": "string",
+                "description": "x402 v1 ONLY (in v2 this is accepted.scheme). exact | upto | escrow | commerce. GET /supported lists what this facilitator serves."
+              },
+              "network": {
+                "type": "string",
+                "description": "x402 v1 ONLY (in v2 this is accepted.network). The chain, in EITHER spelling: the x402 v1 name (\"base\") or the CAIP-2 identifier (\"eip155:8453\"). Both are accepted, and GET /supported publishes every network under both."
+              },
+              "resource": {
+                "type": "object",
+                "description": "x402 v2, OPTIONAL: a copy of the top-level `resource`. Older builds required it here as well and rejected the body without it; it is now derived from the top-level one when omitted. Sending it still works.",
+                "additionalProperties": true
+              },
+              "accepted": {
+                "type": "object",
+                "description": "x402 v2, OPTIONAL: a copy of the top-level `accepted`, on the same terms as `resource` above.",
+                "additionalProperties": true
+              },
+              "payload": {
+                "type": "object",
+                "description": "The signed material. EVM chains use signature + authorization (below); Solana sends { \"transaction\": \"<base64>\" } instead.",
+                "properties": {
+                  "signature": {
+                    "type": "string",
+                    "description": "EVM: the ERC-3009 EIP-712 signature, 0x + 130 hex characters (r || s || v)."
+                  },
+                  "authorization": {
+                    "type": "object",
+                    "description": "EVM: the ERC-3009 struct that was signed. Every field is a STRING, including the amount and the timestamps.",
+                    "properties": {
+                      "from": {
+                        "type": "string",
+                        "description": "Payer address, 0x + 40 hex."
+                      },
+                      "to": {
+                        "type": "string",
+                        "description": "Recipient address, 0x + 40 hex. Matches paymentRequirements.payTo."
+                      },
+                      "value": {
+                        "type": "string",
+                        "description": "Amount in token base units, as a decimal STRING. Named `value` here; the requirements call their own limit `maxAmountRequired`."
+                      },
+                      "validAfter": {
+                        "type": "string",
+                        "description": "Unix SECONDS as a string. \"1700000000\", not 1700000000: a JSON number is rejected."
+                      },
+                      "validBefore": {
+                        "type": "string",
+                        "description": "Unix SECONDS as a string, same rule as validAfter."
+                      },
+                      "nonce": {
+                        "type": "string",
+                        "description": "32-byte nonce, 0x + 64 hex. Fresh per authorization."
+                      }
+                    },
+                    "required": [
+                      "from",
+                      "to",
+                      "value",
+                      "validAfter",
+                      "validBefore",
+                      "nonce"
+                    ],
+                    "additionalProperties": true
+                  },
+                  "transaction": {
+                    "type": "string",
+                    "description": "Solana: the base64 bincode-serialised transaction. Use INSTEAD of signature + authorization."
+                  }
+                },
+                "additionalProperties": true
+              }
+            },
+            "required": [
+              "x402Version",
+              "payload"
+            ],
+            "additionalProperties": true
+          },
+          "paymentRequirements": {
+            "type": "object",
+            "description": "x402 v1 ONLY. What the resource server demands. The four descriptive fields have no defaults: omit one and the whole body fails to parse. In x402 v2 this object does not exist -- see `resource` and `accepted`.",
+            "properties": {
+              "scheme": {
+                "type": "string",
+                "description": "Must match paymentPayload.scheme."
+              },
+              "network": {
+                "type": "string",
+                "description": "The chain, in EITHER spelling: the x402 v1 name (\"base\") or the CAIP-2 identifier (\"eip155:8453\"), same as paymentPayload.network. An offer taken straight out of GET /discovery/resources is CAIP-2 and can be used unmodified."
+              },
+              "maxAmountRequired": {
+                "type": "string",
+                "description": "Ceiling in token base units, as a decimal STRING. The authorization's `value` must not exceed it."
+              },
+              "resource": {
+                "type": "string",
+                "description": "Absolute URL of the thing being paid for. Required."
+              },
+              "description": {
+                "type": "string",
+                "description": "Human-readable label. Required; may be empty."
+              },
+              "mimeType": {
+                "type": "string",
+                "description": "Media type of the resource, e.g. application/json. Required."
+              },
+              "payTo": {
+                "type": "string",
+                "description": "Recipient address. Required."
+              },
+              "maxTimeoutSeconds": {
+                "type": "integer",
+                "description": "How long the offer stands. Required."
+              },
+              "asset": {
+                "type": "string",
+                "description": "Token contract (EVM) or mint (SVM). Required."
+              },
+              "extra": {
+                "type": "object",
+                "description": "Optional. EIP-712 domain (name, version) for tokens not in the static table, escrow addresses, and scheme extensions.",
+                "additionalProperties": true
+              }
+            },
+            "required": [
+              "scheme",
+              "network",
+              "maxAmountRequired",
+              "resource",
+              "description",
+              "mimeType",
+              "payTo",
+              "maxTimeoutSeconds",
+              "asset"
+            ],
+            "additionalProperties": true
+          },
+          "resource": {
+            "type": "object",
+            "description": "x402 v2 ONLY. What is being sold. Replaces the resource/description/mimeType fields of the v1 paymentRequirements.",
+            "properties": {
+              "url": {
+                "type": "string",
+                "description": "Absolute URL of the thing being paid for. Required."
+              },
+              "description": {
+                "type": "string",
+                "description": "Human-readable label. Required; may be empty."
+              },
+              "mimeType": {
+                "type": "string",
+                "description": "Media type of the resource, e.g. application/json. Required."
+              }
+            },
+            "required": [
+              "url",
+              "description",
+              "mimeType"
+            ],
+            "additionalProperties": true
+          },
+          "accepted": {
+            "type": "object",
+            "description": "x402 v2 ONLY. What is being charged. Replaces the rest of the v1 paymentRequirements. Unknown keys are ignored, so a 402 offer carrying extras (maxAmountRequired, resource, description, mimeType) can be forwarded unedited.",
+            "properties": {
+              "scheme": {
+                "type": "string",
+                "description": "exact | upto | escrow | commerce. GET /supported lists what this facilitator serves."
+              },
+              "network": {
+                "type": "string",
+                "description": "The chain as a CAIP-2 identifier (\"eip155:8453\"). CAIP-2 ONLY here: unlike the v1 paymentRequirements.network, this field refuses the bare x402 v1 name (\"base\"). An offer taken straight out of GET /discovery/resources is already CAIP-2 and can be used unmodified."
+              },
+              "asset": {
+                "type": "string",
+                "description": "Token contract (EVM) or mint (SVM). Required."
+              },
+              "amount": {
+                "type": "string",
+                "description": "Ceiling in token base units, as a decimal STRING. This is the v2 name for the v1 maxAmountRequired. The authorization's `value` must not exceed it."
+              },
+              "payTo": {
+                "type": "string",
+                "description": "Recipient address. Required."
+              },
+              "maxTimeoutSeconds": {
+                "type": "integer",
+                "description": "How long the offer stands. Required."
+              },
+              "extra": {
+                "type": "object",
+                "description": "Optional. EIP-712 domain (name, version) for tokens not in the static table, escrow addresses, and scheme extensions.",
+                "additionalProperties": true
+              }
+            },
+            "required": [
+              "scheme",
+              "network",
+              "asset",
+              "amount",
+              "payTo",
+              "maxTimeoutSeconds"
+            ],
+            "additionalProperties": true
+          }
+        },
+        "required": [
+          "x402Version",
+          "paymentPayload"
+        ],
+        "anyOf": [
+          {
+            "title": "x402 v1",
+            "required": [
+              "paymentRequirements"
+            ],
+            "properties": {
+              "paymentPayload": {
+                "required": [
+                  "x402Version",
+                  "scheme",
+                  "network",
+                  "payload"
+                ]
+              }
+            }
+          },
+          {
+            "title": "x402 v2",
+            "required": [
+              "resource",
+              "accepted"
+            ]
+          }
+        ],
+        "additionalProperties": true,
+        "examples": [
+          {
+            "x402Version": 1,
+            "paymentPayload": {
+              "x402Version": 1,
+              "scheme": "exact",
+              "network": "base",
+              "payload": {
+                "signature": "0\u0078111111111111111111111111111111111111111111111111111111111111111122222222222222222222222222222222222222222222222222222222222222221b",
+                "authorization": {
+                  "from": "0x0000000000000000000000000000000000000001",
+                  "to": "0x0000000000000000000000000000000000000002",
+                  "value": "1000000",
+                  "validAfter": "1700000000",
+                  "validBefore": "1700100000",
+                  "nonce": "0\u00780000000000000000000000000000000000000000000000000000000000000001"
+                }
+              }
+            },
+            "paymentRequirements": {
+              "scheme": "exact",
+              "network": "base",
+              "maxAmountRequired": "1000000",
+              "resource": "https://example.com/protected",
+              "description": "One API call",
+              "mimeType": "application/json",
+              "payTo": "0x0000000000000000000000000000000000000002",
+              "maxTimeoutSeconds": 60,
+              "asset": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"
+            }
+          },
+          {
+            "x402Version": 2,
+            "paymentPayload": {
+              "x402Version": 2,
+              "payload": {
+                "signature": "0\u0078111111111111111111111111111111111111111111111111111111111111111122222222222222222222222222222222222222222222222222222222222222221b",
+                "authorization": {
+                  "from": "0x0000000000000000000000000000000000000001",
+                  "to": "0x0000000000000000000000000000000000000002",
+                  "value": "1000000",
+                  "validAfter": "1700000000",
+                  "validBefore": "1700100000",
+                  "nonce": "0\u00780000000000000000000000000000000000000000000000000000000000000001"
+                }
+              }
+            },
+            "resource": {
+              "url": "https://example.com/protected",
+              "description": "One API call",
+              "mimeType": "application/json"
+            },
+            "accepted": {
+              "scheme": "exact",
+              "network": "eip155:8453",
+              "amount": "1000000",
+              "payTo": "0x0000000000000000000000000000000000000002",
+              "maxTimeoutSeconds": 60,
+              "asset": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"
+            }
+          }
+        ],
+        "description": "Identical to the JSON body of POST /verify. TWO envelopes are accepted and they are not interchangeable field by field: x402 v1 is paymentPayload + paymentRequirements, x402 v2 is paymentPayload + resource + accepted and has no paymentRequirements. Both examples below are runnable as printed -- their signatures and nonces are well-formed placeholders, so they answer 200 with isValid:false. More at https://facilitator.ultravioletadao.xyz/skill.md"
+      },
+      "annotations": {
+        "title": "Verify a payment authorization",
+        "readOnlyHint": true,
+        "openWorldHint": true
+      },
+      "_meta": {
+        "uvd/clase": "riel_de_pago"
+      }
+    },
+    {
+      "name": "x402_settle",
+      "description": "SETTLE A PAYMENT ON-CHAIN. This MOVES REAL FUNDS and is IRREVERSIBLE: it broadcasts the payer's authorization as a blockchain transaction, and nothing in this facilitator or any chain can undo a confirmed transfer. Call x402_verify first, and only call this when the payment is meant to execute now. Equivalent to POST /settle. Exact payments on the networks GET /receipts lists (EVM ERC-3009 tokens, native Hedera USDC) return a portable receipt with payment state and settlement ID; unknown never authorizes a fresh signature. Preserve the original authorization. Receipt confirmation is separate from merchant delivery.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "x402Version": {
+            "type": "integer",
+            "enum": [
+              1,
+              2
+            ],
+            "description": "x402 protocol version of the envelope. 1 unless you are sending the v2 shape."
+          },
+          "paymentPayload": {
+            "type": "object",
+            "description": "The payer-signed authorization. Carries its OWN x402Version at its root -- it is not inherited from the envelope. In x402 v1 it also carries scheme and network; in v2 those live in the top-level `accepted` instead.",
+            "properties": {
+              "x402Version": {
+                "type": "integer",
+                "enum": [
+                  1,
+                  2
+                ]
+              },
+              "scheme": {
+                "type": "string",
+                "description": "x402 v1 ONLY (in v2 this is accepted.scheme). exact | upto | escrow | commerce. GET /supported lists what this facilitator serves."
+              },
+              "network": {
+                "type": "string",
+                "description": "x402 v1 ONLY (in v2 this is accepted.network). The chain, in EITHER spelling: the x402 v1 name (\"base\") or the CAIP-2 identifier (\"eip155:8453\"). Both are accepted, and GET /supported publishes every network under both."
+              },
+              "resource": {
+                "type": "object",
+                "description": "x402 v2, OPTIONAL: a copy of the top-level `resource`. Older builds required it here as well and rejected the body without it; it is now derived from the top-level one when omitted. Sending it still works.",
+                "additionalProperties": true
+              },
+              "accepted": {
+                "type": "object",
+                "description": "x402 v2, OPTIONAL: a copy of the top-level `accepted`, on the same terms as `resource` above.",
+                "additionalProperties": true
+              },
+              "payload": {
+                "type": "object",
+                "description": "The signed material. EVM chains use signature + authorization (below); Solana sends { \"transaction\": \"<base64>\" } instead.",
+                "properties": {
+                  "signature": {
+                    "type": "string",
+                    "description": "EVM: the ERC-3009 EIP-712 signature, 0x + 130 hex characters (r || s || v)."
+                  },
+                  "authorization": {
+                    "type": "object",
+                    "description": "EVM: the ERC-3009 struct that was signed. Every field is a STRING, including the amount and the timestamps.",
+                    "properties": {
+                      "from": {
+                        "type": "string",
+                        "description": "Payer address, 0x + 40 hex."
+                      },
+                      "to": {
+                        "type": "string",
+                        "description": "Recipient address, 0x + 40 hex. Matches paymentRequirements.payTo."
+                      },
+                      "value": {
+                        "type": "string",
+                        "description": "Amount in token base units, as a decimal STRING. Named `value` here; the requirements call their own limit `maxAmountRequired`."
+                      },
+                      "validAfter": {
+                        "type": "string",
+                        "description": "Unix SECONDS as a string. \"1700000000\", not 1700000000: a JSON number is rejected."
+                      },
+                      "validBefore": {
+                        "type": "string",
+                        "description": "Unix SECONDS as a string, same rule as validAfter."
+                      },
+                      "nonce": {
+                        "type": "string",
+                        "description": "32-byte nonce, 0x + 64 hex. Fresh per authorization."
+                      }
+                    },
+                    "required": [
+                      "from",
+                      "to",
+                      "value",
+                      "validAfter",
+                      "validBefore",
+                      "nonce"
+                    ],
+                    "additionalProperties": true
+                  },
+                  "transaction": {
+                    "type": "string",
+                    "description": "Solana: the base64 bincode-serialised transaction. Use INSTEAD of signature + authorization."
+                  }
+                },
+                "additionalProperties": true
+              }
+            },
+            "required": [
+              "x402Version",
+              "payload"
+            ],
+            "additionalProperties": true
+          },
+          "paymentRequirements": {
+            "type": "object",
+            "description": "x402 v1 ONLY. What the resource server demands. The four descriptive fields have no defaults: omit one and the whole body fails to parse. In x402 v2 this object does not exist -- see `resource` and `accepted`.",
+            "properties": {
+              "scheme": {
+                "type": "string",
+                "description": "Must match paymentPayload.scheme."
+              },
+              "network": {
+                "type": "string",
+                "description": "The chain, in EITHER spelling: the x402 v1 name (\"base\") or the CAIP-2 identifier (\"eip155:8453\"), same as paymentPayload.network. An offer taken straight out of GET /discovery/resources is CAIP-2 and can be used unmodified."
+              },
+              "maxAmountRequired": {
+                "type": "string",
+                "description": "Ceiling in token base units, as a decimal STRING. The authorization's `value` must not exceed it."
+              },
+              "resource": {
+                "type": "string",
+                "description": "Absolute URL of the thing being paid for. Required."
+              },
+              "description": {
+                "type": "string",
+                "description": "Human-readable label. Required; may be empty."
+              },
+              "mimeType": {
+                "type": "string",
+                "description": "Media type of the resource, e.g. application/json. Required."
+              },
+              "payTo": {
+                "type": "string",
+                "description": "Recipient address. Required."
+              },
+              "maxTimeoutSeconds": {
+                "type": "integer",
+                "description": "How long the offer stands. Required."
+              },
+              "asset": {
+                "type": "string",
+                "description": "Token contract (EVM) or mint (SVM). Required."
+              },
+              "extra": {
+                "type": "object",
+                "description": "Optional. EIP-712 domain (name, version) for tokens not in the static table, escrow addresses, and scheme extensions.",
+                "additionalProperties": true
+              }
+            },
+            "required": [
+              "scheme",
+              "network",
+              "maxAmountRequired",
+              "resource",
+              "description",
+              "mimeType",
+              "payTo",
+              "maxTimeoutSeconds",
+              "asset"
+            ],
+            "additionalProperties": true
+          },
+          "resource": {
+            "type": "object",
+            "description": "x402 v2 ONLY. What is being sold. Replaces the resource/description/mimeType fields of the v1 paymentRequirements.",
+            "properties": {
+              "url": {
+                "type": "string",
+                "description": "Absolute URL of the thing being paid for. Required."
+              },
+              "description": {
+                "type": "string",
+                "description": "Human-readable label. Required; may be empty."
+              },
+              "mimeType": {
+                "type": "string",
+                "description": "Media type of the resource, e.g. application/json. Required."
+              }
+            },
+            "required": [
+              "url",
+              "description",
+              "mimeType"
+            ],
+            "additionalProperties": true
+          },
+          "accepted": {
+            "type": "object",
+            "description": "x402 v2 ONLY. What is being charged. Replaces the rest of the v1 paymentRequirements. Unknown keys are ignored, so a 402 offer carrying extras (maxAmountRequired, resource, description, mimeType) can be forwarded unedited.",
+            "properties": {
+              "scheme": {
+                "type": "string",
+                "description": "exact | upto | escrow | commerce. GET /supported lists what this facilitator serves."
+              },
+              "network": {
+                "type": "string",
+                "description": "The chain as a CAIP-2 identifier (\"eip155:8453\"). CAIP-2 ONLY here: unlike the v1 paymentRequirements.network, this field refuses the bare x402 v1 name (\"base\"). An offer taken straight out of GET /discovery/resources is already CAIP-2 and can be used unmodified."
+              },
+              "asset": {
+                "type": "string",
+                "description": "Token contract (EVM) or mint (SVM). Required."
+              },
+              "amount": {
+                "type": "string",
+                "description": "Ceiling in token base units, as a decimal STRING. This is the v2 name for the v1 maxAmountRequired. The authorization's `value` must not exceed it."
+              },
+              "payTo": {
+                "type": "string",
+                "description": "Recipient address. Required."
+              },
+              "maxTimeoutSeconds": {
+                "type": "integer",
+                "description": "How long the offer stands. Required."
+              },
+              "extra": {
+                "type": "object",
+                "description": "Optional. EIP-712 domain (name, version) for tokens not in the static table, escrow addresses, and scheme extensions.",
+                "additionalProperties": true
+              }
+            },
+            "required": [
+              "scheme",
+              "network",
+              "asset",
+              "amount",
+              "payTo",
+              "maxTimeoutSeconds"
+            ],
+            "additionalProperties": true
+          },
+          "idempotencyKey": {
+            "type": "string",
+            "description": "Optional. Sent as the Idempotency-Key header, NOT as part of the payment body. The same key with the same payment returns the first result instead of settling twice; the same key with a different payment is refused with 409. Use it on any retry. GENERATE A FRESH, UNGUESSABLE VALUE PER PAYMENT -- a UUIDv4 is the right shape. Do not reuse a key across different payments and do not use a predictable one like \"retry-1\": keys share one namespace across all callers, so a guessable key can be claimed by someone else's settle first and yours is then refused with 409."
+          }
+        },
+        "required": [
+          "x402Version",
+          "paymentPayload"
+        ],
+        "anyOf": [
+          {
+            "title": "x402 v1",
+            "required": [
+              "paymentRequirements"
+            ],
+            "properties": {
+              "paymentPayload": {
+                "required": [
+                  "x402Version",
+                  "scheme",
+                  "network",
+                  "payload"
+                ]
+              }
+            }
+          },
+          {
+            "title": "x402 v2",
+            "required": [
+              "resource",
+              "accepted"
+            ]
+          }
+        ],
+        "additionalProperties": true,
+        "examples": [
+          {
+            "x402Version": 1,
+            "paymentPayload": {
+              "x402Version": 1,
+              "scheme": "exact",
+              "network": "base",
+              "payload": {
+                "signature": "0\u0078111111111111111111111111111111111111111111111111111111111111111122222222222222222222222222222222222222222222222222222222222222221b",
+                "authorization": {
+                  "from": "0x0000000000000000000000000000000000000001",
+                  "to": "0x0000000000000000000000000000000000000002",
+                  "value": "1000000",
+                  "validAfter": "1700000000",
+                  "validBefore": "1700100000",
+                  "nonce": "0\u00780000000000000000000000000000000000000000000000000000000000000001"
+                }
+              }
+            },
+            "paymentRequirements": {
+              "scheme": "exact",
+              "network": "base",
+              "maxAmountRequired": "1000000",
+              "resource": "https://example.com/protected",
+              "description": "One API call",
+              "mimeType": "application/json",
+              "payTo": "0x0000000000000000000000000000000000000002",
+              "maxTimeoutSeconds": 60,
+              "asset": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"
+            }
+          },
+          {
+            "x402Version": 2,
+            "paymentPayload": {
+              "x402Version": 2,
+              "payload": {
+                "signature": "0\u0078111111111111111111111111111111111111111111111111111111111111111122222222222222222222222222222222222222222222222222222222222222221b",
+                "authorization": {
+                  "from": "0x0000000000000000000000000000000000000001",
+                  "to": "0x0000000000000000000000000000000000000002",
+                  "value": "1000000",
+                  "validAfter": "1700000000",
+                  "validBefore": "1700100000",
+                  "nonce": "0\u00780000000000000000000000000000000000000000000000000000000000000001"
+                }
+              }
+            },
+            "resource": {
+              "url": "https://example.com/protected",
+              "description": "One API call",
+              "mimeType": "application/json"
+            },
+            "accepted": {
+              "scheme": "exact",
+              "network": "eip155:8453",
+              "amount": "1000000",
+              "payTo": "0x0000000000000000000000000000000000000002",
+              "maxTimeoutSeconds": 60,
+              "asset": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"
+            }
+          }
+        ],
+        "description": "Identical to the JSON body of POST /settle. TWO envelopes are accepted and they are not interchangeable field by field: x402 v1 is paymentPayload + paymentRequirements, x402 v2 is paymentPayload + resource + accepted and has no paymentRequirements. Both examples below are runnable as printed -- their signatures and nonces are well-formed placeholders, so they answer 200 with isValid:false. More at https://facilitator.ultravioletadao.xyz/skill.md"
+      },
+      "annotations": {
+        "title": "Settle a payment on-chain (irreversible)",
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "openWorldHint": true
+      },
+      "_meta": {
+        "uvd/clase": "mueve_dinero"
+      }
+    },
+    {
+      "name": "x402_networks",
+      "description": "How to present every network this facilitator settles on: display name, chain family, chain id, testnet flag, explorer URL templates for a transaction and an address, icon, schemes, and each token's symbol, address, decimals and EIP-712 domain. One row per chain x402_supported names, never more or fewer: use x402_supported to learn whether a payment can be settled, and this to name the chain and link its transaction. Takes no arguments. Moves no money and signs nothing. Equivalent to GET /networks.json.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      },
+      "outputSchema": {
+        "type": "object",
+        "description": "The body of GET /networks.json, unchanged: one row per chain x402_supported names -- never more, never fewer -- with how to present it.",
+        "required": [
+          "networks"
+        ],
+        "properties": {
+          "networks": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "id",
+                "caip2",
+                "family",
+                "testnet",
+                "displayName",
+                "schemes",
+                "tokens"
+              ],
+              "properties": {
+                "id": {
+                  "type": "string",
+                  "description": "The x402 v1 name (\"base\"). A chain with no v1 name (native Hedera) repeats its CAIP-2 id here."
+                },
+                "caip2": {
+                  "type": "string",
+                  "description": "The CAIP-2 id (\"eip155:8453\")."
+                },
+                "family": {
+                  "type": "string",
+                  "description": "evm, svm, near, stellar, algorand, sui, xrpl or hedera."
+                },
+                "chainId": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "minimum": 0,
+                  "description": "The EVM chain id; null outside EVM."
+                },
+                "testnet": {
+                  "type": "boolean"
+                },
+                "displayName": {
+                  "type": "string"
+                },
+                "explorer": {
+                  "type": [
+                    "object",
+                    "null"
+                  ],
+                  "description": "Explorer URL templates; null when none is known.",
+                  "required": [
+                    "base",
+                    "tx",
+                    "address"
+                  ],
+                  "properties": {
+                    "base": {
+                      "type": "string"
+                    },
+                    "tx": {
+                      "type": "string",
+                      "description": "Carries a {tx} placeholder for the transaction id."
+                    },
+                    "address": {
+                      "type": "string",
+                      "description": "Carries an {address} placeholder."
+                    }
+                  }
+                },
+                "icon": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "schemes": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "tokens": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "required": [
+                      "symbol",
+                      "address",
+                      "decimals"
+                    ],
+                    "properties": {
+                      "symbol": {
+                        "type": "string"
+                      },
+                      "address": {
+                        "type": "string"
+                      },
+                      "decimals": {
+                        "type": "integer",
+                        "minimum": 0
+                      },
+                      "eip712": {
+                        "type": [
+                          "object",
+                          "null"
+                        ],
+                        "description": "The EIP-712 domain /verify resolves for this token; null outside EVM or outside the static table.",
+                        "properties": {
+                          "name": {
+                            "type": "string"
+                          },
+                          "version": {
+                            "type": "string"
+                          }
+                        }
+                      },
+                      "usdPegged": {
+                        "type": [
+                          "boolean",
+                          "null"
+                        ]
+                      },
+                      "icon": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "annotations": {
+        "title": "Network directory: names, explorers, tokens",
+        "readOnlyHint": true,
+        "idempotentHint": true,
+        "openWorldHint": false
+      },
+      "_meta": {
+        "uvd/clase": "lectura"
+      }
+    },
+    {
+      "name": "x402_chain_health",
+      "description": "Whether this facilitator can settle right now, chain by chain: RPC reachability and how many settles each signer's gas still covers, graded ok, degraded or down with a bounded reason. Use it to tell a payment that did not settle because the chain or the facilitator's signer is down from one refused on its merits. Optional `network` scopes the answer to one chain, in either spelling (\"base\" or \"eip155:8453\"). The reading is cached for ttlSecs and says when it was measured; a chain that reads down comes back as this result, not as an error. Moves no money and signs nothing. Equivalent to GET /health/ready.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "network": {
+            "type": "string",
+            "description": "Optional. One chain, as its x402 v1 name (\"base\") or its CAIP-2 id (\"eip155:8453\"). Omit it for every configured chain."
+          }
+        },
+        "additionalProperties": false
+      },
+      "outputSchema": {
+        "type": "object",
+        "description": "The body of GET /health/ready, unchanged: whether this facilitator can settle, chain by chain, as measured at checkedAtUnix and cached for ttlSecs. No RPC URL, address or balance is ever in it.",
+        "required": [
+          "status",
+          "networks"
+        ],
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": [
+              "ok",
+              "degraded",
+              "down"
+            ],
+            "description": "The worst reading in scope. down: a mainnet in scope cannot settle. Unscoped, an old sanctions list makes it degraded, never down."
+          },
+          "checkedAtUnix": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "ageSecs": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "ttlSecs": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "probeTimeoutMs": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "thresholds": {
+            "type": "object"
+          },
+          "summary": {
+            "type": "object",
+            "properties": {
+              "ok": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "degraded": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "down": {
+                "type": "integer",
+                "minimum": 0
+              }
+            }
+          },
+          "networks": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "network",
+                "caip2",
+                "mainnet",
+                "status",
+                "rpc",
+                "signers"
+              ],
+              "properties": {
+                "network": {
+                  "type": "string"
+                },
+                "caip2": {
+                  "type": "string"
+                },
+                "mainnet": {
+                  "type": "boolean"
+                },
+                "status": {
+                  "type": "string",
+                  "enum": [
+                    "ok",
+                    "degraded",
+                    "down"
+                  ]
+                },
+                "reason": {
+                  "type": "string",
+                  "description": "A bounded token, present unless status is ok: rpc_unreachable, rpc_timeout, rpc_chain_id_mismatch, signer_gas_critical, signer_gas_low, and on native Hedera also signer_key_mismatch and store_unavailable."
+                },
+                "rpc": {
+                  "type": "string",
+                  "description": "ok, unreachable, timeout or wrong_chain."
+                },
+                "warnSettles": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "signers": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "required": [
+                      "index",
+                      "status",
+                      "gasOk"
+                    ],
+                    "properties": {
+                      "index": {
+                        "type": "integer",
+                        "minimum": 0
+                      },
+                      "status": {
+                        "type": "string",
+                        "enum": [
+                          "ok",
+                          "degraded",
+                          "down"
+                        ]
+                      },
+                      "gasOk": {
+                        "type": "boolean"
+                      },
+                      "settlesRemaining": {
+                        "type": [
+                          "integer",
+                          "null"
+                        ],
+                        "minimum": 0,
+                        "description": "Settles the signer's gas still admits; null where the chain prices gas at zero."
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "unchecked": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Configured networks whose family is not probed: listed here rather than folded into a green answer."
+          },
+          "sanctionsList": {
+            "type": "object"
+          }
+        }
+      },
+      "annotations": {
+        "title": "Settlement health per chain",
+        "readOnlyHint": true,
+        "idempotentHint": true,
+        "openWorldHint": true
+      },
+      "_meta": {
+        "uvd/clase": "lectura"
+      }
+    },
+    {
+      "name": "x402_escrow_onchain_state",
+      "description": "Read what ONE x402r escrow payment holds on-chain, from its AuthCaptureEscrow contract: whether the funds were collected, how much is still capturable and how much is refundable. A view call on the contract -- no transaction and no gas -- so it answers what the chain holds for this payment, not what any marketplace recorded about a task. The arguments identify the payment (the paymentInfo, payer, CAIP-2 network and escrow contracts it was made with); nothing is signed. Moves no money. Equivalent to POST /escrow/state.",
+      "inputSchema": {
+        "type": "object",
+        "description": "Identical to the JSON body of POST /escrow/state. These fields IDENTIFY one escrow payment -- the paymentInfo it was authorized with, its payer, its chain and its escrow contracts. Nothing in them is signed and nothing is spent.",
+        "properties": {
+          "paymentInfo": {
+            "type": "object",
+            "description": "The AuthCaptureEscrow PaymentInfo the payment was made with, as the escrow payload carried it (the payer goes in `payer`).",
+            "properties": {
+              "operator": {
+                "type": "string",
+                "description": "PaymentOperator contract, 0x + 40 hex."
+              },
+              "receiver": {
+                "type": "string",
+                "description": "Who receives the payment, minus fees, 0x + 40 hex."
+              },
+              "token": {
+                "type": "string",
+                "description": "Token contract, 0x + 40 hex."
+              },
+              "maxAmount": {
+                "type": "string",
+                "description": "Most the escrow may hold, in token base units, as a decimal STRING."
+              },
+              "preApprovalExpiry": {
+                "type": "integer",
+                "minimum": 0,
+                "description": "uint48 unix seconds, as a JSON number."
+              },
+              "authorizationExpiry": {
+                "type": "integer",
+                "minimum": 0,
+                "description": "uint48 unix seconds, as a JSON number."
+              },
+              "refundExpiry": {
+                "type": "integer",
+                "minimum": 0,
+                "description": "uint48 unix seconds, as a JSON number."
+              },
+              "minFeeBps": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 65535
+              },
+              "maxFeeBps": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 65535
+              },
+              "feeReceiver": {
+                "type": "string",
+                "description": "Who receives the fee, 0x + 40 hex."
+              },
+              "salt": {
+                "type": "string",
+                "description": "The payment's 32-byte salt, 0x + 64 hex."
+              }
+            },
+            "required": [
+              "operator",
+              "receiver",
+              "token",
+              "maxAmount",
+              "preApprovalExpiry",
+              "authorizationExpiry",
+              "refundExpiry",
+              "minFeeBps",
+              "maxFeeBps",
+              "feeReceiver",
+              "salt"
+            ],
+            "additionalProperties": true
+          },
+          "payer": {
+            "type": "string",
+            "description": "The payer, 0x + 40 hex."
+          },
+          "network": {
+            "type": "string",
+            "description": "The chain as a CAIP-2 id (\"eip155:8453\"). CAIP-2 ONLY: this route refuses the bare x402 v1 name (\"base\")."
+          },
+          "extra": {
+            "type": "object",
+            "description": "The escrow contracts, as the payment requirements' `extra` named them.",
+            "properties": {
+              "escrowAddress": {
+                "type": "string",
+                "description": "AuthCaptureEscrow contract, 0x + 40 hex."
+              },
+              "operatorAddress": {
+                "type": "string",
+                "description": "PaymentOperator contract, 0x + 40 hex."
+              },
+              "tokenCollector": {
+                "type": "string",
+                "description": "ERC3009TokenCollector contract, 0x + 40 hex."
+              }
+            },
+            "required": [
+              "escrowAddress",
+              "operatorAddress",
+              "tokenCollector"
+            ],
+            "additionalProperties": true
+          }
+        },
+        "required": [
+          "paymentInfo",
+          "payer",
+          "network",
+          "extra"
+        ],
+        "additionalProperties": true,
+        "examples": [
+          {
+            "paymentInfo": {
+              "operator": "0x1111111111111111111111111111111111111111",
+              "receiver": "0x2222222222222222222222222222222222222222",
+              "token": "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913",
+              "maxAmount": "1000000",
+              "preApprovalExpiry": 281474976710655,
+              "authorizationExpiry": 281474976710655,
+              "refundExpiry": 281474976710655,
+              "minFeeBps": 0,
+              "maxFeeBps": 100,
+              "feeReceiver": "0x3333333333333333333333333333333333333333",
+              "salt": "0\u00785a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a"
+            },
+            "payer": "0x4444444444444444444444444444444444444444",
+            "network": "eip155:8453",
+            "extra": {
+              "escrowAddress": "0x5555555555555555555555555555555555555555",
+              "operatorAddress": "0x1111111111111111111111111111111111111111",
+              "tokenCollector": "0x6666666666666666666666666666666666666666"
+            }
+          }
+        ]
+      },
+      "outputSchema": {
+        "type": "object",
+        "description": "The body of POST /escrow/state, unchanged: the escrow contract's own view of one payment, read with a view call.",
+        "required": [
+          "hasCollectedPayment",
+          "capturableAmount",
+          "refundableAmount",
+          "paymentInfoHash",
+          "network"
+        ],
+        "properties": {
+          "hasCollectedPayment": {
+            "type": "boolean",
+            "description": "Whether the escrow has collected the payer's funds for this payment."
+          },
+          "capturableAmount": {
+            "type": "string",
+            "pattern": "^[0-9]+$",
+            "description": "Still available for capture, in token base units, as a decimal string."
+          },
+          "refundableAmount": {
+            "type": "string",
+            "pattern": "^[0-9]+$",
+            "description": "Available for refund, in token base units, as a decimal string."
+          },
+          "paymentInfoHash": {
+            "type": "string",
+            "description": "The hash the escrow keys this payment by."
+          },
+          "network": {
+            "type": "string",
+            "description": "The CAIP-2 id of the chain the escrow lives on."
+          }
+        }
+      },
+      "annotations": {
+        "title": "On-chain escrow state (read-only)",
+        "readOnlyHint": true,
+        "idempotentHint": true,
+        "openWorldHint": true
+      },
+      "_meta": {
+        "uvd/clase": "lectura"
+      }
+    },
+    {
+      "name": "x402_durable_evidence",
+      "description": "Look up the DX402 durable evidence anchored for a settled payment: where the sealed copy of the paid response lives, the hash of what was delivered, its retention, whether the payee proved the anchor (verified/signed) and the facilitator's signed receipt. `document: \"receipt\"` returns the signed receipt alone, with its EIP-712 domain, for offline verification. 404 means nothing was anchored for that paymentId and 410 that it was and expired -- different answers in a dispute. Served only where x402_supported lists `durable-evidence` in `extensions`; elsewhere the call answers the generic 404. Moves no money, signs nothing and never returns the sealed bytes. Equivalent to GET /dx402/evidence/{paymentId} or GET /dx402/receipt/{paymentId}.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "paymentId": {
+            "type": "string",
+            "description": "The DX402 paymentId, keccak256(caip2Network || txHash), 0x + 64 hex: the id the seller's X-Durable-Evidence header or its anchor reported. Case and the 0x prefix do not matter."
+          },
+          "document": {
+            "type": "string",
+            "enum": [
+              "evidence",
+              "receipt"
+            ],
+            "default": "evidence",
+            "description": "evidence (the default): pointer, contentHash, retention, verified/signed and the receipt's signature. receipt: the signed EIP-712 receipt alone, with its domain, for offline verification."
+          }
+        },
+        "required": [
+          "paymentId"
+        ],
+        "additionalProperties": false
+      },
+      "outputSchema": {
+        "type": "object",
+        "description": "The body of GET /dx402/evidence/{paymentId} or, with document=receipt, of GET /dx402/receipt/{paymentId}, unchanged.",
+        "anyOf": [
+          {
+            "title": "evidence",
+            "required": [
+              "paymentId",
+              "pointer",
+              "contentHash",
+              "receipt",
+              "receiptSigner",
+              "verified",
+              "signed"
+            ],
+            "properties": {
+              "receipt": {
+                "type": "string"
+              }
+            }
+          },
+          {
+            "title": "receipt",
+            "required": [
+              "receipt",
+              "signature",
+              "signer",
+              "domain"
+            ],
+            "properties": {
+              "receipt": {
+                "type": "object"
+              }
+            }
+          }
+        ],
+        "properties": {
+          "paymentId": {
+            "type": "string"
+          },
+          "pointer": {
+            "type": "string",
+            "description": "Where the sealed copy lives. Ciphertext only, sealed to the payer's own key; GET /dx402/blob/{paymentId} serves it."
+          },
+          "backend": {
+            "type": "string"
+          },
+          "contentHash": {
+            "type": "string",
+            "description": "Hash of the PLAINTEXT that was delivered, so it proves what the evidence decrypts to."
+          },
+          "keyAlg": {
+            "type": "string"
+          },
+          "mode": {
+            "type": "string"
+          },
+          "retention": {
+            "type": "string"
+          },
+          "anchoredAt": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "retentionUntil": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "receipt": {
+            "description": "evidence: the facilitator's signature over the receipt. receipt: the signed receipt itself."
+          },
+          "receiptSigner": {
+            "type": "string"
+          },
+          "verified": {
+            "type": "boolean",
+            "description": "The payee proved the anchor is theirs. false is provisional: a claim anyone could have made."
+          },
+          "signed": {
+            "type": "boolean",
+            "description": "The claimant committed to an identity, not yet confirmed by a chain to be the payee."
+          },
+          "signature": {
+            "type": "string"
+          },
+          "signer": {
+            "type": "string"
+          },
+          "domain": {
+            "type": "object",
+            "required": [
+              "name",
+              "version",
+              "chainId"
+            ],
+            "properties": {
+              "name": {
+                "type": "string"
+              },
+              "version": {
+                "type": "string"
+              },
+              "chainId": {
+                "type": "integer",
+                "minimum": 0
+              }
+            }
+          }
+        }
+      },
+      "annotations": {
+        "title": "DX402 durable evidence of a payment",
+        "readOnlyHint": true,
+        "idempotentHint": true,
+        "openWorldHint": false
+      },
+      "_meta": {
+        "uvd/clase": "lectura"
+      }
+    }
+  ]
+}

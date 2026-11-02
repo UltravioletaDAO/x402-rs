@@ -19,7 +19,10 @@ git -C "$repo" -c core.autocrlf=false archive "$commit" paybox-plugin | tar -x -
 # node:24.21.0 por su digest (el indice multiplataforma, el mismo que fija el plugin de Emporium):
 # el mismo en amd64 y arm64. PLATFORM=linux/amd64 lo corre en esa arquitectura (los bytes no cambian).
 image="node:24.21.0@sha256:3d27e5c11e5786e309ec3e03f93ae536eb36e6e5eb3714d5eb3300a36157add0"
-docker run --rm ${PLATFORM:+--platform "$PLATFORM"} -v "$out/paybox-plugin:/w" -w /w "$image" bash -c '
+# The container runs as root: on Linux (WSL, CI) what it writes under /w is root's, and the trap above could
+# not remove it. It hands the files back to whoever ran this script, whatever happens inside.
+docker run --rm ${PLATFORM:+--platform "$PLATFORM"} -e OWNER="$(id -u):$(id -g)" -v "$out/paybox-plugin:/w" -w /w "$image" bash -c '
+  trap "chown -R \"\$OWNER\" /w" EXIT
   set -eo pipefail
   npm install --global pnpm@11.11.0 >/dev/null 2>&1
   pnpm install --frozen-lockfile >/dev/null 2>&1

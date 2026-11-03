@@ -1738,6 +1738,8 @@ struct Node {
     payment: Value,
     operator: Value,
     config: Value,
+    /// `get_operator` for every operator but "em" (absent: `null`).
+    operators: HashMap<String, Value>,
     /// `get_claimable`, per account (absent: "0").
     claimable: HashMap<String, String>,
     /// The accounts `storage_balance_of` finds on USDC (the rest: `null`).
@@ -1783,6 +1785,7 @@ impl Node {
                            "token": USDC_TESTNET, "tope_por_pago": "10000000",
                            "tope_tvl_global": "1000000000", "tvl_global": "0",
                            "in_flight": "0", "payments": 1, "operators": 1}),
+            operators: HashMap::new(),
             claimable: HashMap::from([(WORKER.to_string(), "870000".to_string())]),
             registered: vec![WORKER.to_string()],
             escrow_storage: HashMap::from([(PAYER.to_string(), PAYER_STORAGE.to_string())]),
@@ -1896,12 +1899,14 @@ async fn stub_live(node: Arc<Mutex<Node>>) -> (String, Arc<AtomicUsize>, Views) 
                         view(node.payment.to_string().into_bytes())
                     }
                     Some("query") if call(CONTRACT, "get_payment") => view(b"null".to_vec()),
-                    Some("query")
-                        if call(CONTRACT, "get_operator") && args["operator_id"] == "em" =>
-                    {
-                        view(node.operator.to_string().into_bytes())
+                    Some("query") if call(CONTRACT, "get_operator") => {
+                        let operator = match args["operator_id"].as_str() {
+                            Some("em") => Some(node.operator.clone()),
+                            Some(id) => node.operators.get(id).cloned(),
+                            None => None,
+                        };
+                        view(operator.map_or(b"null".to_vec(), |o| o.to_string().into_bytes()))
                     }
-                    Some("query") if call(CONTRACT, "get_operator") => view(b"null".to_vec()),
                     Some("query") if call(CONTRACT, "get_config") => {
                         view(node.config.to_string().into_bytes())
                     }
@@ -3027,11 +3032,12 @@ async fn verify_of_an_authorization_takes_no_relay_slot() {
 
 /// A request refused on what the chain answers takes no slot: settle takes
 /// it after every read. With room for one relay this hour, PAYER's reclaim
-/// the gate refuses (before `reclaim_after`), its delegate whose nonce was
-/// used and its authorization without the USDC to pay each leave the hour to
-/// the authorization that follows. Each pair runs on providers sharing one
-/// claim store, as tasks do (the reclaim's escrow holds V-1, the
-/// authorization's does not yet).
+/// the gate refuses (before `reclaim_after`), its delegate past its
+/// `max_block_height`, its delegate whose nonce was used and its
+/// authorization without the USDC to pay each leave the hour to the
+/// authorization that follows. Each pair runs on providers sharing one claim
+/// store, as tasks do (the reclaim's escrow holds V-1, the authorization's
+/// does not yet).
 #[tokio::test]
 async fn a_request_refused_after_reading_takes_no_slot() {
     let one = NearEscrowConfig {
@@ -3061,11 +3067,14 @@ async fn a_request_refused_after_reading_takes_no_slot() {
     assert_eq!(sent.load(Ordering::SeqCst), 1);
 
     let store: Arc<dyn NonceStore> = Arc::new(MemoryNonceStore::new());
+    let mut expired = Node::fresh(authorized_outcome());
+    expired.height = DELEGATE_MAX_HEIGHT;
     let mut used = Node::fresh(authorized_outcome());
     used.access_nonce = DELEGATE_NONCE;
     let mut empty = Node::fresh(authorized_outcome());
     empty.balance = r#""0""#;
     for (node, reason) in [
+        (expired, "near_escrow_delegate_expired"),
         (used, "near_escrow_delegate_not_executable"),
         (empty, "insufficient_funds"),
     ] {
@@ -3690,6 +3699,35 @@ async fn the_config_and_operator_views_are_reused_for_a_few_seconds() {
     assert_eq!((count("get_config"), count("get_operator")), (2, 2));
 }
 
+/// Each operator has a cached view of its own: with `em` and `kk` served,
+/// the `get_operator` cached for `em` never answers for `kk`. `kk`'s minimum
+/// is over the amount, so its authorization is refused right after `em`'s
+/// was accepted, and `em`'s is accepted again after it.
+#[tokio::test]
+async fn each_operator_has_its_own_cached_view() {
+    let mut node = Node::fresh(authorized_outcome());
+    let mut kk = node.operator.clone();
+    kk["min_amount"] = json!((AMOUNT + 1).to_string());
+    node.operators.insert("kk".to_string(), kk);
+    let (provider, sent, _, _) = escrow_provider_live(node, Arc::new(|| NOW)).await;
+    let (_, em) = authorization_on(&terms_v1());
+    assert_valid(&provider.verify_escrow(&em).await.unwrap(), PAYER);
+    let (_, mut req) = authorization_on(&Terms {
+        operator_id: "kk".to_string(),
+        ..terms_v1()
+    });
+    req.extra.operator_id = Some("kk".to_string());
+    let verdict = provider.verify_escrow(&req).await.unwrap();
+    assert_eq!(
+        invalid_reason(&verdict),
+        "near_escrow_below_operator_minimum"
+    );
+    let response = provider.settle_escrow(&req).await.unwrap();
+    assert_eq!(refused(&response), "near_escrow_below_operator_minimum");
+    assert_eq!(sent.load(Ordering::SeqCst), 0);
+    assert_valid(&provider.verify_escrow(&em).await.unwrap(), PAYER);
+}
+
 /// A refusal is never decided on a cached view: the escrow paused, then
 /// resumed within the cache's window, relays the next authorization (the
 /// cached `paused` is read again before refusing); and an operator whose fee
@@ -3720,10 +3758,9 @@ async fn a_refusal_is_never_decided_on_a_cached_view() {
 
 /// The block height and the nonce ceiling, for an authorization and a
 /// lifecycle call alike: a `max_block_height` at or below the head the node
-/// answers is `near_escrow_delegate_expired`; a nonce at
-/// `max_block_height * 1_000_000` or over is
-/// `near_escrow_delegate_nonce_too_large`, before any read. One block or one
-/// nonce on the other side relays.
+/// answers is `near_escrow_delegate_expired`; a nonce at that head's height
+/// times 1_000_000 or over is `near_escrow_delegate_nonce_too_large`, before
+/// the access key is read. One block or one nonce on the other side relays.
 #[tokio::test]
 async fn a_delegate_the_runtime_would_refuse_is_not_relayed() {
     let release = sign(CAPTURER, CONTRACT, vec![release_call()]);
@@ -3757,7 +3794,7 @@ async fn a_delegate_the_runtime_would_refuse_is_not_relayed() {
         assert_eq!(sent.load(Ordering::SeqCst), 1);
     }
 
-    let ceiling = DELEGATE_MAX_HEIGHT * 1_000_000;
+    let ceiling = HEIGHT * 1_000_000;
     for (nonce, passes) in [(ceiling, false), (ceiling + 1, false), (ceiling - 1, true)] {
         let mut signed = authorize.clone();
         signed.delegate_action.nonce = nonce;
@@ -3797,6 +3834,64 @@ fn resign(mut da: DelegateAction) -> SignedDelegateAction {
     }
 }
 
+/// The nonce ceiling is the head's, not the delegate action's: with a
+/// `max_block_height` that never comes, a nonce 1000 blocks over the head's
+/// ceiling is `near_escrow_delegate_nonce_too_large`, for a withdrawal any
+/// account signs and for an authorization alike. Settle relays nothing and
+/// leaves the sender's hour to the request that follows.
+#[tokio::test]
+async fn a_nonce_over_the_heads_ceiling_is_not_relayed() {
+    let one = NearEscrowConfig {
+        sender_per_hour: 1,
+        ..cfg()
+    };
+    let over = |signed: &SignedDelegateAction| {
+        resign(DelegateAction {
+            nonce: (HEIGHT + 1000) * 1_000_000,
+            max_block_height: u64::MAX,
+            ..signed.delegate_action.clone()
+        })
+    };
+    let withdraw_for = sign(
+        "anyone.testnet",
+        CONTRACT,
+        vec![lifecycle("withdraw_for", json!({"account": WORKER}), 50)],
+    );
+    let authorize = sign(PAYER, USDC_TESTNET, vec![authorize_call()]);
+    let cases = [
+        (
+            lifecycle_request(&over(&withdraw_for), "withdraw_for"),
+            lifecycle_request(&withdraw_for, "withdraw_for"),
+            Node::new(withdraw_outcome(
+                "anyone.testnet",
+                WORKER,
+                true,
+                returns("\"870000\""),
+            )),
+        ),
+        (
+            request(Some(&over(&authorize))),
+            request(Some(&authorize)),
+            Node::fresh(authorized_outcome()),
+        ),
+    ];
+    for (over, valid, node) in cases {
+        let store: Arc<dyn NonceStore> = Arc::new(MemoryNonceStore::new());
+        let (provider, sent) = escrow_provider_on(node, one.clone(), store).await;
+        let verdict = provider.verify_escrow(&over).await.unwrap();
+        assert_eq!(
+            invalid_reason(&verdict),
+            "near_escrow_delegate_nonce_too_large"
+        );
+        let response = provider.settle_escrow(&over).await.unwrap();
+        assert_eq!(refused(&response), "near_escrow_delegate_nonce_too_large");
+        assert_eq!(sent.load(Ordering::SeqCst), 0);
+        let response = provider.settle_escrow(&valid).await.unwrap();
+        assert!(response.success, "{response:?}");
+        assert_eq!(sent.load(Ordering::SeqCst), 1);
+    }
+}
+
 #[test]
 fn the_nonce_ceiling_is_counted_without_overflow() {
     let da = |nonce: u64, max_block_height: u64| DelegateAction {
@@ -3804,12 +3899,20 @@ fn the_nonce_ceiling_is_counted_without_overflow() {
         max_block_height,
         ..unsigned(PAYER, USDC_TESTNET, vec![authorize_call()])
     };
-    assert!(nonce_under_ceiling(&da(999_999, 1)));
-    assert!(!nonce_under_ceiling(&da(1_000_000, 1)));
-    assert!(!nonce_under_ceiling(&da(0, 0)));
-    // max_block_height * 1_000_000 is above every u64: nothing is over it.
-    assert!(nonce_under_ceiling(&da(u64::MAX, u64::MAX)));
-    assert!(nonce_under_ceiling(&da(u64::MAX, u64::MAX / 999_999)));
+    assert!(nonce_under_ceiling(&da(999_999, 2), 1));
+    assert!(!nonce_under_ceiling(&da(1_000_000, 2), 1));
+    assert!(!nonce_under_ceiling(&da(0, 1), 0));
+    // height * 1_000_000 is above every u64: nothing is over it.
+    assert!(nonce_under_ceiling(&da(u64::MAX, u64::MAX), u64::MAX));
+    assert!(nonce_under_ceiling(
+        &da(u64::MAX, u64::MAX),
+        u64::MAX / 999_999
+    ));
+    // The ceiling is the head's: a max_block_height that never comes lifts
+    // nothing.
+    let far = da((HEIGHT + 1000) * 1_000_000, u64::MAX);
+    assert!(!nonce_under_ceiling(&far, HEIGHT));
+    assert!(nonce_under_ceiling(&far, HEIGHT + 1001));
     assert!(alive_past(&da(1, 100), 99));
     assert!(!alive_past(&da(1, 100), 100));
     assert!(!alive_past(&da(1, 100), 101));

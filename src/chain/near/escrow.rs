@@ -22,8 +22,9 @@
 //! Nothing the chain would refuse is relayed, as far as the chain shows it
 //! before: an authorization is judged on the escrow's views the way its
 //! `ft_on_transfer` judges it ([`judge_authorize`]), a partial release on the
-//! payment's live amount, and every delegate action on the block height and
-//! its nonce ceiling. Each of those refusals has a token of its own
+//! payment's live amount, and every delegate action on the head the node
+//! answers: its expiry and the nonce ceiling that head gives. Each of those
+//! refusals has a token of its own
 //! (`near_escrow_over_per_payment_cap`), and the server log names the error
 //! the chain would have answered (the escrow's `E06_TOPE_POR_PAGO`, the
 //! runtime's `DelegateActionExpired`).
@@ -366,15 +367,20 @@ fn is_open(status: &str) -> bool {
     matches!(status, "Authorized" | "PartiallyReleased")
 }
 
-/// Whether the runtime can run `da` in any block: its nonce below
-/// `max_block_height` times `ACCESS_KEY_NONCE_RANGE_MULTIPLIER`. The runtime
-/// caps a delegate action's nonce at the height of the block that runs it
-/// times that multiplier (`DelegateActionNonceTooLarge`), and that block is
-/// never above `max_block_height`, so a nonce at or over this ceiling fails
-/// wherever it runs. Counted in u128: the product overflows u64.
-fn nonce_under_ceiling(da: &DelegateAction) -> bool {
+/// Whether `da`'s nonce is below `height` times
+/// `ACCESS_KEY_NONCE_RANGE_MULTIPLIER`, `height` being the head the node
+/// answered. The runtime caps a delegate action's nonce at the height of the
+/// block that runs it times that multiplier (`DelegateActionNonceTooLarge`),
+/// and a relayed one runs in a block past the head, so a nonce under this
+/// ceiling is under the runtime's wherever it runs. Over it, the nonce could
+/// only pass in a block that far past the head; a nonce a wallet signs never
+/// gets there, since an access key starts at the height before the block that
+/// added it times the multiplier (`AccessKey::nonce`) and each transaction
+/// takes the next one. `max_block_height` lifts nothing: it only bounds the
+/// block that may run it. Counted in u128: the product overflows u64.
+fn nonce_under_ceiling(da: &DelegateAction, height: u64) -> bool {
     u128::from(da.nonce)
-        < u128::from(da.max_block_height) * u128::from(AccessKey::ACCESS_KEY_NONCE_RANGE_MULTIPLIER)
+        < u128::from(height) * u128::from(AccessKey::ACCESS_KEY_NONCE_RANGE_MULTIPLIER)
 }
 
 /// Whether `da` has not expired yet at `height`, the head the node answered.
@@ -2084,15 +2090,16 @@ impl NearProvider {
             }
         };
 
-        // What the runtime refuses whatever the escrow says: a nonce over the
-        // ceiling fails in every block, so no read is needed; an expiry is
-        // judged on the head the node answers.
-        if !nonce_under_ceiling(da) {
-            return refuse(Some(&sender), EscrowRejectReason::DelegateNonceTooLarge);
-        }
+        // What the runtime refuses whatever the escrow says, judged on the
+        // head the node answers: an expired delegate action, and a nonce at
+        // or over the ceiling that head gives.
         let timeout = crate::chain::rpc_http_timeout();
-        if !alive_past(da, self.block_height(timeout).await?) {
+        let head = self.block_height(timeout).await?;
+        if !alive_past(da, head) {
             return refuse(Some(&sender), EscrowRejectReason::DelegateExpired);
+        }
+        if !nonce_under_ceiling(da, head) {
+            return refuse(Some(&sender), EscrowRejectReason::DelegateNonceTooLarge);
         }
         match self.check_delegate_nonce_unused(&signed, timeout).await {
             Ok(()) => {}

@@ -601,6 +601,14 @@ Every relay counts against its sender's hour, authorizations and lifecycle calls
 before sending (`NEAR_ESCROW_SENDER_PER_HOUR`, published as `senderPerHour`), and a sender whose hour is full is
 refused with `near_escrow_sender_rate_limited` before anything is sent.
 
+What the chain would refuse is refused before relaying, as far as the chain shows it. A payment is held to the
+escrow's own state, read from its views (`get_config`, `get_operator`, `get_payment`, the payer's NEP-145
+balance on the escrow), and a partial `release` to the payment's live amount; each refusal names the condition
+(`near_escrow_paused`, `near_escrow_over_per_payment_cap`, `near_escrow_amount_exceeds_live`, ...). A
+delegate action whose `max_block_height` is at or below the head the node answers is
+`near_escrow_delegate_expired`, and one whose nonce is at or over `max_block_height * 1000000` is
+`near_escrow_delegate_nonce_too_large`.
+
 `authorize_from_budget` is validated, not relayed until v2 exposes a budget view
 (`near_escrow_method_not_allowed`). A refusal is `isValid: false` / `success: false` with a `near_escrow_*`
 reason; an outcome that shows no verdict is `502 settlement_unconfirmed` with the hash. A success carries

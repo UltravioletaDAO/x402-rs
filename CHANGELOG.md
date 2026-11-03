@@ -14,9 +14,15 @@ code changes.
   `near:mainnet`), and verify and settle relay to that contract and no other.
 - v2 is not listed on either network: it joins once it is deployed with no key
   left on its account.
-- `terraform/environments/production/tests/near_escrow.tftest.hcl` holds both
-  lists to exactly the v1 contract, and the three variables to the
-  facilitator's environment: never a secret, never another container.
+- `NEAR_ESCROW_OPERATOR_IDS=em`: the operators served are the ones both
+  escrows register. `kk` is registered on neither (`get_operator("kk")` is
+  `null` on mainnet and testnet), so `/supported` no longer lists it in
+  `extra.nearEscrow.operatorIds`, on either network. It returns once it is
+  registered on chain.
+- `terraform/environments/production/tests/near_escrow.tftest.hcl` holds the
+  operator list and both contract lists to exactly those values, and the four
+  variables to the facilitator's environment: never a secret, never another
+  container.
 
 ## [2.54.0] - 2026-11-02
 

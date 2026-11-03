@@ -1,5 +1,23 @@
 # Changelog
 
+## [2.54.1] - 2026-11-03
+
+The NEAR `escrow` scheme is served on NEAR mainnet, toward Arras v1 alone. No
+code changes.
+
+### Configuration
+
+- Production (`terraform/environments/production/main.tf`) sets
+  `NEAR_ESCROW_CONTRACTS_MAINNET=v1.arras-escrow.near`, next to
+  `ENABLE_NEAR_ESCROW=true` and `NEAR_ESCROW_CONTRACTS_TESTNET=arras-v1b-1101.testnet`.
+  Once deployed, `/supported` lists an `escrow` kind on `near` (and
+  `near:mainnet`), and verify and settle relay to that contract and no other.
+- v2 is not listed on either network: it joins once it is deployed with no key
+  left on its account.
+- `terraform/environments/production/tests/near_escrow.tftest.hcl` holds both
+  lists to exactly the v1 contract, and the three variables to the
+  facilitator's environment: never a secret, never another container.
+
 ## [2.54.0] - 2026-11-02
 
 Four buyer reads join the MCP server at `POST /mcp`, each dispatched through

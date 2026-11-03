@@ -1290,13 +1290,25 @@ resource "aws_ecs_task_definition" "facilitator" {
         # ============================================================
         # NEAR escrow scheme (Arras contracts)
         # ============================================================
-        # Off in the code by default; on here toward the testnet escrow
-        # only. Mainnet stays without a contract (nothing is relayed
-        # there) until its escrow is deployed.
+        # Off in the code by default; on here toward one v1 escrow per
+        # network. Mainnet names v1.arras-escrow.near alone (Arras v1,
+        # deployed with no keys left on the account). v2 joins the list
+        # only once it is deployed and its account holds no key: until
+        # then nothing is relayed to it. The operators served are the
+        # ones both escrows register (`get_operator`): `em` alone, until
+        # another is registered on chain.
         # ============================================================
         {
           name  = "ENABLE_NEAR_ESCROW"
           value = "true"
+        },
+        {
+          name  = "NEAR_ESCROW_OPERATOR_IDS"
+          value = "em"
+        },
+        {
+          name  = "NEAR_ESCROW_CONTRACTS_MAINNET"
+          value = "v1.arras-escrow.near"
         },
         {
           name  = "NEAR_ESCROW_CONTRACTS_TESTNET"

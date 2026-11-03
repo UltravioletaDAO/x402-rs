@@ -18,12 +18,24 @@
 //! (the operator's capturers, the payment's payer, a non-zero claimable
 //! balance), read before anything is sent. The facilitator holds no list of
 //! accounts.
+//!
+//! Nothing the chain would refuse is relayed, as far as the chain shows it
+//! before: an authorization is judged on the escrow's views the way its
+//! `ft_on_transfer` judges it ([`judge_authorize`]), a partial release on the
+//! payment's live amount, and every delegate action on the head the node
+//! answers: its expiry and the nonce ceiling that head gives. Each of those
+//! refusals has a token of its own
+//! (`near_escrow_over_per_payment_cap`), and the server log names the error
+//! the chain would have answered (the escrow's `E06_TOPE_POR_PAGO`, the
+//! runtime's `DelegateActionExpired`).
 
+use std::collections::HashMap;
 use std::str::FromStr;
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use near_jsonrpc_client::methods;
 use near_jsonrpc_primitives::types::query::QueryResponseKind;
+use near_primitives::account::AccessKey;
 use near_primitives::action::delegate::{DelegateAction, SignedDelegateAction};
 use near_primitives::hash::CryptoHash;
 use near_primitives::transaction::{Action, FunctionCallAction};
@@ -355,6 +367,33 @@ fn is_open(status: &str) -> bool {
     matches!(status, "Authorized" | "PartiallyReleased")
 }
 
+/// Whether `da`'s nonce is below `height` times
+/// `ACCESS_KEY_NONCE_RANGE_MULTIPLIER`, `height` being the head the node
+/// answered. The runtime caps a delegate action's nonce at the height of the
+/// block that runs it times that multiplier (`DelegateActionNonceTooLarge`),
+/// and a relayed one runs in a block past the head, so a nonce under this
+/// ceiling is under the runtime's wherever it runs. Over it, the nonce could
+/// only pass in a block that far past the head; a nonce a wallet signs never
+/// gets there, since an access key starts at the height before the block that
+/// added it times the multiplier (`AccessKey::nonce`) and each transaction
+/// takes the next one. `max_block_height` lifts nothing: it only bounds the
+/// block that may run it. Counted in u128: the product overflows u64.
+fn nonce_under_ceiling(da: &DelegateAction, height: u64) -> bool {
+    u128::from(da.nonce)
+        < u128::from(height) * u128::from(AccessKey::ACCESS_KEY_NONCE_RANGE_MULTIPLIER)
+}
+
+/// Whether `da` has not expired yet at `height`, the head the node answered.
+/// The runtime refuses a delegate action in a block above its
+/// `max_block_height` (`DelegateActionExpired`), and a relayed one always
+/// runs in a block past the head read before relaying (a node behind the
+/// network only puts that block further on). So a `max_block_height` at or
+/// below the head fails wherever it runs; one above it may still land, and
+/// is relayed.
+fn alive_past(da: &DelegateAction, height: u64) -> bool {
+    da.max_block_height > height
+}
+
 /// Why a request is not relayed. The token is all that reaches the caller
 /// (`invalidReason` / `errorReason`); the detail stays in the server log.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -403,9 +442,66 @@ pub(crate) enum EscrowRejectReason {
     AccountNotRegistered,
     SenderRateLimited,
     SenderCountUnavailable,
+    /// The runtime's `DelegateActionExpired`: `max_block_height` is not above
+    /// the head.
+    DelegateExpired,
+    /// The runtime's `DelegateActionNonceTooLarge`, in every block.
+    DelegateNonceTooLarge,
+    // What the escrow would refuse, read from its views before relaying
+    // (`get_operator` answering `null` is `OperatorNotFound`, E04). Each
+    // one's code in `escrow-core/src/error.rs` is its `chain_error`.
+    /// `E01_TOKEN_NO_PERMITIDO`: the escrow holds another token.
+    EscrowTokenNotAllowed,
+    /// `E02_PAUSADO`.
+    EscrowPaused,
+    /// `E05_DEBAJO_DEL_MINIMO`: under the operator's `min_amount`.
+    EscrowUnderMinimum,
+    /// `E06_TOPE_POR_PAGO`.
+    EscrowOverPerPaymentCap,
+    /// `E08_TVL_PAYER`.
+    EscrowOverPayerTvl,
+    /// `E09_TVL_OPERADOR`.
+    EscrowOverOperatorTvl,
+    /// `E10_TVL_GLOBAL`.
+    EscrowOverGlobalTvl,
+    /// `E12_FEE_MAYOR_AL_MAXIMO`: the operator's fee over the signed maximum.
+    EscrowFeeOverMaximum,
+    /// `E13_ID_USADO`.
+    EscrowPaymentIdUsed,
+    /// `E14_SIN_STORAGE`: neither the payer's NEP-145 balance nor the
+    /// operator's sponsorship covers the payment's storage.
+    EscrowNoStorage,
+    /// `E24_MONTO`: a release of more than the payment has live.
+    EscrowReleaseOverLive,
 }
 
 impl EscrowRejectReason {
+    /// What the chain would have answered, for a refusal the pre-validation
+    /// alone makes: the escrow's own code (`escrow-core` `ArrasError::code`)
+    /// or the runtime's error. The readable half of the refusal: it goes to
+    /// the server log, the token to the caller. `None` for every other
+    /// refusal, `OperatorNotFound` included (the authorization gate names
+    /// its E04 itself: the lifecycle gate refuses with it too).
+    fn chain_error(self) -> Option<&'static str> {
+        use EscrowRejectReason::*;
+        Some(match self {
+            DelegateExpired => "DelegateActionExpired",
+            DelegateNonceTooLarge => "DelegateActionNonceTooLarge",
+            EscrowTokenNotAllowed => "E01_TOKEN_NO_PERMITIDO",
+            EscrowPaused => "E02_PAUSADO",
+            EscrowUnderMinimum => "E05_DEBAJO_DEL_MINIMO",
+            EscrowOverPerPaymentCap => "E06_TOPE_POR_PAGO",
+            EscrowOverPayerTvl => "E08_TVL_PAYER",
+            EscrowOverOperatorTvl => "E09_TVL_OPERADOR",
+            EscrowOverGlobalTvl => "E10_TVL_GLOBAL",
+            EscrowFeeOverMaximum => "E12_FEE_MAYOR_AL_MAXIMO",
+            EscrowPaymentIdUsed => "E13_ID_USADO",
+            EscrowNoStorage => "E14_SIN_STORAGE",
+            EscrowReleaseOverLive => "E24_MONTO",
+            _ => return None,
+        })
+    }
+
     pub(crate) fn as_str(self) -> &'static str {
         use EscrowRejectReason::*;
         match self {
@@ -453,6 +549,19 @@ impl EscrowRejectReason {
             AccountNotRegistered => "near_escrow_account_not_registered",
             SenderRateLimited => "near_escrow_sender_rate_limited",
             SenderCountUnavailable => "near_escrow_sender_count_unavailable",
+            DelegateExpired => "near_escrow_delegate_expired",
+            DelegateNonceTooLarge => "near_escrow_delegate_nonce_too_large",
+            EscrowTokenNotAllowed => "near_escrow_token_not_allowed",
+            EscrowPaused => "near_escrow_paused",
+            EscrowUnderMinimum => "near_escrow_below_operator_minimum",
+            EscrowOverPerPaymentCap => "near_escrow_over_per_payment_cap",
+            EscrowOverPayerTvl => "near_escrow_over_payer_tvl_cap",
+            EscrowOverOperatorTvl => "near_escrow_over_operator_tvl_cap",
+            EscrowOverGlobalTvl => "near_escrow_over_global_tvl_cap",
+            EscrowFeeOverMaximum => "near_escrow_fee_over_signed_maximum",
+            EscrowPaymentIdUsed => "near_escrow_payment_id_used",
+            EscrowNoStorage => "near_escrow_no_storage",
+            EscrowReleaseOverLive => "near_escrow_amount_exceeds_live",
         }
     }
 }
@@ -742,6 +851,10 @@ pub(crate) struct EscrowAuthorize {
     pub amount: u128,
     /// The id the contract will give the payment.
     pub payment_id: String,
+    /// The msg's terms the escrow's own state is judged against.
+    pub operator_id: String,
+    pub receiver: AccountId,
+    pub fee_bps_max: u16,
 }
 
 /// Whether a delegate action authorizes exactly the payment `req` describes.
@@ -824,7 +937,259 @@ pub(crate) fn validate_escrow_delegate_actions(
         payer: da.sender_id.clone(),
         amount,
         payment_id,
+        operator_id: terms.operator_id,
+        receiver: terms.receiver,
+        fee_bps_max: terms.fee_bps_max,
     })
+}
+
+// ===========================================================================
+// What the escrow's state lets through: the authorization
+// ===========================================================================
+
+/// NEAR's storage price in yoctoNEAR per byte (`storage_amount_per_byte`):
+/// what `env::storage_byte_cost()` answers inside the escrow. Measured
+/// 2026-11-03: `storage_balance_bounds().min` of `v1.arras-escrow.near` is
+/// 1410000000000000000000, the 141 bytes of its NEP-145 record at this price.
+const STORAGE_BYTE_COST_YOCTO: u128 = 10_000_000_000_000_000_000;
+/// `get_config().version` of the contract whose storage layout
+/// [`v1_storage_floor`] follows.
+const ARRAS_V1: &str = "arras-v1";
+/// How long a `get_config` or `get_operator` answer is reused, in seconds.
+/// A refusal is never decided on a reused answer (see
+/// [`NearProvider::authorize_gate`]), so the cache only ever saves reads on
+/// the way to a relay.
+const VIEW_CACHE_SECS: u64 = 10;
+
+/// What the escrow's views answer that its `ft_on_transfer` judges an
+/// authorization by, besides the msg the request carries.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct EscrowState {
+    /// `get_config`.
+    pub version: String,
+    pub paused: bool,
+    pub token: String,
+    pub tope_por_pago: u128,
+    pub tope_tvl_global: u128,
+    pub tvl_global: u128,
+    /// `get_operator(operator_id)`, `None` when it answers `null`.
+    pub operator: Option<OperatorState>,
+}
+
+/// The fields of `get_operator` an authorization is judged by.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct OperatorState {
+    pub fee_bps: u16,
+    pub fee_recipient: String,
+    pub min_amount: u128,
+    pub tope_tvl_operador: u128,
+    pub tvl_operador: u128,
+    pub tope_tvl_por_payer: u128,
+    pub sponsor_pool: u128,
+    pub sponsor_max_por_payer: u128,
+}
+
+/// A view's U128 field: a canonical decimal string.
+fn view_u128(
+    value: &Value,
+    name: &str,
+    method: &str,
+    contract: &AccountId,
+) -> Result<u128, FacilitatorLocalError> {
+    value
+        .get(name)
+        .and_then(Value::as_str)
+        .and_then(canonical_u128)
+        .ok_or_else(|| {
+            FacilitatorLocalError::ContractCall(format!(
+                "{method} on {contract} answered no U128 {name}"
+            ))
+        })
+}
+
+impl EscrowState {
+    /// The state `get_config` and `get_operator` answered. A field missing
+    /// or out of shape is no verdict: nothing is relayed on a guess.
+    fn from_views(
+        config: &Value,
+        operator: &Value,
+        contract: &AccountId,
+    ) -> Result<Self, FacilitatorLocalError> {
+        let text = |value: &Value, name: &str, method: &str| {
+            value
+                .get(name)
+                .and_then(Value::as_str)
+                .map(str::to_string)
+                .ok_or_else(|| {
+                    FacilitatorLocalError::ContractCall(format!(
+                        "{method} on {contract} answered without {name}"
+                    ))
+                })
+        };
+        let operator = if operator.is_null() {
+            None
+        } else {
+            let op = |name: &str| view_u128(operator, name, "get_operator", contract);
+            Some(OperatorState {
+                fee_bps: operator
+                    .get("fee_bps")
+                    .and_then(Value::as_u64)
+                    .and_then(|n| u16::try_from(n).ok())
+                    .ok_or_else(|| {
+                        FacilitatorLocalError::ContractCall(format!(
+                            "get_operator on {contract} answered no u16 fee_bps"
+                        ))
+                    })?,
+                fee_recipient: text(operator, "fee_recipient", "get_operator")?,
+                min_amount: op("min_amount")?,
+                tope_tvl_operador: op("tope_tvl_operador")?,
+                tvl_operador: op("tvl_operador")?,
+                tope_tvl_por_payer: op("tope_tvl_por_payer")?,
+                sponsor_pool: op("sponsor_pool")?,
+                sponsor_max_por_payer: op("sponsor_max_por_payer")?,
+            })
+        };
+        let cfg = |name: &str| view_u128(config, name, "get_config", contract);
+        Ok(Self {
+            version: text(config, "version", "get_config")?,
+            paused: config
+                .get("paused")
+                .and_then(Value::as_bool)
+                .ok_or_else(|| {
+                    FacilitatorLocalError::ContractCall(format!(
+                        "get_config on {contract} answered without paused"
+                    ))
+                })?,
+            token: text(config, "token", "get_config")?,
+            tope_por_pago: cfg("tope_por_pago")?,
+            tope_tvl_global: cfg("tope_tvl_global")?,
+            tvl_global: cfg("tvl_global")?,
+            operator,
+        })
+    }
+}
+
+/// `current + amount <= cap`, an overflow being over the cap: the escrow's
+/// `cabe`.
+fn fits(current: u128, amount: u128, cap: u128) -> bool {
+    current.checked_add(amount).is_some_and(|n| n <= cap)
+}
+
+/// The least an `arras-v1` authorization charges for storage, in yoctoNEAR:
+/// the bytes its `authorize_bytes` counts for every payment (the payment's
+/// key and record in `payments`, and its entry in the operator's index), at
+/// the protocol's price. What it counts only for some payments is left out,
+/// so the floor is never above the charge. A payment on testnet that wrote
+/// only those records was charged exactly this (532 bytes, 2026-11-03).
+fn v1_storage_floor(authorize: &EscrowAuthorize, fee_recipient: &str) -> u128 {
+    const RECORD_OVERHEAD: u64 = 40;
+    let record = |key: u64, value: u64| RECORD_OVERHEAD + key + value;
+    let len = |s: &str| s.len() as u64;
+    let id = len(&authorize.payment_id);
+    let operator = len(&authorize.operator_id);
+    // borsh(Payment): five strings with a u32 length each (operator_id,
+    // payer, receiver, fee_recipient, and terms_hash, 64 hex), four U128
+    // (amount, released, refunded, storage_charged), two u16 (fee_bps,
+    // fee_bps_max), three U64 (created_at and the deadlines), the status
+    // byte and the `sponsored` bool.
+    let payment = 4 * 5
+        + operator
+        + len(authorize.payer.as_str())
+        + len(authorize.receiver.as_str())
+        + len(fee_recipient)
+        + 64
+        + 16 * 4
+        + 2 * 2
+        + 8 * 3
+        + 1
+        + 1;
+    // `i` + borsh(operator_id) + `/`.
+    let index_prefix = 1 + 4 + operator + 1;
+    let bytes = record(2 + 4, 4 + id) + record(32, payment + 4) + record(index_prefix + 4, 4 + id);
+    u128::from(bytes) * STORAGE_BYTE_COST_YOCTO
+}
+
+/// Whether the escrow would accept `authorize`, judged on `state` the way
+/// its `ft_on_transfer` (`plan_authorize`) judges it, in its order: E01 (the
+/// escrow's token), E02, E04, E05, E06, E08, E09, E10, E12, E13, E14. E03,
+/// E15 and E11 are the msg's own, already checked by
+/// [`validate_escrow_delegate_actions`].
+///
+/// Each check refuses only what the escrow would refuse on that state, and a
+/// guard that reads more than the views show is checked on the part they
+/// show. E13 is `payment_exists` (`get_payment`); E14 needs the payer's
+/// NEP-145 `available` on the escrow (`payer_storage`, read on `arras-v1`
+/// only) below [`v1_storage_floor`], and the sponsorship (pool or per-payer
+/// cap) below it too.
+pub(crate) fn judge_authorize(
+    state: &EscrowState,
+    authorize: &EscrowAuthorize,
+    payment_exists: bool,
+    payer_storage: Option<u128>,
+) -> Result<(), EscrowRejectReason> {
+    use EscrowRejectReason::*;
+    let amount = authorize.amount;
+    if state.token != authorize.token.as_str() {
+        return Err(EscrowTokenNotAllowed);
+    }
+    if state.paused {
+        return Err(EscrowPaused);
+    }
+    let operator = state.operator.as_ref().ok_or(OperatorNotFound)?;
+    if amount < operator.min_amount {
+        return Err(EscrowUnderMinimum);
+    }
+    if amount > state.tope_por_pago {
+        return Err(EscrowOverPerPaymentCap);
+    }
+    if amount > operator.tope_tvl_por_payer {
+        return Err(EscrowOverPayerTvl);
+    }
+    if !fits(operator.tvl_operador, amount, operator.tope_tvl_operador) {
+        return Err(EscrowOverOperatorTvl);
+    }
+    if !fits(state.tvl_global, amount, state.tope_tvl_global) {
+        return Err(EscrowOverGlobalTvl);
+    }
+    if operator.fee_bps > authorize.fee_bps_max {
+        return Err(EscrowFeeOverMaximum);
+    }
+    if payment_exists {
+        return Err(EscrowPaymentIdUsed);
+    }
+    if let Some(available) = payer_storage {
+        let floor = v1_storage_floor(authorize, &operator.fee_recipient);
+        if available < floor
+            && (operator.sponsor_pool < floor || operator.sponsor_max_por_payer < floor)
+        {
+            return Err(EscrowNoStorage);
+        }
+    }
+    Ok(())
+}
+
+/// The escrow views the authorization gate reuses ([`VIEW_CACHE_SECS`]),
+/// keyed by contract, method and arguments. Its keys are bounded: one
+/// `get_config` per configured contract and one `get_operator` per served
+/// operator, both checked before any read.
+#[derive(Default)]
+struct ViewCache {
+    entries: Mutex<HashMap<String, (u64, Value)>>,
+}
+
+impl ViewCache {
+    fn get(&self, key: &str, now: u64) -> Option<Value> {
+        let entries = self.entries.lock().unwrap_or_else(|e| e.into_inner());
+        entries
+            .get(key)
+            .filter(|(at, _)| now.saturating_sub(*at) < VIEW_CACHE_SECS)
+            .map(|(_, value)| value.clone())
+    }
+
+    fn put(&self, key: String, now: u64, value: Value) {
+        let mut entries = self.entries.lock().unwrap_or_else(|e| e.into_inner());
+        entries.insert(key, (now, value));
+    }
 }
 
 // ===========================================================================
@@ -1163,6 +1528,8 @@ pub(crate) struct LifecycleCall {
     pub payment_id: Option<String>,
     /// `withdraw_for`.
     pub account: Option<AccountId>,
+    /// A partial `release`: the amount it releases (absent: all that is live).
+    pub amount: Option<u128>,
 }
 
 /// The event a relayed escrow call has to log.
@@ -1220,33 +1587,36 @@ pub(crate) fn validate_escrow_lifecycle_actions(
     if call.gas < method.min_gas() || call.gas > method.max_gas() {
         return Err(GasOutOfRange);
     }
-    let (payment_id, account) = match method {
+    let (payment_id, account, amount) = match method {
         LifecycleMethod::Release => {
             let args: ReleaseArgs =
                 serde_json::from_slice(&call.args).map_err(|_| MalformedArgs)?;
-            if let Some(amount) = &args.amount {
-                canonical_u128(amount)
-                    .filter(|a| *a > 0)
-                    .ok_or(MalformedArgs)?;
-            }
-            (Some(args.payment_id), None)
+            let amount = match &args.amount {
+                Some(amount) => Some(
+                    canonical_u128(amount)
+                        .filter(|a| *a > 0)
+                        .ok_or(MalformedArgs)?,
+                ),
+                None => None,
+            };
+            (Some(args.payment_id), None, amount)
         }
         LifecycleMethod::Refund | LifecycleMethod::Reclaim => {
             let args: PaymentIdArgs =
                 serde_json::from_slice(&call.args).map_err(|_| MalformedArgs)?;
-            (Some(args.payment_id), None)
+            (Some(args.payment_id), None, None)
         }
         LifecycleMethod::Withdraw => {
             if !(call.args.is_empty() || call.args == b"{}") {
                 return Err(MalformedArgs);
             }
-            (None, None)
+            (None, None, None)
         }
         LifecycleMethod::WithdrawFor => {
             let args: WithdrawForArgs =
                 serde_json::from_slice(&call.args).map_err(|_| MalformedArgs)?;
             let account = AccountId::from_str(&args.account).map_err(|_| MalformedArgs)?;
-            (None, Some(account))
+            (None, Some(account), None)
         }
     };
     if let Some(id) = &payment_id {
@@ -1259,6 +1629,7 @@ pub(crate) fn validate_escrow_lifecycle_actions(
         method,
         payment_id,
         account,
+        amount,
     })
 }
 
@@ -1451,12 +1822,17 @@ impl SenderBudget {
 pub(crate) struct EscrowRuntime {
     config: NearEscrowConfig,
     senders: SenderBudget,
+    views: ViewCache,
 }
 
 impl EscrowRuntime {
     pub(crate) fn new(network: Network, config: NearEscrowConfig) -> Self {
         let senders = SenderBudget::new(network, config.sender_per_hour);
-        Self { config, senders }
+        Self {
+            config,
+            senders,
+            views: ViewCache::default(),
+        }
     }
 
     /// Unix seconds, on the clock the sender hours run on.
@@ -1633,17 +2009,34 @@ impl NearProvider {
     /// sender's relay slot.
     async fn check_escrow(&self, req: &EscrowRequest, phase: Phase) -> Checking {
         let cfg = &self.escrow.config;
-        let refuse = |sender: Option<&AccountId>, reason: EscrowRejectReason| -> Checking {
-            tracing::warn!(
-                network = %self.network(),
-                sender = ?sender.map(|s| s.as_str()),
-                reason = reason.as_str(),
-                "NEAR escrow request refused"
-            );
+        // `chain_error`: what the chain would have answered, for a refusal
+        // the pre-validation makes. Those are one line each, with the reason
+        // and that error, and never who signed or what it moved.
+        let refuse_as = |sender: Option<&AccountId>,
+                         reason: EscrowRejectReason,
+                         chain_error: Option<&'static str>|
+         -> Checking {
+            match chain_error {
+                Some(chain_error) => tracing::info!(
+                    network = %self.network(),
+                    reason = reason.as_str(),
+                    chain_error,
+                    "NEAR escrow request refused before relaying: the chain would refuse it"
+                ),
+                None => tracing::warn!(
+                    network = %self.network(),
+                    sender = ?sender.map(|s| s.as_str()),
+                    reason = reason.as_str(),
+                    "NEAR escrow request refused"
+                ),
+            }
             Ok(Err(Rejected {
                 sender: sender.cloned(),
                 reason,
             }))
+        };
+        let refuse = |sender: Option<&AccountId>, reason: EscrowRejectReason| -> Checking {
+            refuse_as(sender, reason, reason.chain_error())
         };
         if !cfg.enabled {
             return refuse(None, EscrowRejectReason::Disabled);
@@ -1697,7 +2090,17 @@ impl NearProvider {
             }
         };
 
+        // What the runtime refuses whatever the escrow says, judged on the
+        // head the node answers: an expired delegate action, and a nonce at
+        // or over the ceiling that head gives.
         let timeout = crate::chain::rpc_http_timeout();
+        let head = self.block_height(timeout).await?;
+        if !alive_past(da, head) {
+            return refuse(Some(&sender), EscrowRejectReason::DelegateExpired);
+        }
+        if !nonce_under_ceiling(da, head) {
+            return refuse(Some(&sender), EscrowRejectReason::DelegateNonceTooLarge);
+        }
         match self.check_delegate_nonce_unused(&signed, timeout).await {
             Ok(()) => {}
             Err(FacilitatorLocalError::Other(why)) => {
@@ -1721,6 +2124,13 @@ impl NearProvider {
                         return refuse(Some(&sender), EscrowRejectReason::InsufficientFunds)
                     }
                     Err(e) => return Err(e),
+                }
+                if let Err(reason) = self.authorize_gate(authorize).await? {
+                    let chain_error = match reason {
+                        EscrowRejectReason::OperatorNotFound => Some("E04_OPERADOR_INEXISTENTE"),
+                        other => other.chain_error(),
+                    };
+                    return refuse_as(Some(&sender), reason, chain_error);
                 }
             }
             EscrowOp::Lifecycle(call) => {
@@ -1761,9 +2171,10 @@ impl NearProvider {
     /// - `release`: the payment exists, its operator is one the facilitator
     ///   serves (`NEAR_ESCROW_OPERATOR_IDS`), `sender` is a capturer of it
     ///   (`get_operator(get_payment(id).operator_id).capturers`), it is open
-    ///   (`Authorized` or `PartiallyReleased`) and its `release_deadline` is
-    ///   more than [`CLOCK_MARGIN_SECS`] away.
-    /// - `refund`: the same, without the deadline.
+    ///   (`Authorized` or `PartiallyReleased`), its `release_deadline` is
+    ///   more than [`CLOCK_MARGIN_SECS`] away, and a partial release asks for
+    ///   no more than it has live (`amount - released - refunded`; E24).
+    /// - `refund`: the same, without the deadline and the amount.
     /// - `reclaim`: the payment exists, `sender` is its payer, its
     ///   `reclaim_after` passed at least [`CLOCK_MARGIN_SECS`] ago, and it is
     ///   open.
@@ -1844,6 +2255,25 @@ impl NearProvider {
                 {
                     return Ok(Err(ReleaseDeadlinePassed));
                 }
+                if let (LifecycleMethod::Release, Some(amount)) = (call.method, call.amount) {
+                    let amounts = |name: &str| view_u128(&payment, name, "get_payment", contract);
+                    let (total, released, refunded) = (
+                        amounts("amount")?,
+                        amounts("released")?,
+                        amounts("refunded")?,
+                    );
+                    let live = total
+                        .checked_sub(released)
+                        .and_then(|rest| rest.checked_sub(refunded))
+                        .ok_or_else(|| {
+                            FacilitatorLocalError::ContractCall(format!(
+                                "get_payment on {contract} answered more released and refunded than its amount"
+                            ))
+                        })?;
+                    if amount > live {
+                        return Ok(Err(EscrowReleaseOverLive));
+                    }
+                }
                 Ok(Ok(()))
             }
             LifecycleMethod::Reclaim => {
@@ -1918,6 +2348,137 @@ impl NearProvider {
                 }),
             _ => Err(FacilitatorLocalError::ContractCall(format!(
                 "Unexpected query response kind for {method}"
+            ))),
+        }
+    }
+
+    /// Whether the escrow's own state lets `authorize` through:
+    /// [`judge_authorize`] on what its views answer, so an authorization its
+    /// `ft_on_transfer` would refuse is never relayed (the token would hand
+    /// the USDC back, the relayer would pay the gas).
+    ///
+    /// `get_config` and `get_operator` may come from the cache
+    /// ([`VIEW_CACHE_SECS`]); a refusal is never decided on a cached answer,
+    /// but on both read again. `get_payment` and the payer's NEP-145 balance
+    /// on the escrow (`arras-v1` only, the layout [`v1_storage_floor`]
+    /// follows) are read every time.
+    async fn authorize_gate(
+        &self,
+        authorize: &EscrowAuthorize,
+    ) -> Result<Result<(), EscrowRejectReason>, FacilitatorLocalError> {
+        let contract = &authorize.contract;
+        let (state, cached) = self
+            .escrow_state(contract, &authorize.operator_id, false)
+            .await?;
+        let payment_exists = !self
+            .get_payment(contract, &authorize.payment_id)
+            .await?
+            .is_null();
+        let payer_storage = if state.version == ARRAS_V1 {
+            Some(
+                self.escrow_storage_available(contract, &authorize.payer)
+                    .await?,
+            )
+        } else {
+            None
+        };
+        let verdict = judge_authorize(&state, authorize, payment_exists, payer_storage);
+        if verdict.is_ok() || !cached {
+            return Ok(verdict);
+        }
+        let (state, _) = self
+            .escrow_state(contract, &authorize.operator_id, true)
+            .await?;
+        Ok(judge_authorize(
+            &state,
+            authorize,
+            payment_exists,
+            payer_storage,
+        ))
+    }
+
+    /// `get_config` and `get_operator(operator_id)` on the escrow, and
+    /// whether either came from the cache. `fresh` reads both again.
+    async fn escrow_state(
+        &self,
+        contract: &AccountId,
+        operator_id: &str,
+        fresh: bool,
+    ) -> Result<(EscrowState, bool), FacilitatorLocalError> {
+        let (config, config_cached) = self
+            .escrow_view_cached(contract, "get_config", serde_json::json!({}), fresh)
+            .await?;
+        let (operator, operator_cached) = self
+            .escrow_view_cached(
+                contract,
+                "get_operator",
+                serde_json::json!({ "operator_id": operator_id }),
+                fresh,
+            )
+            .await?;
+        let state = EscrowState::from_views(&config, &operator, contract)?;
+        Ok((state, config_cached || operator_cached))
+    }
+
+    /// [`Self::escrow_view`] through the cache: an answer read less than
+    /// [`VIEW_CACHE_SECS`] ago, unless `fresh`. Every answer read is cached.
+    async fn escrow_view_cached(
+        &self,
+        contract: &AccountId,
+        method: &str,
+        args: Value,
+        fresh: bool,
+    ) -> Result<(Value, bool), FacilitatorLocalError> {
+        let key = format!("{contract} {method} {args}");
+        let now = self.escrow.now();
+        if !fresh {
+            if let Some(value) = self.escrow.views.get(&key, now) {
+                return Ok((value, true));
+            }
+        }
+        let value = self.escrow_view(contract, method, args).await?;
+        self.escrow.views.put(key, now, value.clone());
+        Ok((value, false))
+    }
+
+    /// `storage_balance_of(account)` on the escrow (NEP-145): its `available`,
+    /// 0 for an account the escrow does not know.
+    async fn escrow_storage_available(
+        &self,
+        contract: &AccountId,
+        account: &AccountId,
+    ) -> Result<u128, FacilitatorLocalError> {
+        let answer = self
+            .escrow_view(
+                contract,
+                "storage_balance_of",
+                serde_json::json!({ "account_id": account }),
+            )
+            .await?;
+        if answer.is_null() {
+            return Ok(0);
+        }
+        view_u128(&answer, "available", "storage_balance_of", contract)
+    }
+
+    /// The height of the head the node answers (optimistic, like the access
+    /// key and balance reads).
+    async fn block_height(
+        &self,
+        timeout: std::time::Duration,
+    ) -> Result<u64, FacilitatorLocalError> {
+        let request = methods::block::RpcBlockRequest {
+            block_reference: BlockReference::Finality(Finality::None),
+        };
+        match tokio::time::timeout(timeout, self.rpc_client.call(request)).await {
+            Ok(Ok(block)) => Ok(block.header.height),
+            Ok(Err(e)) => Err(FacilitatorLocalError::ContractCall(format!(
+                "Failed to read the NEAR block height: {}",
+                crate::redact::scrub_urls(&e.to_string())
+            ))),
+            Err(_) => Err(FacilitatorLocalError::ContractCall(format!(
+                "NEAR block height read timed out after {}ms",
+                timeout.as_millis()
             ))),
         }
     }

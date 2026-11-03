@@ -18,7 +18,7 @@ use near_primitives::transaction::TransferAction;
 use near_primitives::views::{BlockHeaderView, BlockView};
 use serde_json::json;
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
 const USDC_TESTNET: &str = "3e2210e1184b45b64c8a434c0a7e7b23cc04ea7eb7a6c3c32520d03d4afcb8af";
 const USDC_MAINNET: &str = "17208628f84f5d6ad33f0da3bbbeb27ffcb398eac501a31bd6ad2011e36133a1";
@@ -379,7 +379,7 @@ fn delegate(sender: &str, receiver: &str, actions: Vec<Action>, key: &SecretKey)
             .map(|a| NonDelegateAction::try_from(a).unwrap())
             .collect(),
         nonce: DELEGATE_NONCE,
-        max_block_height: 1_000_000,
+        max_block_height: DELEGATE_MAX_HEIGHT,
         public_key: key.public_key(),
     }
 }
@@ -438,16 +438,7 @@ fn with_args(call: &mut FunctionCallAction, edit: impl FnOnce(&mut Value)) {
 
 #[test]
 fn the_v1_authorization_passes() {
-    assert_eq!(
-        validate(&authorization(|_| {})),
-        Ok(EscrowAuthorize {
-            contract: account(CONTRACT),
-            token: account(USDC_TESTNET),
-            payer: account(PAYER),
-            amount: AMOUNT,
-            payment_id: V1_ID.to_string(),
-        })
-    );
+    assert_eq!(validate(&authorization(|_| {})), Ok(v1_authorize()));
 }
 
 #[test]
@@ -872,6 +863,9 @@ fn v1_authorize() -> EscrowAuthorize {
         payer: account(PAYER),
         amount: AMOUNT,
         payment_id: V1_ID.to_string(),
+        operator_id: "em".to_string(),
+        receiver: account(WORKER),
+        fee_bps_max: 1300,
     }
 }
 
@@ -980,6 +974,9 @@ fn w13_a_refused_authorization_is_not_paid() {
         payer: account("payer.test.near"),
         amount: 10_000_001,
         payment_id: compute_payment_id(&terms, "usdc.test.near", "payer.test.near", 10_000_001),
+        operator_id: terms.operator_id.clone(),
+        receiver: terms.receiver.clone(),
+        fee_bps_max: terms.fee_bps_max,
     };
     match confirm_escrow_authorize(&view(&outcome), &expected, Network::NearTestnet) {
         Err(FacilitatorLocalError::ContractCall(message)) => {
@@ -1223,6 +1220,14 @@ fn every_lifecycle_method_passes_with_its_own_arguments() {
             .as_deref(),
         Some(V1_ID)
     );
+    // A partial release carries its amount; a whole one none.
+    let partial = lifecycle(
+        "release",
+        json!({"payment_id": V1_ID, "amount": "400000"}),
+        30,
+    );
+    assert_eq!(lifecycle_check(partial).unwrap().amount, Some(400_000));
+    assert_eq!(lifecycle_check(release_call()).unwrap().amount, None);
 }
 
 #[test]
@@ -1728,35 +1733,74 @@ fn a_budget_authorization_out_of_shape_is_refused() {
 struct Node {
     /// `broadcast_tx_commit`.
     outcome: Value,
-    /// `get_payment` and `get_operator` on the escrow.
+    /// `get_payment(V1_ID)`, `get_operator("em")` and `get_config` on the
+    /// escrow.
     payment: Value,
     operator: Value,
+    config: Value,
+    /// `get_operator` for every operator but "em" (absent: `null`).
+    operators: HashMap<String, Value>,
     /// `get_claimable`, per account (absent: "0").
     claimable: HashMap<String, String>,
     /// The accounts `storage_balance_of` finds on USDC (the rest: `null`).
     registered: Vec<String>,
+    /// `storage_balance_of` on the escrow (NEP-145): `available` per account
+    /// (absent: `null`).
+    escrow_storage: HashMap<String, String>,
     /// `ft_balance_of` on USDC, raw.
     balance: &'static str,
     /// Every access key's nonce (the delegate actions carry DELEGATE_NONCE).
     access_nonce: u64,
+    /// The head's height (the delegate actions carry DELEGATE_MAX_HEIGHT).
+    height: u64,
 }
+
+/// The tests' head, below the delegate actions' `max_block_height`.
+const HEIGHT: u64 = 900_000;
+const DELEGATE_MAX_HEIGHT: u64 = 1_000_000;
+/// The escrow's `storage_balance_of(PAYER).available` in [`Node::new`]: 0.1
+/// NEAR, enough for any payment's storage.
+const PAYER_STORAGE: &str = "100000000000000000000000";
 
 impl Node {
     /// V-1 authorized and alive (releasable at NOW, not yet reclaimable),
-    /// EM's capturer, the worker owed 870000 and registered on USDC.
+    /// EM's capturer, the worker owed 870000 and registered on USDC; an
+    /// `arras-v1` escrow with room for V-1 under every cap, and the payer's
+    /// storage paid for.
     fn new(outcome: Value) -> Self {
         Self {
             outcome,
             payment: json!({"operator_id": "em", "payer": PAYER, "receiver": WORKER,
-                            "amount": "1000000", "status": "Authorized",
+                            "amount": "1000000", "released": "0", "refunded": "0",
+                            "status": "Authorized",
                             "release_deadline": "1793577600000000000",
                             "reclaim_after": "1793664000000000000"}),
             operator: json!({"owner": "owner.arras-dev.testnet", "capturers": [CAPTURER],
-                             "fee_bps": 1300}),
+                             "fee_bps": 1300, "fee_recipient": "em-fees.arras-dev.testnet",
+                             "min_amount": "10000", "tope_tvl_operador": "1000000000",
+                             "tvl_operador": "0", "tope_tvl_por_payer": "20000000",
+                             "sponsor_pool": "0", "sponsor_max_por_payer": "0"}),
+            config: json!({"version": "arras-v1", "owner": "owner.arras-dev.testnet",
+                           "guardian": "guardian.arras-dev.testnet", "paused": false,
+                           "token": USDC_TESTNET, "tope_por_pago": "10000000",
+                           "tope_tvl_global": "1000000000", "tvl_global": "0",
+                           "in_flight": "0", "payments": 1, "operators": 1}),
+            operators: HashMap::new(),
             claimable: HashMap::from([(WORKER.to_string(), "870000".to_string())]),
             registered: vec![WORKER.to_string()],
+            escrow_storage: HashMap::from([(PAYER.to_string(), PAYER_STORAGE.to_string())]),
             balance: r#""1000000""#,
             access_nonce: DELEGATE_NONCE - 1,
+            height: HEIGHT,
+        }
+    }
+
+    /// The same escrow before V-1 is authorized: what an authorization of it
+    /// meets (`get_payment(V1_ID)` is `null`).
+    fn fresh(outcome: Value) -> Self {
+        Self {
+            payment: Value::Null,
+            ..Self::new(outcome)
         }
     }
 
@@ -1776,19 +1820,39 @@ fn ns(secs: u64) -> u64 {
 /// A stub node; its URL and the count of `broadcast_tx_commit` calls: every
 /// transaction the relayer would pay for.
 async fn stub(node: Node) -> (String, Arc<AtomicUsize>) {
+    let (url, sent, _) = stub_live(Arc::new(Mutex::new(node))).await;
+    (url, sent)
+}
+
+/// The view calls a stub answered, per method.
+type Views = Arc<Mutex<HashMap<String, usize>>>;
+
+/// A stub node answering from `node` as it is at each request (a test may
+/// change it between requests); its URL, the count of `broadcast_tx_commit`
+/// calls and the view calls it answered.
+async fn stub_live(node: Arc<Mutex<Node>>) -> (String, Arc<AtomicUsize>, Views) {
     let sent = Arc::new(AtomicUsize::new(0));
     let counter = sent.clone();
-    let block = serde_json::to_value(BlockView {
-        author: "validator.testnet".parse().unwrap(),
-        header: BlockHeaderView::default(),
-        chunks: vec![],
-    })
-    .unwrap();
+    let views: Views = Arc::new(Mutex::new(HashMap::new()));
+    let seen = views.clone();
     let app = Router::new().route(
         "/",
         post(move |Json(req): Json<Value>| {
-            let (node, block, counter) = (node.clone(), block.clone(), counter.clone());
+            let node = node.lock().unwrap().clone();
+            let (counter, seen) = (counter.clone(), seen.clone());
+            let block = serde_json::to_value(BlockView {
+                author: "validator.testnet".parse().unwrap(),
+                header: BlockHeaderView {
+                    height: node.height,
+                    ..BlockHeaderView::default()
+                },
+                chunks: vec![],
+            })
+            .unwrap();
             async move {
+                if let Some(method) = req["params"]["method_name"].as_str() {
+                    *seen.lock().unwrap().entry(method.to_string()).or_default() += 1;
+                }
                 let params = &req["params"];
                 let view = |result: Vec<u8>| {
                     json!({"result": result, "logs": [], "block_height": 1,
@@ -1835,12 +1899,28 @@ async fn stub(node: Node) -> (String, Arc<AtomicUsize>) {
                         view(node.payment.to_string().into_bytes())
                     }
                     Some("query") if call(CONTRACT, "get_payment") => view(b"null".to_vec()),
-                    Some("query")
-                        if call(CONTRACT, "get_operator") && args["operator_id"] == "em" =>
-                    {
-                        view(node.operator.to_string().into_bytes())
+                    Some("query") if call(CONTRACT, "get_operator") => {
+                        let operator = match args["operator_id"].as_str() {
+                            Some("em") => Some(node.operator.clone()),
+                            Some(id) => node.operators.get(id).cloned(),
+                            None => None,
+                        };
+                        view(operator.map_or(b"null".to_vec(), |o| o.to_string().into_bytes()))
                     }
-                    Some("query") if call(CONTRACT, "get_operator") => view(b"null".to_vec()),
+                    Some("query") if call(CONTRACT, "get_config") => {
+                        view(node.config.to_string().into_bytes())
+                    }
+                    Some("query") if call(CONTRACT, "storage_balance_of") => {
+                        let available = args["account_id"]
+                            .as_str()
+                            .and_then(|a| node.escrow_storage.get(a).cloned());
+                        view(match available {
+                            Some(available) => json!({"total": available, "available": available})
+                                .to_string()
+                                .into_bytes(),
+                            None => b"null".to_vec(),
+                        })
+                    }
                     Some("query") if call(CONTRACT, "get_claimable") => {
                         let owed = args["account"]
                             .as_str()
@@ -1861,7 +1941,7 @@ async fn stub(node: Node) -> (String, Arc<AtomicUsize>) {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
-    (format!("http://{addr}"), sent)
+    (format!("http://{addr}"), sent, views)
 }
 
 async fn escrow_provider_with(
@@ -1938,7 +2018,7 @@ fn invalid_reason(response: &VerifyResponse) -> String {
 
 #[tokio::test]
 async fn settle_pays_an_authorization_the_escrow_accepted() {
-    let (provider, sent) = escrow_provider(Node::new(authorized_outcome())).await;
+    let (provider, sent) = escrow_provider(Node::fresh(authorized_outcome())).await;
     let signed = sign(PAYER, USDC_TESTNET, vec![authorize_call()]);
     let response = provider
         .settle_escrow(&request(Some(&signed)))
@@ -1970,7 +2050,7 @@ async fn settle_of_w13_is_success_false() {
     // W-13, retold between this module's accounts: the escrow refused, the
     // token refunded, "0" used.
     let (provider, sent) =
-        escrow_provider(Node::new(w13_relayed(USDC_TESTNET, PAYER, CONTRACT))).await;
+        escrow_provider(Node::fresh(w13_relayed(USDC_TESTNET, PAYER, CONTRACT))).await;
     let signed = sign(PAYER, USDC_TESTNET, vec![authorize_call()]);
     let response = provider
         .settle_escrow(&request(Some(&signed)))
@@ -1985,7 +2065,7 @@ async fn settle_of_w13_is_success_false() {
 async fn settle_without_c_is_unconfirmed_with_the_hash() {
     let mut outcome = authorized_outcome();
     receipt_mut(&mut outcome, &rid("on"))["logs"] = json!([]);
-    let (provider, _) = escrow_provider(Node::new(outcome)).await;
+    let (provider, _) = escrow_provider(Node::fresh(outcome)).await;
     let signed = sign(PAYER, USDC_TESTNET, vec![authorize_call()]);
     match provider.settle_escrow(&request(Some(&signed))).await {
         Err(FacilitatorLocalError::SettlementUnconfirmed(tx, Network::NearTestnet)) => {
@@ -2000,7 +2080,7 @@ async fn settle_without_c_is_unconfirmed_with_the_hash() {
 
 #[tokio::test]
 async fn a_payer_short_of_the_amount_is_refused_before_spending() {
-    let mut node = Node::new(authorized_outcome());
+    let mut node = Node::fresh(authorized_outcome());
     node.balance = r#""999999""#;
     let (provider, sent) = escrow_provider(node).await;
     let signed = sign(PAYER, USDC_TESTNET, vec![authorize_call()]);
@@ -2025,7 +2105,7 @@ async fn an_authorization_of_zero_is_refused_before_spending() {
     req.amount = Some(0);
     req.extra.payment_id = Some(compute_payment_id(&terms_v1(), USDC_TESTNET, PAYER, 0));
     for nonce in [DELEGATE_NONCE - 1, DELEGATE_NONCE] {
-        let mut node = Node::new(authorized_outcome());
+        let mut node = Node::fresh(authorized_outcome());
         node.balance = r#""0""#;
         node.access_nonce = nonce;
         let (provider, sent) = escrow_provider(node).await;
@@ -2120,7 +2200,7 @@ async fn terms_the_escrow_refuses_are_refused_before_spending() {
             "near_escrow_deadlines_invalid",
         ),
     ];
-    let mut node = Node::new(authorized_outcome());
+    let mut node = Node::fresh(authorized_outcome());
     node.access_nonce = DELEGATE_NONCE;
     let (provider, sent) = escrow_provider(node).await;
     for (terms, reason) in &cases {
@@ -2132,7 +2212,7 @@ async fn terms_the_escrow_refuses_are_refused_before_spending() {
     }
     assert_eq!(sent.load(Ordering::SeqCst), 0);
 
-    let (provider, _) = escrow_provider(Node::new(authorized_outcome())).await;
+    let (provider, _) = escrow_provider(Node::fresh(authorized_outcome())).await;
     let (_, req) = authorization_on(&Terms {
         release_deadline: in_a_minute + 1,
         ..terms_v1()
@@ -2150,7 +2230,7 @@ async fn every_authorization_relayed_counts_against_its_sender() {
         ..cfg()
     };
     let signed = sign(PAYER, USDC_TESTNET, vec![authorize_call()]);
-    let (provider, sent) = escrow_provider_with(Node::new(authorized_outcome()), one).await;
+    let (provider, sent) = escrow_provider_with(Node::fresh(authorized_outcome()), one).await;
     let response = provider
         .settle_escrow(&request(Some(&signed)))
         .await
@@ -2179,7 +2259,7 @@ async fn an_authorization_burst_never_relays_more_than_the_hour_allows() {
         sender_per_hour: 1,
         ..cfg()
     };
-    let refusing = Node::new(w13_relayed(USDC_TESTNET, PAYER, CONTRACT));
+    let refusing = Node::fresh(w13_relayed(USDC_TESTNET, PAYER, CONTRACT));
     let (provider, sent) = escrow_provider_with(refusing, one).await;
     let signed = sign(PAYER, USDC_TESTNET, vec![authorize_call()]);
     let req = request(Some(&signed));
@@ -2228,7 +2308,7 @@ async fn a_relay_that_ends_success_false_takes_one_slot(node: Node, req: &Escrow
 async fn an_authorization_that_ends_success_false_takes_one_slot() {
     let signed = sign(PAYER, USDC_TESTNET, vec![authorize_call()]);
     a_relay_that_ends_success_false_takes_one_slot(
-        Node::new(w13_relayed(USDC_TESTNET, PAYER, CONTRACT)),
+        Node::fresh(w13_relayed(USDC_TESTNET, PAYER, CONTRACT)),
         &request(Some(&signed)),
     )
     .await;
@@ -2246,7 +2326,7 @@ async fn a_lifecycle_call_that_ends_success_false_takes_one_slot() {
 
 #[tokio::test]
 async fn a_delegate_action_whose_nonce_was_used_is_refused_before_spending() {
-    let mut node = Node::new(authorized_outcome());
+    let mut node = Node::fresh(authorized_outcome());
     node.access_nonce = DELEGATE_NONCE;
     let (provider, sent) = escrow_provider(node).await;
     let signed = sign(PAYER, USDC_TESTNET, vec![authorize_call()]);
@@ -2266,7 +2346,7 @@ async fn a_delegate_action_whose_nonce_was_used_is_refused_before_spending() {
 
 #[tokio::test]
 async fn a_bad_signature_or_another_asset_is_refused_before_spending() {
-    let (provider, sent) = escrow_provider(Node::new(authorized_outcome())).await;
+    let (provider, sent) = escrow_provider(Node::fresh(authorized_outcome())).await;
     let mut forged = sign(PAYER, USDC_TESTNET, vec![authorize_call()]);
     forged.delegate_action.nonce += 1;
     let response = provider
@@ -2933,7 +3013,7 @@ async fn verify_of_an_authorization_takes_no_relay_slot() {
         sender_per_hour: 1,
         ..cfg()
     };
-    let (provider, sent) = escrow_provider_with(Node::new(authorized_outcome()), one).await;
+    let (provider, sent) = escrow_provider_with(Node::fresh(authorized_outcome()), one).await;
     let signed = sign(PAYER, USDC_TESTNET, vec![authorize_call()]);
     for _ in 0..3 {
         let verdict = provider
@@ -2952,10 +3032,12 @@ async fn verify_of_an_authorization_takes_no_relay_slot() {
 
 /// A request refused on what the chain answers takes no slot: settle takes
 /// it after every read. With room for one relay this hour, PAYER's reclaim
-/// the gate refuses (before `reclaim_after`), its delegate whose nonce was
-/// used and its authorization without the USDC to pay each leave the hour to
-/// the authorization that follows. The last three run on three providers
-/// sharing one claim store, as tasks do.
+/// the gate refuses (before `reclaim_after`), its delegate past its
+/// `max_block_height`, its delegate whose nonce was used and its
+/// authorization without the USDC to pay each leave the hour to the
+/// authorization that follows. Each pair runs on providers sharing one claim
+/// store, as tasks do (the reclaim's escrow holds V-1, the authorization's
+/// does not yet).
 #[tokio::test]
 async fn a_request_refused_after_reading_takes_no_slot() {
     let one = NearEscrowConfig {
@@ -2964,7 +3046,9 @@ async fn a_request_refused_after_reading_takes_no_slot() {
     };
     let authorization = request(Some(&sign(PAYER, USDC_TESTNET, vec![authorize_call()])));
 
-    let (provider, sent) = escrow_provider_with(Node::new(authorized_outcome()), one.clone()).await;
+    let store: Arc<dyn NonceStore> = Arc::new(MemoryNonceStore::new());
+    let (provider, sent) =
+        escrow_provider_on(Node::new(authorized_outcome()), one.clone(), store.clone()).await;
     let reclaim = sign(
         PAYER,
         CONTRACT,
@@ -2975,16 +3059,22 @@ async fn a_request_refused_after_reading_takes_no_slot() {
         .await
         .unwrap();
     assert_eq!(refused(&response), "near_escrow_reclaim_not_yet");
+    assert_eq!(sent.load(Ordering::SeqCst), 0);
+    let (provider, sent) =
+        escrow_provider_on(Node::fresh(authorized_outcome()), one.clone(), store).await;
     let response = provider.settle_escrow(&authorization).await.unwrap();
     assert!(response.success, "{response:?}");
     assert_eq!(sent.load(Ordering::SeqCst), 1);
 
     let store: Arc<dyn NonceStore> = Arc::new(MemoryNonceStore::new());
-    let mut used = Node::new(authorized_outcome());
+    let mut expired = Node::fresh(authorized_outcome());
+    expired.height = DELEGATE_MAX_HEIGHT;
+    let mut used = Node::fresh(authorized_outcome());
     used.access_nonce = DELEGATE_NONCE;
-    let mut empty = Node::new(authorized_outcome());
+    let mut empty = Node::fresh(authorized_outcome());
     empty.balance = r#""0""#;
     for (node, reason) in [
+        (expired, "near_escrow_delegate_expired"),
         (used, "near_escrow_delegate_not_executable"),
         (empty, "insufficient_funds"),
     ] {
@@ -2993,7 +3083,7 @@ async fn a_request_refused_after_reading_takes_no_slot() {
         assert_eq!(refused(&response), reason);
         assert_eq!(sent.load(Ordering::SeqCst), 0);
     }
-    let (provider, sent) = escrow_provider_on(Node::new(authorized_outcome()), one, store).await;
+    let (provider, sent) = escrow_provider_on(Node::fresh(authorized_outcome()), one, store).await;
     let response = provider.settle_escrow(&authorization).await.unwrap();
     assert!(response.success, "{response:?}");
     assert_eq!(sent.load(Ordering::SeqCst), 1);
@@ -3026,25 +3116,22 @@ async fn an_unreadable_relay_count_relays_nothing() {
         returns(""),
         vec![arras("released", json!({"payment_id": V1_ID}))],
     );
-    let (url, sent) = stub(Node::new(done)).await;
-    let provider = NearProvider::try_new(
-        SecretKey::from_random(KeyType::ED25519),
-        RELAYER.to_string(),
-        url,
-        Network::NearTestnet,
-    )
-    .unwrap()
-    .with_escrow(cfg(), Arc::new(Unreachable), Arc::new(|| NOW));
+    let unreachable = |node: Node| async move {
+        let (url, sent) = stub(node).await;
+        let provider = NearProvider::try_new(
+            SecretKey::from_random(KeyType::ED25519),
+            RELAYER.to_string(),
+            url,
+            Network::NearTestnet,
+        )
+        .unwrap()
+        .with_escrow(cfg(), Arc::new(Unreachable), Arc::new(|| NOW));
+        (provider, sent)
+    };
+    let (provider, sent) = unreachable(Node::new(done)).await;
     let release = sign(CAPTURER, CONTRACT, vec![release_call()]);
     let response = provider
         .settle_escrow(&lifecycle_request(&release, "release"))
-        .await
-        .unwrap();
-    assert_eq!(refused(&response), "near_escrow_sender_count_unavailable");
-    // An authorization too: whether its sender's hour is full is unknown.
-    let signed = sign(PAYER, USDC_TESTNET, vec![authorize_call()]);
-    let response = provider
-        .settle_escrow(&request(Some(&signed)))
         .await
         .unwrap();
     assert_eq!(refused(&response), "near_escrow_sender_count_unavailable");
@@ -3057,6 +3144,15 @@ async fn an_unreadable_relay_count_relays_nothing() {
         "near_escrow_sender_count_unavailable"
     );
     assert_eq!(sent.load(Ordering::SeqCst), 0);
+    // An authorization too: whether its sender's hour is full is unknown.
+    let (provider, sent) = unreachable(Node::fresh(authorized_outcome())).await;
+    let signed = sign(PAYER, USDC_TESTNET, vec![authorize_call()]);
+    let response = provider
+        .settle_escrow(&request(Some(&signed)))
+        .await
+        .unwrap();
+    assert_eq!(refused(&response), "near_escrow_sender_count_unavailable");
+    assert_eq!(sent.load(Ordering::SeqCst), 0);
 }
 
 #[tokio::test]
@@ -3065,7 +3161,7 @@ async fn the_scheme_switched_off_relays_nothing() {
         enabled: false,
         ..cfg()
     };
-    let (provider, sent) = escrow_provider_with(Node::new(authorized_outcome()), off).await;
+    let (provider, sent) = escrow_provider_with(Node::fresh(authorized_outcome()), off).await;
     let signed = sign(PAYER, USDC_TESTNET, vec![authorize_call()]);
     let response = provider
         .settle_escrow(&request(Some(&signed)))
@@ -3073,6 +3169,923 @@ async fn the_scheme_switched_off_relays_nothing() {
         .unwrap();
     assert_eq!(refused(&response), "near_escrow_disabled");
     assert_eq!(sent.load(Ordering::SeqCst), 0);
+}
+
+// ---------------------------------------------------------------------------
+// Pre-validation: what the chain would refuse is refused before relaying
+// ---------------------------------------------------------------------------
+
+/// [`Node::new`]'s escrow as [`judge_authorize`] reads it.
+fn v1_state() -> EscrowState {
+    EscrowState {
+        version: "arras-v1".to_string(),
+        paused: false,
+        token: USDC_TESTNET.to_string(),
+        tope_por_pago: 10_000_000,
+        tope_tvl_global: 1_000_000_000,
+        tvl_global: 0,
+        operator: Some(OperatorState {
+            fee_bps: 1300,
+            fee_recipient: "em-fees.arras-dev.testnet".to_string(),
+            min_amount: 10_000,
+            tope_tvl_operador: 1_000_000_000,
+            tvl_operador: 0,
+            tope_tvl_por_payer: 20_000_000,
+            sponsor_pool: 0,
+            sponsor_max_por_payer: 0,
+        }),
+    }
+}
+
+/// V-1's storage on an `arras-v1` escrow, written out by hand from the
+/// contract's `authorize_bytes`: the payment's key (40 + 6 + 48), its record
+/// (40 + 32 + 4 + borsh 242: 20 of string lengths, "em" 2, PAYER 18, WORKER
+/// 19, "em-fees.arras-dev.testnet" 25, the terms hash 64, 64 of four U128, 4
+/// of two u16, 24 of three U64, 2 of status and flag) and its index entry
+/// (40 + 12 + 48): 512 bytes at 10^19 yoctoNEAR.
+const V1_STORAGE_FLOOR: u128 = 512 * 10_000_000_000_000_000_000;
+
+#[test]
+fn the_v1_storage_floor_is_the_contracts_count() {
+    assert_eq!(
+        v1_storage_floor(&v1_authorize(), "em-fees.arras-dev.testnet"),
+        V1_STORAGE_FLOOR
+    );
+    // Each account's length counts once, the operator's twice (its id in the
+    // payment and in the index key) and the payment id's twice.
+    let longer = EscrowAuthorize {
+        payer: account("payer-demo-2.testnet"),
+        ..v1_authorize()
+    };
+    assert_eq!(
+        v1_storage_floor(&longer, "em-fees.arras-dev.testnet"),
+        V1_STORAGE_FLOOR + 2 * 10_000_000_000_000_000_000
+    );
+}
+
+/// Each guard of the escrow's `ft_on_transfer` the views show, with the
+/// state one step over its limit: the contract's own code, the first that
+/// fails deciding (E01 before E02 before E04 ...). At the limit, the same
+/// state passes.
+#[test]
+fn judge_authorize_refuses_what_the_escrow_refuses_in_its_order() {
+    use EscrowRejectReason::*;
+    let a = v1_authorize();
+    let op = |edit: fn(&mut OperatorState)| {
+        let mut state = v1_state();
+        edit(state.operator.as_mut().unwrap());
+        state
+    };
+    let cfg_with = |edit: fn(&mut EscrowState)| {
+        let mut state = v1_state();
+        edit(&mut state);
+        state
+    };
+    assert_eq!(
+        judge_authorize(&v1_state(), &a, false, Some(0)),
+        Err(EscrowNoStorage)
+    );
+    let paid = Some(V1_STORAGE_FLOOR);
+    assert_eq!(judge_authorize(&v1_state(), &a, false, paid), Ok(()));
+    let refusals: Vec<(EscrowState, bool, Option<u128>, EscrowRejectReason)> = vec![
+        (
+            cfg_with(|s| s.token = USDC_MAINNET.to_string()),
+            false,
+            paid,
+            EscrowTokenNotAllowed,
+        ),
+        (cfg_with(|s| s.paused = true), false, paid, EscrowPaused),
+        (
+            cfg_with(|s| s.operator = None),
+            false,
+            paid,
+            OperatorNotFound,
+        ),
+        (
+            op(|o| o.min_amount = AMOUNT + 1),
+            false,
+            paid,
+            EscrowUnderMinimum,
+        ),
+        (
+            cfg_with(|s| s.tope_por_pago = AMOUNT - 1),
+            false,
+            paid,
+            EscrowOverPerPaymentCap,
+        ),
+        (
+            op(|o| o.tope_tvl_por_payer = AMOUNT - 1),
+            false,
+            paid,
+            EscrowOverPayerTvl,
+        ),
+        (
+            op(|o| o.tvl_operador = 1_000_000_000 - AMOUNT + 1),
+            false,
+            paid,
+            EscrowOverOperatorTvl,
+        ),
+        (
+            op(|o| o.tvl_operador = u128::MAX),
+            false,
+            paid,
+            EscrowOverOperatorTvl,
+        ),
+        (
+            cfg_with(|s| s.tvl_global = 1_000_000_000 - AMOUNT + 1),
+            false,
+            paid,
+            EscrowOverGlobalTvl,
+        ),
+        (
+            cfg_with(|s| s.tvl_global = u128::MAX),
+            false,
+            paid,
+            EscrowOverGlobalTvl,
+        ),
+        (op(|o| o.fee_bps = 1301), false, paid, EscrowFeeOverMaximum),
+        (v1_state(), true, paid, EscrowPaymentIdUsed),
+        (
+            v1_state(),
+            false,
+            Some(V1_STORAGE_FLOOR - 1),
+            EscrowNoStorage,
+        ),
+        // The first failure decides.
+        (
+            cfg_with(|s| {
+                s.token = USDC_MAINNET.to_string();
+                s.paused = true
+            }),
+            true,
+            Some(0),
+            EscrowTokenNotAllowed,
+        ),
+        (
+            cfg_with(|s| {
+                s.paused = true;
+                s.operator = None
+            }),
+            true,
+            Some(0),
+            EscrowPaused,
+        ),
+        (
+            op(|o| {
+                o.min_amount = AMOUNT + 1;
+                o.fee_bps = 1301
+            }),
+            true,
+            Some(0),
+            EscrowUnderMinimum,
+        ),
+        (
+            op(|o| o.fee_bps = 1301),
+            true,
+            Some(0),
+            EscrowFeeOverMaximum,
+        ),
+        (v1_state(), true, Some(0), EscrowPaymentIdUsed),
+    ];
+    for (state, exists, storage, reason) in refusals {
+        assert_eq!(
+            judge_authorize(&state, &a, exists, storage),
+            Err(reason),
+            "{state:?} {exists} {storage:?}"
+        );
+    }
+    // At every limit at once, it passes.
+    let mut edge = v1_state();
+    edge.tope_por_pago = AMOUNT;
+    edge.tvl_global = 1_000_000_000 - AMOUNT;
+    let o = edge.operator.as_mut().unwrap();
+    o.min_amount = AMOUNT;
+    o.tope_tvl_por_payer = AMOUNT;
+    o.tvl_operador = 1_000_000_000 - AMOUNT;
+    assert_eq!(judge_authorize(&edge, &a, false, paid), Ok(()));
+    // Storage: the payer's balance, or the sponsorship when both its pool and
+    // its per-payer cap reach the floor. A contract whose layout is not
+    // v1's (`None`) is not judged on storage.
+    let sponsored = |pool: u128, cap: u128| {
+        let mut state = v1_state();
+        let o = state.operator.as_mut().unwrap();
+        o.sponsor_pool = pool;
+        o.sponsor_max_por_payer = cap;
+        judge_authorize(&state, &a, false, Some(V1_STORAGE_FLOOR - 1))
+    };
+    assert_eq!(sponsored(V1_STORAGE_FLOOR, V1_STORAGE_FLOOR), Ok(()));
+    assert_eq!(
+        sponsored(V1_STORAGE_FLOOR - 1, V1_STORAGE_FLOOR),
+        Err(EscrowNoStorage)
+    );
+    assert_eq!(
+        sponsored(V1_STORAGE_FLOOR, V1_STORAGE_FLOOR - 1),
+        Err(EscrowNoStorage)
+    );
+    assert_eq!(judge_authorize(&v1_state(), &a, false, None), Ok(()));
+}
+
+/// Each refusal the pre-validation adds: its token, and the error the chain
+/// would have answered, which the log names (the escrow's code, copied from
+/// `escrow-core` `ArrasError::code`, or the runtime's error). E04 is the
+/// lifecycle's `near_escrow_operator_not_found`, the same condition.
+#[test]
+fn each_refusal_before_relaying_has_its_token_and_the_chains_error() {
+    use EscrowRejectReason::*;
+    for (reason, token, chain_error) in [
+        (
+            DelegateExpired,
+            "near_escrow_delegate_expired",
+            "DelegateActionExpired",
+        ),
+        (
+            DelegateNonceTooLarge,
+            "near_escrow_delegate_nonce_too_large",
+            "DelegateActionNonceTooLarge",
+        ),
+        (
+            EscrowTokenNotAllowed,
+            "near_escrow_token_not_allowed",
+            "E01_TOKEN_NO_PERMITIDO",
+        ),
+        (EscrowPaused, "near_escrow_paused", "E02_PAUSADO"),
+        (
+            EscrowUnderMinimum,
+            "near_escrow_below_operator_minimum",
+            "E05_DEBAJO_DEL_MINIMO",
+        ),
+        (
+            EscrowOverPerPaymentCap,
+            "near_escrow_over_per_payment_cap",
+            "E06_TOPE_POR_PAGO",
+        ),
+        (
+            EscrowOverPayerTvl,
+            "near_escrow_over_payer_tvl_cap",
+            "E08_TVL_PAYER",
+        ),
+        (
+            EscrowOverOperatorTvl,
+            "near_escrow_over_operator_tvl_cap",
+            "E09_TVL_OPERADOR",
+        ),
+        (
+            EscrowOverGlobalTvl,
+            "near_escrow_over_global_tvl_cap",
+            "E10_TVL_GLOBAL",
+        ),
+        (
+            EscrowFeeOverMaximum,
+            "near_escrow_fee_over_signed_maximum",
+            "E12_FEE_MAYOR_AL_MAXIMO",
+        ),
+        (
+            EscrowPaymentIdUsed,
+            "near_escrow_payment_id_used",
+            "E13_ID_USADO",
+        ),
+        (EscrowNoStorage, "near_escrow_no_storage", "E14_SIN_STORAGE"),
+        (
+            EscrowReleaseOverLive,
+            "near_escrow_amount_exceeds_live",
+            "E24_MONTO",
+        ),
+    ] {
+        assert_eq!(reason.as_str(), token, "{reason:?}");
+        assert_eq!(reason.chain_error(), Some(chain_error), "{reason:?}");
+    }
+    assert_eq!(OperatorNotFound.as_str(), "near_escrow_operator_not_found");
+    // The refusals that existed before keep their logs: no chain error.
+    for reason in [
+        InsufficientFunds,
+        NotCapturer,
+        OperatorNotFound,
+        PaymentNotOpen,
+    ] {
+        assert_eq!(reason.chain_error(), None, "{reason:?}");
+    }
+}
+
+/// Each refusal of the escrow, from its views on the stub node: refused at
+/// verify and at settle with its code, nothing relayed; the node one step
+/// back on the right side of the limit relays.
+#[tokio::test]
+async fn each_refusal_of_the_escrow_is_caught_before_relaying() {
+    let signed = sign(PAYER, USDC_TESTNET, vec![authorize_call()]);
+    let req = request(Some(&signed));
+    type Edit = fn(&mut Node);
+    let cases: Vec<(&str, Edit, Edit)> = vec![
+        (
+            "near_escrow_token_not_allowed",
+            |n| n.config["token"] = json!(USDC_MAINNET),
+            |n| n.config["token"] = json!(USDC_TESTNET),
+        ),
+        (
+            "near_escrow_paused",
+            |n| n.config["paused"] = json!(true),
+            |n| n.config["paused"] = json!(false),
+        ),
+        (
+            "near_escrow_operator_not_found",
+            |n| n.operator = Value::Null,
+            |_| {},
+        ),
+        (
+            "near_escrow_below_operator_minimum",
+            |n| n.operator["min_amount"] = json!("1000001"),
+            |n| n.operator["min_amount"] = json!("1000000"),
+        ),
+        (
+            "near_escrow_over_per_payment_cap",
+            |n| n.config["tope_por_pago"] = json!("999999"),
+            |n| n.config["tope_por_pago"] = json!("1000000"),
+        ),
+        (
+            "near_escrow_over_payer_tvl_cap",
+            |n| n.operator["tope_tvl_por_payer"] = json!("999999"),
+            |n| n.operator["tope_tvl_por_payer"] = json!("1000000"),
+        ),
+        (
+            "near_escrow_over_operator_tvl_cap",
+            |n| n.operator["tvl_operador"] = json!("999000001"),
+            |n| n.operator["tvl_operador"] = json!("999000000"),
+        ),
+        (
+            "near_escrow_over_global_tvl_cap",
+            |n| n.config["tvl_global"] = json!("999000001"),
+            |n| n.config["tvl_global"] = json!("999000000"),
+        ),
+        (
+            "near_escrow_fee_over_signed_maximum",
+            |n| n.operator["fee_bps"] = json!(1301),
+            |n| n.operator["fee_bps"] = json!(1300),
+        ),
+        (
+            "near_escrow_payment_id_used",
+            |n| n.payment = Node::new(Value::Null).payment,
+            |n| n.payment = Value::Null,
+        ),
+        (
+            "near_escrow_no_storage",
+            |n| {
+                n.escrow_storage.clear();
+            },
+            |n| {
+                n.escrow_storage.clear();
+                n.operator["sponsor_pool"] = json!(V1_STORAGE_FLOOR.to_string());
+                n.operator["sponsor_max_por_payer"] = json!(V1_STORAGE_FLOOR.to_string());
+            },
+        ),
+    ];
+    for (reason, refusing, passing) in cases {
+        let mut node = Node::fresh(authorized_outcome());
+        refusing(&mut node);
+        let (provider, sent) = escrow_provider(node).await;
+        let verdict = provider.verify_escrow(&req).await.unwrap();
+        assert_eq!(invalid_reason(&verdict), reason);
+        let response = provider.settle_escrow(&req).await.unwrap();
+        assert_eq!(refused(&response), reason);
+        assert_eq!(response.payer, MixedAddress::Near(PAYER.to_string()));
+        assert_eq!(sent.load(Ordering::SeqCst), 0, "{reason}");
+
+        let mut node = Node::fresh(authorized_outcome());
+        passing(&mut node);
+        let (provider, sent) = escrow_provider(node).await;
+        let response = provider.settle_escrow(&req).await.unwrap();
+        assert!(response.success, "{reason}: {response:?}");
+        assert_eq!(sent.load(Ordering::SeqCst), 1, "{reason}");
+    }
+}
+
+/// What is valid relays as before: V-1 against an escrow at every limit at
+/// once (the amount the operator's minimum, the per-payment and per-payer
+/// caps; both TVLs one payment from theirs; the fee the signed maximum; the
+/// payer's storage exactly the floor) is verified and settled, relayed once.
+#[tokio::test]
+async fn an_authorization_at_every_limit_still_relays() {
+    let mut node = Node::fresh(authorized_outcome());
+    node.config["tope_por_pago"] = json!("1000000");
+    node.config["tvl_global"] = json!("999000000");
+    node.operator["min_amount"] = json!("1000000");
+    node.operator["tope_tvl_por_payer"] = json!("1000000");
+    node.operator["tvl_operador"] = json!("999000000");
+    node.escrow_storage
+        .insert(PAYER.to_string(), V1_STORAGE_FLOOR.to_string());
+    let (provider, sent) = escrow_provider(node).await;
+    let signed = sign(PAYER, USDC_TESTNET, vec![authorize_call()]);
+    assert_valid(
+        &provider
+            .verify_escrow(&request(Some(&signed)))
+            .await
+            .unwrap(),
+        PAYER,
+    );
+    let response = provider
+        .settle_escrow(&request(Some(&signed)))
+        .await
+        .unwrap();
+    assert!(response.success, "{response:?}");
+    assert_eq!(sent.load(Ordering::SeqCst), 1);
+}
+
+/// An escrow whose `get_config.version` is not `arras-v1` is not judged on
+/// storage, whose layout here is v1's: its payer's NEP-145 balance is never
+/// read. Every other check still runs.
+#[tokio::test]
+async fn storage_is_judged_on_arras_v1_alone() {
+    let mut node = Node::fresh(authorized_outcome());
+    node.config["version"] = json!("arras-v2");
+    node.escrow_storage.clear();
+    let (provider, sent, _, views) = escrow_provider_live(node.clone(), Arc::new(|| NOW)).await;
+    let response = provider
+        .settle_escrow(&request(Some(&sign(
+            PAYER,
+            USDC_TESTNET,
+            vec![authorize_call()],
+        ))))
+        .await
+        .unwrap();
+    assert!(response.success, "{response:?}");
+    assert_eq!(sent.load(Ordering::SeqCst), 1);
+    // The escrow was asked for its config, and never for the payer's storage.
+    assert_eq!(views.lock().unwrap().get("get_config"), Some(&1));
+    assert_eq!(views.lock().unwrap().get("storage_balance_of"), None);
+    node.config["paused"] = json!(true);
+    let (provider, sent) = escrow_provider(node).await;
+    let response = provider
+        .settle_escrow(&request(Some(&sign(
+            PAYER,
+            USDC_TESTNET,
+            vec![authorize_call()],
+        ))))
+        .await
+        .unwrap();
+    assert_eq!(refused(&response), "near_escrow_paused");
+    assert_eq!(sent.load(Ordering::SeqCst), 0);
+}
+
+/// A view answered without a field the gate reads is no verdict: nothing is
+/// relayed on a guess.
+#[tokio::test]
+async fn a_view_out_of_shape_relays_nothing() {
+    type Edit = fn(&mut Node);
+    let edits: Vec<Edit> = vec![
+        |n| {
+            n.config.as_object_mut().unwrap().remove("tope_por_pago");
+        },
+        |n| n.config["paused"] = json!("no"),
+        |n| n.operator["min_amount"] = json!(10000),
+        |n| n.operator["fee_bps"] = json!(70000),
+        |n| {
+            n.operator.as_object_mut().unwrap().remove("fee_recipient");
+        },
+        |n| {
+            n.escrow_storage.insert(PAYER.to_string(), "01".to_string());
+        },
+    ];
+    for edit in edits {
+        let mut node = Node::fresh(authorized_outcome());
+        edit(&mut node);
+        let (provider, sent) = escrow_provider(node).await;
+        let signed = sign(PAYER, USDC_TESTNET, vec![authorize_call()]);
+        assert!(provider
+            .settle_escrow(&request(Some(&signed)))
+            .await
+            .is_err());
+        assert_eq!(sent.load(Ordering::SeqCst), 0);
+    }
+}
+
+async fn escrow_provider_live(
+    node: Node,
+    clock: Clock,
+) -> (NearProvider, Arc<AtomicUsize>, Arc<Mutex<Node>>, Views) {
+    let shared = Arc::new(Mutex::new(node));
+    let (url, sent, views) = stub_live(shared.clone()).await;
+    let provider = NearProvider::try_new(
+        SecretKey::from_random(KeyType::ED25519),
+        RELAYER.to_string(),
+        url,
+        Network::NearTestnet,
+    )
+    .unwrap()
+    .with_escrow(cfg(), Arc::new(MemoryNonceStore::new()), clock);
+    (provider, sent, shared, views)
+}
+
+/// `get_config` and `get_operator` are read once per [`VIEW_CACHE_SECS`];
+/// `get_payment` and the payer's storage every time.
+#[tokio::test]
+async fn the_config_and_operator_views_are_reused_for_a_few_seconds() {
+    let now = Arc::new(AtomicU64::new(NOW));
+    let clock = now.clone();
+    let (provider, _, _, views) = escrow_provider_live(
+        Node::fresh(authorized_outcome()),
+        Arc::new(move || clock.load(Ordering::SeqCst)),
+    )
+    .await;
+    let req = request(Some(&sign(PAYER, USDC_TESTNET, vec![authorize_call()])));
+    let count = |method: &str| views.lock().unwrap().get(method).copied().unwrap_or(0);
+    for _ in 0..3 {
+        assert_valid(&provider.verify_escrow(&req).await.unwrap(), PAYER);
+    }
+    assert_eq!((count("get_config"), count("get_operator")), (1, 1));
+    assert_eq!((count("get_payment"), count("storage_balance_of")), (3, 3));
+    now.store(NOW + VIEW_CACHE_SECS - 1, Ordering::SeqCst);
+    assert_valid(&provider.verify_escrow(&req).await.unwrap(), PAYER);
+    assert_eq!(count("get_config"), 1);
+    now.store(NOW + VIEW_CACHE_SECS, Ordering::SeqCst);
+    assert_valid(&provider.verify_escrow(&req).await.unwrap(), PAYER);
+    assert_eq!((count("get_config"), count("get_operator")), (2, 2));
+}
+
+/// Each operator has a cached view of its own: with `em` and `kk` served,
+/// the `get_operator` cached for `em` never answers for `kk`. `kk`'s minimum
+/// is over the amount, so its authorization is refused right after `em`'s
+/// was accepted, and `em`'s is accepted again after it.
+#[tokio::test]
+async fn each_operator_has_its_own_cached_view() {
+    let mut node = Node::fresh(authorized_outcome());
+    let mut kk = node.operator.clone();
+    kk["min_amount"] = json!((AMOUNT + 1).to_string());
+    node.operators.insert("kk".to_string(), kk);
+    let (provider, sent, _, _) = escrow_provider_live(node, Arc::new(|| NOW)).await;
+    let (_, em) = authorization_on(&terms_v1());
+    assert_valid(&provider.verify_escrow(&em).await.unwrap(), PAYER);
+    let (_, mut req) = authorization_on(&Terms {
+        operator_id: "kk".to_string(),
+        ..terms_v1()
+    });
+    req.extra.operator_id = Some("kk".to_string());
+    let verdict = provider.verify_escrow(&req).await.unwrap();
+    assert_eq!(
+        invalid_reason(&verdict),
+        "near_escrow_below_operator_minimum"
+    );
+    let response = provider.settle_escrow(&req).await.unwrap();
+    assert_eq!(refused(&response), "near_escrow_below_operator_minimum");
+    assert_eq!(sent.load(Ordering::SeqCst), 0);
+    assert_valid(&provider.verify_escrow(&em).await.unwrap(), PAYER);
+}
+
+/// A refusal is never decided on a cached view: the escrow paused, then
+/// resumed within the cache's window, relays the next authorization (the
+/// cached `paused` is read again before refusing); and an operator whose fee
+/// dropped since it was cached is read again too.
+#[tokio::test]
+async fn a_refusal_is_never_decided_on_a_cached_view() {
+    let mut node = Node::fresh(authorized_outcome());
+    node.config["paused"] = json!(true);
+    let (provider, sent, live, views) = escrow_provider_live(node, Arc::new(|| NOW)).await;
+    let req = request(Some(&sign(PAYER, USDC_TESTNET, vec![authorize_call()])));
+    let verdict = provider.verify_escrow(&req).await.unwrap();
+    assert_eq!(invalid_reason(&verdict), "near_escrow_paused");
+    live.lock().unwrap().config["paused"] = json!(false);
+    live.lock().unwrap().operator["fee_bps"] = json!(1400);
+    let verdict = provider.verify_escrow(&req).await.unwrap();
+    assert_eq!(
+        invalid_reason(&verdict),
+        "near_escrow_fee_over_signed_maximum"
+    );
+    live.lock().unwrap().operator["fee_bps"] = json!(1300);
+    let response = provider.settle_escrow(&req).await.unwrap();
+    assert!(response.success, "{response:?}");
+    assert_eq!(sent.load(Ordering::SeqCst), 1);
+    // One read per verdict: the first found nothing cached, and each later
+    // one read again what the cache said before refusing.
+    assert_eq!(views.lock().unwrap().get("get_config"), Some(&3));
+}
+
+/// The block height and the nonce ceiling, for an authorization and a
+/// lifecycle call alike: a `max_block_height` at or below the head the node
+/// answers is `near_escrow_delegate_expired`; a nonce at that head's height
+/// times 1_000_000 or over is `near_escrow_delegate_nonce_too_large`, before
+/// the access key is read. One block or one nonce on the other side relays.
+#[tokio::test]
+async fn a_delegate_the_runtime_would_refuse_is_not_relayed() {
+    let release = sign(CAPTURER, CONTRACT, vec![release_call()]);
+    let authorize = sign(PAYER, USDC_TESTNET, vec![authorize_call()]);
+    let requests = [
+        (request(Some(&authorize)), Node::fresh(authorized_outcome())),
+        (
+            lifecycle_request(&release, "release"),
+            Node::new(lifecycle_outcome(
+                CAPTURER,
+                returns(""),
+                vec![arras("released", json!({"payment_id": V1_ID}))],
+            )),
+        ),
+    ];
+    for (req, node) in &requests {
+        let mut expired = node.clone();
+        expired.height = DELEGATE_MAX_HEIGHT;
+        let (provider, sent) = escrow_provider(expired).await;
+        let verdict = provider.verify_escrow(req).await.unwrap();
+        assert_eq!(invalid_reason(&verdict), "near_escrow_delegate_expired");
+        let response = provider.settle_escrow(req).await.unwrap();
+        assert_eq!(refused(&response), "near_escrow_delegate_expired");
+        assert_eq!(sent.load(Ordering::SeqCst), 0);
+
+        let mut alive = node.clone();
+        alive.height = DELEGATE_MAX_HEIGHT - 1;
+        let (provider, sent) = escrow_provider(alive).await;
+        let response = provider.settle_escrow(req).await.unwrap();
+        assert!(response.success, "{response:?}");
+        assert_eq!(sent.load(Ordering::SeqCst), 1);
+    }
+
+    let ceiling = HEIGHT * 1_000_000;
+    for (nonce, passes) in [(ceiling, false), (ceiling + 1, false), (ceiling - 1, true)] {
+        let mut signed = authorize.clone();
+        signed.delegate_action.nonce = nonce;
+        let signed = resign(signed.delegate_action);
+        let mut node = Node::fresh(authorized_outcome());
+        // A read would refuse it otherwise: the access key is past it.
+        node.access_nonce = if passes { nonce - 1 } else { u64::MAX };
+        let (provider, sent) = escrow_provider(node).await;
+        let response = provider
+            .settle_escrow(&request(Some(&signed)))
+            .await
+            .unwrap();
+        if passes {
+            assert!(response.success, "{nonce}: {response:?}");
+            assert_eq!(sent.load(Ordering::SeqCst), 1);
+        } else {
+            assert_eq!(
+                refused(&response),
+                "near_escrow_delegate_nonce_too_large",
+                "{nonce}"
+            );
+            assert_eq!(sent.load(Ordering::SeqCst), 0);
+        }
+    }
+}
+
+/// `da`, signed again by a key of its own: the signature has to verify for
+/// the request to reach the checks after it.
+fn resign(mut da: DelegateAction) -> SignedDelegateAction {
+    let key = SecretKey::from_random(KeyType::ED25519);
+    da.public_key = key.public_key();
+    let signer: Signer = InMemorySigner::from_secret_key(da.sender_id.clone(), key);
+    let signature = signer.sign(da.get_nep461_hash().as_bytes());
+    SignedDelegateAction {
+        delegate_action: da,
+        signature,
+    }
+}
+
+/// The nonce ceiling is the head's, not the delegate action's: with a
+/// `max_block_height` that never comes, a nonce 1000 blocks over the head's
+/// ceiling is `near_escrow_delegate_nonce_too_large`, for a withdrawal any
+/// account signs and for an authorization alike. Settle relays nothing and
+/// leaves the sender's hour to the request that follows.
+#[tokio::test]
+async fn a_nonce_over_the_heads_ceiling_is_not_relayed() {
+    let one = NearEscrowConfig {
+        sender_per_hour: 1,
+        ..cfg()
+    };
+    let over = |signed: &SignedDelegateAction| {
+        resign(DelegateAction {
+            nonce: (HEIGHT + 1000) * 1_000_000,
+            max_block_height: u64::MAX,
+            ..signed.delegate_action.clone()
+        })
+    };
+    let withdraw_for = sign(
+        "anyone.testnet",
+        CONTRACT,
+        vec![lifecycle("withdraw_for", json!({"account": WORKER}), 50)],
+    );
+    let authorize = sign(PAYER, USDC_TESTNET, vec![authorize_call()]);
+    let cases = [
+        (
+            lifecycle_request(&over(&withdraw_for), "withdraw_for"),
+            lifecycle_request(&withdraw_for, "withdraw_for"),
+            Node::new(withdraw_outcome(
+                "anyone.testnet",
+                WORKER,
+                true,
+                returns("\"870000\""),
+            )),
+        ),
+        (
+            request(Some(&over(&authorize))),
+            request(Some(&authorize)),
+            Node::fresh(authorized_outcome()),
+        ),
+    ];
+    for (over, valid, node) in cases {
+        let store: Arc<dyn NonceStore> = Arc::new(MemoryNonceStore::new());
+        let (provider, sent) = escrow_provider_on(node, one.clone(), store).await;
+        let verdict = provider.verify_escrow(&over).await.unwrap();
+        assert_eq!(
+            invalid_reason(&verdict),
+            "near_escrow_delegate_nonce_too_large"
+        );
+        let response = provider.settle_escrow(&over).await.unwrap();
+        assert_eq!(refused(&response), "near_escrow_delegate_nonce_too_large");
+        assert_eq!(sent.load(Ordering::SeqCst), 0);
+        let response = provider.settle_escrow(&valid).await.unwrap();
+        assert!(response.success, "{response:?}");
+        assert_eq!(sent.load(Ordering::SeqCst), 1);
+    }
+}
+
+#[test]
+fn the_nonce_ceiling_is_counted_without_overflow() {
+    let da = |nonce: u64, max_block_height: u64| DelegateAction {
+        nonce,
+        max_block_height,
+        ..unsigned(PAYER, USDC_TESTNET, vec![authorize_call()])
+    };
+    assert!(nonce_under_ceiling(&da(999_999, 2), 1));
+    assert!(!nonce_under_ceiling(&da(1_000_000, 2), 1));
+    assert!(!nonce_under_ceiling(&da(0, 1), 0));
+    // height * 1_000_000 is above every u64: nothing is over it.
+    assert!(nonce_under_ceiling(&da(u64::MAX, u64::MAX), u64::MAX));
+    assert!(nonce_under_ceiling(
+        &da(u64::MAX, u64::MAX),
+        u64::MAX / 999_999
+    ));
+    // The ceiling is the head's: a max_block_height that never comes lifts
+    // nothing.
+    let far = da((HEIGHT + 1000) * 1_000_000, u64::MAX);
+    assert!(!nonce_under_ceiling(&far, HEIGHT));
+    assert!(nonce_under_ceiling(&far, HEIGHT + 1001));
+    assert!(alive_past(&da(1, 100), 99));
+    assert!(!alive_past(&da(1, 100), 100));
+    assert!(!alive_past(&da(1, 100), 101));
+    assert!(!alive_past(&da(1, u64::MAX), u64::MAX));
+}
+
+/// A partial release of more than the payment has live (`amount - released
+/// - refunded`) is E24 on the escrow: refused before relaying. As much as is
+/// live, or no amount (all of it), relays.
+#[tokio::test]
+async fn a_release_of_more_than_is_live_is_not_relayed() {
+    let done = lifecycle_outcome(
+        CAPTURER,
+        returns(""),
+        vec![arras("released", json!({"payment_id": V1_ID}))],
+    );
+    let partially = |node: &mut Node| {
+        node.payment["status"] = json!("PartiallyReleased");
+        node.payment["released"] = json!("300000");
+        node.payment["refunded"] = json!("100000");
+    };
+    let release = |amount: Option<&str>| {
+        let args = match amount {
+            Some(a) => json!({"payment_id": V1_ID, "amount": a}),
+            None => json!({"payment_id": V1_ID}),
+        };
+        sign(CAPTURER, CONTRACT, vec![lifecycle("release", args, 30)])
+    };
+    for amount in ["600001", "1000000"] {
+        let mut node = Node::new(done.clone());
+        partially(&mut node);
+        let (provider, sent) = escrow_provider(node).await;
+        let signed = release(Some(amount));
+        let verdict = provider
+            .verify_escrow(&lifecycle_request(&signed, "release"))
+            .await
+            .unwrap();
+        assert_eq!(
+            invalid_reason(&verdict),
+            "near_escrow_amount_exceeds_live",
+            "{amount}"
+        );
+        let response = provider
+            .settle_escrow(&lifecycle_request(&signed, "release"))
+            .await
+            .unwrap();
+        assert_eq!(
+            refused(&response),
+            "near_escrow_amount_exceeds_live",
+            "{amount}"
+        );
+        assert_eq!(sent.load(Ordering::SeqCst), 0, "{amount}");
+    }
+    for amount in [Some("600000"), Some("1"), None] {
+        let mut node = Node::new(done.clone());
+        partially(&mut node);
+        let (provider, sent) = escrow_provider(node).await;
+        let response = provider
+            .settle_escrow(&lifecycle_request(&release(amount), "release"))
+            .await
+            .unwrap();
+        assert!(response.success, "{amount:?}: {response:?}");
+        assert_eq!(sent.load(Ordering::SeqCst), 1);
+    }
+    // A payment answered with more released and refunded than its amount,
+    // or without them, is no verdict.
+    for edit in [
+        |n: &mut Node| n.payment["released"] = json!("1000001"),
+        |n: &mut Node| {
+            n.payment.as_object_mut().unwrap().remove("refunded");
+        },
+    ] {
+        let mut node = Node::new(done.clone());
+        edit(&mut node);
+        let (provider, sent) = escrow_provider(node).await;
+        assert!(provider
+            .settle_escrow(&lifecycle_request(&release(Some("1")), "release"))
+            .await
+            .is_err());
+        assert_eq!(sent.load(Ordering::SeqCst), 0);
+    }
+}
+
+/// A refusal caught before relaying is logged once, with the network and the
+/// reason, and never with who signed it or what it moved.
+#[tokio::test]
+async fn a_refusal_before_relaying_logs_no_payer() {
+    #[derive(Clone, Default)]
+    struct Buffer(Arc<Mutex<Vec<u8>>>);
+    impl std::io::Write for Buffer {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for Buffer {
+        type Writer = Buffer;
+        fn make_writer(&'a self) -> Self::Writer {
+            self.clone()
+        }
+    }
+    let buffer = Buffer::default();
+    let subscriber = tracing_subscriber::fmt()
+        .with_writer(buffer.clone())
+        .with_ansi(false)
+        .with_max_level(tracing::Level::INFO)
+        .finish();
+    let _guard = tracing::subscriber::set_default(subscriber);
+
+    let mut node = Node::fresh(authorized_outcome());
+    node.config["tope_por_pago"] = json!("999999");
+    let (provider, sent) = escrow_provider(node).await;
+    let req = request(Some(&sign(PAYER, USDC_TESTNET, vec![authorize_call()])));
+    let response = provider.settle_escrow(&req).await.unwrap();
+    assert_eq!(refused(&response), "near_escrow_over_per_payment_cap");
+    let mut node = Node::new(lifecycle_outcome(CAPTURER, returns(""), vec![]));
+    node.payment["released"] = json!("999999");
+    let (lifecycle_provider, sent_too) = escrow_provider(node).await;
+    let release = sign(
+        CAPTURER,
+        CONTRACT,
+        vec![lifecycle(
+            "release",
+            json!({"payment_id": V1_ID, "amount": "2"}),
+            30,
+        )],
+    );
+    let response = lifecycle_provider
+        .settle_escrow(&lifecycle_request(&release, "release"))
+        .await
+        .unwrap();
+    assert_eq!(refused(&response), "near_escrow_amount_exceeds_live");
+    // An authorization for an operator the escrow does not know: E04, under
+    // the lifecycle's token.
+    let mut node = Node::fresh(authorized_outcome());
+    node.operator = Value::Null;
+    let (unknown_provider, sent_also) = escrow_provider(node).await;
+    let response = unknown_provider.settle_escrow(&req).await.unwrap();
+    assert_eq!(refused(&response), "near_escrow_operator_not_found");
+    assert_eq!(
+        sent.load(Ordering::SeqCst)
+            + sent_too.load(Ordering::SeqCst)
+            + sent_also.load(Ordering::SeqCst),
+        0
+    );
+
+    let logs = String::from_utf8(buffer.0.lock().unwrap().clone()).unwrap();
+    let refusals: Vec<&str> = logs
+        .lines()
+        .filter(|l| l.contains("refused before relaying"))
+        .collect();
+    assert_eq!(refusals.len(), 3, "{logs}");
+    for (line, token, chain_error) in [
+        (
+            refusals[0],
+            "near_escrow_over_per_payment_cap",
+            "E06_TOPE_POR_PAGO",
+        ),
+        (refusals[1], "near_escrow_amount_exceeds_live", "E24_MONTO"),
+        (
+            refusals[2],
+            "near_escrow_operator_not_found",
+            "E04_OPERADOR_INEXISTENTE",
+        ),
+    ] {
+        assert!(line.contains(token) && line.contains(chain_error), "{logs}");
+    }
+    for who in [PAYER, CAPTURER, "1000000"] {
+        assert!(!logs.contains(who), "{who} in {logs}");
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -3112,7 +4125,7 @@ fn the_evm_escrow_extra_keeps_its_exact_json() {
 
 #[tokio::test]
 async fn the_near_escrow_kind_is_additive() {
-    let (provider, _) = escrow_provider(Node::new(authorized_outcome())).await;
+    let (provider, _) = escrow_provider(Node::fresh(authorized_outcome())).await;
     let kinds = provider.supported().await.unwrap().kinds;
     assert_eq!(kinds.len(), 2);
     let exact = serde_json::to_value(&kinds[0]).unwrap();
@@ -3154,7 +4167,7 @@ async fn the_near_escrow_kind_is_additive() {
             ..cfg()
         },
     ] {
-        let (provider, _) = escrow_provider_with(Node::new(authorized_outcome()), config).await;
+        let (provider, _) = escrow_provider_with(Node::fresh(authorized_outcome()), config).await;
         let kinds = provider.supported().await.unwrap().kinds;
         assert_eq!(kinds.len(), 1);
         assert_eq!(kinds[0].scheme, Scheme::Exact);
@@ -3239,7 +4252,7 @@ mod routing {
     }
 
     async fn on_near(config: NearEscrowConfig) -> (OnNear, Arc<AtomicUsize>) {
-        let (near, sent) = escrow_provider_with(Node::new(authorized_outcome()), config).await;
+        let (near, sent) = escrow_provider_with(Node::fresh(authorized_outcome()), config).await;
         let providers = Providers(HashMap::from([(
             Network::NearTestnet,
             NetworkProvider::Near(near),

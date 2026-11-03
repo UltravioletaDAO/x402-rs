@@ -1,5 +1,45 @@
 # Changelog
 
+## [2.55.0] - 2026-11-03
+
+The NEAR `escrow` scheme refuses, before relaying, what the chain would
+refuse, as far as the chain shows it beforehand. Every check uses only what
+the escrow's views and the node answer, so nothing the escrow or the runtime
+would accept is refused.
+
+### Added
+
+- **An authorization is judged on the escrow's own state**
+  (`judge_authorize`, `src/chain/near/escrow.rs`), in the order its
+  `ft_on_transfer` checks it: `get_config`, `get_operator`, `get_payment`
+  and the payer's NEP-145 balance on the escrow. New refusals:
+  `near_escrow_token_not_allowed`, `near_escrow_paused`,
+  `near_escrow_below_operator_minimum`, `near_escrow_over_per_payment_cap`,
+  `near_escrow_over_payer_tvl_cap`, `near_escrow_over_operator_tvl_cap`,
+  `near_escrow_over_global_tvl_cap`, `near_escrow_fee_over_signed_maximum`,
+  `near_escrow_payment_id_used`, `near_escrow_no_storage`; an operator the
+  escrow does not know is `near_escrow_operator_not_found`, the lifecycle's
+  token. Storage is judged on `arras-v1` contracts only.
+- **A partial `release` of more than the payment has live** (`amount -
+  released - refunded`) is `near_escrow_amount_exceeds_live`.
+- **Every delegate action, authorization or lifecycle call**: a
+  `max_block_height` at or below the head the node answers is
+  `near_escrow_delegate_expired`; a nonce at or over `max_block_height *
+  1000000` is `near_escrow_delegate_nonce_too_large`.
+- `get_config` and `get_operator` are reused for 10 s; a refusal is never
+  decided on a reused answer (both are read again first).
+- Each of these refusals logs one `info` line with the network, the token and
+  the error the chain would have answered (the escrow's code, such as
+  `E06_TOPE_POR_PAGO`, or the runtime's): no sender, no amount.
+
+### Notes
+
+- A view answered without a field the check reads is no verdict: nothing is
+  relayed, as the lifecycle gate already did.
+- An authorization costs up to three more RPC reads (the head, `get_payment`
+  and the payer's storage), plus `get_config` and `get_operator` once per
+  10 s.
+
 ## [2.54.1] - 2026-11-03
 
 The NEAR `escrow` scheme is served on NEAR mainnet, toward Arras v1 alone. No

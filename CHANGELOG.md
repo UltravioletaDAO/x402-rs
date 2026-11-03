@@ -5,7 +5,8 @@
 The NEAR `escrow` scheme refuses, before relaying, what the chain would
 refuse, as far as the chain shows it beforehand. Every check uses only what
 the escrow's views and the node answer, so nothing the escrow or the runtime
-would accept is refused.
+would accept is refused (the nonce ceiling, judged on the head, refuses only
+nonces no wallet signs).
 
 ### Added
 
@@ -24,8 +25,9 @@ would accept is refused.
   released - refunded`) is `near_escrow_amount_exceeds_live`.
 - **Every delegate action, authorization or lifecycle call**: a
   `max_block_height` at or below the head the node answers is
-  `near_escrow_delegate_expired`; a nonce at or over `max_block_height *
-  1000000` is `near_escrow_delegate_nonce_too_large`.
+  `near_escrow_delegate_expired`; a nonce at or over that head's height
+  times 1000000 is `near_escrow_delegate_nonce_too_large` (the runtime caps
+  it at the height of the block that runs it, always past the head).
 - `get_config` and `get_operator` are reused for 10 s; a refusal is never
   decided on a reused answer (both are read again first).
 - Each of these refusals logs one `info` line with the network, the token and

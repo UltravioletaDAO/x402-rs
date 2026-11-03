@@ -606,7 +606,7 @@ escrow's own state, read from its views (`get_config`, `get_operator`, `get_paym
 balance on the escrow), and a partial `release` to the payment's live amount; each refusal names the condition
 (`near_escrow_paused`, `near_escrow_over_per_payment_cap`, `near_escrow_amount_exceeds_live`, ...). A
 delegate action whose `max_block_height` is at or below the head the node answers is
-`near_escrow_delegate_expired`, and one whose nonce is at or over `max_block_height * 1000000` is
+`near_escrow_delegate_expired`, and one whose nonce is at or over that head's height times 1000000 is
 `near_escrow_delegate_nonce_too_large`.
 
 `authorize_from_budget` is validated, not relayed until v2 exposes a budget view

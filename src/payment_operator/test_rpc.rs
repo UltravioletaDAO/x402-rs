@@ -75,6 +75,9 @@ struct NodeState {
     /// Selectors whose NEXT `eth_estimateGas` answers `execution reverted`,
     /// once each.
     estimate_reverts_once: Vec<[u8; 4]>,
+    /// Selectors whose `eth_estimateGas` answers this gas instead of the
+    /// default.
+    estimates: Vec<([u8; 4], u64)>,
     /// While set, `eth_sendRawTransaction` keeps the transaction and answers
     /// an error: a node that took it and whose answer was lost.
     send_answers_lost: bool,
@@ -177,6 +180,12 @@ impl MockNode {
     /// through, so one step of a flow can fail while the rest land.
     pub(crate) fn revert_estimates(&self, selector: [u8; 4]) {
         self.state.lock().unwrap().estimate_reverts.push(selector);
+    }
+
+    /// Make `eth_estimateGas` of every call whose data starts with `selector`
+    /// answer `gas`: a call that costs that much.
+    pub(crate) fn estimate_gas_for(&self, selector: [u8; 4], gas: u64) {
+        self.state.lock().unwrap().estimates.push((selector, gas));
     }
 
     /// [`Self::revert_estimates`] for the next estimate of `selector` only: a
@@ -415,7 +424,14 @@ fn answer(state: &Mutex<NodeState>, req: &Value) -> Value {
                 state.estimate_reverts_once.remove(once);
                 return rpc_error(id, 3, "execution reverted");
             }
-            json!("0x30000")
+            match state
+                .estimates
+                .iter()
+                .find(|(selector, _)| input.starts_with(selector))
+            {
+                Some((_, gas)) => hex_quantity(u128::from(*gas)),
+                None => json!("0x30000"),
+            }
         }
         "eth_blockNumber" => hex_quantity(TIP as u128),
         "eth_getBlockByNumber" => {

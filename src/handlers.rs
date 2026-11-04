@@ -7292,6 +7292,18 @@ where
                             .into_response()
                     }
                 },
+                Err(e @ crate::chain::evm::EstimatedSendError::GasOverLimit { .. }) => {
+                    // Refused before a nonce: nothing was written.
+                    release_feedback_proof(&claim).await;
+                    gas_over_limit_refusal(&FeedbackResponse {
+                        proof: Some(proof_report),
+                        success: false,
+                        transaction: None,
+                        feedback_index: None,
+                        error: Some(e.to_string()),
+                        network,
+                    })
+                }
                 Err(e) => {
                     error!(network = %network, error = %e, "Failed to submit feedback transaction");
                     // The submission itself was refused, so nothing was written.
@@ -8501,6 +8513,9 @@ where
                             .into_response()
                     }
                 },
+                Err(e @ crate::chain::evm::EstimatedSendError::GasOverLimit { .. }) => {
+                    gas_over_limit_refusal(&json!({ "success": false, "error": e.to_string() }))
+                }
                 Err(e) => {
                     error!(error = %e, "Failed to send revoke transaction");
                     (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({
@@ -9143,6 +9158,9 @@ where
                             .into_response()
                     }
                 },
+                Err(e @ crate::chain::evm::EstimatedSendError::GasOverLimit { .. }) => {
+                    gas_over_limit_refusal(&json!({ "success": false, "error": e.to_string() }))
+                }
                 Err(e) => {
                     error!(error = %e, "Failed to send append response transaction");
                     (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({
@@ -11752,7 +11770,7 @@ pub async fn get_register_info() -> impl IntoResponse {
             "recipient": "string (required) - address that receives the agent NFT. The facilitator does not keep the identities it mints"
         },
         "refusals": {
-            "400": "errorCode agent_uri_missing | agent_uri_too_long | agent_uri_malformed | agent_uri_scheme | agent_uri_credentials | agent_uri_ip_literal | agent_uri_non_public_host | agent_uri_embedded_ip | agent_uri_tunnel | recipient_required | recipient_invalid | recipient_is_facilitator | recipient_cannot_receive (EVM: a contract without onERC721Received)",
+            "400": "errorCode agent_uri_missing | agent_uri_too_long | agent_uri_malformed | agent_uri_scheme | agent_uri_credentials | agent_uri_ip_literal | agent_uri_non_public_host | agent_uri_embedded_ip | agent_uri_tunnel | recipient_required | recipient_invalid | recipient_is_facilitator | recipient_cannot_receive (EVM: a contract without onERC721Received) | erc8004_gas_over_limit (robinhood, robinhood-testnet: the mint's gas estimate is above the network's ceiling for one transaction; nothing was sent)",
             "403": "errorCode recipient_blocked - the recipient is on a compliance list",
             "503": "errorCode recipient_screening_unavailable | recipient_check_unavailable - retryable, nothing was minted"
         },
@@ -11951,7 +11969,12 @@ where
     )
     .await;
     register_jobs::finalize_from_response(&job_id, &resp);
-    (status, Json(resp)).into_response()
+    match register_jobs::get(&job_id).and_then(|job| job.error_code) {
+        Some(code) if code == crate::erc8004::max_gas::GAS_OVER_LIMIT_CODE => {
+            gas_over_limit_refusal(&resp)
+        }
+        _ => (status, Json(resp)).into_response(),
+    }
 }
 
 /// Why `POST /register` will not mint this request, or `None` when it may.
@@ -12146,6 +12169,16 @@ fn recipient_is_facilitator(provider: Option<&NetworkProvider>, recipient: &Mixe
         }
         _ => false,
     }
+}
+
+/// An ERC-8004 write that [`crate::chain::evm::send_call_estimated`] refused
+/// because its estimate is above the network's gas ceiling
+/// ([`crate::erc8004::max_gas`]): nothing was sent, so `400` on the route's own
+/// body plus `errorCode` `erc8004_gas_over_limit`.
+fn gas_over_limit_refusal(body: &impl serde::Serialize) -> Response {
+    let mut body = serde_json::to_value(body).unwrap_or_else(|_| json!({ "success": false }));
+    body["errorCode"] = json!(crate::erc8004::max_gas::GAS_OVER_LIMIT_CODE);
+    (StatusCode::BAD_REQUEST, Json(body)).into_response()
 }
 
 /// A `POST /register` refusal: the usual body with `success: false`, plus a
@@ -13357,6 +13390,26 @@ where
     // Handle registration transaction
     let pending_tx = match register_result {
         Ok(tx) => tx,
+        Err(e @ crate::chain::evm::EstimatedSendError::GasOverLimit { .. }) => {
+            // Refused before a nonce: nothing was minted. The job carries the
+            // code, so the synchronous answer and a poll both name it.
+            if let Some(ref jid) = job_id {
+                register_jobs::set_error_code(jid, crate::erc8004::max_gas::GAS_OVER_LIMIT_CODE);
+            }
+            return (
+                StatusCode::BAD_REQUEST,
+                RegisterAgentResponse {
+                    success: false,
+                    agent_id: None,
+                    transaction: None,
+                    transfer_transaction: None,
+                    owner: None,
+                    error: Some(e.to_string()),
+                    network,
+                    mint: None,
+                },
+            );
+        }
         Err(e) => {
             error!(network = %network, error = %e, "Failed to send registration transaction");
             return (
@@ -14140,10 +14193,11 @@ async fn transfer_agent_nft(
     };
 
     let pending = send_result.map_err(|e| {
-        // Refused at estimation: this send moved nothing, as surely as a
-        // mined revert. Any other send error may come after the node took the
-        // transaction, so it is in flight until a read says otherwise.
-        let reverted = matches!(e, crate::chain::evm::EstimatedSendError::Reverted(_));
+        // Refused at estimation, or above the network's gas ceiling: this
+        // send moved nothing, as surely as a mined revert. Any other send
+        // error may come after the node took the transaction, so it is in
+        // flight until a read says otherwise.
+        let reverted = e.sent_nothing();
         TransferFailure {
             reverted,
             in_flight: !reverted,
@@ -24307,6 +24361,159 @@ mod erc8004_register_gate_tests {
         assert!(node.sent().is_empty());
     }
 
+    /// A gate over a scripted node on Robinhood Chain, whose registry says
+    /// `OWNER` holds no identity yet.
+    async fn robinhood_gate_on_node() -> (Gate, crate::payment_operator::test_rpc::MockNode) {
+        use crate::payment_operator::test_rpc::{self, CallAnswer, MockNode};
+        let node = MockNode::start(Network::Robinhood).await;
+        let provider = test_rpc::provider(Network::Robinhood, &node, true).await;
+        node.on_call(
+            get_contracts(&Network::Robinhood)
+                .unwrap()
+                .identity_registry,
+            <IIdentityRegistry::balanceOfCall as alloy::sol_types::SolCall>::SELECTOR,
+            CallAnswer::Return(alloy::primitives::U256::ZERO.to_be_bytes::<32>().to_vec()),
+        );
+        let gate = Gate {
+            providers: Arc::new(Providers {
+                lookups: AtomicUsize::new(0),
+                provider: Some(NetworkProvider::Evm(provider)),
+            }),
+            lists: Lists::Clear,
+            screened: Arc::new(AtomicUsize::new(0)),
+        };
+        (gate, node)
+    }
+
+    /// Robinhood Chain holds each ERC-8004 write to its gas ceiling
+    /// (`erc8004::max_gas`): a mint estimated above it is refused before
+    /// anything is sent, `400` with its own `errorCode`, on the synchronous
+    /// answer and on the job an asynchronous caller polls. At the ceiling the
+    /// same mint goes out.
+    #[tokio::test]
+    async fn a_mint_above_the_gas_ceiling_is_refused_with_its_code() {
+        let _writer = super::writer_lease_gate_tests::WRITER_FLAG
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        crate::writer_lease::set_writer_for_test(true);
+        let mint = <IIdentityRegistry::register_1Call as alloy::sol_types::SolCall>::SELECTOR;
+        let ceiling = crate::erc8004::max_gas::ceiling(Network::Robinhood)
+            .expect("Robinhood Chain has an ERC-8004 gas ceiling");
+        let uri = |n: u8| format!("https://execution.market/agents/gate-test-gas-ceiling-{n}");
+
+        let (gate, node) = robinhood_gate_on_node().await;
+        node.estimate_gas_for(mint, ceiling + 1);
+        let (status, doc) = register(&gate, body("robinhood", &uri(1), Some(OWNER))).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{doc}");
+        assert_eq!(doc["errorCode"], "erc8004_gas_over_limit", "{doc}");
+        assert_eq!(doc["success"], false, "{doc}");
+        assert_eq!(doc["network"], "robinhood", "{doc}");
+        assert!(
+            doc["transaction"].is_null() && doc["agentId"].is_null(),
+            "{doc}"
+        );
+        assert!(node.sent().is_empty(), "a transaction went out: {doc}");
+
+        let mut headers = HeaderMap::new();
+        headers.insert("prefer", "respond-async".parse().unwrap());
+        let response = post_register(
+            State(gate.clone()),
+            headers,
+            Bytes::from(body("robinhood", &uri(2), Some(OWNER)).to_string()),
+        )
+        .await
+        .into_response();
+        assert_eq!(response.status(), StatusCode::ACCEPTED);
+        let accepted: serde_json::Value = serde_json::from_slice(
+            &axum::body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        let job_id = accepted["jobId"].as_str().expect("a job id").to_string();
+        let mut job = serde_json::Value::Null;
+        for _ in 0..200 {
+            job = serde_json::to_value(register_jobs::get(&job_id).expect("the job is kept"))
+                .unwrap();
+            if job["status"] != "pending" {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        }
+        assert_eq!(job["status"], "failed", "{job}");
+        assert_eq!(job["errorCode"], "erc8004_gas_over_limit", "{job}");
+        assert!(node.sent().is_empty(), "a transaction went out: {job}");
+
+        let (gate, node) = robinhood_gate_on_node().await;
+        node.estimate_gas_for(mint, ceiling);
+        let (_, doc) = register(&gate, body("robinhood", &uri(3), Some(OWNER))).await;
+        assert!(doc["errorCode"].is_null(), "{doc}");
+        assert!(
+            node.sent().iter().any(|tx| tx.input.starts_with(&mint)),
+            "the mint at the ceiling was not sent: {doc}"
+        );
+    }
+
+    /// The same ceiling holds a rating and an agent's response to one: each,
+    /// estimated above it, is refused `400` with the code, and nothing is
+    /// sent; at the ceiling each goes out.
+    #[tokio::test]
+    async fn ratings_and_responses_above_the_gas_ceiling_are_refused_with_its_code() {
+        use alloy::sol_types::SolCall;
+        let ceiling = crate::erc8004::max_gas::ceiling(Network::Robinhood)
+            .expect("Robinhood Chain has an ERC-8004 gas ceiling");
+        let rating = serde_json::json!({
+            "x402Version": 1,
+            "network": "robinhood",
+            "feedback": { "agentId": 7, "value": 5 },
+        });
+        let answer = serde_json::json!({
+            "x402Version": 1,
+            "network": "robinhood",
+            "agentId": 7,
+            "clientAddress": OWNER,
+            "feedbackIndex": 1,
+            "responseUri": "https://execution.market/agents/7/response.json",
+        });
+        let cases = [
+            (IReputationRegistry::giveFeedbackCall::SELECTOR, &rating),
+            (IReputationRegistry::appendResponseCall::SELECTOR, &answer),
+        ];
+        for (selector, request) in cases {
+            for (estimate, refused) in [(ceiling + 1, true), (ceiling, false)] {
+                let (gate, node) = robinhood_gate_on_node().await;
+                node.estimate_gas_for(selector, estimate);
+                let body = Bytes::from(request.to_string());
+                let response = if selector == IReputationRegistry::giveFeedbackCall::SELECTOR {
+                    post_feedback(State(gate.clone()), body)
+                        .await
+                        .into_response()
+                } else {
+                    post_append_response(State(gate.clone()), body)
+                        .await
+                        .into_response()
+                };
+                let status = response.status();
+                let doc: serde_json::Value = serde_json::from_slice(
+                    &axum::body::to_bytes(response.into_body(), usize::MAX)
+                        .await
+                        .unwrap(),
+                )
+                .unwrap();
+                let sent = node.sent().iter().any(|tx| tx.input.starts_with(&selector));
+                if refused {
+                    assert_eq!(status, StatusCode::BAD_REQUEST, "{doc}");
+                    assert_eq!(doc["errorCode"], "erc8004_gas_over_limit", "{doc}");
+                    assert_eq!(doc["success"], false, "{doc}");
+                    assert!(!sent, "a refused write was sent: {doc}");
+                } else {
+                    assert!(doc["errorCode"].is_null(), "{doc}");
+                    assert!(sent, "a write at the ceiling was not sent: {doc}");
+                }
+            }
+        }
+    }
+
     /// The async path (`Prefer: respond-async`) meets the same gate: a
     /// refused request is a 400 with its code, never a 202, and leaves no job.
     #[tokio::test]
@@ -26015,6 +26222,7 @@ mod register_jobs_replica_tests {
             transfer_transaction: None,
             owner: None,
             error: None,
+            error_code: None,
             key: None,
             updated_at: 0,
         }

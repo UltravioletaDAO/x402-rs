@@ -60,6 +60,7 @@
 mod abi;
 pub mod agent_uri;
 pub mod daily_cap;
+pub mod max_gas;
 pub mod proof;
 pub mod register_jobs;
 pub mod relay;

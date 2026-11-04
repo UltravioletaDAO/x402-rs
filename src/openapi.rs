@@ -171,7 +171,11 @@ discovery documents) carry no limit and therefore no headers.
 The ERC-8004 writes that send a transaction (`POST /register`, `POST /feedback`
 and the `/feedback/*` submits) are also limited per network per UTC day. Past
 that limit they answer `429` with code `erc8004_daily_write_limit` and a
-`retry-after` that runs to 00:00 UTC; other networks are not affected.
+`retry-after` that runs to 00:00 UTC; other networks are not affected. On
+`robinhood` and `robinhood-testnet` each transaction those writes send is also
+held to a gas ceiling: one whose gas estimate is above it is not sent, and a
+write refused that way before it sent anything answers `400` with `errorCode`
+`erc8004_gas_over_limit` (`GET /config`, `erc8004DailyWriteCap.maxGasPerWrite`).
 
 Separately from any bucket, admission to each task is checked before any
 route runs, and a refusal means nothing was done; resend the same request:
@@ -1395,6 +1399,7 @@ each with its own `errorCode`, before anything is sent:
 | `agent_uri_tunnel` | 400 | A tunnelling service (`ngrok`, `trycloudflare`, ...) |
 | `recipient_required`, `recipient_is_facilitator`, `recipient_invalid` (the zero address) | 400 | See above |
 | `recipient_cannot_receive` | 400 | EVM: a contract that does not answer `onERC721Received`; the transfer would revert and leave the identity with the facilitator |
+| `erc8004_gas_over_limit` | 400 | `robinhood`, `robinhood-testnet`: the mint's gas estimate is above the network's ceiling for one transaction; nothing is sent |
 | `recipient_blocked` | 403 | The recipient is on a compliance list; nothing is minted or handed over |
 | `recipient_screening_unavailable`, `recipient_check_unavailable` | 503 | The lists, or the recipient's code, could not be read; retryable |
 | `mint_not_atomic` (in `mint.errorCode`) | 400 | Solana: the mint would not fit one transaction: more than 4 `metadata` entries, or over 1232 bytes with long values |
@@ -1521,7 +1526,7 @@ re-minted — the async path returns the existing job, the sync path returns
     responses(
         (status = 200, description = "Registration result (sync)", body = Object),
         (status = 202, description = "Async registration accepted; poll /register/status/{jobId}", body = Object),
-        (status = 400, description = "Registration failed, or refused before the chain: `errorCode` says which rule (`agent_uri_*`, `recipient_required`, `recipient_is_facilitator`, `recipient_invalid`, `recipient_cannot_receive`)", body = Object),
+        (status = 400, description = "Registration failed, or refused before the chain: `errorCode` says which rule (`agent_uri_*`, `recipient_required`, `recipient_is_facilitator`, `recipient_invalid`, `recipient_cannot_receive`, `erc8004_gas_over_limit`)", body = Object),
         (status = 403, description = "`recipient_blocked`: the recipient is on a compliance list", body = Object),
         (status = 409, description = "A registration for this agent is already in progress, or on Solana `held_identity_not_resumable`: an identity with this `agentUri` is held by the facilitator and this is not a retry of the request that minted it; nothing is sent", body = Object),
         (status = 500, description = "Solana: the identity exists but is still held by the facilitator (`mint.status` is `pending_stats` or `pending_transfer`). Repeat the request to finish it", body = Object),
@@ -3486,8 +3491,9 @@ unknown or revoked key is charged like any \
 other caller. A request whose client address (the last `X-Forwarded-For` entry, the one the load \
 balancer appends) is on the IP allowlist skips the same, answered with `x-ratelimit-exempt: \
 ip-allowlist`. Neither the body deadline, nor the task's ceiling of concurrent requests (`503`, every \
-caller), nor the daily write limit (`429 erc8004_daily_write_limit`, it protects the gas the \
-facilitator pays) is skipped.
+caller), nor the daily write limit (`429 erc8004_daily_write_limit`, how many writes the \
+facilitator pays gas for), nor the gas ceiling of each write's transactions where a network has one \
+(`400 erc8004_gas_over_limit`) is skipped.
 
 Rate limited per IP like the other cheap reads.",
     responses(
@@ -3533,7 +3539,12 @@ Rate limited per IP like the other cheap reads.",
                 },
                 "erc8004DailyWriteCap": {
                     "mounted": true, "defaultPerNetwork": 1000,
-                    "perNetwork": { "ethereum": 100, "solana": 150 }
+                    "perNetwork": { "ethereum": 100, "solana": 150 },
+                    "maxGasPerWrite": {
+                        "perNetwork": { "robinhood": 1000000, "robinhood-testnet": 1000000 },
+                        "otherNetworks": "no ceiling", "env": "ERC8004_MAX_GAS_<NETWORK>",
+                        "refusal": { "status": 400, "errorCode": "erc8004_gas_over_limit" }
+                    }
                 }
             })
         ),
@@ -4454,6 +4465,63 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// The networks `/docs` and `GET /register` say hold each ERC-8004
+    /// transaction to a gas ceiling are exactly the ones with a built-in
+    /// ceiling (`erc8004::max_gas`). Typed by hand in three places; a network
+    /// added to the table, or dropped from it, without them fails here.
+    #[tokio::test]
+    async fn the_networks_named_with_a_gas_ceiling_are_the_built_in_ones() {
+        use axum::response::IntoResponse;
+        let names: Vec<String> = crate::erc8004::max_gas::GasCeilings::from_lookup(|_| None)
+            .configured()
+            .into_iter()
+            .map(|(network, _)| network.to_string())
+            .collect();
+        assert!(!names.is_empty());
+        let quoted: Vec<String> = names.iter().map(|n| format!("`{n}`")).collect();
+        let listed = match quoted.split_last() {
+            Some((last, [])) => last.clone(),
+            Some((last, rest)) => format!("{} and {last}", rest.join(", ")),
+            None => unreachable!(),
+        };
+
+        fn strings(value: &serde_json::Value, out: &mut Vec<String>) {
+            match value {
+                serde_json::Value::String(s) => {
+                    out.push(s.split_whitespace().collect::<Vec<_>>().join(" "))
+                }
+                serde_json::Value::Array(items) => items.iter().for_each(|v| strings(v, out)),
+                serde_json::Value::Object(map) => map.values().for_each(|v| strings(v, out)),
+                _ => {}
+            }
+        }
+        let mut texts = Vec::new();
+        strings(
+            &serde_json::to_value(ApiDoc::openapi()).unwrap(),
+            &mut texts,
+        );
+        for phrase in [
+            format!("On {listed} each transaction those writes send is also held to a gas ceiling"),
+            format!("| `erc8004_gas_over_limit` | 400 | {}: ", quoted.join(", ")),
+        ] {
+            assert!(
+                texts.iter().any(|t| t.contains(&phrase)),
+                "/docs does not say: {phrase}"
+            );
+        }
+
+        let response = crate::handlers::get_register_info().await.into_response();
+        let info: serde_json::Value = serde_json::from_slice(
+            &axum::body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        let refusals = info["refusals"]["400"].as_str().unwrap_or_default();
+        let phrase = format!("erc8004_gas_over_limit ({}: ", names.join(", "));
+        assert!(refusals.contains(&phrase), "GET /register: {refusals}");
     }
 
     /// The relayed-feedback availability list in `/docs` is exactly the set of

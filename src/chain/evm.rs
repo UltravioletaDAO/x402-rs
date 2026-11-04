@@ -188,14 +188,32 @@ pub enum EstimatedSendError {
     /// Gas estimation executed the call and it reverted. Nothing was sent and
     /// no nonce was reserved.
     Reverted(alloy::contract::Error),
+    /// The estimate is above the network's ceiling for one ERC-8004
+    /// transaction ([`crate::erc8004::max_gas`]). Nothing was sent, no nonce
+    /// was reserved and this send did not keep the write's daily slot.
+    GasOverLimit { estimated: u64, ceiling: u64 },
     /// The broadcast itself failed.
     Send(alloy::contract::Error),
+}
+
+impl EstimatedSendError {
+    /// Whether the call surely went nowhere: refused at estimation, by the
+    /// node or by the gas ceiling. A `Send` failure may come after the node
+    /// took the transaction.
+    pub fn sent_nothing(&self) -> bool {
+        matches!(self, Self::Reverted(_) | Self::GasOverLimit { .. })
+    }
 }
 
 impl std::fmt::Display for EstimatedSendError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Reverted(e) => write!(f, "gas estimation reverted, transaction not sent: {e}"),
+            Self::GasOverLimit { estimated, ceiling } => write!(
+                f,
+                "this transaction needs an estimated {estimated} gas, above the ceiling of \
+                 {ceiling} for one ERC-8004 transaction on this network; not sent"
+            ),
             Self::Send(e) => write!(f, "{e}"),
         }
     }
@@ -222,6 +240,14 @@ impl std::error::Error for EstimatedSendError {}
 /// so a flaky RPC behaves exactly as before. Estimating goes through the same
 /// `FillProvider`, whose `estimate_gas` runs only `prepare_call_sync` (the
 /// wallet's `from`), never the nonce filler.
+///
+/// On a network with a gas ceiling for one ERC-8004 transaction
+/// ([`crate::erc8004::max_gas`], today Robinhood Chain and its testnet), an
+/// estimate above it is refused here, before the write keeps its daily slot
+/// and before a nonce is reserved ([`EstimatedSendError::GasOverLimit`]), and
+/// a call that could not be estimated is sent with the ceiling as its gas
+/// limit instead of the filler's. Every caller of this function is an
+/// ERC-8004 write; a network without a ceiling sends as before.
 pub async fn send_call_estimated<P, D>(
     call: alloy::contract::CallBuilder<P, D, AlloyEthereum>,
     network: Network,
@@ -230,9 +256,22 @@ where
     P: Provider<AlloyEthereum>,
     D: alloy::contract::CallDecoder,
 {
+    let ceiling = crate::erc8004::max_gas::ceiling(network);
     let call = call.block(BlockId::latest());
     match call.estimate_gas().await {
         Ok(gas) => {
+            if let Some(ceiling) = ceiling.filter(|ceiling| gas > *ceiling) {
+                tracing::warn!(
+                    %network,
+                    estimated = gas,
+                    ceiling,
+                    "ERC-8004 write above the network's gas ceiling; call not sent, no nonce consumed"
+                );
+                return Err(EstimatedSendError::GasOverLimit {
+                    estimated: gas,
+                    ceiling,
+                });
+            }
             crate::erc8004::daily_cap::mark_sent();
             call.gas(gas).send().await.map_err(EstimatedSendError::Send)
         }
@@ -246,13 +285,30 @@ where
                 );
                 return Err(EstimatedSendError::Reverted(e));
             }
-            tracing::warn!(
-                %network,
-                error = %msg,
-                "Gas estimation unavailable, falling back to filler"
-            );
             crate::erc8004::daily_cap::mark_sent();
-            call.send().await.map_err(EstimatedSendError::Send)
+            match ceiling {
+                // Never sent blind where a ceiling holds: at most the ceiling.
+                Some(ceiling) => {
+                    tracing::warn!(
+                        %network,
+                        error = %msg,
+                        ceiling,
+                        "Gas estimation unavailable, sending with the network's ERC-8004 gas ceiling"
+                    );
+                    call.gas(ceiling)
+                        .send()
+                        .await
+                        .map_err(EstimatedSendError::Send)
+                }
+                None => {
+                    tracing::warn!(
+                        %network,
+                        error = %msg,
+                        "Gas estimation unavailable, falling back to filler"
+                    );
+                    call.send().await.map_err(EstimatedSendError::Send)
+                }
+            }
         }
     }
 }
@@ -3502,20 +3558,57 @@ mod tests {
     /// nonces in production.
     #[derive(Clone)]
     struct ScriptedRpc {
-        estimate_reverts: bool,
+        estimate: EstimateAnswer,
         calls: Arc<std::sync::Mutex<Vec<String>>>,
+        /// The raw transactions `eth_sendRawTransaction` received.
+        raw_sent: Arc<std::sync::Mutex<Vec<String>>>,
+    }
+
+    /// What [`ScriptedRpc`] answers to `eth_estimateGas`.
+    #[derive(Clone, Copy)]
+    enum EstimateAnswer {
+        Gas(u64),
+        Reverts,
+        /// A node-side failure that is not an execution revert.
+        Unavailable,
     }
 
     impl ScriptedRpc {
         fn new(estimate_reverts: bool) -> Self {
+            Self::answering(if estimate_reverts {
+                EstimateAnswer::Reverts
+            } else {
+                EstimateAnswer::Gas(21_000)
+            })
+        }
+
+        fn answering(estimate: EstimateAnswer) -> Self {
             Self {
-                estimate_reverts,
+                estimate,
                 calls: Default::default(),
+                raw_sent: Default::default(),
             }
         }
 
         fn calls(&self) -> Vec<String> {
             self.calls.lock().unwrap().clone()
+        }
+
+        /// The gas limit of every transaction broadcast, in order.
+        fn sent_gas_limits(&self) -> Vec<u64> {
+            use alloy::consensus::Transaction as _;
+            use alloy::eips::Decodable2718 as _;
+            self.raw_sent
+                .lock()
+                .unwrap()
+                .iter()
+                .map(|raw| {
+                    let raw = hex::decode(raw.trim_start_matches("0x")).unwrap();
+                    alloy::consensus::TxEnvelope::decode_2718(&mut raw.as_slice())
+                        .unwrap()
+                        .gas_limit()
+                })
+                .collect()
         }
     }
 
@@ -3565,16 +3658,25 @@ mod tests {
                             .lock()
                             .unwrap()
                             .push(ESTIMATE_ANSWERED.to_string());
-                        if this.estimate_reverts {
-                            r#""error":{"code":3,"message":"execution reverted","data":"0x"}"#
-                                .to_string()
-                        } else {
-                            r#""result":"0x5208""#.to_string()
+                        match this.estimate {
+                            EstimateAnswer::Reverts => {
+                                r#""error":{"code":3,"message":"execution reverted","data":"0x"}"#
+                                    .to_string()
+                            }
+                            EstimateAnswer::Unavailable => {
+                                r#""error":{"code":-32603,"message":"upstream request timed out"}"#
+                                    .to_string()
+                            }
+                            EstimateAnswer::Gas(gas) => format!(r#""result":"0x{gas:x}""#),
                         }
                     }
                     "eth_getTransactionCount" => r#""result":"0x7""#.to_string(),
                     "eth_chainId" => r#""result":"0x2105""#.to_string(),
-                    "eth_sendRawTransaction" => format!(r#""result":"0x{}""#, "ab".repeat(32)),
+                    "eth_sendRawTransaction" => {
+                        let raw = req["params"][0].as_str().unwrap_or_default().to_string();
+                        this.raw_sent.lock().unwrap().push(raw);
+                        format!(r#""result":"0x{}""#, "ab".repeat(32))
+                    }
                     other => {
                         format!(r#""error":{{"code":-32601,"message":"{other} not scripted"}}"#)
                     }
@@ -3698,6 +3800,153 @@ mod tests {
             "the filler estimated a second time: {calls:?}"
         );
         assert_eq!(read_next(&nonces, from).await, Some(8));
+    }
+
+    // ---------------------------------------------------------------
+    // The gas ceiling of one ERC-8004 write (`erc8004::max_gas`).
+    // ---------------------------------------------------------------
+
+    /// Run `work` holding a daily-limit slot for `network`, the way a capped
+    /// route serves a write, and hand back the limit to read what was kept.
+    async fn in_a_daily_slot<F: Future>(
+        network: Network,
+        work: F,
+    ) -> (Arc<crate::erc8004::daily_cap::DailyWriteCap>, F::Output) {
+        use crate::erc8004::daily_cap::{scope, DailyWriteCap};
+        let cap = Arc::new(DailyWriteCap::new(
+            10,
+            std::collections::HashMap::new(),
+            Box::new(|| 1_700_000_000),
+        ));
+        let slot = cap.reserve(network).ok().map(Arc::new);
+        let output = scope(slot, work).await;
+        (cap, output)
+    }
+
+    /// The ceiling of a network that must have one.
+    fn ceiling_of(network: Network) -> u64 {
+        crate::erc8004::max_gas::ceiling(network)
+            .unwrap_or_else(|| panic!("{network} has no ERC-8004 gas ceiling"))
+    }
+
+    /// An estimate above the ceiling is refused before the write keeps its
+    /// daily slot, before a nonce is reserved and before anything is
+    /// broadcast, on Robinhood Chain and on its testnet.
+    #[tokio::test]
+    async fn an_estimate_above_the_ceiling_is_refused_before_slot_nonce_or_send() {
+        for network in [Network::Robinhood, Network::RobinhoodTestnet] {
+            let ceiling = ceiling_of(network);
+            let rpc = ScriptedRpc::answering(EstimateAnswer::Gas(ceiling + 1));
+            let nonces = PendingNonceManager::default();
+            let (call, from) = scripted_call(rpc.clone(), nonces.clone());
+
+            let (cap, outcome) = in_a_daily_slot(network, send_call_estimated(call, network)).await;
+
+            assert!(
+                matches!(
+                    outcome,
+                    Err(EstimatedSendError::GasOverLimit { estimated, ceiling: limit })
+                        if estimated == ceiling + 1 && limit == ceiling
+                ),
+                "{network}: got {:?}",
+                outcome.map(|_| ())
+            );
+            assert!(outcome
+                .as_ref()
+                .err()
+                .is_some_and(EstimatedSendError::sent_nothing));
+            assert_eq!(
+                cap.used_today(&network),
+                0,
+                "{network}: the refused write kept its daily slot"
+            );
+            let calls = rpc.calls();
+            assert!(
+                !calls.iter().any(|m| m == "eth_getTransactionCount"),
+                "{network}: a nonce was fetched for a refused write: {calls:?}"
+            );
+            assert!(
+                !calls.iter().any(|m| m == "eth_sendRawTransaction"),
+                "{network}: {calls:?}"
+            );
+            assert_eq!(read_next(&nonces, from).await, None, "{network}");
+        }
+    }
+
+    /// An estimate at or under the ceiling is sent as before: its own estimate
+    /// as the gas limit, the nonce reserved after it, the daily slot kept.
+    #[tokio::test]
+    async fn an_estimate_within_the_ceiling_is_sent_as_before() {
+        let network = Network::Robinhood;
+        let ceiling = ceiling_of(network);
+        for estimate in [ceiling / 5, ceiling] {
+            let rpc = ScriptedRpc::answering(EstimateAnswer::Gas(estimate));
+            let nonces = PendingNonceManager::default();
+            let (call, from) = scripted_call(rpc.clone(), nonces.clone());
+
+            let (cap, outcome) = in_a_daily_slot(network, send_call_estimated(call, network)).await;
+
+            let pending =
+                outcome.unwrap_or_else(|e| panic!("an estimate of {estimate} was not sent: {e}"));
+            assert_eq!(*pending.tx_hash(), FixedBytes::<32>::from([0xab; 32]));
+            assert_eq!(rpc.sent_gas_limits(), vec![estimate]);
+            assert_eq!(cap.used_today(&network), 1, "the sent write lost its slot");
+            assert_eq!(read_next(&nonces, from).await, Some(8));
+        }
+    }
+
+    /// A network without a ceiling sends whatever it is estimated, as before.
+    #[tokio::test]
+    async fn a_network_without_a_ceiling_sends_any_estimate() {
+        let network = Network::Base;
+        assert_eq!(crate::erc8004::max_gas::ceiling(network), None);
+        let huge = 50_000_000;
+        let rpc = ScriptedRpc::answering(EstimateAnswer::Gas(huge));
+        let (call, _) = scripted_call(rpc.clone(), PendingNonceManager::default());
+
+        let (cap, outcome) = in_a_daily_slot(network, send_call_estimated(call, network)).await;
+
+        let pending = outcome.unwrap_or_else(|e| panic!("base did not send: {e}"));
+        assert_eq!(*pending.tx_hash(), FixedBytes::<32>::from([0xab; 32]));
+        assert_eq!(rpc.sent_gas_limits(), vec![huge]);
+        assert_eq!(cap.used_today(&network), 1);
+    }
+
+    /// Where a ceiling holds, a call whose gas could not be estimated is sent
+    /// with the ceiling as its limit, and the filler is not asked to estimate
+    /// again. Where none holds, it falls to the filler as before: here the
+    /// filler's own estimate fails too and nothing is broadcast.
+    #[tokio::test]
+    async fn without_an_estimate_a_capped_network_sends_at_its_ceiling() {
+        let network = Network::Robinhood;
+        let ceiling = ceiling_of(network);
+        let rpc = ScriptedRpc::answering(EstimateAnswer::Unavailable);
+        let (call, _) = scripted_call(rpc.clone(), PendingNonceManager::default());
+
+        let (cap, outcome) = in_a_daily_slot(network, send_call_estimated(call, network)).await;
+
+        let pending = outcome.unwrap_or_else(|e| panic!("not sent with the ceiling: {e}"));
+        assert_eq!(*pending.tx_hash(), FixedBytes::<32>::from([0xab; 32]));
+        assert_eq!(rpc.sent_gas_limits(), vec![ceiling]);
+        let estimates = |rpc: &ScriptedRpc| {
+            rpc.calls()
+                .iter()
+                .filter(|m| *m == "eth_estimateGas")
+                .count()
+        };
+        assert_eq!(estimates(&rpc), 1, "{:?}", rpc.calls());
+        assert_eq!(cap.used_today(&network), 1);
+
+        let rpc = ScriptedRpc::answering(EstimateAnswer::Unavailable);
+        let (call, _) = scripted_call(rpc.clone(), PendingNonceManager::default());
+        let outcome = send_call_estimated(call, Network::Base).await;
+        assert!(
+            matches!(outcome, Err(EstimatedSendError::Send(_))),
+            "got {:?}",
+            outcome.map(|_| ())
+        );
+        assert_eq!(estimates(&rpc), 2, "{:?}", rpc.calls());
+        assert!(rpc.sent_gas_limits().is_empty());
     }
 
     // ---------------------------------------------------------------

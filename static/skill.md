@@ -566,7 +566,7 @@ failures occurred".
 
 ## 8. Reputation and identity (ERC-8004)
 
-Live on 13 mainnets, 23 networks in total. See `/auth.md` for the authorship rules —
+Live on 14 mainnets, 25 networks in total. See `/auth.md` for the authorship rules —
 they are the part integrators get wrong.
 
 - `GET /identity/{network}/{agentId}` · `GET /identity/{network}/owner/{address}`

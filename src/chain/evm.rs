@@ -7883,6 +7883,52 @@ mod proof_of_payment_tests {
         );
     }
 
+    /// The settle's proof gate is `is_erc8004_supported`: a network enters it
+    /// with the ERC-8004 table, as Robinhood Chain did in 2.56.0, and a network
+    /// outside that table still settles without a proof. The logs carry
+    /// `blockTimestamp`, so the node is never asked anything.
+    #[tokio::test]
+    async fn the_settle_proof_follows_the_erc8004_table() {
+        let payer = PrivateKeySigner::random();
+        let token = base_usdc();
+        let timestamp = unix_now_secs() - 30;
+        let receipt: TransactionReceipt = serde_json::from_value(receipt_json(
+            payer.address(),
+            token,
+            Some(BLOCK),
+            Some(timestamp),
+        ))
+        .expect("receipt parses");
+        let request = settle_request(&payer, token, true);
+
+        for (network, served) in [
+            (Network::Robinhood, true),
+            (Network::RobinhoodTestnet, true),
+            (Network::HyperEvm, false),
+        ] {
+            // Nothing queued: a proof that needed a read would come back `None`.
+            let rpc = ProviderBuilder::new()
+                .connect_mocked_client(alloy::providers::mock::Asserter::new());
+            let proof = create_proof_of_payment(
+                &rpc,
+                &receipt,
+                &request.payment_requirements,
+                network,
+                MixedAddress::Evm(payer.address().into()),
+                MixedAddress::Evm(PAYEE.into()),
+                TokenAmount::from(U256::from(AMOUNT)),
+                MixedAddress::Evm(token.into()),
+            )
+            .await;
+            assert_eq!(proof.is_some(), served, "{network}: {proof:?}");
+            if let Some(proof) = proof {
+                assert_eq!(proof.network, network);
+                assert_eq!(proof.block_number, BLOCK);
+                assert_eq!(proof.timestamp, timestamp);
+            }
+        }
+    }
+
     /// `elapsed >= bound` is asserted so that a read failing instantly cannot
     /// pass for the timeout.
     #[tokio::test]

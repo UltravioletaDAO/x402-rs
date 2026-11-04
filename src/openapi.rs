@@ -59,9 +59,9 @@ Arc uses USDC `0x3600000000000000000000000000000000000000` with 6 payment decima
 
 ## ERC-8004 Reputation (Trustless Agents)
 
-The facilitator supports [ERC-8004](https://eips.ethereum.org/EIPS/eip-8004) for AI agent identity and reputation across **23 networks** (13 mainnets + 10 testnets), spanning both EVM and Solana.
+The facilitator supports [ERC-8004](https://eips.ethereum.org/EIPS/eip-8004) for AI agent identity and reputation across **25 networks** (14 mainnets + 11 testnets), spanning both EVM and Solana.
 
-**EVM networks:** `ethereum`, `base`, `polygon`, `arbitrum`, `optimism`, `celo`, `bsc`, `monad`, `avalanche`, `scroll`, `skale-base`, `arc`, `ethereum-sepolia`, `base-sepolia`, `polygon-amoy`, `arbitrum-sepolia`, `optimism-sepolia`, `celo-sepolia`, `avalanche-fuji`, `skale-base-sepolia`, `arc-testnet`
+**EVM networks:** `ethereum`, `base`, `polygon`, `arbitrum`, `optimism`, `celo`, `bsc`, `monad`, `avalanche`, `scroll`, `skale-base`, `arc`, `robinhood`, `ethereum-sepolia`, `base-sepolia`, `polygon-amoy`, `arbitrum-sepolia`, `optimism-sepolia`, `celo-sepolia`, `avalanche-fuji`, `skale-base-sepolia`, `arc-testnet`, `robinhood-testnet`
 
 **Solana networks:** `solana`, `solana-devnet` (via [QuantuLabs 8004-solana](https://github.com/QuantuLabs/8004-solana) + [ATOM Engine](https://github.com/QuantuLabs/8004-atom))
 
@@ -227,7 +227,7 @@ constraint rather than as grounds for a `406`.
         (name = "Core", description = "Core x402 payment verification and settlement (exact, upto, escrow schemes)"),
         (name = "Escrow", description = "Gasless escrow lifecycle (authorize, release, refund, state query)"),
         (name = "Discovery", description = "Network and scheme discovery"),
-        (name = "ERC-8004", description = "AI Agent reputation and identity (ERC-8004 Trustless Agents) - 23 networks (EVM + Solana)"),
+        (name = "ERC-8004", description = "AI Agent reputation and identity (ERC-8004 Trustless Agents) - 25 networks (EVM + Solana)"),
         (name = "Bazaar", description = "Decentralized resource discovery registry"),
         (name = "Compliance", description = "OFAC compliance and sanctions screening"),
         (name = "Health", description = "Service health and status"),
@@ -1411,7 +1411,7 @@ not the recipient afterwards), the identity is retired on the spot (its `agentUR
 `recipient`) within 24 hours puts the `agentURI` back and retries the delivery of that same
 identity.
 
-**Supported networks:** 23 networks (EVM + Solana). EVM chains use ERC-721 NFTs, Solana uses Metaplex Core NFTs.
+**Supported networks:** 25 networks (EVM + Solana). EVM chains use ERC-721 NFTs, Solana uses Metaplex Core NFTs.
 
 **EVM request:**
 ```json
@@ -1593,7 +1593,7 @@ async fn path_feedback_get() {}
     description = r#"
 Submits on-chain reputation feedback for an AI agent via the ERC-8004 Reputation Registry (EVM) or Agent Registry with ATOM Engine CPI (Solana).
 
-**Supported networks:** 23 networks (EVM + Solana).
+**Supported networks:** 25 networks (EVM + Solana).
 
 **agentId format:** Numeric (42) for EVM, base58 Pubkey string for Solana. Both JSON numbers and strings are accepted.
 
@@ -2068,7 +2068,7 @@ async fn path_feedback_response() {}
     description = r#"
 Queries the reputation summary for an AI agent from the ERC-8004 Reputation Registry.
 
-**EVM networks:** ethereum, base, polygon, arbitrum, optimism, celo, bsc, monad, avalanche, scroll, skale-base, arc + testnets
+**EVM networks:** ethereum, base, polygon, arbitrum, optimism, celo, bsc, monad, avalanche, scroll, skale-base, arc, robinhood + testnets
 
 **Solana networks:** solana, solana-devnet (reads from ATOM Engine for enriched reputation data)
 
@@ -2129,7 +2129,7 @@ async fn path_reputation() {}
     description = r#"
 Retrieves agent identity information from the ERC-8004 Identity Registry.
 
-**EVM networks:** ethereum, base, polygon, arbitrum, optimism, celo, bsc, monad, avalanche, scroll, skale-base, arc + testnets
+**EVM networks:** ethereum, base, polygon, arbitrum, optimism, celo, bsc, monad, avalanche, scroll, skale-base, arc, robinhood + testnets
 
 **Solana networks:** solana, solana-devnet (reads AgentAccount PDA from 8004-solana program)
 
@@ -4414,6 +4414,46 @@ mod tests {
             seen += 1;
         }
         assert!(seen > 0, "no `N{stated}` left to check; update this test");
+    }
+
+    /// The two ERC-8004 read endpoints name every EVM mainnet ERC-8004 is
+    /// served on. Typed by hand like the section above, and they had drifted
+    /// the same way: until 2.37.0 they stopped at `scroll` while SKALE Base was
+    /// served. Derived from `supported_networks()`, so a mainnet added there
+    /// without touching these lines fails here.
+    #[test]
+    fn the_erc8004_read_endpoints_name_every_evm_mainnet() {
+        let spec = ApiDoc::openapi();
+        for path in [
+            "/reputation/{network}/{agent_id}",
+            "/identity/{network}/{agent_id}",
+        ] {
+            let description = spec.paths.paths[path]
+                .get
+                .as_ref()
+                .and_then(|operation| operation.description.as_deref())
+                .unwrap_or_else(|| panic!("GET {path} must carry a description"));
+            let line = description
+                .lines()
+                .find(|l| l.starts_with("**EVM networks:**"))
+                .unwrap_or_else(|| panic!("GET {path} must list its EVM networks"));
+            let named: Vec<&str> = line["**EVM networks:**".len()..]
+                .trim()
+                .trim_end_matches("+ testnets")
+                .split(',')
+                .map(str::trim)
+                .collect();
+            for network in crate::erc8004::supported_networks() {
+                if !network.is_mainnet() || crate::erc8004::get_contracts(&network).is_none() {
+                    continue;
+                }
+                let name = network.to_string();
+                assert!(
+                    named.contains(&name.as_str()),
+                    "GET {path} does not name `{name}`, which serves ERC-8004: {line}"
+                );
+            }
+        }
     }
 
     /// The relayed-feedback availability list in `/docs` is exactly the set of

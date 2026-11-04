@@ -1,5 +1,14 @@
 # Changelog
 
+## [2.56.0] - 2026-11-04
+
+- ERC-8004 identity and reputation on Robinhood Chain (`robinhood`, chain 4663) and Robinhood Chain Testnet (`robinhood-testnet`, chain 46630), using the canonical registries: identity `0x8004A169…a432`, reputation `0x8004BAa1…9b63` and validation `0x8004Cc84…AB58` on mainnet; `0x8004A818…BD9e`, `0x8004B663…8713` and `0x8004Cb1B…4272` on testnet. All six were read on 2026-11-04 (`eth_getCode`, `eth_call`, `eth_getStorageAt`) against `rpc.mainnet.chain.robinhood.com` and `rpc.testnet.chain.robinhood.com`: 130-byte proxies with `getVersion()` = `2.0.0`, identity and reputation on the EIP-1967 implementations Base and Base Sepolia run. The identity registry has the shape the owner lookup assumes everywhere else (`totalSupply()` reverts, ERC-721 but not Enumerable; highest agent id ~20.8k on mainnet and 301 on testnet at 17:20Z) and Multicall3 is deployed on both. Every ERC-8004 route (`/identity`, `/reputation`, `/register`, `/feedback`, `/feedback/response`, `/feedback/revoke`, the `supportedNetworks` of `GET /feedback` and `GET /register` and of each "not supported" error) now accepts both, under their v1 names; the set grows from 23 to 25 networks (14 mainnets + 11 testnets).
+- Gas is ETH. The writes take the path ERC-8004 writes take on every EIP-1559 chain (`send_call_estimated`, priced by alloy's filler, the wallet's default signer), on the same provider and nonce manager that settle USDG there. No infrastructure change: production already sets `RPC_URL_ROBINHOOD` and `RPC_URL_ROBINHOOD_TESTNET`.
+- `/settle` on Robinhood: a payment whose requirements carry the `8004-reputation` extension now gets a `proofOfPayment` in the response, as on the other ERC-8004 networks (one `eth_getBlockByNumber`, bounded at 2 s, when the receipt's logs carry no `blockTimestamp`). Settles without the extension are unchanged.
+- The built-in daily ERC-8004 write limit for `robinhood` and `robinhood-testnet` is 100, like Arc's: neither has measured write traffic yet. `ERC8004_DAILY_WRITE_CAP_ROBINHOOD` / `_ROBINHOOD_TESTNET` override it.
+- Relayed (EIP-7702) feedback stays unavailable on both: Execution Market has deployed no `FeedbackDelegate` on Robinhood Chain. No escrow, `upto` or Permit2 change.
+- New tests: `every_published_erc8004_count_and_list_is_the_served_one` holds the ERC-8004 counts and network lists typed in the landing, `/erc8004`, `llms.txt`, `skill.md`, `auth.md` and both agent cards to `supported_networks()`; `the_erc8004_read_endpoints_name_every_evm_mainnet` does the same for the "EVM networks" lines of `GET /reputation` and `GET /identity` in `/docs`; `the_settle_proof_follows_the_erc8004_table` pins the `/settle` proof on Robinhood.
+
 ## [2.55.0] - 2026-11-03
 
 The NEAR `escrow` scheme refuses, before relaying, what the chain would

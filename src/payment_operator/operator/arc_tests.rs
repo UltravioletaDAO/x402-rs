@@ -19,7 +19,9 @@ use super::{
 use crate::chain::evm::EvmChain;
 use crate::network::Network;
 use crate::payment_operator::abi::{EscrowContract, OperatorContract, OperatorV3Contract};
-use crate::payment_operator::addresses::{canonical_v1, create3, OperatorAddresses};
+use crate::payment_operator::addresses::{
+    canonical_v1, create3, OperatorAddresses, CANONICAL_V1_NETWORKS,
+};
 use crate::payment_operator::autoverify::{self, Verdict};
 use crate::payment_operator::errors::OperatorError;
 use crate::payment_operator::test_rpc::{self, CallAnswer, MockNode, Providers};
@@ -120,7 +122,7 @@ async fn http(err: &OperatorError) -> (u16, Value, Option<String>) {
 
 #[tokio::test]
 async fn arc_release_encodes_capture() {
-    for network in [Network::Arc, Network::ArcTestnet] {
+    for &network in CANONICAL_V1_NETWORKS {
         let (node, providers) = arc(network).await;
         deployed(&node, network);
         super::forget_operator_code_for_test(network, operator(network));
@@ -146,11 +148,13 @@ async fn arc_release_encodes_capture() {
         assert_eq!(call.paymentInfo.salt, U256::from(0x3039u64));
         // Arc's documented minimum maxFeePerGas: the escrow write is priced by
         // the same floor as an `exact` settle on this chain.
-        assert!(
-            tx.max_fee_per_gas >= 20_000_000_000,
-            "{}",
-            tx.max_fee_per_gas
-        );
+        if matches!(network, Network::Arc | Network::ArcTestnet) {
+            assert!(
+                tx.max_fee_per_gas >= 20_000_000_000,
+                "{}",
+                tx.max_fee_per_gas
+            );
+        }
         // Read first: the operator's code, and nothing else -- no self-check,
         // no state read on a release.
         assert_eq!(node.code_reads(), vec![operator(network)]);
@@ -160,7 +164,7 @@ async fn arc_release_encodes_capture() {
 
 #[tokio::test]
 async fn arc_refund_encodes_void() {
-    for network in [Network::Arc, Network::ArcTestnet] {
+    for &network in CANONICAL_V1_NETWORKS {
         let (node, providers) = arc(network).await;
         escrow_holds(&node, ONE);
         deployed(&node, network);
@@ -545,7 +549,7 @@ fn state_query(network: Network, escrow: Address, collector: Address) -> String 
 
 #[tokio::test]
 async fn arc_escrow_state_query_uses_generation_d() {
-    for network in [Network::Arc, Network::ArcTestnet] {
+    for &network in CANONICAL_V1_NETWORKS {
         let (node, providers) = arc(network).await;
         node.on_call(
             canonical_v1::ESCROW,
@@ -672,7 +676,7 @@ fn extra(escrow: Address, operator: Address, collector: Address) -> EscrowExtra 
 async fn arc_rejects_create3_and_generation_c_addresses() {
     let forbidden: Vec<Address> = create3_set().into_iter().chain(GENERATION_C).collect();
 
-    for network in [Network::Arc, Network::ArcTestnet] {
+    for &network in CANONICAL_V1_NETWORKS {
         // Nothing the code declares for Arc is one of them.
         let addrs = OperatorAddresses::for_network(network).unwrap();
         let mut declared = vec![
@@ -756,8 +760,9 @@ async fn arc_rejects_create3_and_generation_c_addresses() {
 // authorize: the payer's EOA signature, and a verified operator
 // ---------------------------------------------------------------------------
 
-/// An authorization of Arc USDC on `network` by `payer`, signed by `signer`
-/// under the domain of `signed_for` (normally the network it is sent to).
+/// An authorization of the network's payment token (USDC on Arc, USDG on
+/// Robinhood Chain) on `network` by `payer`, signed by `signer` under the
+/// domain of `signed_for` (normally the network it is sent to).
 fn signed_authorize(
     network: Network,
     signed_for: Network,
@@ -781,10 +786,7 @@ fn signed_authorize_to(
         op,
         canonical_v1::TOKEN_COLLECTOR,
     );
-    let usdc = crate::network::USDCDeployment::by_network(network)
-        .unwrap()
-        .address();
-    body["payload"]["paymentInfo"]["token"] = json!(usdc.to_string());
+    body["payload"]["paymentInfo"]["token"] = json!(payment_token(network).to_string());
     body["payload"]["authorization"]["from"] = json!(payer.address());
     let payload: crate::payment_operator::types::EscrowPayload =
         serde_json::from_value(body["payload"].clone()).unwrap();
@@ -795,15 +797,38 @@ fn signed_authorize_to(
     body
 }
 
+/// The token a generation-D payment on `network` moves: the network's USDC,
+/// or USDG where there is no USDC (Robinhood Chain).
+fn payment_token(network: Network) -> Address {
+    let token = crate::network::USDCDeployment::by_network(network)
+        .map(|d| d.address())
+        .or_else(|| crate::network::USDGDeployment::by_network(network).map(|d| d.address()))
+        .unwrap_or_else(|| panic!("{network} has neither USDC nor USDG"));
+    match token {
+        crate::types::MixedAddress::Evm(address) => address.0,
+        other => panic!("{network}: not an EVM token: {other}"),
+    }
+}
+
 /// What the canonical collector verifies, computed from the chain side's
 /// definitions: `find_known_eip712_metadata` for the domain and
 /// `payer_agnostic_hash` for the nonce (checked against the escrow's own
 /// `getHash` in `arc_chain_tests`).
 fn receive_with_authorization_digest(network: Network, info: &ContractPaymentInfo) -> B256 {
-    use alloy::sol_types::{eip712_domain, SolStruct};
-    let chain_id = EvmChain::try_from(network).unwrap().chain_id;
     let (name, version) =
         crate::chain::evm::find_known_eip712_metadata(network, &info.token).expect("known token");
+    digest_under(network, name, version, info)
+}
+
+/// [`receive_with_authorization_digest`] under a domain named by hand.
+fn digest_under(
+    network: Network,
+    name: String,
+    version: String,
+    info: &ContractPaymentInfo,
+) -> B256 {
+    use alloy::sol_types::{eip712_domain, SolStruct};
+    let chain_id = EvmChain::try_from(network).unwrap().chain_id;
     let domain = eip712_domain! {
         name: name,
         version: version,
@@ -860,6 +885,76 @@ async fn arc_authorize_requires_the_payers_eoa_signature() {
         );
         assert!(node.sent().is_empty());
         assert_eq!(err.http_answer().unwrap().status, 400);
+    }
+    autoverify::set_for_test(network, operator(network), None);
+}
+
+/// Robinhood Chain moves USDG, whose ERC-3009 domain comes from the static
+/// table (`Global Dollar` / `1`, its `version()` reverts on chain): the
+/// payer's EOA signature under that domain and chain is authorized against the
+/// declared operator from the pinned signer; one signed for Arc, or by anyone
+/// else, is refused before anything is sent.
+#[tokio::test]
+async fn robinhood_authorize_takes_the_payers_usdg_signature() {
+    let network = Network::Robinhood;
+    let usdg = address!("5fc5360D0400a0Fd4f2af552ADD042D716F1d168");
+    assert_eq!(payment_token(network), usdg);
+    assert_eq!(
+        crate::chain::evm::find_known_eip712_metadata(network, &usdg),
+        Some(("Global Dollar".to_string(), "1".to_string()))
+    );
+    let (node, providers) = arc(network).await;
+    deploy_v3_operator(&node, operator(network), canonical_v1::ESCROW);
+    autoverify::set_for_test(network, operator(network), None);
+    let pinned = test_rpc::evm(&providers, network).pinned_signer();
+    let payer = PrivateKeySigner::from_bytes(&B256::repeat_byte(0x36)).unwrap();
+    let stranger = PrivateKeySigner::from_bytes(&B256::repeat_byte(0x37)).unwrap();
+
+    let good = signed_authorize(network, network, &payer, &payer);
+    assert_eq!(
+        good["payload"]["paymentInfo"]["token"],
+        json!(usdg.to_string())
+    );
+    settle(&good, &providers)
+        .await
+        .expect("an EOA authorization of USDG by the payer");
+    let sent = node.sent();
+    assert_eq!(sent.len(), 1);
+    assert_eq!(
+        sent[0].input[..4],
+        OperatorContract::authorizeCall::SELECTOR
+    );
+    assert_eq!(sent[0].to, Some(operator(network)));
+    assert_eq!(
+        sent[0].from, pinned,
+        "authorize leaves from the pinned signer"
+    );
+
+    let payload: crate::payment_operator::types::EscrowPayload =
+        serde_json::from_value(good["payload"].clone()).unwrap();
+    let info = ContractPaymentInfo::from_escrow_payload(&payload);
+    let resigned = |digest: B256| {
+        let mut body = good.clone();
+        let signature = payer.sign_hash_sync(&digest).unwrap();
+        body["payload"]["signature"] = json!(Bytes::from(signature.as_bytes().to_vec()));
+        body
+    };
+    let global_dollar = |version: &str| ("Global Dollar".to_string(), version.to_string());
+    let (name, version) = global_dollar("1");
+    let signed_for_arc = resigned(digest_under(Network::Arc, name, version, &info));
+    let (name, version) = global_dollar("2");
+    let another_version = resigned(digest_under(network, name, version, &info));
+    let someone_else = signed_authorize(network, network, &payer, &stranger);
+    for bad in [signed_for_arc, another_version, someone_else] {
+        node.clear_log();
+        let err = settle(&bad, &providers)
+            .await
+            .expect_err("not the payer's signature for Robinhood USDG");
+        assert!(
+            matches!(err, OperatorError::AuthorizationSignatureInvalid(_)),
+            "{err:?}"
+        );
+        assert!(node.sent().is_empty());
     }
     autoverify::set_for_test(network, operator(network), None);
 }

@@ -216,13 +216,14 @@ async fn observe_calldata() -> Value {
     Value::Array(entries)
 }
 
-/// Every escrow network this snapshot covers: all of them but Arc, which
-/// joined the scheme after it was recorded.
+/// Every escrow network this snapshot covers: all of them but the canonical
+/// v1 networks (Arc, then Robinhood Chain), which joined the scheme after it
+/// was recorded and speak another ABI.
 fn snapshot_networks() -> Vec<Network> {
     ESCROW_NETWORKS
         .iter()
         .copied()
-        .filter(|n| !matches!(n, Network::Arc | Network::ArcTestnet))
+        .filter(|n| !crate::payment_operator::addresses::is_canonical_v1_network(*n))
         .collect()
 }
 

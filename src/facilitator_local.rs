@@ -1367,12 +1367,17 @@ mod escrow_supported_tests {
 
     #[test]
     fn supported_arc_announces_generation_d_only() {
+        use crate::payment_operator::addresses::{is_canonical_v1_network, CANONICAL_V1_NETWORKS};
         let others: Vec<Network> = ESCROW_NETWORKS
             .iter()
             .copied()
-            .filter(|n| !matches!(n, Network::Arc | Network::ArcTestnet))
+            .filter(|n| !is_canonical_v1_network(*n))
             .collect();
         assert_eq!(others.len(), 11);
+        assert_eq!(
+            CANONICAL_V1_NETWORKS,
+            &[Network::Arc, Network::ArcTestnet, Network::Robinhood]
+        );
 
         for verified in [false, true] {
             let kinds = escrow_supported_kinds(|_, _| verified);
@@ -1383,7 +1388,7 @@ mod escrow_supported_tests {
                 others.iter().flat_map(|&n| on(&kinds, n)).collect();
             assert_eq!(json(&rest), json(&as_built_through_2_40(&others)));
 
-            for network in [Network::Arc, Network::ArcTestnet] {
+            for &network in CANONICAL_V1_NETWORKS {
                 let operator = OperatorAddresses::for_network(network)
                     .unwrap()
                     .payment_operators[0];
@@ -1422,9 +1427,21 @@ mod escrow_supported_tests {
             "commerce only on Arc testnet"
         );
 
+        // Robinhood Chain: escrow + commerce once verified; its testnet none.
+        let only_robinhood = escrow_supported_kinds(|n, _| n == Network::Robinhood);
+        assert_eq!(addresses(&on(&only_robinhood, Network::Robinhood)).len(), 2);
+        assert!(on(&only_robinhood, Network::RobinhoodTestnet).is_empty());
+
         // Published under both names, like every other scheme.
         let published = advertise_under_both_network_forms(escrow_supported_kinds(|_, _| true));
-        for name in ["arc", "eip155:5042", "arc-testnet", "eip155:5042002"] {
+        for name in [
+            "arc",
+            "eip155:5042",
+            "arc-testnet",
+            "eip155:5042002",
+            "robinhood",
+            "eip155:4663",
+        ] {
             assert!(
                 published
                     .iter()

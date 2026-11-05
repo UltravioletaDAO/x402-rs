@@ -588,7 +588,7 @@ The `action` field controls the operation:
 | `release` | Send escrowed funds to receiver | EIP-712 lifecycle order by the payer or the operator owner (`payload.lifecycleAuth`) |
 | `refundInEscrow` | Return escrowed funds to payer | EIP-712 lifecycle order by the receiver, the operator owner, or the payer once `authorizationExpiry` has passed |
 
-Escrow contracts deployed on 13 networks. See `/supported` for networks with active PaymentOperator deployments.
+Escrow contracts deployed on 14 networks. See `/supported` for networks with active PaymentOperator deployments.
 
 **NEAR escrow (scheme `escrow` on `near` / `near-testnet`)** is a path of its own, into the Arras escrow
 contracts: served only while `ENABLE_NEAR_ESCROW` is on and a contract is configured for the network
@@ -618,7 +618,7 @@ delegate action whose `max_block_height` is at or below the head the node answer
 reason; an outcome that shows no verdict is `502 settlement_unconfirmed` with the hash. A success carries
 `extensions.nearEscrow` (`action`, `contract`, and `paymentId` or `account`).
 
-**Arc and Arc testnet** run the canonical commerce-payments v1.0.0 set -- AuthCaptureEscrow
+**Arc, Arc testnet and Robinhood Chain (`robinhood`, not its testnet)** run the canonical commerce-payments v1.0.0 set -- AuthCaptureEscrow
 `0xBdEA0D1bcC5966192B070Fdf62aB4EF5b4420cff`, ERC-3009 collector `0x0E3dF9510de65469C4518D7843919c0b8C7A7757`,
 PaymentOperatorFactory v1.0.2 `0xc24153B7ED8DC03e551F29DDEeA5CadFe57e2716` -- and a request there must name
 that escrow and collector. Every write there (`authorize`, `release`, `refundInEscrow`) goes to `paymentInfo.operator`
@@ -630,16 +630,17 @@ capturable amount, so `refundInEscrow` must name exactly that amount. Nothing ca
 `409 nothing_to_void`; an `amount` of `0` answers `422 amount_required_on_generation` (it is never read as
 "all of it"); any other amount answers `422 partial_refund_unsupported_on_generation`; and a chain read that
 fails answers `502 chain_read_unavailable` with `retryable: true`. None of them sends a transaction.
-`authorize` on Arc takes EOA signatures only, and is placed against a listed PaymentOperator only once that
+`authorize` on these networks takes EOA signatures only, and is placed against a listed PaymentOperator only once that
 operator has passed its on-chain self-check: until then it answers `503 operator_not_verified`, retryable --
-the expected case being an operator that is declared but not deployed yet.
+the expected case being an operator that is declared but not deployed yet. On Robinhood Chain the token is
+USDG (`0x5fc5360D0400a0Fd4f2af552ADD042D716F1d168`, EIP-712 domain `Global Dollar` / `1`).
 
 **Lifecycle orders.** `release` and `refundInEscrow` carry no ERC-3009 signature (the funds are
 already escrowed) but they do move money, so they carry `payload.lifecycleAuth`: an EIP-712
 signature over `LifecycleOrder(string action, uint256 amount, uint256 deadline, bytes32 nonce, PaymentInfo paymentInfo)`
 with domain `{ name: "x402 escrow lifecycle", version: "1", chainId }` and `PaymentInfo` the
 AuthCaptureEscrow type verbatim. The "operator owner" is the operator's `FEE_RECIPIENT()`
-(`FEE_RECEIVER()` on Arc), read on chain. Whether the order is required is governed by `ESCROW_LIFECYCLE_AUTH` (`off` | `log` |
+(`FEE_RECEIVER()` on Arc and Robinhood Chain), read on chain. Whether the order is required is governed by `ESCROW_LIFECYCLE_AUTH` (`off` | `log` |
 `enforce`); `GET /settle` publishes the effective mode. Under `enforce` a missing or invalid order
 is 403 with a bounded `errorReason` (`missing`, `bad_signature`, `expired`, `deadline_too_far`,
 `replayed`, `unauthorized_role`); `owner_unverifiable` is 502 and retryable.
@@ -1031,8 +1032,8 @@ Until 2026-09-03 `escrow`, `commerce` and `upto` appeared **only** under CAIP-2 
 
 `upto` is **not** available on every EVM network that supports `exact`. The proxy address is identical on all chains because it is deployed with CREATE2, but the deployment still has to be replayed per chain, and on Avalanche, Celo, Scroll, Unichain, Optimism Sepolia and HashKey Chain (mainnet and testnet) it never was — the address has no code there. Query `/supported` rather than assuming: it now lists `upto` only where settlement can actually succeed.
 
-**Escrow networks (13):** `base`, `ethereum`, `polygon`, `arbitrum`, `celo`, `monad`, `avalanche`, `optimism`, `skale-base`, `arc`, `base-sepolia`, `ethereum-sepolia`, `arc-testnet`.
-Each lists `commerce`, and `escrow` once per PaymentOperator the facilitator declares for it; on `arc` and `arc-testnet` an operator is listed only once it has passed its on-chain self-check.
+**Escrow networks (14):** `base`, `ethereum`, `polygon`, `arbitrum`, `celo`, `monad`, `avalanche`, `optimism`, `skale-base`, `arc`, `robinhood`, `base-sepolia`, `ethereum-sepolia`, `arc-testnet`.
+Each lists `commerce`, and `escrow` once per PaymentOperator the facilitator declares for it; on `arc`, `arc-testnet` and `robinhood` an operator is listed only once it has passed its on-chain self-check.
 
 **NEAR escrow:** `near` / `near-testnet` list an `escrow` kind only while `ENABLE_NEAR_ESCROW` is on and a contract is configured for the network; they are not PaymentOperator networks. Its `extra.nearEscrow` is plural -- `{contracts, operatorIds, minGasTgas, maxGasTgas, senderPerHour}`, every contract and operator accepted -- while a 402 names one of each in its own `extra.nearEscrow` (see `POST /settle`). `POST /accepts` never merges the plural one into a requirement.
 

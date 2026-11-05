@@ -4,12 +4,13 @@
 //! - Existing networks (Base, Ethereum, etc.) use LEGACY per-chain addresses because
 //!   their deployed PaymentOperators reference the old infrastructure contracts.
 //! - SKALE uses the CREATE3 unified addresses (`create3`).
-//! - Arc and Arc testnet use the canonical commerce-payments v1.0.0 set
-//!   (`canonical_v1`), whose operators speak their own ABI (`capture` / `void`).
+//! - Arc, Arc testnet and Robinhood Chain use the canonical commerce-payments
+//!   v1.0.0 set (`canonical_v1`), whose operators speak their own ABI
+//!   (`capture` / `void`).
 //!
 //! Source: https://github.com/BackTrackCo/x402r-sdk/blob/main/packages/core/src/config/index.ts
 //!
-//! Supported networks (13 total):
+//! Supported networks (14 total):
 //! - Base Sepolia (testnet)
 //! - Ethereum Sepolia (testnet)
 //! - Base Mainnet
@@ -23,6 +24,8 @@
 //! - SKALE Base (gasless L3, CREDIT gas token)
 //! - Arc (mainnet)
 //! - Arc testnet
+//! - Robinhood Chain (mainnet; not its testnet, which carries the canonical set
+//!   but no Execution Market operator)
 
 use alloy::primitives::{address, Address};
 
@@ -78,13 +81,13 @@ pub mod create3 {
 }
 
 // ============================================================================
-// Canonical commerce-payments v1.0.0 set (Arc, Arc testnet)
+// Canonical commerce-payments v1.0.0 set (Arc, Arc testnet, Robinhood Chain)
 // ============================================================================
 
 /// The canonical `commerce-payments` v1.0.0 AuthCaptureEscrow and the x402r
 /// contracts bound to it (salt namespaces `x402r-canonical-v1.0.1` and, for the
 /// PaymentOperatorFactory, `x402r-canonical-v1.0.2`). Same address on every
-/// chain that carries it; used here on Arc and Arc testnet only.
+/// chain that carries it; used here on Arc, Arc testnet and Robinhood Chain.
 ///
 /// Not the [`create3`] set: that one has no code on Arc. Operators this
 /// factory deploys have no `release` / `refundInEscrow`; they `capture` and
@@ -92,8 +95,10 @@ pub mod create3 {
 ///
 /// Sources: BackTrackCo/x402r-sdk `packages/core/src/config/index.ts` @ bbfec12c;
 /// BackTrackCo/x402r-contracts `deployments/canonical-v1.0.1.json` and
-/// `canonical-v1.0.2.json` @ c5223eaa. The code at each address on both Arc
-/// networks is recorded in `tests/fixtures/escrow/arc-generation-d-chain.json`.
+/// `canonical-v1.0.2.json` @ c5223eaa. The code at each address is recorded
+/// in `tests/fixtures/escrow/arc-generation-d-chain.json` for both Arc networks
+/// and in `tests/fixtures/escrow/robinhood-generation-d-chain.json` for
+/// Robinhood Chain.
 pub mod canonical_v1 {
     use super::*;
 
@@ -111,7 +116,10 @@ pub mod canonical_v1 {
 
 /// Networks on the [`canonical_v1`] set. On these, and only these, the
 /// facilitator accepts neither the legacy nor the CREATE3 addresses.
-pub const CANONICAL_V1_NETWORKS: &[Network] = &[Network::Arc, Network::ArcTestnet];
+/// Robinhood Chain Testnet is not one: the set has code there, but no
+/// PaymentOperator of Execution Market does (`eth_getCode`, 2026-11-05).
+pub const CANONICAL_V1_NETWORKS: &[Network] =
+    &[Network::Arc, Network::ArcTestnet, Network::Robinhood];
 
 /// Whether `network` runs the [`canonical_v1`] set.
 pub fn is_canonical_v1_network(network: Network) -> bool {
@@ -119,8 +127,9 @@ pub fn is_canonical_v1_network(network: Network) -> bool {
 }
 
 /// The `PaymentOperatorFactory.computeAddress` argument the Execution Market
-/// operator listed for Arc and Arc testnet in [`OperatorAddresses::for_network`]
-/// is derived from (one CREATE2 address, the same on both networks).
+/// operator listed for Arc, Arc testnet and Robinhood Chain in
+/// [`OperatorAddresses::for_network`] is derived from (one CREATE2 address,
+/// the same on the three networks).
 /// Configuration data only: read by the tests and by
 /// `scripts/record_arc_escrow_fixture.py`, never at runtime.
 #[allow(dead_code)]
@@ -262,6 +271,7 @@ pub const ESCROW_NETWORKS: &[Network] = &[
     Network::SkaleBase,
     Network::Arc,
     Network::ArcTestnet,
+    Network::Robinhood,
 ];
 
 // ============================================================================
@@ -282,7 +292,7 @@ pub fn escrow_for_network(network: Network) -> Option<Address> {
         Network::Avalanche => Some(avalanche::ESCROW),
         Network::Optimism => Some(optimism::ESCROW),
         Network::SkaleBase => Some(create3::ESCROW),
-        Network::Arc | Network::ArcTestnet => Some(canonical_v1::ESCROW),
+        Network::Arc | Network::ArcTestnet | Network::Robinhood => Some(canonical_v1::ESCROW),
         _ => None,
     }
 }
@@ -301,7 +311,9 @@ pub fn factory_for_network(network: Network) -> Option<Address> {
         Network::Avalanche => Some(avalanche::FACTORY),
         Network::Optimism => Some(optimism::FACTORY),
         Network::SkaleBase => Some(create3::FACTORY_PAYMENT_OPERATOR),
-        Network::Arc | Network::ArcTestnet => Some(canonical_v1::FACTORY_PAYMENT_OPERATOR),
+        Network::Arc | Network::ArcTestnet | Network::Robinhood => {
+            Some(canonical_v1::FACTORY_PAYMENT_OPERATOR)
+        }
         _ => None,
     }
 }
@@ -320,7 +332,9 @@ pub fn token_collector_for_network(network: Network) -> Option<Address> {
         Network::Avalanche => Some(avalanche::TOKEN_COLLECTOR),
         Network::Optimism => Some(optimism::TOKEN_COLLECTOR),
         Network::SkaleBase => Some(create3::TOKEN_COLLECTOR),
-        Network::Arc | Network::ArcTestnet => Some(canonical_v1::TOKEN_COLLECTOR),
+        Network::Arc | Network::ArcTestnet | Network::Robinhood => {
+            Some(canonical_v1::TOKEN_COLLECTOR)
+        }
         _ => None,
     }
 }
@@ -339,7 +353,9 @@ pub fn protocol_fee_config_for_network(network: Network) -> Option<Address> {
         Network::Avalanche => Some(avalanche::PROTOCOL_FEE_CONFIG),
         Network::Optimism => Some(optimism::PROTOCOL_FEE_CONFIG),
         Network::SkaleBase => Some(create3::PROTOCOL_FEE_CONFIG),
-        Network::Arc | Network::ArcTestnet => Some(canonical_v1::PROTOCOL_FEE_CONFIG),
+        Network::Arc | Network::ArcTestnet | Network::Robinhood => {
+            Some(canonical_v1::PROTOCOL_FEE_CONFIG)
+        }
         _ => None,
     }
 }
@@ -358,7 +374,9 @@ pub fn refund_request_for_network(network: Network) -> Option<Address> {
         Network::Avalanche => Some(avalanche::REFUND_REQUEST),
         Network::Optimism => Some(optimism::REFUND_REQUEST),
         Network::SkaleBase => Some(create3::FACTORY_REFUND_REQUEST),
-        Network::Arc | Network::ArcTestnet => Some(canonical_v1::FACTORY_REFUND_REQUEST),
+        Network::Arc | Network::ArcTestnet | Network::Robinhood => {
+            Some(canonical_v1::FACTORY_REFUND_REQUEST)
+        }
         _ => None,
     }
 }
@@ -387,7 +405,8 @@ impl OperatorAddresses {
     /// Get addresses for a network.
     ///
     /// Legacy networks use per-chain infrastructure addresses, SKALE the
-    /// CREATE3 unified ones, Arc and Arc testnet the canonical v1 set.
+    /// CREATE3 unified ones, Arc, Arc testnet and Robinhood Chain the canonical
+    /// v1 set.
     pub fn for_network(network: Network) -> Option<Self> {
         match network {
             // Testnets (legacy)
@@ -491,8 +510,9 @@ impl OperatorAddresses {
                 refund_request: create3::FACTORY_REFUND_REQUEST,
             }),
 
-            // Canonical commerce-payments v1.0.0 set
-            Network::Arc | Network::ArcTestnet => Some(Self {
+            // Canonical commerce-payments v1.0.0 set. Execution Market's
+            // operator is one CREATE2 address on the three networks.
+            Network::Arc | Network::ArcTestnet | Network::Robinhood => Some(Self {
                 escrow: canonical_v1::ESCROW,
                 factory: canonical_v1::FACTORY_PAYMENT_OPERATOR,
                 payment_operators: vec![address!("0258472A1410Ac3Ad720f1BC83f22B3c0af1Fd9D")],
@@ -532,7 +552,68 @@ mod tests {
 
     #[test]
     fn test_escrow_networks_count() {
-        assert_eq!(ESCROW_NETWORKS.len(), 13);
+        assert_eq!(ESCROW_NETWORKS.len(), 14);
+    }
+
+    /// Robinhood Chain (4663) runs the canonical v1 set with Execution
+    /// Market's operator, the same addresses as Arc; its testnet is not an
+    /// escrow network (no operator deployed there).
+    #[test]
+    fn robinhood_runs_the_canonical_v1_set_and_its_testnet_none() {
+        let network = Network::Robinhood;
+        assert!(is_supported(network));
+        assert!(is_canonical_v1_network(network));
+        let addrs = OperatorAddresses::for_network(network).unwrap();
+        assert_eq!(
+            addrs.escrow,
+            address!("BdEA0D1bcC5966192B070Fdf62aB4EF5b4420cff")
+        );
+        assert_eq!(
+            addrs.factory,
+            address!("c24153B7ED8DC03e551F29DDEeA5CadFe57e2716")
+        );
+        assert_eq!(
+            addrs.token_collector,
+            address!("0E3dF9510de65469C4518D7843919c0b8C7A7757")
+        );
+        assert_eq!(
+            addrs.protocol_fee_config,
+            address!("Be2d24614F339a1eB103A399F93AA2a39Ca815Bc")
+        );
+        assert_eq!(
+            addrs.refund_request,
+            address!("e971C674fD5c3462023f3F891dF6289DFbC9CEFC")
+        );
+        assert_eq!(
+            addrs.payment_operators,
+            vec![address!("0258472A1410Ac3Ad720f1BC83f22B3c0af1Fd9D")]
+        );
+        assert_eq!(escrow_for_network(network), Some(addrs.escrow));
+        assert_eq!(factory_for_network(network), Some(addrs.factory));
+        assert_eq!(
+            token_collector_for_network(network),
+            Some(addrs.token_collector)
+        );
+        assert_eq!(
+            protocol_fee_config_for_network(network),
+            Some(addrs.protocol_fee_config)
+        );
+        assert_eq!(
+            refund_request_for_network(network),
+            Some(addrs.refund_request)
+        );
+        let arc = OperatorAddresses::for_network(Network::Arc).unwrap();
+        assert_eq!(addrs.payment_operators, arc.payment_operators);
+
+        let testnet = Network::RobinhoodTestnet;
+        assert!(!is_supported(testnet));
+        assert!(!is_canonical_v1_network(testnet));
+        assert!(OperatorAddresses::for_network(testnet).is_none());
+        assert!(escrow_for_network(testnet).is_none());
+        assert!(factory_for_network(testnet).is_none());
+        assert!(token_collector_for_network(testnet).is_none());
+        assert!(protocol_fee_config_for_network(testnet).is_none());
+        assert!(refund_request_for_network(testnet).is_none());
     }
 
     #[test]

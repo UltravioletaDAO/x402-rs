@@ -1,14 +1,16 @@
 #!/usr/bin/env python3
-"""record_arc_escrow_fixture.py -- record what Arc answers about its escrow set.
+"""record_arc_escrow_fixture.py -- record what a chain answers about its escrow set.
 
-Writes tests/fixtures/escrow/arc-generation-d-chain.json, which the Rust tests
-`every_announced_arc_address_has_code` and
-`arc_operator_address_matches_recorded_compute_address` read. Nothing in that
-file is typed by hand: every value is a JSON-RPC answer, and every address
-asked about is read out of src/payment_operator/addresses.rs, so the fixture
-covers exactly what the code declares.
+Writes tests/fixtures/escrow/arc-generation-d-chain.json (`--set arc`, the
+default) or tests/fixtures/escrow/robinhood-generation-d-chain.json
+(`--set robinhood`), which the Rust tests in
+src/payment_operator/arc_chain_tests.rs read. Nothing in either file is typed
+by hand: every value is a JSON-RPC answer, and every address asked about is
+read out of src/payment_operator/addresses.rs, so the fixture covers exactly
+what the code declares.
 
-Per network (Arc 5042, Arc testnet 5042002), pinned to one block:
+Per network (Arc 5042 and Arc testnet 5042002; Robinhood Chain 4663), pinned
+to one block:
   * eth_chainId, eth_blockNumber
   * eth_getCode of every `canonical_v1` address, of every PaymentOperator the
     code lists for the network, and of the CREATE3 set (expected empty there)
@@ -29,8 +31,9 @@ hook reads a 0x-prefixed 64-digit run as a private key). Needs `cast`
 encoder the test checks it against.
 
 Usage:
-  python3 scripts/record_arc_escrow_fixture.py            # write the fixture
-  python3 scripts/record_arc_escrow_fixture.py --dry-run  # print, write nothing
+  python3 scripts/record_arc_escrow_fixture.py                      # write the Arc fixture
+  python3 scripts/record_arc_escrow_fixture.py --set robinhood      # write the Robinhood one
+  python3 scripts/record_arc_escrow_fixture.py --dry-run [--set S]  # print, write nothing
 """
 
 from __future__ import annotations
@@ -48,14 +51,26 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
 ADDRESSES_RS = REPO / "src" / "payment_operator" / "addresses.rs"
-FIXTURE = REPO / "tests" / "fixtures" / "escrow" / "arc-generation-d-chain.json"
+FIXTURES = {
+    "arc": REPO / "tests" / "fixtures" / "escrow" / "arc-generation-d-chain.json",
+    "robinhood": REPO / "tests" / "fixtures" / "escrow" / "robinhood-generation-d-chain.json",
+}
 
-NETWORKS = {
-    "arc": {"chain_id": 5042, "rpc": "https://rpc.mainnet.arc.io", "variant": "Arc"},
-    "arc-testnet": {
-        "chain_id": 5042002,
-        "rpc": "https://rpc.testnet.arc.network",
-        "variant": "ArcTestnet",
+SETS = {
+    "arc": {
+        "arc": {"chain_id": 5042, "rpc": "https://rpc.mainnet.arc.io", "variant": "Arc"},
+        "arc-testnet": {
+            "chain_id": 5042002,
+            "rpc": "https://rpc.testnet.arc.network",
+            "variant": "ArcTestnet",
+        },
+    },
+    "robinhood": {
+        "robinhood": {
+            "chain_id": 4663,
+            "rpc": "https://rpc.mainnet.chain.robinhood.com",
+            "variant": "Robinhood",
+        },
     },
 }
 
@@ -180,7 +195,10 @@ def record_network(name: str, net: dict, canonical: dict[str, str], create3: dic
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--dry-run", action="store_true", help="print the summary, write nothing")
+    ap.add_argument("--set", choices=sorted(SETS), default="arc", help="which networks to record")
     args = ap.parse_args()
+    networks = SETS[args.set]
+    fixture = FIXTURES[args.set]
 
     src = ADDRESSES_RS.read_text(encoding="utf-8")
     try:
@@ -192,7 +210,7 @@ def main() -> int:
             "hex without 0x. Do not edit by hand: re-run the script.",
             "networks": {},
         }
-        for name, net in NETWORKS.items():
+        for name, net in networks.items():
             doc["networks"][name] = record_network(name, net, canonical, create3, src)
     except Stop as e:
         print(f"[FAIL] {e}", file=sys.stderr)
@@ -208,9 +226,9 @@ def main() -> int:
         print(f"  getHash(probe) -> {net['getHashProbe']['result'][:8]}...{net['getHashProbe']['result'][-8:]}")
     if args.dry_run:
         return 0
-    FIXTURE.parent.mkdir(parents=True, exist_ok=True)
-    FIXTURE.write_text(json.dumps(doc, indent=2) + "\n", encoding="utf-8")
-    print(f"[OK] wrote {FIXTURE.relative_to(REPO)}")
+    fixture.parent.mkdir(parents=True, exist_ok=True)
+    fixture.write_text(json.dumps(doc, indent=2) + "\n", encoding="utf-8")
+    print(f"[OK] wrote {fixture.relative_to(REPO)}")
     return 0
 
 

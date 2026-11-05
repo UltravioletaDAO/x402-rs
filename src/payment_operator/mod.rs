@@ -66,11 +66,12 @@
 //! | TokenCollector | 0x48ADf6E37F9b31dC2AAD0462C5862B5422C736B8 |
 //! | ProtocolFeeConfig | 0x59314674BAbb1a24Eb2704468a9cCdD50668a1C6 |
 //!
-//! ## Arc (eip155:5042) and Arc testnet (eip155:5042002)
+//! ## Arc (eip155:5042), Arc testnet (eip155:5042002) and Robinhood Chain (eip155:4663)
 //!
 //! The canonical commerce-payments v1.0.0 set (`addresses::canonical_v1`),
 //! whose operators `capture` and `void` instead of `release` and
-//! `refundInEscrow` (`operator::OperatorAbi::V3`).
+//! `refundInEscrow` (`operator::OperatorAbi::V3`). Same addresses on the three;
+//! Robinhood Chain moves USDG. Not Robinhood Chain Testnet: no operator there.
 //!
 //! | Contract | Address |
 //! |----------|---------|

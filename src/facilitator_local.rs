@@ -92,6 +92,8 @@ fn kind_identity(kind: &SupportedPaymentKind) -> String {
 ///   x402r CREATE3 addresses (interop with `@x402r/helpers`), except on the
 ///   canonical v1 networks (Arc), where the CREATE3 set has no code and the
 ///   entry names the canonical v1 escrow, factory and collector instead.
+///   `/settle` relays only to declared operators, so an operator deployed
+///   this way is served once it is declared in `OperatorAddresses`.
 ///
 /// On the canonical v1 networks an operator is announced only while
 /// `operator_verified` says it passed its self-check (`autoverify`). Every

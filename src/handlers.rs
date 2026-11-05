@@ -1375,8 +1375,9 @@ fn alt_scheme_unconfirmed(
 
 /// Status, `errorReason` token, detail and `Retry-After` of an escrow failure
 /// that carries its own answer (`OperatorError::http_answer`): the canonical v1
-/// (Arc) paths, where a failed chain read is retryable and never a 4xx, and the
-/// two deterministic refusals of `void`. `None` for every other failure, which
+/// (Arc) paths, where a failed chain read is retryable and never a 4xx, the
+/// two deterministic refusals of `void`, and an operator or token the escrow
+/// rail does not serve on the network. `None` for every other failure, which
 /// keeps the classification it had.
 fn typed_escrow_parts(
     e: &crate::payment_operator::OperatorError,

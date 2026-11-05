@@ -25,7 +25,12 @@
 //! - Arc (mainnet)
 //! - Arc testnet
 //! - Robinhood Chain (mainnet; not its testnet, which carries the canonical set
-//!   but no Execution Market operator)
+//!   but no Execution Market operator). Its rail moves USDG only
+//!   (`ONE_TOKEN_ESCROW_NETWORKS`)
+//!
+//! On every one of them the rail relays only to the PaymentOperators
+//! `OperatorAddresses::for_network` declares for that network. Adding one is a
+//! pull request to that table (README, "Escrow PaymentOperators").
 
 use alloy::primitives::{address, Address};
 
@@ -124,6 +129,24 @@ pub const CANONICAL_V1_NETWORKS: &[Network] =
 /// Whether `network` runs the [`canonical_v1`] set.
 pub fn is_canonical_v1_network(network: Network) -> bool {
     CANONICAL_V1_NETWORKS.contains(&network)
+}
+
+/// Escrow networks whose rail moves one token only, the one [`served_escrow_token`]
+/// names: Robinhood Chain, with USDG. On every other escrow network the token
+/// is not restricted here.
+pub const ONE_TOKEN_ESCROW_NETWORKS: &[Network] = &[Network::Robinhood];
+
+/// The one token the escrow rail moves on a [`ONE_TOKEN_ESCROW_NETWORKS`]
+/// network, read from the token table in `crate::network`: USDG on Robinhood
+/// Chain. `None` on every other network.
+pub fn served_escrow_token(network: Network) -> Option<Address> {
+    if !ONE_TOKEN_ESCROW_NETWORKS.contains(&network) {
+        return None;
+    }
+    match crate::network::USDGDeployment::by_network(network)?.address() {
+        crate::types::MixedAddress::Evm(token) => Some(token.0),
+        _ => None,
+    }
 }
 
 /// The `PaymentOperatorFactory.computeAddress` argument the Execution Market
@@ -395,6 +418,8 @@ pub fn is_supported(network: Network) -> bool {
 pub struct OperatorAddresses {
     pub escrow: Address,
     pub factory: Address,
+    /// The only PaymentOperators the escrow rail relays to on this network
+    /// (`operator::assert_served_on_network`); `/supported` announces them.
     pub payment_operators: Vec<Address>,
     pub token_collector: Address,
     pub protocol_fee_config: Address,

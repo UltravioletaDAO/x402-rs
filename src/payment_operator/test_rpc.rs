@@ -59,6 +59,8 @@ pub(crate) struct SentTx {
 struct NodeState {
     chain_id: u64,
     calls: HashMap<(Address, [u8; 4]), CallAnswer>,
+    /// The method of every request the node received, in order.
+    requests: Vec<String>,
     /// Every `eth_call` answered, as `(to, selector)`.
     reads: Vec<(Address, [u8; 4])>,
     /// Every `eth_call` answered, whole: `(to, calldata, block)`.
@@ -242,9 +244,16 @@ impl MockNode {
         self.state.lock().unwrap().code_reads.clone()
     }
 
+    /// The method of every request received, in order: reads, estimates and
+    /// sends alike.
+    pub(crate) fn requests(&self) -> Vec<String> {
+        self.state.lock().unwrap().requests.clone()
+    }
+
     /// Forget what was sent and read so far; the script stays.
     pub(crate) fn clear_log(&self) {
         let mut state = self.state.lock().unwrap();
+        state.requests.clear();
         state.sent.clear();
         state.reads.clear();
         state.call_log.clear();
@@ -392,6 +401,7 @@ fn answer(state: &Mutex<NodeState>, req: &Value) -> Value {
         .unwrap_or_default();
     let params = req.get("params").cloned().unwrap_or(Value::Null);
     let mut state = state.lock().unwrap();
+    state.requests.push(method.to_string());
     let result = match method {
         "eth_chainId" => hex_quantity(state.chain_id as u128),
         "eth_getTransactionCount" => json!("0x0"),

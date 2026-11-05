@@ -27,13 +27,16 @@ use crate::provider_cache::{HasProviderMap, ProviderMap};
 use crate::types::{EvmAddress, MixedAddress, SettleResponse, TransactionHash};
 
 use super::abi::{EscrowContract, OperatorContract, OperatorV3Contract};
-use super::addresses::{canonical_v1, is_canonical_v1_network, OperatorAddresses};
+use super::addresses::{
+    canonical_v1, is_canonical_v1_network, served_escrow_token, OperatorAddresses,
+    ONE_TOKEN_ESCROW_NETWORKS,
+};
 use super::autoverify;
 use super::errors::OperatorError;
 use super::lifecycle_auth::{self, LifecycleAction};
 use super::types::{
-    ContractPaymentInfo, EscrowExtra, EscrowLifecyclePayload, EscrowPayload, EscrowStateQuery,
-    EscrowStateResponse,
+    ContractPaymentInfo, EscrowExtra, EscrowLifecyclePayload, EscrowPayload, EscrowPaymentInfo,
+    EscrowStateQuery, EscrowStateResponse,
 };
 
 // Minimal ERC-20 ABI for balance checks during verify
@@ -80,6 +83,29 @@ enum ParsedEscrowRequest {
     },
 }
 
+impl ParsedEscrowRequest {
+    /// [`assert_served_on_network`] for this request, whichever action it is.
+    fn assert_served(&self) -> Result<(), OperatorError> {
+        match self {
+            Self::Authorize {
+                network,
+                payload,
+                extra,
+            } => assert_served_on_network(*network, extra, &payload.payment_info),
+            Self::Release {
+                network,
+                lifecycle,
+                extra,
+            }
+            | Self::RefundInEscrow {
+                network,
+                lifecycle,
+                extra,
+            } => assert_served_on_network(*network, extra, &lifecycle.payment_info),
+        }
+    }
+}
+
 // ============================================================================
 // Main settlement dispatcher
 // ============================================================================
@@ -98,9 +124,23 @@ where
     if !super::is_enabled() {
         return Err(OperatorError::FeatureDisabled);
     }
+    settle_escrow_enabled(body, facilitator).await
+}
 
+/// [`settle_escrow`] past its feature-flag check.
+async fn settle_escrow_enabled<F>(
+    body: &str,
+    facilitator: &F,
+) -> Result<SettleResponse, OperatorError>
+where
+    F: HasProviderMap,
+    F::Map: ProviderMap<Value = NetworkProvider>,
+{
     // Parse the request (action-aware)
     let parsed = parse_escrow_request(body)?;
+    // Decided on the request alone: nothing is read or sent for one the
+    // network does not serve.
+    parsed.assert_served()?;
 
     match parsed {
         ParsedEscrowRequest::Authorize {
@@ -836,7 +876,8 @@ async fn execute_authorize(
 /// Sends escrowed funds to the receiver. No ERC-3009 signature: the caller's
 /// entitlement was checked by `lifecycle_auth::gate` before this runs.
 /// The PaymentOperator contract checks msg.sender == operator for access control.
-/// Operator address is not restricted — the escrow contract enforces operator rules.
+/// The operator is one this facilitator declares for the network
+/// ([`assert_served_on_network`]).
 #[instrument(skip_all, err)]
 async fn execute_release(
     lifecycle: &EscrowLifecyclePayload,
@@ -909,7 +950,8 @@ async fn execute_release(
 /// Returns escrowed funds to the payer. No ERC-3009 signature: the caller's
 /// entitlement was checked by `lifecycle_auth::gate` before this runs.
 /// The amount parameter is uint120 in the ABI.
-/// Operator address is not restricted — the escrow contract enforces operator rules.
+/// The operator is one this facilitator declares for the network
+/// ([`assert_served_on_network`]).
 #[instrument(skip_all, err)]
 async fn execute_refund_in_escrow(
     lifecycle: &EscrowLifecyclePayload,
@@ -1041,11 +1083,11 @@ async fn void_whole_authorization(
     send_operator_tx(provider, target, &call, Some(provider.pinned_signer())).await
 }
 
-/// On a canonical v1 network, the operator a NEW authorization goes to, if
-/// this facilitator declares it, must have passed its self-check
-/// (`autoverify`). An operator the merchant brings is relayed as everywhere
-/// else, after [`assert_v3_target_has_code`]. `release` and `refundInEscrow`
-/// never come through here.
+/// On a canonical v1 network, the operator a NEW authorization goes to must
+/// have passed its self-check (`autoverify`). On `/settle` only a declared
+/// operator gets here ([`assert_served_on_network`]); `/verify` still reads
+/// any other one's code. `release` and `refundInEscrow` never come through
+/// here.
 ///
 /// Called after [`assert_v3_target_is_operator`], so the address the call
 /// goes to and `paymentInfo.operator` are one and the same.
@@ -1069,6 +1111,48 @@ async fn authorize_operator_gate(
             Err(OperatorError::ChainReadUnavailable(reason))
         }
     }
+}
+
+/// The escrow rail relays only what this facilitator declares, for
+/// `authorize`, `release` and `refundInEscrow` alike:
+/// - on every escrow network, an operator that
+///   [`OperatorAddresses::for_network`] does not declare for that network,
+///   either as the address the write goes to (`authorizeAddress`, else
+///   `operatorAddress`) or as `paymentInfo.operator`:
+///   [`OperatorError::OperatorNotServed`];
+/// - on a [`ONE_TOKEN_ESCROW_NETWORKS`] network (Robinhood Chain), a
+///   `paymentInfo.token` other than [`served_escrow_token`]:
+///   [`OperatorError::TokenNotServed`].
+///
+/// Decided on the request alone, before anything is read or sent. A network
+/// with no escrow is refused as the flows refuse it.
+fn assert_served_on_network(
+    network: Network,
+    extra: &EscrowExtra,
+    payment_info: &EscrowPaymentInfo,
+) -> Result<(), OperatorError> {
+    let declared = OperatorAddresses::for_network(network)
+        .ok_or_else(|| OperatorError::unsupported_network(&network))?
+        .payment_operators;
+    let target = extra.authorize_address.unwrap_or(extra.operator_address);
+    if let Some(operator) = [target, payment_info.operator]
+        .into_iter()
+        .find(|operator| !declared.contains(operator))
+    {
+        return Err(OperatorError::OperatorNotServed {
+            operator,
+            network: network.to_string(),
+        });
+    }
+    if ONE_TOKEN_ESCROW_NETWORKS.contains(&network)
+        && served_escrow_token(network) != Some(payment_info.token)
+    {
+        return Err(OperatorError::TokenNotServed {
+            token: payment_info.token,
+            network: network.to_string(),
+        });
+    }
+    Ok(())
 }
 
 /// A v3 write goes to `paymentInfo.operator` itself. The canonical escrow
@@ -1384,8 +1468,9 @@ async fn send_operator_tx(
             return Err(send_failure(e));
         }
         Err(e) => {
-            // `target` is the MERCHANT-supplied operator address: it is deliberately
-            // not validated (see `validate_addresses`), so a misconfigured merchant
+            // `target` is the operator address the request names: one this
+            // facilitator declares (`assert_served_on_network`), but nothing proves
+            // it still answers, so a misconfigured operator
             // and a broken facilitator produce the same `execution reverted` with
             // empty revert data. Logging the target only at `debug!` made those two
             // indistinguishable in production and cost ~315 failed operations over
@@ -1457,16 +1542,12 @@ pub(super) async fn eth_call(
 /// This allows merchants using `@x402r/helpers` (CREATE3 addresses) to work on all
 /// networks, not just SKALE.
 ///
-/// Operator address is NOT validated — the facilitator acts as a relay and
-/// the escrow contract enforces operator rules. Merchants bring their own
-/// PaymentOperator contracts.
+/// The operator is not checked here: on `/settle` it was held to the operators
+/// declared for the network before anything was read
+/// ([`assert_served_on_network`]).
 ///
 /// The `strict_operator` parameter is retained for future use but currently
-/// all callers pass `false` (operator-agnostic mode).
-///
-/// Note on gas risk: accepting any operator means the facilitator may spend
-/// gas on transactions that revert if the operator contract rejects them.
-/// This is an accepted tradeoff for protocol openness.
+/// all callers pass `false`.
 fn validate_addresses(
     network: Network,
     extra: &EscrowExtra,
@@ -1490,7 +1571,7 @@ fn validate_addresses(
             )));
         }
     }
-    // Operator address is not validated — merchants specify their own operator.
+    // The operator is checked before, in `assert_served_on_network`.
 
     // Canonical v1 networks (Arc): the canonical v1 escrow and collector, and
     // nothing else. The CREATE3 set below has no code there.

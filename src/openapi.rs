@@ -590,6 +590,12 @@ The `action` field controls the operation:
 
 Escrow contracts deployed on 14 networks. See `/supported` for networks with active PaymentOperator deployments.
 
+`/settle` relays `authorize`, `release` and `refundInEscrow` only to the PaymentOperators this facilitator declares
+for the network -- each `escrow` entry of `/supported` names one of them. A request whose `paymentInfo.operator`, or
+the address the call would go to (`authorizeAddress`, else `operatorAddress`), is any other answers
+`400 escrow_operator_not_served`, before anything is read or sent. To have an operator added, see "Escrow
+PaymentOperators" in the repository's README.
+
 **NEAR escrow (scheme `escrow` on `near` / `near-testnet`)** is a path of its own, into the Arras escrow
 contracts: served only while `ENABLE_NEAR_ESCROW` is on and a contract is configured for the network
 (`/supported` then lists an `escrow` kind there). The payload is `{"signedDelegateAction": "<base64 borsh>"}`,
@@ -622,8 +628,8 @@ reason; an outcome that shows no verdict is `502 settlement_unconfirmed` with th
 `0xBdEA0D1bcC5966192B070Fdf62aB4EF5b4420cff`, ERC-3009 collector `0x0E3dF9510de65469C4518D7843919c0b8C7A7757`,
 PaymentOperatorFactory v1.0.2 `0xc24153B7ED8DC03e551F29DDEeA5CadFe57e2716` -- and a request there must name
 that escrow and collector. Every write there (`authorize`, `release`, `refundInEscrow`) goes to `paymentInfo.operator`
-itself, and only once that address has code: a request whose `operatorAddress` / `authorizeAddress` is another
-address answers `400 operator_mismatch`, and one whose operator has no code on the network answers
+itself, and only once that address has code: a request whose call would go anywhere else answers
+`400 escrow_operator_not_served` (above), and one whose operator has no code on the network answers
 `422 operator_has_no_code`; neither sends a transaction. Their operators have no `release` / `refundInEscrow`: `release` is sent as
 `capture(paymentInfo, amount, 0x)` and `refundInEscrow` as `void(paymentInfo, 0x)`, which returns the WHOLE
 capturable amount, so `refundInEscrow` must name exactly that amount. Nothing capturable left answers
@@ -633,7 +639,9 @@ fails answers `502 chain_read_unavailable` with `retryable: true`. None of them 
 `authorize` on these networks takes EOA signatures only, and is placed against a listed PaymentOperator only once that
 operator has passed its on-chain self-check: until then it answers `503 operator_not_verified`, retryable --
 the expected case being an operator that is declared but not deployed yet. On Robinhood Chain the token is
-USDG (`0x5fc5360D0400a0Fd4f2af552ADD042D716F1d168`, EIP-712 domain `Global Dollar` / `1`).
+USDG (`0x5fc5360D0400a0Fd4f2af552ADD042D716F1d168`, EIP-712 domain `Global Dollar` / `1`), and the only one its rail
+moves: on `/settle` a request moving any other `paymentInfo.token` answers `400 escrow_token_not_served`, for all
+three writes and before anything is read or sent.
 
 **Lifecycle orders.** `release` and `refundInEscrow` carry no ERC-3009 signature (the funds are
 already escrowed) but they do move money, so they carry `payload.lifecycleAuth`: an EIP-712

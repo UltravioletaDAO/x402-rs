@@ -598,6 +598,23 @@ The facilitator supports the [x402r extension](https://github.com/coinbase/x402/
 - **x402r Proposal:** https://github.com/coinbase/x402/issues/864
 - **x402r Contracts:** https://github.com/BackTrackCo/x402r-contracts
 
+### Escrow PaymentOperators
+
+On `POST /settle`, the `escrow` and `commerce` schemes (`authorize`, `release`, `refundInEscrow`) are relayed only to
+the PaymentOperators this facilitator declares for each network; `GET /supported` lists them under `escrow`. A request
+naming any other operator answers `400 escrow_operator_not_served`, and nothing is read or sent. On Robinhood Chain
+the escrow rail also moves USDG only (`400 escrow_token_not_served`).
+
+To have an operator added, open a pull request that adds its address to the `payment_operators` list of its network
+in `OperatorAddresses::for_network` (`src/payment_operator/addresses.rs`). In the description, include:
+
+- the network and the operator address;
+- a block-explorer link, on that network, where the operator contract's source is verified;
+- a contact (GitHub handle or email) for whoever runs the operator.
+
+On Arc, Arc testnet and Robinhood Chain a declared operator also has to pass the facilitator's on-chain self-check
+before it takes new authorizations.
+
 ---
 
 ## Configuration

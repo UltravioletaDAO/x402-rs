@@ -154,6 +154,18 @@ pub enum OperatorError {
     /// before anything is signed.
     #[error("PaymentOperator {operator} has no code on {network}; nothing was sent")]
     OperatorHasNoCode { operator: Address, network: String },
+
+    /// The request names a PaymentOperator the escrow rail does not serve on
+    /// this network: it serves only the operators this facilitator declares
+    /// for the network. Refused before anything is read or sent.
+    #[error("PaymentOperator {operator} is not served by the escrow rail on {network}; nothing was sent")]
+    OperatorNotServed { operator: Address, network: String },
+
+    /// The request moves a token the escrow rail does not serve on this
+    /// network: on Robinhood Chain, anything but USDG. Refused before anything
+    /// is read or sent.
+    #[error("token {token} is not served by the escrow rail on {network}; nothing was sent")]
+    TokenNotServed { token: Address, network: String },
 }
 
 /// How a typed escrow failure answers over HTTP: status, the bounded token
@@ -226,6 +238,16 @@ impl OperatorError {
             OperatorError::NothingToVoid => Some(HttpAnswer {
                 status: 409,
                 token: "nothing_to_void",
+                retry_after_secs: None,
+            }),
+            OperatorError::OperatorNotServed { .. } => Some(HttpAnswer {
+                status: 400,
+                token: "escrow_operator_not_served",
+                retry_after_secs: None,
+            }),
+            OperatorError::TokenNotServed { .. } => Some(HttpAnswer {
+                status: 400,
+                token: "escrow_token_not_served",
                 retry_after_secs: None,
             }),
             _ => None,

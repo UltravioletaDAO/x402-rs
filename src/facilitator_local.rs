@@ -98,37 +98,66 @@ fn kind_identity(kind: &SupportedPaymentKind) -> String {
 /// On the canonical v1 networks an operator is announced only while
 /// `operator_verified` says it passed its self-check (`autoverify`). Every
 /// other network is announced exactly as it always was.
+///
+/// Every `escrow` entry also carries `lifecycleSigners` (the network's
+/// declared lifecycle signers, `{}` when none) and `lifecycleSignersVersion`,
+/// from the same `OperatorAddresses::lifecycle_signer_map` the lifecycle gate
+/// admits `declared_signer` from. `commerce` entries carry neither.
 pub(crate) fn escrow_supported_kinds(
     operator_verified: impl Fn(Network, alloy::primitives::Address) -> bool,
 ) -> Vec<SupportedPaymentKind> {
+    escrow_supported_kinds_from(
+        crate::payment_operator::addresses::OperatorAddresses::for_network,
+        operator_verified,
+    )
+}
+
+/// [`escrow_supported_kinds`] over `table` in place of
+/// `OperatorAddresses::for_network`, so the announcement can be held to a
+/// table that declares lifecycle signers.
+pub(crate) fn escrow_supported_kinds_from(
+    table: impl Fn(Network) -> Option<crate::payment_operator::addresses::OperatorAddresses>,
+    operator_verified: impl Fn(Network, alloy::primitives::Address) -> bool,
+) -> Vec<SupportedPaymentKind> {
     use crate::payment_operator::addresses::{
-        canonical_v1, create3, is_canonical_v1_network, OperatorAddresses, ESCROW_NETWORKS,
+        canonical_v1, create3, is_canonical_v1_network, ESCROW_NETWORKS, LIFECYCLE_SIGNERS_VERSION,
     };
 
-    let entry =
-        |scheme: Scheme, network: Network, escrow, operator, collector| SupportedPaymentKind {
-            x402_version: X402Version::V2,
-            scheme,
-            network: network.to_caip2(),
-            network_aliases: None,
-            extra: Some(SupportedPaymentKindExtra {
-                near_escrow: None,
-                fee_payer: None,
-                tokens: None,
-                escrow: Some(EscrowSupportedInfo {
-                    escrow_address: EvmAddress(escrow),
-                    operator_address: EvmAddress(operator),
-                    token_collector: EvmAddress(collector),
-                }),
+    let entry = |scheme: Scheme,
+                 network: Network,
+                 escrow,
+                 operator,
+                 collector,
+                 lifecycle_signers: Option<
+        std::collections::BTreeMap<alloy::primitives::Address, alloy::primitives::Address>,
+    >| SupportedPaymentKind {
+        x402_version: X402Version::V2,
+        scheme,
+        network: network.to_caip2(),
+        network_aliases: None,
+        extra: Some(SupportedPaymentKindExtra {
+            near_escrow: None,
+            fee_payer: None,
+            tokens: None,
+            escrow: Some(EscrowSupportedInfo {
+                escrow_address: EvmAddress(escrow),
+                operator_address: EvmAddress(operator),
+                token_collector: EvmAddress(collector),
+                lifecycle_signers_version: lifecycle_signers
+                    .as_ref()
+                    .map(|_| LIFECYCLE_SIGNERS_VERSION),
+                lifecycle_signers,
             }),
-        };
+        }),
+    };
 
     let mut kinds = Vec::new();
     for &network in ESCROW_NETWORKS {
-        let Some(addrs) = OperatorAddresses::for_network(network) else {
+        let Some(addrs) = table(network) else {
             continue;
         };
         let canonical = is_canonical_v1_network(network);
+        let lifecycle_signers = addrs.lifecycle_signer_map();
         for &operator in &addrs.payment_operators {
             if canonical && !operator_verified(network, operator) {
                 continue;
@@ -139,6 +168,7 @@ pub(crate) fn escrow_supported_kinds(
                 addrs.escrow,
                 operator,
                 addrs.token_collector,
+                Some(lifecycle_signers.clone()),
             ));
         }
         let (escrow, factory, collector) = if canonical {
@@ -154,7 +184,14 @@ pub(crate) fn escrow_supported_kinds(
                 create3::TOKEN_COLLECTOR,
             )
         };
-        kinds.push(entry(Scheme::Commerce, network, escrow, factory, collector));
+        kinds.push(entry(
+            Scheme::Commerce,
+            network,
+            escrow,
+            factory,
+            collector,
+            None,
+        ));
     }
     kinds
 }
@@ -751,6 +788,8 @@ mod supported_advertisement_tests {
                         operator_byte,
                     )),
                     token_collector: EvmAddress(alloy::primitives::Address::repeat_byte(3)),
+                    lifecycle_signers: None,
+                    lifecycle_signers_version: None,
                 }),
             }),
         }
@@ -943,6 +982,8 @@ mod testnet_chain_id_supported_diff_tests {
                 escrow_address: tag,
                 operator_address: tag,
                 token_collector: tag,
+                lifecycle_signers: None,
+                lifecycle_signers_version: None,
             }),
         }
     }
@@ -1300,6 +1341,8 @@ mod escrow_supported_tests {
                             escrow_address: EvmAddress(addrs.escrow),
                             operator_address: EvmAddress(operator),
                             token_collector: EvmAddress(addrs.token_collector),
+                            lifecycle_signers: None,
+                            lifecycle_signers_version: None,
                         }),
                     };
 
@@ -1321,6 +1364,8 @@ mod escrow_supported_tests {
                         escrow_address: EvmAddress(create3::ESCROW),
                         operator_address: EvmAddress(create3::FACTORY_PAYMENT_OPERATOR),
                         token_collector: EvmAddress(create3::TOKEN_COLLECTOR),
+                        lifecycle_signers: None,
+                        lifecycle_signers_version: None,
                     }),
                 };
 
@@ -1340,6 +1385,23 @@ mod escrow_supported_tests {
         kinds
             .iter()
             .map(|k| serde_json::to_value(k).unwrap())
+            .collect()
+    }
+
+    /// [`json`] without `lifecycleSigners` / `lifecycleSignersVersion`, which
+    /// 2.57.0 added to every `escrow` entry: everything an entry published
+    /// before stays byte for byte (the announcement itself is held by
+    /// `the_lifecycle_signer_announcement_is_the_table`).
+    fn json_without_lifecycle_signers(kinds: &[SupportedPaymentKind]) -> Vec<Value> {
+        json(kinds)
+            .into_iter()
+            .map(|mut kind| {
+                if let Some(extra) = kind.get_mut("extra").and_then(Value::as_object_mut) {
+                    extra.remove("lifecycleSigners");
+                    extra.remove("lifecycleSignersVersion");
+                }
+                kind
+            })
             .collect()
     }
 
@@ -1388,7 +1450,10 @@ mod escrow_supported_tests {
             // independent of the self-check.
             let rest: Vec<SupportedPaymentKind> =
                 others.iter().flat_map(|&n| on(&kinds, n)).collect();
-            assert_eq!(json(&rest), json(&as_built_through_2_40(&others)));
+            assert_eq!(
+                json_without_lifecycle_signers(&rest),
+                json(&as_built_through_2_40(&others))
+            );
 
             for &network in CANONICAL_V1_NETWORKS {
                 let operator = OperatorAddresses::for_network(network)
@@ -1547,6 +1612,163 @@ mod escrow_supported_tests {
         }
 
         autoverify::set_for_test(Network::Arc, arc_operator(Network::Arc), None);
+        match previous {
+            Some(v) => std::env::set_var("ENABLE_PAYMENT_OPERATOR", v),
+            None => std::env::remove_var("ENABLE_PAYMENT_OPERATOR"),
+        }
+    }
+
+    /// `extra.lifecycleSigners` / `extra.lifecycleSignersVersion` of one kind,
+    /// `None` each when absent.
+    fn lifecycle_announcement(kind: &SupportedPaymentKind) -> (Option<Value>, Option<Value>) {
+        let value = serde_json::to_value(kind).unwrap();
+        let extra = &value["extra"];
+        (
+            extra.get("lifecycleSigners").cloned(),
+            extra.get("lifecycleSignersVersion").cloned(),
+        )
+    }
+
+    /// The contract of the lifecycle signer announcement, held to the shared
+    /// policy vector: for each of its tables, every `escrow` kind of a
+    /// network, under both of its names, announces exactly that network's
+    /// declared signers -- the JSON the vector states, byte for byte, and the
+    /// map the lifecycle gate reads (`lifecycle_signer_map`) -- with version
+    /// 1; a network with none announces `{}`; no other scheme carries either
+    /// field. An announcement that differs from the table goes red here.
+    #[test]
+    fn the_lifecycle_signer_announcement_is_the_table() {
+        use crate::payment_operator::addresses::LIFECYCLE_SIGNERS_VERSION;
+        use crate::payment_operator::lifecycle_vector;
+        let v = lifecycle_vector::vector();
+        assert_eq!(LIFECYCLE_SIGNERS_VERSION, 1);
+        for (name, by_network) in &v.announcements {
+            let table = v.table(name);
+            let kinds =
+                advertise_under_both_network_forms(escrow_supported_kinds_from(&table, |_, _| {
+                    true
+                }));
+            let mut networks_seen = std::collections::BTreeSet::new();
+            for kind in &kinds {
+                let (signers, version) = lifecycle_announcement(kind);
+                if kind.scheme != Scheme::Escrow {
+                    assert_eq!((&signers, &version), (&None, &None), "{name} {kind:?}");
+                    continue;
+                }
+                let network = resolve_network(&kind.network).unwrap();
+                networks_seen.insert(network.to_caip2());
+                let from_table: serde_json::Map<String, Value> = table(network)
+                    .unwrap()
+                    .lifecycle_signer_map()
+                    .into_iter()
+                    .map(|(op, signer)| (format!("{op:#x}"), Value::String(format!("{signer:#x}"))))
+                    .collect();
+                assert_eq!(
+                    signers,
+                    Some(Value::Object(from_table)),
+                    "{name} {}",
+                    kind.network
+                );
+                assert_eq!(
+                    version,
+                    Some(Value::from(LIFECYCLE_SIGNERS_VERSION)),
+                    "{name} {}",
+                    kind.network
+                );
+                let expected = by_network
+                    .get(&network.to_caip2())
+                    .cloned()
+                    .unwrap_or_else(|| {
+                        serde_json::json!({
+                            "lifecycleSigners": {},
+                            "lifecycleSignersVersion": LIFECYCLE_SIGNERS_VERSION,
+                        })
+                    });
+                assert_eq!(
+                    serde_json::json!({
+                        "lifecycleSigners": signers,
+                        "lifecycleSignersVersion": version,
+                    }),
+                    expected,
+                    "{name} {}",
+                    kind.network
+                );
+            }
+            // Every escrow network was looked at.
+            let all: std::collections::BTreeSet<String> =
+                ESCROW_NETWORKS.iter().map(|n| n.to_caip2()).collect();
+            assert_eq!(networks_seen, all, "{name}");
+        }
+        // The vector does declare somebody: the test above is not vacuous.
+        let declared = &v.announcements["declared"]["eip155:8453"]["lifecycleSigners"];
+        assert_eq!(declared.as_object().map(|m| m.len()), Some(1));
+
+        // A canonical v1 network whose operator has not verified announces no
+        // escrow kind, so no declared signer either: a reader finds nothing and
+        // grants nothing. The other networks announce as before.
+        use crate::payment_operator::addresses::is_canonical_v1_network;
+        let table = v.table("declared");
+        for kind in escrow_supported_kinds_from(&table, |_, _| false) {
+            let network = resolve_network(&kind.network).unwrap();
+            if kind.scheme == Scheme::Escrow {
+                assert!(!is_canonical_v1_network(network), "{}", kind.network);
+                assert!(
+                    lifecycle_announcement(&kind).1.is_some(),
+                    "{}",
+                    kind.network
+                );
+            }
+        }
+    }
+
+    /// The production table declares nobody, and the body `GET /supported`
+    /// answers with (`supported_body` over `supported()`, escrow switched on)
+    /// says so: every x402r `escrow` kind carries `lifecycleSigners: {}` with
+    /// its version -- not an absent field, which is what a facilitator older
+    /// than the announcement publishes -- and no other kind carries either.
+    /// No chain provider is configured here, so `exact` and the NEAR `escrow`
+    /// kind are not in this body; neither builds an `EscrowSupportedInfo`.
+    #[tokio::test]
+    async fn supported_announces_no_lifecycle_signer_with_its_version() {
+        use crate::payment_operator::autoverify::{self, Verdict};
+        let facilitator = FacilitatorLocal::new(
+            crate::payment_operator::test_rpc::Providers(HashMap::new()),
+            Arc::new(Box::new(NoScreening) as Box<dyn ComplianceChecker>),
+        );
+        let _flags = crate::payment_operator::test_rpc::ESCROW_FLAGS
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let previous = std::env::var("ENABLE_PAYMENT_OPERATOR").ok();
+        std::env::set_var("ENABLE_PAYMENT_OPERATOR", "true");
+        let arc_operator = OperatorAddresses::for_network(Network::Arc)
+            .unwrap()
+            .payment_operators[0];
+        autoverify::set_for_test(Network::Arc, arc_operator, Some(Verdict::Verified));
+
+        let supported = facilitator.supported().await.unwrap();
+        let body = crate::handlers::supported_body(supported);
+        let kinds = body["kinds"].as_array().expect("kinds");
+        let mut escrow = 0;
+        for kind in kinds {
+            let extra = &kind["extra"];
+            if kind["scheme"] == "escrow" {
+                escrow += 1;
+                assert_eq!(extra["lifecycleSigners"], serde_json::json!({}), "{kind}");
+                assert_eq!(extra["lifecycleSignersVersion"], 1, "{kind}");
+            } else {
+                assert!(extra.get("lifecycleSigners").is_none(), "{kind}");
+                assert!(extra.get("lifecycleSignersVersion").is_none(), "{kind}");
+            }
+        }
+        assert!(
+            kinds
+                .iter()
+                .any(|k| k["scheme"] == "escrow" && k["network"] == "base"),
+            "under the v1 name too"
+        );
+        assert!(escrow > 0);
+
+        autoverify::set_for_test(Network::Arc, arc_operator, None);
         match previous {
             Some(v) => std::env::set_var("ENABLE_PAYMENT_OPERATOR", v),
             None => std::env::remove_var("ENABLE_PAYMENT_OPERATOR"),

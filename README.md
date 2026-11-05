@@ -615,6 +615,15 @@ in `OperatorAddresses::for_network` (`src/payment_operator/addresses.rs`). In th
 On Arc, Arc testnet and Robinhood Chain a declared operator also has to pass the facilitator's on-chain self-check
 before it takes new authorizations.
 
+A declared operator may also have one **lifecycle signer**: a key whose EIP-712 lifecycle order the facilitator
+admits for `release` and `refundInEscrow` on any escrow of that operator, on that network only (role
+`declared_signer`; the destinations stay those of the `paymentInfo`). Declaring, rotating or revoking it is a pull
+request to the `lifecycle_signers` list of the network in `OperatorAddresses::for_network` -- one row per operator,
+the operator one of that network's `payment_operators`, a rotation removing the old row, never the same key on a
+testnet and a mainnet. `GET /supported` announces the result on every x402r `escrow` entry as
+`extra.lifecycleSigners` (`{}` when none) with `extra.lifecycleSignersVersion`. No lifecycle signer is declared
+today. The policy vector for the role is `tests/fixtures/escrow/lifecycle-declared-signer-vector.json`.
+
 ---
 
 ## Configuration

@@ -12,11 +12,20 @@
 //!
 //! | action           | accepted signers                                              |
 //! |------------------|---------------------------------------------------------------|
-//! | `release`        | `paymentInfo.payer`; the operator owner (`FEE_RECIPIENT()`, or `FEE_RECEIVER()` on v3 operators) |
-//! | `refundInEscrow` | `paymentInfo.receiver`; the operator owner; the payer, but only once `authorizationExpiry` has passed (the chain already lets them `reclaim()`) |
+//! | `release`        | `paymentInfo.payer`; the operator's declared lifecycle signer; the operator owner (`FEE_RECIPIENT()`, or `FEE_RECEIVER()` on v3 operators) |
+//! | `refundInEscrow` | `paymentInfo.receiver`; the operator's declared lifecycle signer; the operator owner; the payer, but only once `authorizationExpiry` has passed (the chain already lets them `reclaim()`) |
 //!
 //! The receiver may never release (self-payment is what escrow exists to stop)
 //! and the payer may never refund before expiry (that is the chargeback).
+//!
+//! The declared lifecycle signer (`declared_signer`) is the key
+//! `OperatorAddresses::lifecycle_signers` names for `paymentInfo.operator` on
+//! the order's network -- declared, rotated and revoked by pull request, and
+//! announced in `/supported` (`lifecycleSigners`) from the same table. It is
+//! checked locally, after the deadline, the signature and the nonce and before
+//! the owner read, so an owner RPC that is down does not refuse it. It holds
+//! the owner's power over every escrow of that operator: release to the
+//! receiver, refund to the payer before expiry.
 //!
 //! The order is signed over the SAME `paymentInfo` that is submitted, so
 //! neither side computes `getHash` and there is nothing to drift. `PaymentInfo`
@@ -48,6 +57,7 @@ use crate::chain::evm::{EvmChain, EvmProvider};
 use crate::network::Network;
 
 use super::abi::{OperatorContract, OperatorV3Contract};
+use super::addresses::OperatorAddresses;
 use super::errors::OperatorError;
 use super::operator::OperatorAbi;
 use super::types::{ContractPaymentInfo, EscrowLifecyclePayload};
@@ -210,6 +220,9 @@ pub enum Role {
     OperatorOwner,
     /// The payer, refunding after `authorizationExpiry`.
     PayerAfterExpiry,
+    /// The lifecycle signer the operator table declares for
+    /// `paymentInfo.operator` on this network.
+    DeclaredSigner,
 }
 
 impl Role {
@@ -219,6 +232,7 @@ impl Role {
             Role::Receiver => "receiver",
             Role::OperatorOwner => "operator_owner",
             Role::PayerAfterExpiry => "payer_after_expiry",
+            Role::DeclaredSigner => "declared_signer",
         }
     }
 }
@@ -283,6 +297,10 @@ pub struct OrderContext<'a> {
     /// Unix seconds.
     pub now: u64,
     pub max_deadline_secs: u64,
+    /// The lifecycle signer the operator table declares for
+    /// `payment_info.operator` on `chain_id`'s network, if any
+    /// ([`declared_signer`]).
+    pub declared_signer: Option<Address>,
 }
 
 /// The first, chain-free half of the evaluation.
@@ -291,8 +309,8 @@ pub enum Step {
     /// Settled without reading the chain.
     Verdict(Verdict),
     /// The signature is good and fresh but the signer is neither payer nor
-    /// receiver (or holds no role as such). Only the operator owner rule is
-    /// left, and that one needs a read.
+    /// receiver (or holds no role as such) nor the declared lifecycle signer.
+    /// Only the operator owner rule is left, and that one needs a read.
     NeedsOwner { signer: Address },
 }
 
@@ -408,10 +426,27 @@ pub fn pre_evaluate(
             signer: auth.signer,
             role,
         }),
+        // Deadline, signature and nonce are settled above; the owner read is
+        // below. Local, so an owner RPC that is down cannot refuse it.
+        None if ctx.declared_signer == Some(auth.signer) => Step::Verdict(Verdict::Ok {
+            signer: auth.signer,
+            role: Role::DeclaredSigner,
+        }),
         None => Step::NeedsOwner {
             signer: auth.signer,
         },
     }
+}
+
+/// The lifecycle signer `table` declares for `operator` on `network`
+/// (`OperatorAddresses::lifecycle_signer`). Production passes
+/// `OperatorAddresses::for_network`.
+pub fn declared_signer(
+    table: impl Fn(Network) -> Option<OperatorAddresses>,
+    network: Network,
+    operator: Address,
+) -> Option<Address> {
+    table(network)?.lifecycle_signer(operator)
 }
 
 /// Finish a [`Step::NeedsOwner`] with what the chain said the owner is.
@@ -456,7 +491,10 @@ fn describe(verdict: &Verdict) -> String {
         Verdict::DeadlineTooFar => "lifecycleAuth.deadline is too far ahead".to_string(),
         Verdict::Replayed => "lifecycleAuth.nonce was already used".to_string(),
         Verdict::UnauthorizedRole { signer } => {
-            format!("{signer} is neither a party to this escrow nor the operator owner")
+            format!(
+                "{signer} is neither a party to this escrow, the operator's declared lifecycle \
+                 signer, nor the operator owner"
+            )
         }
         Verdict::OwnerUnverifiable { signer, error } => {
             format!("could not read the operator owner to check {signer}; retry later ({error})")
@@ -589,37 +627,31 @@ pub(super) async fn gate_with_mode(
     if mode == Mode::Off {
         return Ok(());
     }
-    let chain_id = EvmChain::try_from(network)
-        .map_err(|_| OperatorError::NonEvmNetwork)?
-        .chain_id;
     let payment_info = ContractPaymentInfo::from_lifecycle_payload(lifecycle);
-    let ctx = OrderContext {
+    let verdict = evaluate(
         action,
-        payment_info: &payment_info,
-        amount: lifecycle.amount,
-        chain_id,
-        now: unix_now(),
-        max_deadline_secs: max_deadline_secs(),
-    };
-    let verdict = match pre_evaluate(lifecycle.lifecycle_auth.as_ref(), &ctx, replay_guard()) {
-        Step::Verdict(v) => v,
-        Step::NeedsOwner { signer } => {
-            let owner = read_operator_owner(provider, chain_id, payment_info.operator, abi).await;
-            finish_with_owner(signer, owner)
-        }
-    };
+        lifecycle,
+        network,
+        provider,
+        abi,
+        OperatorAddresses::for_network,
+        unix_now(),
+        replay_guard(),
+    )
+    .await?;
     let signer = match &verdict {
         Verdict::Ok { signer, .. }
         | Verdict::UnauthorizedRole { signer }
         | Verdict::OwnerUnverifiable { signer, .. } => Some(*signer),
         _ => lifecycle.lifecycle_auth.as_ref().map(|a| a.signer),
     };
-    if verdict.is_ok() {
+    if let Verdict::Ok { role, .. } = &verdict {
         info!(
             action = action.as_str(),
             network = %network,
             mode = mode.as_str(),
             verdict = verdict.category(),
+            role = role.as_str(),
             signer = ?signer,
             operator = ?payment_info.operator,
             payer = ?payment_info.payer,
@@ -641,6 +673,48 @@ pub(super) async fn gate_with_mode(
         );
     }
     decide(mode, &verdict)
+}
+
+/// The verdict on one order: the chain-free half ([`pre_evaluate`], with the
+/// declared signer `table` names for `(network, paymentInfo.operator)`), then
+/// the owner read only when that half leaves [`Step::NeedsOwner`]. Everything
+/// [`gate_with_mode`] does short of logging and deciding; `table`, `now` and
+/// `replay` are what it takes from the process (`OperatorAddresses::for_network`,
+/// the clock, the process guard), so the policy vector can run the same path.
+#[allow(clippy::too_many_arguments)]
+pub(super) async fn evaluate(
+    action: LifecycleAction,
+    lifecycle: &EscrowLifecyclePayload,
+    network: Network,
+    provider: &EvmProvider,
+    abi: OperatorAbi,
+    table: impl Fn(Network) -> Option<OperatorAddresses>,
+    now: u64,
+    replay: &ReplayGuard,
+) -> Result<Verdict, OperatorError> {
+    let chain_id = EvmChain::try_from(network)
+        .map_err(|_| OperatorError::NonEvmNetwork)?
+        .chain_id;
+    let payment_info = ContractPaymentInfo::from_lifecycle_payload(lifecycle);
+    let ctx = OrderContext {
+        action,
+        payment_info: &payment_info,
+        amount: lifecycle.amount,
+        chain_id,
+        now,
+        max_deadline_secs: max_deadline_secs(),
+        declared_signer: declared_signer(table, network, payment_info.operator),
+    };
+    Ok(
+        match pre_evaluate(lifecycle.lifecycle_auth.as_ref(), &ctx, replay) {
+            Step::Verdict(v) => v,
+            Step::NeedsOwner { signer } => {
+                let owner =
+                    read_operator_owner(provider, chain_id, payment_info.operator, abi).await;
+                finish_with_owner(signer, owner)
+            }
+        },
+    )
 }
 
 #[cfg(test)]
@@ -682,6 +756,7 @@ mod tests {
             chain_id: CHAIN,
             now: NOW,
             max_deadline_secs: DEFAULT_MAX_DEADLINE_SECS,
+            declared_signer: None,
         }
     }
 
@@ -1259,6 +1334,326 @@ mod tests {
         assert_eq!(
             base.reads(),
             vec![(legacy, OperatorContract::FEE_RECIPIENTCall::SELECTOR)]
+        );
+    }
+
+    // ---- the declared lifecycle signer: the shared policy vector ----------
+    //
+    // `tests/fixtures/escrow/lifecycle-declared-signer-vector.json`, loaded
+    // byte for byte by Execution Market's lifecycle signer too. See
+    // `super::super::lifecycle_vector`.
+
+    use crate::payment_operator::addresses::{is_canonical_v1_network, LIFECYCLE_SIGNERS_VERSION};
+    use crate::payment_operator::lifecycle_vector::{self, Case, Outcome, Vector};
+
+    fn outcome_of_verdict(v: &Verdict) -> Outcome {
+        match v {
+            Verdict::Ok { role, .. } => Outcome {
+                verdict: Some("ok".into()),
+                role: Some(role.as_str().into()),
+                step: None,
+            },
+            other => Outcome {
+                verdict: Some(other.category().into()),
+                role: None,
+                step: None,
+            },
+        }
+    }
+
+    fn outcome_of_step(s: &Step) -> Outcome {
+        match s {
+            Step::Verdict(v) => outcome_of_verdict(v),
+            Step::NeedsOwner { .. } => Outcome {
+                verdict: None,
+                role: None,
+                step: Some("needs_owner".into()),
+            },
+        }
+    }
+
+    fn admits_declared_signer(o: &Outcome) -> bool {
+        o.verdict.as_deref() == Some("ok") && o.role.as_deref() == Some("declared_signer")
+    }
+
+    /// The vector's keys are what their seeds derive, D is nobody else, and
+    /// every digest and signature eth_account computed is the one this
+    /// implementation computes: the declared role changes nothing in the
+    /// EIP-712 order, and the signatures are byte for byte the RFC 6979 ones,
+    /// so either side can be checked against the other's bytes.
+    #[test]
+    fn the_shared_vector_keys_digests_and_signatures_match_this_implementation() {
+        let v = lifecycle_vector::vector();
+        assert_eq!(v.vector_version, 1);
+        assert_eq!(v.max_deadline_secs, DEFAULT_MAX_DEADLINE_SECS);
+        assert_eq!(
+            v.announcement.lifecycle_signers_version,
+            LIFECYCLE_SIGNERS_VERSION
+        );
+        for (name, key) in &v.keys {
+            assert_eq!(key.signer().address(), key.address, "key {name}");
+            assert!(
+                key.seed.contains("TEST KEY"),
+                "key {name} is marked as a test key"
+            );
+        }
+        let d = v.key("declaredSigner").address;
+        for other in ["payer", "receiver", "owner", "otherKey"] {
+            assert_ne!(d, v.key(other).address, "D is not the {other}");
+        }
+        assert!(v.cases.len() >= 20, "the whole matrix is there");
+        for c in &v.cases {
+            let payload = c.payload(&v);
+            let pi = ContractPaymentInfo::from_lifecycle_payload(&payload);
+            let signed_amount: u128 = c.signed_over.amount.parse().unwrap();
+            let digest = signing_hash(
+                c.action(),
+                signed_amount,
+                c.deadline,
+                c.nonce(),
+                &pi,
+                c.signed_over.chain_id,
+            );
+            assert_eq!(digest, c.digest(), "{}: digest", c.id);
+            let key = v.key(&c.signer);
+            let ours = key.signer().sign_hash_sync(&digest).unwrap();
+            assert_eq!(
+                hex::encode(ours.as_bytes()),
+                c.signature,
+                "{}: signature",
+                c.id
+            );
+            let auth = payload.lifecycle_auth.as_ref().unwrap();
+            assert_eq!(recover(auth, digest), Some(key.address), "{}", c.id);
+            // `emDelegate` says what the policy says about the declared role.
+            match c.em_delegate {
+                Some(true) => assert!(admits_declared_signer(&c.policy), "{}", c.id),
+                Some(false) => {
+                    assert_eq!(c.policy.step.as_deref(), Some("needs_owner"), "{}", c.id)
+                }
+                None => assert!(!admits_declared_signer(&c.policy), "{}", c.id),
+            }
+        }
+    }
+
+    /// The policy half, no chain: each case's first submission is the
+    /// `policy` the vector states, and a resubmission is what `expected` says,
+    /// with the declared signer resolved through [`declared_signer`] from the
+    /// case's table.
+    #[test]
+    fn the_shared_vector_policy_matrix() {
+        let v = lifecycle_vector::vector();
+        for c in &v.cases {
+            let payload = c.payload(&v);
+            let pi = ContractPaymentInfo::from_lifecycle_payload(&payload);
+            let network = c.network();
+            let context = OrderContext {
+                action: c.action(),
+                payment_info: &pi,
+                amount: c.amount(),
+                chain_id: EvmChain::try_from(network).unwrap().chain_id,
+                now: v.now,
+                max_deadline_secs: v.max_deadline_secs,
+                declared_signer: declared_signer(v.table(&c.table), network, pi.operator),
+            };
+            let guard = ReplayGuard::default();
+            let auth = payload.lifecycle_auth.as_ref();
+            let first = pre_evaluate(auth, &context, &guard);
+            assert_eq!(outcome_of_step(&first), c.policy, "{}", c.id);
+            for (i, expected) in c.expected.iter().enumerate().skip(1) {
+                let again = pre_evaluate(auth, &context, &guard);
+                assert_eq!(&outcome_of_step(&again), expected, "{} #{i}", c.id);
+            }
+        }
+    }
+
+    async fn through_the_gate(v: &Vector, c: &Case) -> (Vec<Outcome>, Vec<(Address, [u8; 4])>) {
+        use crate::payment_operator::test_rpc::{self, CallAnswer, MockNode};
+        let network = c.network();
+        let (abi, selector) = if is_canonical_v1_network(network) {
+            (
+                OperatorAbi::V3,
+                OperatorV3Contract::FEE_RECEIVERCall::SELECTOR,
+            )
+        } else {
+            (
+                OperatorAbi::Legacy,
+                OperatorContract::FEE_RECIPIENTCall::SELECTOR,
+            )
+        };
+        // A cached owner would answer without a read: every case starts cold,
+        // so "no owner read" is measured, not inherited from an earlier case.
+        owner_cache()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clear();
+        let node = MockNode::start(network).await;
+        let provider = test_rpc::provider(network, &node, true).await;
+        match c.owner_rpc.as_str() {
+            "up" => node.on_call(
+                c.payment_info.operator,
+                selector,
+                CallAnswer::Return(alloy::sol_types::SolValue::abi_encode(
+                    &v.key("owner").address,
+                )),
+            ),
+            "down" => node.fail_reads(true),
+            other => panic!("{}: ownerRpc {other}", c.id),
+        }
+        let payload = c.payload(v);
+        let guard = ReplayGuard::default();
+        let mut outcomes = Vec::new();
+        for _ in &c.expected {
+            let verdict = evaluate(
+                c.action(),
+                &payload,
+                network,
+                &provider,
+                abi,
+                v.table(&c.table),
+                v.now,
+                &guard,
+            )
+            .await
+            .expect("an EVM network");
+            outcomes.push(outcome_of_verdict(&verdict));
+        }
+        (outcomes, node.reads())
+    }
+
+    /// The whole matrix through the path `gate` runs: the declared signer
+    /// resolved from the case's table, the policy, and the owner read only
+    /// when the policy leaves it. A declared signer is admitted with the owner
+    /// RPC down and without a single owner read; anything the declared rule
+    /// does not admit still ends where it ended before it existed.
+    #[tokio::test]
+    async fn the_shared_vector_through_the_gate() {
+        let v = lifecycle_vector::vector();
+        for c in &v.cases {
+            let (outcomes, reads) = through_the_gate(&v, c).await;
+            assert_eq!(outcomes, c.expected, "{}", c.id);
+            if c.policy.step.is_none() {
+                assert!(
+                    reads.is_empty(),
+                    "{}: settled locally, read {reads:?}",
+                    c.id
+                );
+            }
+        }
+    }
+
+    /// The production gate reads the production table, which declares nobody:
+    /// an order the vector's D signs for Base/A -- admitted when the vector's
+    /// table declares D -- is refused under `enforce` exactly as before the
+    /// role existed, through the owner rule.
+    #[tokio::test]
+    async fn the_production_gate_admits_no_declared_signer_while_the_table_is_empty() {
+        use crate::payment_operator::test_rpc::{self, CallAnswer, MockNode};
+        let v = lifecycle_vector::vector();
+        let d = v.key("declaredSigner").signer();
+        let base_a = address!("271f9fa7f8907aCf178CCFB470076D9129D8F0Eb");
+        owner_cache()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clear();
+        let node = MockNode::start(Network::Base).await;
+        let provider = test_rpc::provider(Network::Base, &node, true).await;
+        node.on_call(
+            base_a,
+            OperatorContract::FEE_RECIPIENTCall::SELECTOR,
+            CallAnswer::Return(alloy::sol_types::SolValue::abi_encode(
+                &v.key("owner").address,
+            )),
+        );
+        let order = owner_order(&d, base_a, Network::Base);
+        let err = gate_with_mode(
+            Mode::Enforce,
+            LifecycleAction::Release,
+            &order,
+            Network::Base,
+            &provider,
+            OperatorAbi::Legacy,
+        )
+        .await
+        .expect_err("nobody is declared");
+        assert!(
+            matches!(
+                err,
+                OperatorError::LifecycleAuthRejected {
+                    category: "unauthorized_role",
+                    ..
+                }
+            ),
+            "{err:?}"
+        );
+        assert_eq!(
+            node.reads(),
+            vec![(base_a, OperatorContract::FEE_RECIPIENTCall::SELECTOR)]
+        );
+    }
+
+    /// A declared signer is admitted only for the operator AND the network
+    /// it is declared for; existing roles keep their own label even when the
+    /// same key is also declared.
+    #[test]
+    fn a_declared_signer_is_bound_to_its_operator_and_network() {
+        let v = lifecycle_vector::vector();
+        let d = v.key("declaredSigner").address;
+        let table = v.table("declared");
+        let base_a = address!("271f9fa7f8907aCf178CCFB470076D9129D8F0Eb");
+        let base_b = address!("030353642B936c9D4213caD7BcB0fB8a1489cBe5");
+        let shared = address!("C2377a9Db1de2520BD6b2756eD012f4E82F7938e");
+        assert_eq!(declared_signer(&table, Network::Base, base_a), Some(d));
+        assert_eq!(declared_signer(&table, Network::Base, base_b), None);
+        assert_eq!(declared_signer(&table, Network::Arbitrum, shared), Some(d));
+        assert_eq!(declared_signer(&table, Network::Celo, shared), None);
+        assert_eq!(declared_signer(&table, Network::Solana, base_a), None);
+        // The real table declares nobody, for any operator of any network.
+        for &network in crate::payment_operator::addresses::ESCROW_NETWORKS {
+            for operator in OperatorAddresses::for_network(network)
+                .unwrap()
+                .payment_operators
+            {
+                assert_eq!(
+                    declared_signer(OperatorAddresses::for_network, network, operator),
+                    None,
+                    "{network}"
+                );
+            }
+        }
+
+        // D also the payer: a payer release stays `payer`.
+        let payer = v.key("declaredSigner").signer();
+        let pi = payment_info(payer.address(), Address::ZERO, NOW + 3600);
+        let mut c = ctx(LifecycleAction::Release, &pi);
+        c.declared_signer = Some(payer.address());
+        let auth = sign(&payer, &c, NOW + 60, nonce(1));
+        assert_eq!(
+            pre_evaluate(Some(&auth), &c, &ReplayGuard::default()),
+            Step::Verdict(Verdict::Ok {
+                signer: payer.address(),
+                role: Role::Payer
+            })
+        );
+        // The same key on a refund before expiry, where the payer has no role:
+        // admitted as the declared signer, without the owner rule.
+        let mut r = ctx(LifecycleAction::RefundInEscrow, &pi);
+        r.declared_signer = Some(payer.address());
+        let auth = sign(&payer, &r, NOW + 60, nonce(2));
+        assert_eq!(
+            pre_evaluate(Some(&auth), &r, &ReplayGuard::default()),
+            Step::Verdict(Verdict::Ok {
+                signer: payer.address(),
+                role: Role::DeclaredSigner
+            })
+        );
+        assert_eq!(Role::DeclaredSigner.as_str(), "declared_signer");
+        assert_eq!(
+            describe(&Verdict::Ok {
+                signer: payer.address(),
+                role: Role::DeclaredSigner
+            }),
+            format!("signed by {} as declared_signer", payer.address())
         );
     }
 }

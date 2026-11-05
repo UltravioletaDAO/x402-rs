@@ -30,7 +30,11 @@
 //!
 //! On every one of them the rail relays only to the PaymentOperators
 //! `OperatorAddresses::for_network` declares for that network. Adding one is a
-//! pull request to that table (README, "Escrow PaymentOperators").
+//! pull request to that table (README, "Escrow PaymentOperators"). So is
+//! declaring, rotating or revoking an operator's lifecycle signer
+//! (`OperatorAddresses::lifecycle_signers`).
+
+use std::collections::{BTreeMap, BTreeSet};
 
 use alloy::primitives::{address, Address};
 
@@ -413,6 +417,27 @@ pub fn is_supported(network: Network) -> bool {
 // Per-Network Operator Addresses
 // ============================================================================
 
+/// Version of the `lifecycleSigners` announcement in `/supported`, published
+/// beside it as `lifecycleSignersVersion`. A reader accepts the version it
+/// knows and nothing else; a change to the announcement's shape or meaning is
+/// a new version under a new key, never a silent edit of this one.
+pub const LIFECYCLE_SIGNERS_VERSION: u32 = 1;
+
+/// A lifecycle signer declared for one PaymentOperator on one network.
+///
+/// An order for `operator` on that network signed by `signer` is admitted as
+/// `declared_signer` (`lifecycle_auth::Role::DeclaredSigner`): it may
+/// `release` or `refundInEscrow` ANY escrow of that operator, refund before
+/// `authorizationExpiry` included. The destinations stay the ones the
+/// `paymentInfo` fixes, but the key holds that power over every open escrow of
+/// the operator, so it is declared, rotated and revoked only by a pull request
+/// to [`OperatorAddresses::for_network`] -- never by configuration.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LifecycleSigner {
+    pub operator: Address,
+    pub signer: Address,
+}
+
 /// All escrow contract addresses for a network.
 #[derive(Debug, Clone)]
 pub struct OperatorAddresses {
@@ -424,9 +449,45 @@ pub struct OperatorAddresses {
     pub token_collector: Address,
     pub protocol_fee_config: Address,
     pub refund_request: Address,
+    /// Declared lifecycle signers on this network, at most one per operator,
+    /// each operator one of `payment_operators` (the table test holds both).
+    /// Read only through [`Self::lifecycle_signer_map`]. Empty on every
+    /// network: a signer's address comes in by a pull request of its own.
+    pub lifecycle_signers: Vec<LifecycleSigner>,
 }
 
 impl OperatorAddresses {
+    /// Operator -> declared lifecycle signer on this network: the ONE source
+    /// for both what the lifecycle gate admits as `declared_signer` and what
+    /// `/supported` announces as `lifecycleSigners`.
+    ///
+    /// A row grants nothing (fail closed) when its operator is not one of
+    /// `payment_operators`, when its signer is the zero address, or when its
+    /// operator has more than one row -- a rotation that kept the revoked row
+    /// must not leave the old key in force. The table test keeps all three out
+    /// of [`Self::for_network`].
+    pub fn lifecycle_signer_map(&self) -> BTreeMap<Address, Address> {
+        let mut map = BTreeMap::new();
+        let mut ambiguous = BTreeSet::new();
+        for row in &self.lifecycle_signers {
+            if !self.payment_operators.contains(&row.operator) || row.signer == Address::ZERO {
+                continue;
+            }
+            if map.insert(row.operator, row.signer).is_some() {
+                ambiguous.insert(row.operator);
+            }
+        }
+        for operator in ambiguous {
+            map.remove(&operator);
+        }
+        map
+    }
+
+    /// The declared lifecycle signer of `operator` on this network, if any.
+    pub fn lifecycle_signer(&self, operator: Address) -> Option<Address> {
+        self.lifecycle_signer_map().get(&operator).copied()
+    }
+
     /// Get addresses for a network.
     ///
     /// Legacy networks use per-chain infrastructure addresses, SKALE the
@@ -442,6 +503,7 @@ impl OperatorAddresses {
                 token_collector: base_sepolia::TOKEN_COLLECTOR,
                 protocol_fee_config: base_sepolia::PROTOCOL_FEE_CONFIG,
                 refund_request: base_sepolia::REFUND_REQUEST,
+                lifecycle_signers: vec![],
             }),
             Network::EthereumSepolia => Some(Self {
                 escrow: ethereum_sepolia::ESCROW,
@@ -450,6 +512,7 @@ impl OperatorAddresses {
                 token_collector: ethereum_sepolia::TOKEN_COLLECTOR,
                 protocol_fee_config: ethereum_sepolia::PROTOCOL_FEE_CONFIG,
                 refund_request: ethereum_sepolia::REFUND_REQUEST,
+                lifecycle_signers: vec![],
             }),
 
             // Mainnets (legacy)
@@ -463,6 +526,7 @@ impl OperatorAddresses {
                 token_collector: base_mainnet::TOKEN_COLLECTOR,
                 protocol_fee_config: base_mainnet::PROTOCOL_FEE_CONFIG,
                 refund_request: base_mainnet::REFUND_REQUEST,
+                lifecycle_signers: vec![],
             }),
             Network::Ethereum => Some(Self {
                 escrow: ethereum_mainnet::ESCROW,
@@ -471,6 +535,7 @@ impl OperatorAddresses {
                 token_collector: ethereum_mainnet::TOKEN_COLLECTOR,
                 protocol_fee_config: ethereum_mainnet::PROTOCOL_FEE_CONFIG,
                 refund_request: ethereum_mainnet::REFUND_REQUEST,
+                lifecycle_signers: vec![],
             }),
             Network::Polygon => Some(Self {
                 escrow: polygon::ESCROW,
@@ -479,6 +544,7 @@ impl OperatorAddresses {
                 token_collector: polygon::TOKEN_COLLECTOR,
                 protocol_fee_config: polygon::PROTOCOL_FEE_CONFIG,
                 refund_request: polygon::REFUND_REQUEST,
+                lifecycle_signers: vec![],
             }),
             Network::Arbitrum => Some(Self {
                 escrow: arbitrum::ESCROW,
@@ -487,6 +553,7 @@ impl OperatorAddresses {
                 token_collector: arbitrum::TOKEN_COLLECTOR,
                 protocol_fee_config: arbitrum::PROTOCOL_FEE_CONFIG,
                 refund_request: arbitrum::REFUND_REQUEST,
+                lifecycle_signers: vec![],
             }),
             Network::Celo => Some(Self {
                 escrow: celo::ESCROW,
@@ -495,6 +562,7 @@ impl OperatorAddresses {
                 token_collector: celo::TOKEN_COLLECTOR,
                 protocol_fee_config: celo::PROTOCOL_FEE_CONFIG,
                 refund_request: celo::REFUND_REQUEST,
+                lifecycle_signers: vec![],
             }),
             Network::Monad => Some(Self {
                 escrow: monad::ESCROW,
@@ -503,6 +571,7 @@ impl OperatorAddresses {
                 token_collector: monad::TOKEN_COLLECTOR,
                 protocol_fee_config: monad::PROTOCOL_FEE_CONFIG,
                 refund_request: monad::REFUND_REQUEST,
+                lifecycle_signers: vec![],
             }),
             Network::Avalanche => Some(Self {
                 escrow: avalanche::ESCROW,
@@ -511,6 +580,7 @@ impl OperatorAddresses {
                 token_collector: avalanche::TOKEN_COLLECTOR,
                 protocol_fee_config: avalanche::PROTOCOL_FEE_CONFIG,
                 refund_request: avalanche::REFUND_REQUEST,
+                lifecycle_signers: vec![],
             }),
             Network::Optimism => Some(Self {
                 escrow: optimism::ESCROW,
@@ -519,6 +589,7 @@ impl OperatorAddresses {
                 token_collector: optimism::TOKEN_COLLECTOR,
                 protocol_fee_config: optimism::PROTOCOL_FEE_CONFIG,
                 refund_request: optimism::REFUND_REQUEST,
+                lifecycle_signers: vec![],
             }),
 
             // New networks (CREATE3)
@@ -533,20 +604,34 @@ impl OperatorAddresses {
                 token_collector: create3::TOKEN_COLLECTOR,
                 protocol_fee_config: create3::PROTOCOL_FEE_CONFIG,
                 refund_request: create3::FACTORY_REFUND_REQUEST,
+                lifecycle_signers: vec![],
             }),
 
             // Canonical commerce-payments v1.0.0 set. Execution Market's
-            // operator is one CREATE2 address on the three networks.
-            Network::Arc | Network::ArcTestnet | Network::Robinhood => Some(Self {
-                escrow: canonical_v1::ESCROW,
-                factory: canonical_v1::FACTORY_PAYMENT_OPERATOR,
-                payment_operators: vec![address!("0258472A1410Ac3Ad720f1BC83f22B3c0af1Fd9D")],
-                token_collector: canonical_v1::TOKEN_COLLECTOR,
-                protocol_fee_config: canonical_v1::PROTOCOL_FEE_CONFIG,
-                refund_request: canonical_v1::FACTORY_REFUND_REQUEST,
-            }),
+            // operator is one CREATE2 address on the three networks; each
+            // keeps its own lifecycle signer list, so a signer declared for
+            // one network is never declared on another (a testnet and a
+            // mainnet least of all) by sharing an arm.
+            Network::Arc => Some(Self::canonical_v1_set(vec![])),
+            Network::ArcTestnet => Some(Self::canonical_v1_set(vec![])),
+            Network::Robinhood => Some(Self::canonical_v1_set(vec![])),
 
             _ => None,
+        }
+    }
+
+    /// The canonical v1 set with Execution Market's operator, the same on
+    /// Arc, Arc testnet and Robinhood Chain, and that network's own lifecycle
+    /// signers.
+    fn canonical_v1_set(lifecycle_signers: Vec<LifecycleSigner>) -> Self {
+        Self {
+            escrow: canonical_v1::ESCROW,
+            factory: canonical_v1::FACTORY_PAYMENT_OPERATOR,
+            payment_operators: vec![address!("0258472A1410Ac3Ad720f1BC83f22B3c0af1Fd9D")],
+            token_collector: canonical_v1::TOKEN_COLLECTOR,
+            protocol_fee_config: canonical_v1::PROTOCOL_FEE_CONFIG,
+            refund_request: canonical_v1::FACTORY_REFUND_REQUEST,
+            lifecycle_signers,
         }
     }
 }
@@ -698,6 +783,171 @@ mod tests {
                 network
             );
         }
+    }
+
+    /// Every reason a lifecycle signer row of `addrs` would grant nothing.
+    fn lifecycle_table_faults(addrs: &OperatorAddresses) -> Vec<String> {
+        let mut faults = Vec::new();
+        for (i, row) in addrs.lifecycle_signers.iter().enumerate() {
+            if !addrs.payment_operators.contains(&row.operator) {
+                faults.push(format!(
+                    "row {i}: {} is not a payment operator of this network",
+                    row.operator
+                ));
+            }
+            if row.signer == Address::ZERO {
+                faults.push(format!("row {i}: the signer is the zero address"));
+            }
+            if addrs.lifecycle_signers[..i]
+                .iter()
+                .any(|earlier| earlier.operator == row.operator)
+            {
+                faults.push(format!("row {i}: {} already has a row", row.operator));
+            }
+        }
+        faults
+    }
+
+    /// Every lifecycle signer the table declares is one the gate admits and
+    /// `/supported` announces: its operator is a payment operator of THAT
+    /// network (the same address on another network does not count), its
+    /// signer is not the zero address, and its operator has no second row (a
+    /// rotation removes the revoked row). `lifecycle_signer_map` would drop a
+    /// row that breaks one of these; this keeps it from being merged at all.
+    #[test]
+    fn every_declared_lifecycle_signer_is_valid_for_its_own_network() {
+        for &network in ESCROW_NETWORKS {
+            let addrs = OperatorAddresses::for_network(network).unwrap();
+            assert_eq!(
+                lifecycle_table_faults(&addrs),
+                Vec::<String>::new(),
+                "{network}"
+            );
+            assert_eq!(
+                addrs.lifecycle_signer_map().len(),
+                addrs.lifecycle_signers.len(),
+                "{network}: every row is in force"
+            );
+        }
+    }
+
+    /// A lifecycle signer of a testnet is never a lifecycle signer of a
+    /// mainnet: the key that may release or refund real escrows is never also
+    /// the one that does so on a test network, where keys are handled loosely.
+    #[test]
+    fn no_lifecycle_signer_is_declared_on_both_a_testnet_and_a_mainnet() {
+        let signers = |testnet: bool| -> BTreeSet<Address> {
+            ESCROW_NETWORKS
+                .iter()
+                .filter(|n| n.is_testnet() == testnet)
+                .flat_map(|n| {
+                    OperatorAddresses::for_network(*n)
+                        .unwrap()
+                        .lifecycle_signers
+                })
+                .map(|row| row.signer)
+                .collect()
+        };
+        let shared: Vec<Address> = signers(true)
+            .intersection(&signers(false))
+            .copied()
+            .collect();
+        assert!(
+            shared.is_empty(),
+            "declared on a testnet and a mainnet: {shared:?}"
+        );
+    }
+
+    /// No key of the shared policy vector (nor the canonical 0x01 test key) is
+    /// ever declared, on any network. Their private keys are public (keccak256
+    /// of seed strings, thirty-two 0x01 bytes): declaring one
+    /// would let anyone release or refund every escrow of that operator. This
+    /// test stays when the first real signer is declared.
+    #[test]
+    fn no_test_key_of_the_shared_vector_is_ever_declared() {
+        let vector = crate::payment_operator::lifecycle_vector::vector();
+        let mut test_keys: BTreeSet<Address> = vector.keys.values().map(|k| k.address).collect();
+        assert!(test_keys.len() >= 5);
+        // And the canonical test key of thirty-two 0x01 bytes, which signs the
+        // independent digest vector in `lifecycle_auth`.
+        test_keys.insert(address!("1a642f0E3c3aF545E7AcBD38b07251B3990914F1"));
+        for &network in ESCROW_NETWORKS {
+            for row in OperatorAddresses::for_network(network)
+                .unwrap()
+                .lifecycle_signers
+            {
+                assert!(
+                    !test_keys.contains(&row.signer),
+                    "{network}: {} is a public test key",
+                    row.signer
+                );
+            }
+        }
+    }
+
+    /// No lifecycle signer is declared yet, on any network: the address and its
+    /// key are provisioned apart and come in by a pull request of their own,
+    /// which changes this test with the table.
+    #[test]
+    fn no_lifecycle_signer_is_declared_yet() {
+        for &network in ESCROW_NETWORKS {
+            let addrs = OperatorAddresses::for_network(network).unwrap();
+            assert!(addrs.lifecycle_signers.is_empty(), "{network}");
+            assert!(addrs.lifecycle_signer_map().is_empty(), "{network}");
+        }
+    }
+
+    /// The table check, and the map, against the rows it exists to refuse.
+    #[test]
+    fn a_lifecycle_signer_row_for_a_foreign_unknown_or_repeated_operator_grants_nothing() {
+        let signer = Address::repeat_byte(0xd1);
+        let other = Address::repeat_byte(0xe2);
+        let base = OperatorAddresses::for_network(Network::Base).unwrap();
+        let a = base.payment_operators[0];
+        let b = base.payment_operators[1];
+        let with = |rows: Vec<LifecycleSigner>| OperatorAddresses {
+            lifecycle_signers: rows,
+            ..base.clone()
+        };
+        let row = |operator, signer| LifecycleSigner { operator, signer };
+
+        let valid = with(vec![row(a, signer)]);
+        assert!(lifecycle_table_faults(&valid).is_empty());
+        assert_eq!(valid.lifecycle_signer(a), Some(signer));
+        assert_eq!(valid.lifecycle_signer(b), None);
+
+        // Ethereum's operator, declared under Base.
+        let ethereum = OperatorAddresses::for_network(Network::Ethereum)
+            .unwrap()
+            .payment_operators[0];
+        // An operator no network declares.
+        let unknown = address!("00000000000000000000000000000000000000aa");
+        for bad in [
+            vec![row(ethereum, signer)],
+            vec![row(unknown, signer)],
+            vec![row(a, Address::ZERO)],
+            vec![row(a, signer), row(a, other)],
+        ] {
+            let table = with(bad.clone());
+            assert!(!lifecycle_table_faults(&table).is_empty(), "{bad:?}");
+            assert!(table.lifecycle_signer_map().is_empty(), "{bad:?}");
+            for r in &bad {
+                assert_eq!(table.lifecycle_signer(r.operator), None, "{bad:?}");
+            }
+        }
+
+        // The same operator address on two networks: a row on one says
+        // nothing about the other.
+        let arbitrum = OperatorAddresses::for_network(Network::Arbitrum).unwrap();
+        let celo = OperatorAddresses::for_network(Network::Celo).unwrap();
+        assert_eq!(arbitrum.payment_operators, celo.payment_operators);
+        let shared = arbitrum.payment_operators[0];
+        let declared = OperatorAddresses {
+            lifecycle_signers: vec![row(shared, signer)],
+            ..arbitrum
+        };
+        assert_eq!(declared.lifecycle_signer(shared), Some(signer));
+        assert_eq!(celo.lifecycle_signer(shared), None);
     }
 
     #[test]

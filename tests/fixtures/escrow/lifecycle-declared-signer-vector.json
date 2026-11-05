@@ -1,0 +1,1407 @@
+{
+  "vector": "x402-rs escrow lifecycle declared_signer policy",
+  "vectorVersion": 1,
+  "testOnly": "Every key in this file is derived from a public seed string. They are test keys: never fund one, never declare one in the production table.",
+  "generator": "scripts/lifecycle_declared_signer_vector.py (eth_account)",
+  "encoding": {
+    "keyDerivation": "privateKey = keccak256(utf8(seed)); address = its secp256k1 address",
+    "addresses": "lowercase, 0x-prefixed, 40 hex digits (what /supported emits)",
+    "nonce": "32 bytes as 64 hex digits, no 0x prefix",
+    "digest": "EIP-712 digest of what was SIGNED (signedOver), 64 hex digits, no 0x prefix",
+    "signature": "65 bytes r||s||v (v = 27 or 28) as 130 hex digits, no 0x prefix",
+    "amounts": "decimal strings; salt likewise (uint256)"
+  },
+  "caseFields": {
+    "table": "the declarations in force, a key of `tables`",
+    "network": "where the order is submitted (CAIP-2)",
+    "amount": "the amount submitted; signedOver holds what was signed",
+    "signer": "the key that signs; claimedSigner is what lifecycleAuth.signer says",
+    "ownerRpc": "up: the operator owner getter (FEE_RECIPIENT, FEE_RECEIVER on Arc) answers keys.owner; down: every owner read fails",
+    "policy": "the chain-free verdict ({verdict, role}) or {step: needs_owner} when only the operator-owner rule is left",
+    "expected": "the verdict of each submission, in order, through the facilitator's gate",
+    "emDelegate": "true: the signer must be admitted as declared_signer (Execution Market signs with it); false: the declared role must not be granted; null: not a declared-role decision"
+  },
+  "eip712": {
+    "domain": {
+      "name": "x402 escrow lifecycle",
+      "version": "1",
+      "chainId": "signedOver.chainId"
+    },
+    "primaryType": "LifecycleOrder",
+    "types": {
+      "LifecycleOrder": [
+        {
+          "name": "action",
+          "type": "string"
+        },
+        {
+          "name": "amount",
+          "type": "uint256"
+        },
+        {
+          "name": "deadline",
+          "type": "uint256"
+        },
+        {
+          "name": "nonce",
+          "type": "bytes32"
+        },
+        {
+          "name": "paymentInfo",
+          "type": "PaymentInfo"
+        }
+      ],
+      "PaymentInfo": [
+        {
+          "name": "operator",
+          "type": "address"
+        },
+        {
+          "name": "payer",
+          "type": "address"
+        },
+        {
+          "name": "receiver",
+          "type": "address"
+        },
+        {
+          "name": "token",
+          "type": "address"
+        },
+        {
+          "name": "maxAmount",
+          "type": "uint120"
+        },
+        {
+          "name": "preApprovalExpiry",
+          "type": "uint48"
+        },
+        {
+          "name": "authorizationExpiry",
+          "type": "uint48"
+        },
+        {
+          "name": "refundExpiry",
+          "type": "uint48"
+        },
+        {
+          "name": "minFeeBps",
+          "type": "uint16"
+        },
+        {
+          "name": "maxFeeBps",
+          "type": "uint16"
+        },
+        {
+          "name": "feeReceiver",
+          "type": "address"
+        },
+        {
+          "name": "salt",
+          "type": "uint256"
+        }
+      ]
+    }
+  },
+  "announcement": {
+    "where": "GET /supported of the facilitator that settles, every x402r (EVM) kind with scheme \"escrow\" on the network, under its CAIP-2 id and under its v1 name: extra.lifecycleSigners and extra.lifecycleSignersVersion",
+    "lifecycleSigners": "object, operator -> declared signer, every declared operator of that network; {} when none is declared. Every escrow kind of a network carries the same map",
+    "lifecycleSignersVersion": 1,
+    "absent": "both fields absent: a facilitator older than the announcement (no delegate)",
+    "otherKinds": "absent from every other kind: commerce, exact, upto, and the NEAR escrow kind",
+    "readerRule": "no lifecycleSignersVersion, a version other than 1, a network with no escrow kind, or an operator missing from the map: no declared signer. A permission is never inferred from an absence, and never read from a payment requirement, POST /accepts or a request payload"
+  },
+  "now": 1793000000,
+  "maxDeadlineSecs": 900,
+  "keys": {
+    "declaredSigner": {
+      "seed": "x402-rs lifecycle vector v1 / declared signer D / TEST KEY, never fund",
+      "address": "0x1110bc3d68857adca5dd4fa065cc220b3aa3dfd4"
+    },
+    "otherKey": {
+      "seed": "x402-rs lifecycle vector v1 / other key E / TEST KEY, never fund",
+      "address": "0x4347e2db806f8eeb0492811f35557ee797c6bf8b"
+    },
+    "payer": {
+      "seed": "x402-rs lifecycle vector v1 / payer / TEST KEY, never fund",
+      "address": "0xd102644a799bfd52a16a149906b0f4b4938230ae"
+    },
+    "receiver": {
+      "seed": "x402-rs lifecycle vector v1 / receiver / TEST KEY, never fund",
+      "address": "0x04691daff7ba72785d181a4150bd72378d3120fe"
+    },
+    "owner": {
+      "seed": "x402-rs lifecycle vector v1 / operator owner / TEST KEY, never fund",
+      "address": "0x1eaf7b00f25a6a833669e4a6c3018a3473f18e4f"
+    }
+  },
+  "tables": {
+    "declared": [
+      {
+        "network": "eip155:8453",
+        "operator": "0x271f9fa7f8907acf178ccfb470076d9129d8f0eb",
+        "signer": "0x1110bc3d68857adca5dd4fa065cc220b3aa3dfd4"
+      },
+      {
+        "network": "eip155:42161",
+        "operator": "0xc2377a9db1de2520bd6b2756ed012f4e82f7938e",
+        "signer": "0x1110bc3d68857adca5dd4fa065cc220b3aa3dfd4"
+      },
+      {
+        "network": "eip155:5042",
+        "operator": "0x0258472a1410ac3ad720f1bc83f22b3c0af1fd9d",
+        "signer": "0x1110bc3d68857adca5dd4fa065cc220b3aa3dfd4"
+      }
+    ],
+    "empty": [],
+    "rotated": [
+      {
+        "network": "eip155:8453",
+        "operator": "0x271f9fa7f8907acf178ccfb470076d9129d8f0eb",
+        "signer": "0x4347e2db806f8eeb0492811f35557ee797c6bf8b"
+      }
+    ],
+    "invalid": [
+      {
+        "network": "eip155:8453",
+        "operator": "0x69b67962ffb7c5c7078ff348a87df604dfa8001b",
+        "signer": "0x1110bc3d68857adca5dd4fa065cc220b3aa3dfd4"
+      },
+      {
+        "network": "eip155:8453",
+        "operator": "0x030353642b936c9d4213cad7bcb0fb8a1489cbe5",
+        "signer": "0x0000000000000000000000000000000000000000"
+      }
+    ],
+    "ambiguous": [
+      {
+        "network": "eip155:8453",
+        "operator": "0x271f9fa7f8907acf178ccfb470076d9129d8f0eb",
+        "signer": "0x1110bc3d68857adca5dd4fa065cc220b3aa3dfd4"
+      },
+      {
+        "network": "eip155:8453",
+        "operator": "0x271f9fa7f8907acf178ccfb470076d9129d8f0eb",
+        "signer": "0x4347e2db806f8eeb0492811f35557ee797c6bf8b"
+      }
+    ]
+  },
+  "announcements": {
+    "declared": {
+      "eip155:8453": {
+        "lifecycleSigners": {
+          "0x271f9fa7f8907acf178ccfb470076d9129d8f0eb": "0x1110bc3d68857adca5dd4fa065cc220b3aa3dfd4"
+        },
+        "lifecycleSignersVersion": 1
+      },
+      "eip155:42161": {
+        "lifecycleSigners": {
+          "0xc2377a9db1de2520bd6b2756ed012f4e82f7938e": "0x1110bc3d68857adca5dd4fa065cc220b3aa3dfd4"
+        },
+        "lifecycleSignersVersion": 1
+      },
+      "eip155:42220": {
+        "lifecycleSigners": {},
+        "lifecycleSignersVersion": 1
+      },
+      "eip155:5042": {
+        "lifecycleSigners": {
+          "0x0258472a1410ac3ad720f1bc83f22b3c0af1fd9d": "0x1110bc3d68857adca5dd4fa065cc220b3aa3dfd4"
+        },
+        "lifecycleSignersVersion": 1
+      }
+    },
+    "empty": {
+      "eip155:8453": {
+        "lifecycleSigners": {},
+        "lifecycleSignersVersion": 1
+      },
+      "eip155:42161": {
+        "lifecycleSigners": {},
+        "lifecycleSignersVersion": 1
+      },
+      "eip155:42220": {
+        "lifecycleSigners": {},
+        "lifecycleSignersVersion": 1
+      },
+      "eip155:5042": {
+        "lifecycleSigners": {},
+        "lifecycleSignersVersion": 1
+      }
+    },
+    "rotated": {
+      "eip155:8453": {
+        "lifecycleSigners": {
+          "0x271f9fa7f8907acf178ccfb470076d9129d8f0eb": "0x4347e2db806f8eeb0492811f35557ee797c6bf8b"
+        },
+        "lifecycleSignersVersion": 1
+      },
+      "eip155:42161": {
+        "lifecycleSigners": {},
+        "lifecycleSignersVersion": 1
+      },
+      "eip155:42220": {
+        "lifecycleSigners": {},
+        "lifecycleSignersVersion": 1
+      },
+      "eip155:5042": {
+        "lifecycleSigners": {},
+        "lifecycleSignersVersion": 1
+      }
+    },
+    "invalid": {
+      "eip155:8453": {
+        "lifecycleSigners": {},
+        "lifecycleSignersVersion": 1
+      },
+      "eip155:42161": {
+        "lifecycleSigners": {},
+        "lifecycleSignersVersion": 1
+      },
+      "eip155:42220": {
+        "lifecycleSigners": {},
+        "lifecycleSignersVersion": 1
+      },
+      "eip155:5042": {
+        "lifecycleSigners": {},
+        "lifecycleSignersVersion": 1
+      }
+    },
+    "ambiguous": {
+      "eip155:8453": {
+        "lifecycleSigners": {},
+        "lifecycleSignersVersion": 1
+      },
+      "eip155:42161": {
+        "lifecycleSigners": {},
+        "lifecycleSignersVersion": 1
+      },
+      "eip155:42220": {
+        "lifecycleSigners": {},
+        "lifecycleSignersVersion": 1
+      },
+      "eip155:5042": {
+        "lifecycleSigners": {},
+        "lifecycleSignersVersion": 1
+      }
+    }
+  },
+  "cases": [
+    {
+      "id": "declared-release",
+      "note": "D declared for Base/A releases; the owner is never read",
+      "table": "declared",
+      "network": "eip155:8453",
+      "action": "release",
+      "paymentInfo": {
+        "operator": "0x271f9fa7f8907acf178ccfb470076d9129d8f0eb",
+        "payer": "0xd102644a799bfd52a16a149906b0f4b4938230ae",
+        "receiver": "0x04691daff7ba72785d181a4150bd72378d3120fe",
+        "token": "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913",
+        "maxAmount": "1000000",
+        "preApprovalExpiry": 1793003600,
+        "authorizationExpiry": 1793007200,
+        "refundExpiry": 1795592000,
+        "minFeeBps": 0,
+        "maxFeeBps": 1300,
+        "feeReceiver": "0xae07ceb6b395bc685a776a0b4c489e8d9ce9a6ad",
+        "salt": "12345"
+      },
+      "amount": "1000000",
+      "deadline": 1793000060,
+      "nonce": "30b66427e0c6ca06bf293f42a66d768bb50122a6c1cb24e71b8cf09a60ec967c",
+      "signer": "declaredSigner",
+      "claimedSigner": "declaredSigner",
+      "signedOver": {
+        "chainId": 8453,
+        "amount": "1000000"
+      },
+      "ownerRpc": "up",
+      "policy": {
+        "verdict": "ok",
+        "role": "declared_signer"
+      },
+      "expected": [
+        {
+          "verdict": "ok",
+          "role": "declared_signer"
+        }
+      ],
+      "emDelegate": true,
+      "digest": "2956409cfdf237e1d7f8255e32573f3e5fffebc17637530d3d42a3b1c4de8dd0",
+      "signature": "4b15e5e64155a47a7104de1e903c5cf9bdf9dcca331695146c088cde6bf7eaa522db1bc8e4d6399074afb31aa6b3cea9c3f2556629dccfd01df928a7672ea8851c"
+    },
+    {
+      "id": "declared-refund-before-expiry",
+      "note": "D refunds before authorizationExpiry, which the payer may not",
+      "table": "declared",
+      "network": "eip155:8453",
+      "action": "refundInEscrow",
+      "paymentInfo": {
+        "operator": "0x271f9fa7f8907acf178ccfb470076d9129d8f0eb",
+        "payer": "0xd102644a799bfd52a16a149906b0f4b4938230ae",
+        "receiver": "0x04691daff7ba72785d181a4150bd72378d3120fe",
+        "token": "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913",
+        "maxAmount": "1000000",
+        "preApprovalExpiry": 1793003600,
+        "authorizationExpiry": 1793007200,
+        "refundExpiry": 1795592000,
+        "minFeeBps": 0,
+        "maxFeeBps": 1300,
+        "feeReceiver": "0xae07ceb6b395bc685a776a0b4c489e8d9ce9a6ad",
+        "salt": "12345"
+      },
+      "amount": "1000000",
+      "deadline": 1793000060,
+      "nonce": "72954eef2f4e6af27ca50cab1358c844492e5b0772643a31addf6219417d92ba",
+      "signer": "declaredSigner",
+      "claimedSigner": "declaredSigner",
+      "signedOver": {
+        "chainId": 8453,
+        "amount": "1000000"
+      },
+      "ownerRpc": "up",
+      "policy": {
+        "verdict": "ok",
+        "role": "declared_signer"
+      },
+      "expected": [
+        {
+          "verdict": "ok",
+          "role": "declared_signer"
+        }
+      ],
+      "emDelegate": true,
+      "digest": "a9684434927a005ecc543369ecda35791e08a4e14f2071f5e148098828aa2c84",
+      "signature": "89a2e8e19ec10d8e8d88bc0e029c38cb11058f740dc7a1d93e665e2c217456d4332544004521cb0eb9554e8664dc6f989c4eb5e399bf9ae75e6bb2b08ca8e7701c"
+    },
+    {
+      "id": "declared-release-owner-rpc-down",
+      "note": "same as declared-release with the owner RPC failing: a local check",
+      "table": "declared",
+      "network": "eip155:8453",
+      "action": "release",
+      "paymentInfo": {
+        "operator": "0x271f9fa7f8907acf178ccfb470076d9129d8f0eb",
+        "payer": "0xd102644a799bfd52a16a149906b0f4b4938230ae",
+        "receiver": "0x04691daff7ba72785d181a4150bd72378d3120fe",
+        "token": "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913",
+        "maxAmount": "1000000",
+        "preApprovalExpiry": 1793003600,
+        "authorizationExpiry": 1793007200,
+        "refundExpiry": 1795592000,
+        "minFeeBps": 0,
+        "maxFeeBps": 1300,
+        "feeReceiver": "0xae07ceb6b395bc685a776a0b4c489e8d9ce9a6ad",
+        "salt": "12345"
+      },
+      "amount": "1000000",
+      "deadline": 1793000060,
+      "nonce": "3c52a5d0fb8bf5b6e65fae7d8205c32d9c2f0ea9337f964f4d26dc5074453609",
+      "signer": "declaredSigner",
+      "claimedSigner": "declaredSigner",
+      "signedOver": {
+        "chainId": 8453,
+        "amount": "1000000"
+      },
+      "ownerRpc": "down",
+      "policy": {
+        "verdict": "ok",
+        "role": "declared_signer"
+      },
+      "expected": [
+        {
+          "verdict": "ok",
+          "role": "declared_signer"
+        }
+      ],
+      "emDelegate": true,
+      "digest": "ed7692fceecb662adb8f889294575751f3d1b8f6c9783d0db4e5ab61797b275b",
+      "signature": "abf819a0296a61bf3eb413e283046836b656c3e77546a40afd0628781971cad57337f3778c1ec45c253dac374fe7b75ae81ab104c254b95deaac4424692862801b"
+    },
+    {
+      "id": "declared-refund-owner-rpc-down",
+      "note": "",
+      "table": "declared",
+      "network": "eip155:8453",
+      "action": "refundInEscrow",
+      "paymentInfo": {
+        "operator": "0x271f9fa7f8907acf178ccfb470076d9129d8f0eb",
+        "payer": "0xd102644a799bfd52a16a149906b0f4b4938230ae",
+        "receiver": "0x04691daff7ba72785d181a4150bd72378d3120fe",
+        "token": "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913",
+        "maxAmount": "1000000",
+        "preApprovalExpiry": 1793003600,
+        "authorizationExpiry": 1793007200,
+        "refundExpiry": 1795592000,
+        "minFeeBps": 0,
+        "maxFeeBps": 1300,
+        "feeReceiver": "0xae07ceb6b395bc685a776a0b4c489e8d9ce9a6ad",
+        "salt": "12345"
+      },
+      "amount": "1000000",
+      "deadline": 1793000060,
+      "nonce": "8f931343f20d0363fcd2bdef0370a206e2437209ac24359d33f4151cdf793d46",
+      "signer": "declaredSigner",
+      "claimedSigner": "declaredSigner",
+      "signedOver": {
+        "chainId": 8453,
+        "amount": "1000000"
+      },
+      "ownerRpc": "down",
+      "policy": {
+        "verdict": "ok",
+        "role": "declared_signer"
+      },
+      "expected": [
+        {
+          "verdict": "ok",
+          "role": "declared_signer"
+        }
+      ],
+      "emDelegate": true,
+      "digest": "fa91775dea895f679ec12c8d5d30faf0912846d0cb74447c35d096bb7d00035b",
+      "signature": "e1bb8fed822fb4e11584578f0616eec6ae2741744a30fe5fa59cf117d3de8e33034f86c70ab993dcbfde1cb743d35cccb06223c02e5247eb3bf232ca0c6228231c"
+    },
+    {
+      "id": "declared-arc-refund-capturable",
+      "note": "Arc refundInEscrow signed over the capturable amount (70000) that is submitted",
+      "table": "declared",
+      "network": "eip155:5042",
+      "action": "refundInEscrow",
+      "paymentInfo": {
+        "operator": "0x0258472a1410ac3ad720f1bc83f22b3c0af1fd9d",
+        "payer": "0xd102644a799bfd52a16a149906b0f4b4938230ae",
+        "receiver": "0x04691daff7ba72785d181a4150bd72378d3120fe",
+        "token": "0x3600000000000000000000000000000000000000",
+        "maxAmount": "100000",
+        "preApprovalExpiry": 1793003600,
+        "authorizationExpiry": 1793007200,
+        "refundExpiry": 1795592000,
+        "minFeeBps": 0,
+        "maxFeeBps": 1300,
+        "feeReceiver": "0xae07ceb6b395bc685a776a0b4c489e8d9ce9a6ad",
+        "salt": "12345"
+      },
+      "amount": "70000",
+      "deadline": 1793000060,
+      "nonce": "040786af368a072efb5e7a198088828ea09573d6ec8ae355f8955f29d15c629e",
+      "signer": "declaredSigner",
+      "claimedSigner": "declaredSigner",
+      "signedOver": {
+        "chainId": 5042,
+        "amount": "70000"
+      },
+      "ownerRpc": "down",
+      "policy": {
+        "verdict": "ok",
+        "role": "declared_signer"
+      },
+      "expected": [
+        {
+          "verdict": "ok",
+          "role": "declared_signer"
+        }
+      ],
+      "emDelegate": true,
+      "digest": "cd9c61a9ca8e1d913e971a0462d157891a05940b2b4362e63368e1419cfa3e44",
+      "signature": "c6a6c86c5ae2abc2e7087db0e2effb936a4f85df4fdf0ea87eb2a7ec9c709d457f5bc4ea2991e5628ae16f1efbe66c12ec8c534884a55ef3c6f3798f42bda4751b"
+    },
+    {
+      "id": "other-operator",
+      "note": "D is declared for Base/A only; this order is for Base/B (its feeReceiver is A)",
+      "table": "declared",
+      "network": "eip155:8453",
+      "action": "release",
+      "paymentInfo": {
+        "operator": "0x030353642b936c9d4213cad7bcb0fb8a1489cbe5",
+        "payer": "0xd102644a799bfd52a16a149906b0f4b4938230ae",
+        "receiver": "0x04691daff7ba72785d181a4150bd72378d3120fe",
+        "token": "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913",
+        "maxAmount": "1000000",
+        "preApprovalExpiry": 1793003600,
+        "authorizationExpiry": 1793007200,
+        "refundExpiry": 1795592000,
+        "minFeeBps": 0,
+        "maxFeeBps": 1300,
+        "feeReceiver": "0x271f9fa7f8907acf178ccfb470076d9129d8f0eb",
+        "salt": "12345"
+      },
+      "amount": "1000000",
+      "deadline": 1793000060,
+      "nonce": "09e0de7ed7bb60a77baa92c4d1c8f408408e6f3f73ef4311f377f687e4e76fc9",
+      "signer": "declaredSigner",
+      "claimedSigner": "declaredSigner",
+      "signedOver": {
+        "chainId": 8453,
+        "amount": "1000000"
+      },
+      "ownerRpc": "up",
+      "policy": {
+        "step": "needs_owner"
+      },
+      "expected": [
+        {
+          "verdict": "unauthorized_role"
+        }
+      ],
+      "emDelegate": false,
+      "digest": "3c4895fa949048cc715b98ca816d785028cc587b579388395d5b70defcc1cc30",
+      "signature": "350ff3cd47ceddaf7395f4765d48d68951f33dd12f8f63b147f6408e9a044c660e41c6c50029bfbdc48c5bb51cc5e12d6f4967f3608d2b911665d16a09981a3d1c"
+    },
+    {
+      "id": "other-chain",
+      "note": "same operator address as the Arbitrum declaration, on Celo, which declares none",
+      "table": "declared",
+      "network": "eip155:42220",
+      "action": "release",
+      "paymentInfo": {
+        "operator": "0xc2377a9db1de2520bd6b2756ed012f4e82f7938e",
+        "payer": "0xd102644a799bfd52a16a149906b0f4b4938230ae",
+        "receiver": "0x04691daff7ba72785d181a4150bd72378d3120fe",
+        "token": "0xceba9300f2b948710d2653dd7b07f33a8b32118c",
+        "maxAmount": "1000000",
+        "preApprovalExpiry": 1793003600,
+        "authorizationExpiry": 1793007200,
+        "refundExpiry": 1795592000,
+        "minFeeBps": 0,
+        "maxFeeBps": 1300,
+        "feeReceiver": "0xae07ceb6b395bc685a776a0b4c489e8d9ce9a6ad",
+        "salt": "12345"
+      },
+      "amount": "1000000",
+      "deadline": 1793000060,
+      "nonce": "039942fad73b16a0069b364ed2eb74993a2557732a5ba94d28e19644cdb4b32e",
+      "signer": "declaredSigner",
+      "claimedSigner": "declaredSigner",
+      "signedOver": {
+        "chainId": 42220,
+        "amount": "1000000"
+      },
+      "ownerRpc": "up",
+      "policy": {
+        "step": "needs_owner"
+      },
+      "expected": [
+        {
+          "verdict": "unauthorized_role"
+        }
+      ],
+      "emDelegate": false,
+      "digest": "379b4257dfd30968e999beabcb0504499beb125b0d651c7361d6efb2c86bd688",
+      "signature": "034bffcb918852164f4a5dcbbe2afb9ce8267c86f29cb0e429dba041160a2527111e72b07e05804ab00380c2edd295d3ec201508040a58138eb0e0c90b98d4371c"
+    },
+    {
+      "id": "other-key",
+      "note": "E signs for Base/A, where D is the declared signer",
+      "table": "declared",
+      "network": "eip155:8453",
+      "action": "release",
+      "paymentInfo": {
+        "operator": "0x271f9fa7f8907acf178ccfb470076d9129d8f0eb",
+        "payer": "0xd102644a799bfd52a16a149906b0f4b4938230ae",
+        "receiver": "0x04691daff7ba72785d181a4150bd72378d3120fe",
+        "token": "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913",
+        "maxAmount": "1000000",
+        "preApprovalExpiry": 1793003600,
+        "authorizationExpiry": 1793007200,
+        "refundExpiry": 1795592000,
+        "minFeeBps": 0,
+        "maxFeeBps": 1300,
+        "feeReceiver": "0xae07ceb6b395bc685a776a0b4c489e8d9ce9a6ad",
+        "salt": "12345"
+      },
+      "amount": "1000000",
+      "deadline": 1793000060,
+      "nonce": "14ab924b74eb67c55078bf7acc3d5c9e81da9a70b09ee4be6ce4ecd0b90bc293",
+      "signer": "otherKey",
+      "claimedSigner": "otherKey",
+      "signedOver": {
+        "chainId": 8453,
+        "amount": "1000000"
+      },
+      "ownerRpc": "up",
+      "policy": {
+        "step": "needs_owner"
+      },
+      "expected": [
+        {
+          "verdict": "unauthorized_role"
+        }
+      ],
+      "emDelegate": false,
+      "digest": "1ec778224993a0176da83c4678f68089a66a880f9d476fbd402deac4ac5aaa38",
+      "signature": "233296c17ef88bffa0577cc6fd7ab1a58895755114fc7ca57a9da412e7148f7b4a6e56a7021a82402dbcca6601f5709b38bad1cfc4ce4a90d7d2fe8dbe4ee7b71c"
+    },
+    {
+      "id": "declaration-absent",
+      "note": "",
+      "table": "empty",
+      "network": "eip155:8453",
+      "action": "release",
+      "paymentInfo": {
+        "operator": "0x271f9fa7f8907acf178ccfb470076d9129d8f0eb",
+        "payer": "0xd102644a799bfd52a16a149906b0f4b4938230ae",
+        "receiver": "0x04691daff7ba72785d181a4150bd72378d3120fe",
+        "token": "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913",
+        "maxAmount": "1000000",
+        "preApprovalExpiry": 1793003600,
+        "authorizationExpiry": 1793007200,
+        "refundExpiry": 1795592000,
+        "minFeeBps": 0,
+        "maxFeeBps": 1300,
+        "feeReceiver": "0xae07ceb6b395bc685a776a0b4c489e8d9ce9a6ad",
+        "salt": "12345"
+      },
+      "amount": "1000000",
+      "deadline": 1793000060,
+      "nonce": "eca5e09c616e2e9e26e904061855dbd3a1054bce3108f059168ff8c0a9e3ef0f",
+      "signer": "declaredSigner",
+      "claimedSigner": "declaredSigner",
+      "signedOver": {
+        "chainId": 8453,
+        "amount": "1000000"
+      },
+      "ownerRpc": "up",
+      "policy": {
+        "step": "needs_owner"
+      },
+      "expected": [
+        {
+          "verdict": "unauthorized_role"
+        }
+      ],
+      "emDelegate": false,
+      "digest": "e9bf868f71dec9bbc18970a3f129916d4b7f0f385743906865668ea9cf221a20",
+      "signature": "c9be5629011d6b2803d38635eb97d88eebeb71fc554ac9844a4c2ce321d18e2f53869aa4cd0e1b3192436227a4cf8d9c580dc644ac2adbc6d4e4943b0ffcb1ad1b"
+    },
+    {
+      "id": "declaration-revoked",
+      "note": "D was replaced by E",
+      "table": "rotated",
+      "network": "eip155:8453",
+      "action": "release",
+      "paymentInfo": {
+        "operator": "0x271f9fa7f8907acf178ccfb470076d9129d8f0eb",
+        "payer": "0xd102644a799bfd52a16a149906b0f4b4938230ae",
+        "receiver": "0x04691daff7ba72785d181a4150bd72378d3120fe",
+        "token": "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913",
+        "maxAmount": "1000000",
+        "preApprovalExpiry": 1793003600,
+        "authorizationExpiry": 1793007200,
+        "refundExpiry": 1795592000,
+        "minFeeBps": 0,
+        "maxFeeBps": 1300,
+        "feeReceiver": "0xae07ceb6b395bc685a776a0b4c489e8d9ce9a6ad",
+        "salt": "12345"
+      },
+      "amount": "1000000",
+      "deadline": 1793000060,
+      "nonce": "e8824df1e1b1ee604ad5cbfe093f02e472e610690bf73ec67c0fb3beafc94f83",
+      "signer": "declaredSigner",
+      "claimedSigner": "declaredSigner",
+      "signedOver": {
+        "chainId": 8453,
+        "amount": "1000000"
+      },
+      "ownerRpc": "up",
+      "policy": {
+        "step": "needs_owner"
+      },
+      "expected": [
+        {
+          "verdict": "unauthorized_role"
+        }
+      ],
+      "emDelegate": false,
+      "digest": "b114942b5ea9b96bff8d7d9e852bb5142362f557f99cf97e04e9454c13b589af",
+      "signature": "111aaf73eced64b710d704abe8255b11f87c76eb6e92f5487a1ae883e7bdf7b41f56ce4e0d968b1764f04cdfff9411b330d1fe98a2af060e5c980bc90ff57d591b"
+    },
+    {
+      "id": "rotated-key",
+      "note": "E, declared in D's place, is admitted",
+      "table": "rotated",
+      "network": "eip155:8453",
+      "action": "refundInEscrow",
+      "paymentInfo": {
+        "operator": "0x271f9fa7f8907acf178ccfb470076d9129d8f0eb",
+        "payer": "0xd102644a799bfd52a16a149906b0f4b4938230ae",
+        "receiver": "0x04691daff7ba72785d181a4150bd72378d3120fe",
+        "token": "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913",
+        "maxAmount": "1000000",
+        "preApprovalExpiry": 1793003600,
+        "authorizationExpiry": 1793007200,
+        "refundExpiry": 1795592000,
+        "minFeeBps": 0,
+        "maxFeeBps": 1300,
+        "feeReceiver": "0xae07ceb6b395bc685a776a0b4c489e8d9ce9a6ad",
+        "salt": "12345"
+      },
+      "amount": "1000000",
+      "deadline": 1793000060,
+      "nonce": "9ecbabf5fd954f1c1134a9e5cea87205401af804344a0253a1860b4254c43cb7",
+      "signer": "otherKey",
+      "claimedSigner": "otherKey",
+      "signedOver": {
+        "chainId": 8453,
+        "amount": "1000000"
+      },
+      "ownerRpc": "down",
+      "policy": {
+        "verdict": "ok",
+        "role": "declared_signer"
+      },
+      "expected": [
+        {
+          "verdict": "ok",
+          "role": "declared_signer"
+        }
+      ],
+      "emDelegate": true,
+      "digest": "b664fbcf85caaab42a736ff632130439dd084711ce7f22c797a05c0dc65ff189",
+      "signature": "d6bc1747c6c6b6e85c3f074e108b50896cb6d5079f0ac16342d25bbadfed220e20e158221b2ecfac1b3ae7a6f8d81fcdf761ff907f72dd08aa3da6d346d16e881b"
+    },
+    {
+      "id": "declaration-invalid-foreign-operator",
+      "note": "the row names an operator Base does not declare",
+      "table": "invalid",
+      "network": "eip155:8453",
+      "action": "release",
+      "paymentInfo": {
+        "operator": "0x69b67962ffb7c5c7078ff348a87df604dfa8001b",
+        "payer": "0xd102644a799bfd52a16a149906b0f4b4938230ae",
+        "receiver": "0x04691daff7ba72785d181a4150bd72378d3120fe",
+        "token": "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913",
+        "maxAmount": "1000000",
+        "preApprovalExpiry": 1793003600,
+        "authorizationExpiry": 1793007200,
+        "refundExpiry": 1795592000,
+        "minFeeBps": 0,
+        "maxFeeBps": 1300,
+        "feeReceiver": "0xae07ceb6b395bc685a776a0b4c489e8d9ce9a6ad",
+        "salt": "12345"
+      },
+      "amount": "1000000",
+      "deadline": 1793000060,
+      "nonce": "5ae24e08f1a62f87e5d36b68fcb4142fd9ab01bdb226210257726ab804d4559a",
+      "signer": "declaredSigner",
+      "claimedSigner": "declaredSigner",
+      "signedOver": {
+        "chainId": 8453,
+        "amount": "1000000"
+      },
+      "ownerRpc": "up",
+      "policy": {
+        "step": "needs_owner"
+      },
+      "expected": [
+        {
+          "verdict": "unauthorized_role"
+        }
+      ],
+      "emDelegate": false,
+      "digest": "40b877681ea9496fe68545d5dacaa750fdcca8eef5782eeaaf87b64afd161686",
+      "signature": "05fac037ff8f6dc1cfbc4fbda858243dbeed700681b5195dea73f678d616786c6c615e99dca37163d3a3acfa1ef7d314a0220616ba3e12541500175431dce1d41b"
+    },
+    {
+      "id": "declaration-ambiguous",
+      "note": "two rows for Base/A grant neither key: not D",
+      "table": "ambiguous",
+      "network": "eip155:8453",
+      "action": "release",
+      "paymentInfo": {
+        "operator": "0x271f9fa7f8907acf178ccfb470076d9129d8f0eb",
+        "payer": "0xd102644a799bfd52a16a149906b0f4b4938230ae",
+        "receiver": "0x04691daff7ba72785d181a4150bd72378d3120fe",
+        "token": "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913",
+        "maxAmount": "1000000",
+        "preApprovalExpiry": 1793003600,
+        "authorizationExpiry": 1793007200,
+        "refundExpiry": 1795592000,
+        "minFeeBps": 0,
+        "maxFeeBps": 1300,
+        "feeReceiver": "0xae07ceb6b395bc685a776a0b4c489e8d9ce9a6ad",
+        "salt": "12345"
+      },
+      "amount": "1000000",
+      "deadline": 1793000060,
+      "nonce": "e417d8ec644ca0f55d740a80ef0f80bc53cf853b836a53fc22d30c5e9bae4a4d",
+      "signer": "declaredSigner",
+      "claimedSigner": "declaredSigner",
+      "signedOver": {
+        "chainId": 8453,
+        "amount": "1000000"
+      },
+      "ownerRpc": "up",
+      "policy": {
+        "step": "needs_owner"
+      },
+      "expected": [
+        {
+          "verdict": "unauthorized_role"
+        }
+      ],
+      "emDelegate": false,
+      "digest": "f81e9b0ca1342234a128a155b514b2d672179c069a7d07e33b3928a1725af7db",
+      "signature": "d2392cdd906db1aca69810494e31c596a987a89cd65dbd7814d0cde4fb855322761d0e850ff339d9093edbcb594ecc5be40b41f8e2b6676a4620dd6b13ec8f851b"
+    },
+    {
+      "id": "declaration-ambiguous-other-row",
+      "note": "nor E, the key of the second row",
+      "table": "ambiguous",
+      "network": "eip155:8453",
+      "action": "release",
+      "paymentInfo": {
+        "operator": "0x271f9fa7f8907acf178ccfb470076d9129d8f0eb",
+        "payer": "0xd102644a799bfd52a16a149906b0f4b4938230ae",
+        "receiver": "0x04691daff7ba72785d181a4150bd72378d3120fe",
+        "token": "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913",
+        "maxAmount": "1000000",
+        "preApprovalExpiry": 1793003600,
+        "authorizationExpiry": 1793007200,
+        "refundExpiry": 1795592000,
+        "minFeeBps": 0,
+        "maxFeeBps": 1300,
+        "feeReceiver": "0xae07ceb6b395bc685a776a0b4c489e8d9ce9a6ad",
+        "salt": "12345"
+      },
+      "amount": "1000000",
+      "deadline": 1793000060,
+      "nonce": "7604744a9c9777f2db7410d5ab25a9a07a816999e168d64665025d53ad84e686",
+      "signer": "otherKey",
+      "claimedSigner": "otherKey",
+      "signedOver": {
+        "chainId": 8453,
+        "amount": "1000000"
+      },
+      "ownerRpc": "up",
+      "policy": {
+        "step": "needs_owner"
+      },
+      "expected": [
+        {
+          "verdict": "unauthorized_role"
+        }
+      ],
+      "emDelegate": false,
+      "digest": "1ad680ec6c87aa921e8de6afb8b02b7e18e60ea0305df300ce3bbf394d1e795b",
+      "signature": "5b13884af9c09adc36033a652fc7566d6bef9b63cebebb09875085fe6775f92144dbfef774f54108321b5e43e1c117ed6f6cce39d34a88348d3d16f7840e9f4b1b"
+    },
+    {
+      "id": "bad-signature-other-chain",
+      "note": "D signed the order for chainId 42161",
+      "table": "declared",
+      "network": "eip155:8453",
+      "action": "release",
+      "paymentInfo": {
+        "operator": "0x271f9fa7f8907acf178ccfb470076d9129d8f0eb",
+        "payer": "0xd102644a799bfd52a16a149906b0f4b4938230ae",
+        "receiver": "0x04691daff7ba72785d181a4150bd72378d3120fe",
+        "token": "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913",
+        "maxAmount": "1000000",
+        "preApprovalExpiry": 1793003600,
+        "authorizationExpiry": 1793007200,
+        "refundExpiry": 1795592000,
+        "minFeeBps": 0,
+        "maxFeeBps": 1300,
+        "feeReceiver": "0xae07ceb6b395bc685a776a0b4c489e8d9ce9a6ad",
+        "salt": "12345"
+      },
+      "amount": "1000000",
+      "deadline": 1793000060,
+      "nonce": "b428a807acf32fdce18c906c5f0eeb1ce2e8e73e25cf3127b454b08eb4fd6681",
+      "signer": "declaredSigner",
+      "claimedSigner": "declaredSigner",
+      "signedOver": {
+        "chainId": 42161,
+        "amount": "1000000"
+      },
+      "ownerRpc": "up",
+      "policy": {
+        "verdict": "bad_signature"
+      },
+      "expected": [
+        {
+          "verdict": "bad_signature"
+        }
+      ],
+      "emDelegate": null,
+      "digest": "562f504754bb4840d48a5e9f4a05446fd9ac1cc955d086e8909a864620b87b6c",
+      "signature": "b677efd9b73548464ee800e040c4171a2a9f3a225b946f7318bd93235b868a265f6e6d40df2407f1e842c8b6d147e5bddb23f9ba52bbeca86d3aea8575baecc21c"
+    },
+    {
+      "id": "bad-signature-other-amount",
+      "note": "D signed 1000000; 999999 is submitted",
+      "table": "declared",
+      "network": "eip155:8453",
+      "action": "release",
+      "paymentInfo": {
+        "operator": "0x271f9fa7f8907acf178ccfb470076d9129d8f0eb",
+        "payer": "0xd102644a799bfd52a16a149906b0f4b4938230ae",
+        "receiver": "0x04691daff7ba72785d181a4150bd72378d3120fe",
+        "token": "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913",
+        "maxAmount": "1000000",
+        "preApprovalExpiry": 1793003600,
+        "authorizationExpiry": 1793007200,
+        "refundExpiry": 1795592000,
+        "minFeeBps": 0,
+        "maxFeeBps": 1300,
+        "feeReceiver": "0xae07ceb6b395bc685a776a0b4c489e8d9ce9a6ad",
+        "salt": "12345"
+      },
+      "amount": "999999",
+      "deadline": 1793000060,
+      "nonce": "7a424c5771dd10ee2fb44b7d22c196c28a65e4f21ef85f1b330b6d5874bdd520",
+      "signer": "declaredSigner",
+      "claimedSigner": "declaredSigner",
+      "signedOver": {
+        "chainId": 8453,
+        "amount": "1000000"
+      },
+      "ownerRpc": "up",
+      "policy": {
+        "verdict": "bad_signature"
+      },
+      "expected": [
+        {
+          "verdict": "bad_signature"
+        }
+      ],
+      "emDelegate": null,
+      "digest": "d7fa44b8b44bf880dd94aac79b37b36c209903148fadf17ed555e2ee8f620714",
+      "signature": "d863569bedf18a0be9f7f4c31f60f83b444d32b35ef457348aa4450b4925a94e67c1208a45d9a404bc7bc90691fbee28828d6fc0e6ab55229180017901983b091b"
+    },
+    {
+      "id": "bad-signature-arc-capturable",
+      "note": "D signed maxAmount (100000); the capturable 70000 is submitted",
+      "table": "declared",
+      "network": "eip155:5042",
+      "action": "refundInEscrow",
+      "paymentInfo": {
+        "operator": "0x0258472a1410ac3ad720f1bc83f22b3c0af1fd9d",
+        "payer": "0xd102644a799bfd52a16a149906b0f4b4938230ae",
+        "receiver": "0x04691daff7ba72785d181a4150bd72378d3120fe",
+        "token": "0x3600000000000000000000000000000000000000",
+        "maxAmount": "100000",
+        "preApprovalExpiry": 1793003600,
+        "authorizationExpiry": 1793007200,
+        "refundExpiry": 1795592000,
+        "minFeeBps": 0,
+        "maxFeeBps": 1300,
+        "feeReceiver": "0xae07ceb6b395bc685a776a0b4c489e8d9ce9a6ad",
+        "salt": "12345"
+      },
+      "amount": "70000",
+      "deadline": 1793000060,
+      "nonce": "b4c6f5314a6256e7daa68c516be711886657bf9ea54c0601fba77c3931eec8aa",
+      "signer": "declaredSigner",
+      "claimedSigner": "declaredSigner",
+      "signedOver": {
+        "chainId": 5042,
+        "amount": "100000"
+      },
+      "ownerRpc": "up",
+      "policy": {
+        "verdict": "bad_signature"
+      },
+      "expected": [
+        {
+          "verdict": "bad_signature"
+        }
+      ],
+      "emDelegate": null,
+      "digest": "16ca0dc2f543c9f295eaef4b2a68b7c3e53434ee94ee483c4a571c50a29a40d9",
+      "signature": "f9b094a981a14e6d1b0f84137756b0cc704f255e83f72a289f2421753b42182b74b514530c76df90d3b83cc0e82557c61f218b4dd4812beca3fa872d8017824c1c"
+    },
+    {
+      "id": "forged-claim",
+      "note": "E signs and claims to be D",
+      "table": "declared",
+      "network": "eip155:8453",
+      "action": "release",
+      "paymentInfo": {
+        "operator": "0x271f9fa7f8907acf178ccfb470076d9129d8f0eb",
+        "payer": "0xd102644a799bfd52a16a149906b0f4b4938230ae",
+        "receiver": "0x04691daff7ba72785d181a4150bd72378d3120fe",
+        "token": "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913",
+        "maxAmount": "1000000",
+        "preApprovalExpiry": 1793003600,
+        "authorizationExpiry": 1793007200,
+        "refundExpiry": 1795592000,
+        "minFeeBps": 0,
+        "maxFeeBps": 1300,
+        "feeReceiver": "0xae07ceb6b395bc685a776a0b4c489e8d9ce9a6ad",
+        "salt": "12345"
+      },
+      "amount": "1000000",
+      "deadline": 1793000060,
+      "nonce": "24282f309a095ce9d6362f33004b6fc81f18874808ddd235232fc0b96fe31a9b",
+      "signer": "otherKey",
+      "claimedSigner": "declaredSigner",
+      "signedOver": {
+        "chainId": 8453,
+        "amount": "1000000"
+      },
+      "ownerRpc": "up",
+      "policy": {
+        "verdict": "bad_signature"
+      },
+      "expected": [
+        {
+          "verdict": "bad_signature"
+        }
+      ],
+      "emDelegate": null,
+      "digest": "287be7a945c79d9d4eb9bd0a23124fd95c329eccef001cf1a6a0a04ef5e0515a",
+      "signature": "df3e9b2548dc4c80f83a73f52466b5e8c5b09a62b2f49c921b30376a5e84374f2e7b0ab8c39da2e854c8530ba46f9a44f8af47fa05f3db8ff2d1be69b02e48791c"
+    },
+    {
+      "id": "replayed",
+      "note": "submitted twice with the same nonce",
+      "table": "declared",
+      "network": "eip155:8453",
+      "action": "release",
+      "paymentInfo": {
+        "operator": "0x271f9fa7f8907acf178ccfb470076d9129d8f0eb",
+        "payer": "0xd102644a799bfd52a16a149906b0f4b4938230ae",
+        "receiver": "0x04691daff7ba72785d181a4150bd72378d3120fe",
+        "token": "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913",
+        "maxAmount": "1000000",
+        "preApprovalExpiry": 1793003600,
+        "authorizationExpiry": 1793007200,
+        "refundExpiry": 1795592000,
+        "minFeeBps": 0,
+        "maxFeeBps": 1300,
+        "feeReceiver": "0xae07ceb6b395bc685a776a0b4c489e8d9ce9a6ad",
+        "salt": "12345"
+      },
+      "amount": "1000000",
+      "deadline": 1793000060,
+      "nonce": "16a41cdfe1d1acfdc23b1cbd2766bce1cfebf3709d651889ab7167652eebdbbc",
+      "signer": "declaredSigner",
+      "claimedSigner": "declaredSigner",
+      "signedOver": {
+        "chainId": 8453,
+        "amount": "1000000"
+      },
+      "ownerRpc": "up",
+      "policy": {
+        "verdict": "ok",
+        "role": "declared_signer"
+      },
+      "expected": [
+        {
+          "verdict": "ok",
+          "role": "declared_signer"
+        },
+        {
+          "verdict": "replayed"
+        }
+      ],
+      "emDelegate": true,
+      "digest": "f4c99dc3732e516bb42f503d50f372038f296c801d86ee97f658e19f3185dc68",
+      "signature": "f1448fa129267bc16b058108641d80aab69e07640f57ee07f5b2c3cb142375461f7cb4cb79c745ec95906fe8233e3b54adb830b8a83fe310c04c1c80e813219d1b"
+    },
+    {
+      "id": "expired",
+      "note": "",
+      "table": "declared",
+      "network": "eip155:8453",
+      "action": "release",
+      "paymentInfo": {
+        "operator": "0x271f9fa7f8907acf178ccfb470076d9129d8f0eb",
+        "payer": "0xd102644a799bfd52a16a149906b0f4b4938230ae",
+        "receiver": "0x04691daff7ba72785d181a4150bd72378d3120fe",
+        "token": "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913",
+        "maxAmount": "1000000",
+        "preApprovalExpiry": 1793003600,
+        "authorizationExpiry": 1793007200,
+        "refundExpiry": 1795592000,
+        "minFeeBps": 0,
+        "maxFeeBps": 1300,
+        "feeReceiver": "0xae07ceb6b395bc685a776a0b4c489e8d9ce9a6ad",
+        "salt": "12345"
+      },
+      "amount": "1000000",
+      "deadline": 1792999999,
+      "nonce": "349314735499acd89a6dfbb347e4a284ce7130bafa62bc6306579a37d8bc04a0",
+      "signer": "declaredSigner",
+      "claimedSigner": "declaredSigner",
+      "signedOver": {
+        "chainId": 8453,
+        "amount": "1000000"
+      },
+      "ownerRpc": "up",
+      "policy": {
+        "verdict": "expired"
+      },
+      "expected": [
+        {
+          "verdict": "expired"
+        }
+      ],
+      "emDelegate": null,
+      "digest": "699a3755898ab5f3ce16dc1619cb0d952110e26ef62fa5737acb169bba6d3aad",
+      "signature": "0e8d88351bb6f98453b2317946a2152fbb78589261f8a7a74638e1f20e9c0b416bd0d6c64031bbbacc3bf6592231384dfcd1e145eed9f6f1548465dc185da0ad1c"
+    },
+    {
+      "id": "deadline-too-far",
+      "note": "",
+      "table": "declared",
+      "network": "eip155:8453",
+      "action": "release",
+      "paymentInfo": {
+        "operator": "0x271f9fa7f8907acf178ccfb470076d9129d8f0eb",
+        "payer": "0xd102644a799bfd52a16a149906b0f4b4938230ae",
+        "receiver": "0x04691daff7ba72785d181a4150bd72378d3120fe",
+        "token": "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913",
+        "maxAmount": "1000000",
+        "preApprovalExpiry": 1793003600,
+        "authorizationExpiry": 1793007200,
+        "refundExpiry": 1795592000,
+        "minFeeBps": 0,
+        "maxFeeBps": 1300,
+        "feeReceiver": "0xae07ceb6b395bc685a776a0b4c489e8d9ce9a6ad",
+        "salt": "12345"
+      },
+      "amount": "1000000",
+      "deadline": 1793000901,
+      "nonce": "711a8e6b38bd1c5254219a9dcad71e395c87213cc8501dda0d58696740ac242a",
+      "signer": "declaredSigner",
+      "claimedSigner": "declaredSigner",
+      "signedOver": {
+        "chainId": 8453,
+        "amount": "1000000"
+      },
+      "ownerRpc": "up",
+      "policy": {
+        "verdict": "deadline_too_far"
+      },
+      "expected": [
+        {
+          "verdict": "deadline_too_far"
+        }
+      ],
+      "emDelegate": null,
+      "digest": "fb270bb5bf79328723b8154587dc5293ed4def605f665787f5ac5ab8d952fe25",
+      "signature": "4a1a481f889f43e354f5a087ceed8da15a9288ba0b60761ecdaedab5875fe8814e1097088aecd2402b2a8e58784ce21981909cc15adb6fd88c215b6af8cf8e771c"
+    },
+    {
+      "id": "payer-release",
+      "note": "the roles that existed before declared_signer, unchanged",
+      "table": "declared",
+      "network": "eip155:8453",
+      "action": "release",
+      "paymentInfo": {
+        "operator": "0x271f9fa7f8907acf178ccfb470076d9129d8f0eb",
+        "payer": "0xd102644a799bfd52a16a149906b0f4b4938230ae",
+        "receiver": "0x04691daff7ba72785d181a4150bd72378d3120fe",
+        "token": "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913",
+        "maxAmount": "1000000",
+        "preApprovalExpiry": 1793003600,
+        "authorizationExpiry": 1793007200,
+        "refundExpiry": 1795592000,
+        "minFeeBps": 0,
+        "maxFeeBps": 1300,
+        "feeReceiver": "0xae07ceb6b395bc685a776a0b4c489e8d9ce9a6ad",
+        "salt": "12345"
+      },
+      "amount": "1000000",
+      "deadline": 1793000060,
+      "nonce": "96ecf3b9c08bb6a6e06306968be8dfc19b58587e3cc2caf5ea383f46f54c843f",
+      "signer": "payer",
+      "claimedSigner": "payer",
+      "signedOver": {
+        "chainId": 8453,
+        "amount": "1000000"
+      },
+      "ownerRpc": "up",
+      "policy": {
+        "verdict": "ok",
+        "role": "payer"
+      },
+      "expected": [
+        {
+          "verdict": "ok",
+          "role": "payer"
+        }
+      ],
+      "emDelegate": null,
+      "digest": "848e87b2a51e888f6f0f413def65e4239c13670ac174f51df47adc2c1647f01c",
+      "signature": "6119ec39ce07b472aeeff3ff02377243fe6feaec8ff2aa7846a771c4af9df7511f80ee6551aaa184bec61400baf4f6cc7301b35cc45582d73a0392c7cdc30ed51b"
+    },
+    {
+      "id": "receiver-refund",
+      "note": "",
+      "table": "declared",
+      "network": "eip155:8453",
+      "action": "refundInEscrow",
+      "paymentInfo": {
+        "operator": "0x271f9fa7f8907acf178ccfb470076d9129d8f0eb",
+        "payer": "0xd102644a799bfd52a16a149906b0f4b4938230ae",
+        "receiver": "0x04691daff7ba72785d181a4150bd72378d3120fe",
+        "token": "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913",
+        "maxAmount": "1000000",
+        "preApprovalExpiry": 1793003600,
+        "authorizationExpiry": 1793007200,
+        "refundExpiry": 1795592000,
+        "minFeeBps": 0,
+        "maxFeeBps": 1300,
+        "feeReceiver": "0xae07ceb6b395bc685a776a0b4c489e8d9ce9a6ad",
+        "salt": "12345"
+      },
+      "amount": "1000000",
+      "deadline": 1793000060,
+      "nonce": "4fde59f7899580f20b72e505fc7ca41ead914bfc9d17f7b3b3ac19cd0360831c",
+      "signer": "receiver",
+      "claimedSigner": "receiver",
+      "signedOver": {
+        "chainId": 8453,
+        "amount": "1000000"
+      },
+      "ownerRpc": "up",
+      "policy": {
+        "verdict": "ok",
+        "role": "receiver"
+      },
+      "expected": [
+        {
+          "verdict": "ok",
+          "role": "receiver"
+        }
+      ],
+      "emDelegate": null,
+      "digest": "404758af25e1e256328b0eaed0813e35b048209b067524f8be0b66f0a631e90c",
+      "signature": "a9c72e5fbbe0a34d13b3642f5c9f1d2f81ef678a27edc864205a30bd97fd0aa367def6a000040387a308e4a5dd75ec0030d14dd7fca8ddd48b8b5574b7cf01631c"
+    },
+    {
+      "id": "payer-refund-at-expiry",
+      "note": "the payer refunds in the very second authorizationExpiry is reached",
+      "table": "declared",
+      "network": "eip155:8453",
+      "action": "refundInEscrow",
+      "paymentInfo": {
+        "operator": "0x271f9fa7f8907acf178ccfb470076d9129d8f0eb",
+        "payer": "0xd102644a799bfd52a16a149906b0f4b4938230ae",
+        "receiver": "0x04691daff7ba72785d181a4150bd72378d3120fe",
+        "token": "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913",
+        "maxAmount": "1000000",
+        "preApprovalExpiry": 1793003600,
+        "authorizationExpiry": 1793000000,
+        "refundExpiry": 1795592000,
+        "minFeeBps": 0,
+        "maxFeeBps": 1300,
+        "feeReceiver": "0xae07ceb6b395bc685a776a0b4c489e8d9ce9a6ad",
+        "salt": "12345"
+      },
+      "amount": "1000000",
+      "deadline": 1793000060,
+      "nonce": "b75f820390ac9a56cfb13d8ccd6f44831f590eba5183d6af7f05f5d06d82f964",
+      "signer": "payer",
+      "claimedSigner": "payer",
+      "signedOver": {
+        "chainId": 8453,
+        "amount": "1000000"
+      },
+      "ownerRpc": "up",
+      "policy": {
+        "verdict": "ok",
+        "role": "payer_after_expiry"
+      },
+      "expected": [
+        {
+          "verdict": "ok",
+          "role": "payer_after_expiry"
+        }
+      ],
+      "emDelegate": null,
+      "digest": "e98b3a0ef5fccb072f7d3db1d0f7fff5e8bab3329ddb1ecf022925eedef65be6",
+      "signature": "fdd7b35218693db5714bcef2e81dc2d30c3e52565f5aa563dbc1480abf8fb86125c6ea48fb4e02146dabedd45ac07a57339fe779d5a4400c16b019a38cb38b431c"
+    },
+    {
+      "id": "receiver-release",
+      "note": "the receiver still may not release",
+      "table": "declared",
+      "network": "eip155:8453",
+      "action": "release",
+      "paymentInfo": {
+        "operator": "0x271f9fa7f8907acf178ccfb470076d9129d8f0eb",
+        "payer": "0xd102644a799bfd52a16a149906b0f4b4938230ae",
+        "receiver": "0x04691daff7ba72785d181a4150bd72378d3120fe",
+        "token": "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913",
+        "maxAmount": "1000000",
+        "preApprovalExpiry": 1793003600,
+        "authorizationExpiry": 1793007200,
+        "refundExpiry": 1795592000,
+        "minFeeBps": 0,
+        "maxFeeBps": 1300,
+        "feeReceiver": "0xae07ceb6b395bc685a776a0b4c489e8d9ce9a6ad",
+        "salt": "12345"
+      },
+      "amount": "1000000",
+      "deadline": 1793000060,
+      "nonce": "3e0a348779467454a7ef499cc4f5783c11546bb14de9c6c5f4ce0653029c68cd",
+      "signer": "receiver",
+      "claimedSigner": "receiver",
+      "signedOver": {
+        "chainId": 8453,
+        "amount": "1000000"
+      },
+      "ownerRpc": "up",
+      "policy": {
+        "step": "needs_owner"
+      },
+      "expected": [
+        {
+          "verdict": "unauthorized_role"
+        }
+      ],
+      "emDelegate": null,
+      "digest": "b75e1cd0533c7f28336a66402490fb1144473e93248617040eb3c0b4a96c2bc1",
+      "signature": "f07526763b9cfc0fda99864f5d93aee5e0faf35e8b3a00eb80438cd9d7f04cee2a0ce8f8f48f9cc4c38488f47ebafc1bb9207392ce42627db0aedc8cde8482ec1b"
+    },
+    {
+      "id": "owner-release",
+      "note": "the operator owner is still read from the chain",
+      "table": "declared",
+      "network": "eip155:8453",
+      "action": "release",
+      "paymentInfo": {
+        "operator": "0x271f9fa7f8907acf178ccfb470076d9129d8f0eb",
+        "payer": "0xd102644a799bfd52a16a149906b0f4b4938230ae",
+        "receiver": "0x04691daff7ba72785d181a4150bd72378d3120fe",
+        "token": "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913",
+        "maxAmount": "1000000",
+        "preApprovalExpiry": 1793003600,
+        "authorizationExpiry": 1793007200,
+        "refundExpiry": 1795592000,
+        "minFeeBps": 0,
+        "maxFeeBps": 1300,
+        "feeReceiver": "0xae07ceb6b395bc685a776a0b4c489e8d9ce9a6ad",
+        "salt": "12345"
+      },
+      "amount": "1000000",
+      "deadline": 1793000060,
+      "nonce": "0331f7963db5f0f9b06cb2d8cf3dd0e8af8afa483f49e7e23d9aa075a4f74e5e",
+      "signer": "owner",
+      "claimedSigner": "owner",
+      "signedOver": {
+        "chainId": 8453,
+        "amount": "1000000"
+      },
+      "ownerRpc": "up",
+      "policy": {
+        "step": "needs_owner"
+      },
+      "expected": [
+        {
+          "verdict": "ok",
+          "role": "operator_owner"
+        }
+      ],
+      "emDelegate": null,
+      "digest": "5438ad2501031393181d77a6ce414ddd3b053e02e2e25c139ade6e1fc8398190",
+      "signature": "d748e518f7e589a132d6c7ccd85b91d0c4a4675c77e7703f58b648b43c6cdef278e8944cd84eca2a429a785a0a2f225826a3e99057681b44859195d1840841eb1b"
+    }
+  ]
+}

@@ -99,6 +99,8 @@ mod arc_chain_tests;
 pub mod autoverify;
 pub mod errors;
 pub mod lifecycle_auth;
+#[cfg(test)]
+pub(crate) mod lifecycle_vector;
 pub mod operator;
 #[cfg(test)]
 pub(crate) mod test_rpc;

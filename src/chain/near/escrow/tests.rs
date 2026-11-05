@@ -4103,6 +4103,8 @@ fn the_evm_escrow_extra_keeps_its_exact_json() {
             escrow_address: address(0x11),
             operator_address: address(0x22),
             token_collector: address(0x33),
+            lifecycle_signers: None,
+            lifecycle_signers_version: None,
         }),
         near_escrow: None,
     };

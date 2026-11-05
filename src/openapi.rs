@@ -585,8 +585,8 @@ The `action` field controls the operation:
 | Action | Description | Signature Required |
 |--------|-------------|-------------------|
 | `authorize` (default) | Lock funds in escrow | Yes (ERC-3009, by the payer) |
-| `release` | Send escrowed funds to receiver | EIP-712 lifecycle order by the payer or the operator owner (`payload.lifecycleAuth`) |
-| `refundInEscrow` | Return escrowed funds to payer | EIP-712 lifecycle order by the receiver, the operator owner, or the payer once `authorizationExpiry` has passed |
+| `release` | Send escrowed funds to receiver | EIP-712 lifecycle order by the payer, the operator's declared lifecycle signer, or the operator owner (`payload.lifecycleAuth`) |
+| `refundInEscrow` | Return escrowed funds to payer | EIP-712 lifecycle order by the receiver, the operator's declared lifecycle signer, the operator owner, or the payer once `authorizationExpiry` has passed |
 
 Escrow contracts deployed on 14 networks. See `/supported` for networks with active PaymentOperator deployments.
 
@@ -648,7 +648,13 @@ already escrowed) but they do move money, so they carry `payload.lifecycleAuth`:
 signature over `LifecycleOrder(string action, uint256 amount, uint256 deadline, bytes32 nonce, PaymentInfo paymentInfo)`
 with domain `{ name: "x402 escrow lifecycle", version: "1", chainId }` and `PaymentInfo` the
 AuthCaptureEscrow type verbatim. The "operator owner" is the operator's `FEE_RECIPIENT()`
-(`FEE_RECEIVER()` on Arc and Robinhood Chain), read on chain. Whether the order is required is governed by `ESCROW_LIFECYCLE_AUTH` (`off` | `log` |
+(`FEE_RECEIVER()` on Arc and Robinhood Chain), read on chain. The operator's declared lifecycle signer is the key this
+facilitator's operator table names for `paymentInfo.operator` on that network (role `declared_signer`), checked
+without reading the chain; every x402r (EVM) `escrow` entry of `/supported` announces the network's declared
+signers in `extra.lifecycleSigners` (operator -> signer, `{}` when none, lowercase addresses, the same map on every
+escrow entry of the network) with `extra.lifecycleSignersVersion: 1`, and both fields are absent from every other
+entry (the NEAR `escrow` one included). Without `lifecycleSignersVersion`, or with a version other than `1`, there
+is no declared signer. Whether the order is required is governed by `ESCROW_LIFECYCLE_AUTH` (`off` | `log` |
 `enforce`); `GET /settle` publishes the effective mode. Under `enforce` a missing or invalid order
 is 403 with a bounded `errorReason` (`missing`, `bad_signature`, `expired`, `deadline_too_far`,
 `replayed`, `unauthorized_role`); `owner_unverifiable` is 502 and retryable.

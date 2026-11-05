@@ -1,3 +1,6 @@
 # .githooks/pre-commit corre con /bin/sh; un CRLF en el shebang o en el
 # script lo rompe en silencio. Fuerza LF sin importar el autocrlf local.
 .githooks/* text eol=lf
+# El vector del rol declared_signer se compara por su SHA-256 en los dos lados
+# (lifecycle_vector::FIXTURE_SHA256): LF en todo checkout, igual que en git.
+tests/fixtures/escrow/lifecycle-declared-signer-vector.json text eol=lf

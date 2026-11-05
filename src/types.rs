@@ -2431,6 +2431,22 @@ pub struct EscrowSupportedInfo {
     pub operator_address: EvmAddress,
     /// TokenCollector contract address (receives ERC-3009 transfers)
     pub token_collector: EvmAddress,
+    /// `extra.lifecycleSigners`: operator -> the lifecycle signer this
+    /// facilitator admits for it as `declared_signer`, for every declared
+    /// operator of the network (`OperatorAddresses::lifecycle_signer_map`, the
+    /// table the gate reads), the same map on every escrow kind of the
+    /// network. Only on the x402r (EVM) `escrow` kinds, and there always, `{}`
+    /// when nothing is declared, so a reader tells "no declared signer" from a
+    /// facilitator older than the field (absent). A future shape goes under a
+    /// new key: a v1 reader must never mis-parse it (and, flattened, a parse
+    /// failure here would drop the escrow addresses beside it).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lifecycle_signers:
+        Option<std::collections::BTreeMap<alloy::primitives::Address, alloy::primitives::Address>>,
+    /// `extra.lifecycleSignersVersion`: `LIFECYCLE_SIGNERS_VERSION`, present
+    /// exactly when `lifecycleSigners` is.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lifecycle_signers_version: Option<u32>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

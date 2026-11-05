@@ -4019,9 +4019,15 @@ fn negotiate_accepts(
             // `nearEscrow` is never added: in /supported it lists every contract
             // and operator accepted, while in a requirement the same key names
             // the one contract, operator, msg and payment id that verify reads.
+            // Neither is the lifecycle signer announcement: it is read from
+            // `GET /supported` only, and next to a merchant's own keys it would
+            // look like the facilitator vouching for them.
             if let serde_json::Value::Object(fac_obj) = fac_extra {
                 for (k, v) in fac_obj {
-                    if k == "nearEscrow" {
+                    if k == "nearEscrow"
+                        || k == "lifecycleSigners"
+                        || k == "lifecycleSignersVersion"
+                    {
                         continue;
                     }
                     if !merged.contains_key(k) {
@@ -23221,6 +23227,46 @@ mod accepts_negotiation_tests {
         let (matched, _) = negotiate_accepts(&[offer], &[near]);
         assert_eq!(matched[0]["extra"]["nearEscrow"], own);
         assert_eq!(matched[0]["extra"]["feePayer"], "facilitator.testnet");
+    }
+
+    /// The lifecycle signer announcement of an EVM `escrow` kind is read from
+    /// `GET /supported` only: `/accepts` adds the kind's addresses to a
+    /// requirement and never `lifecycleSigners` or its version, so a merchant's
+    /// own `lifecycleSigners` comes back as sent and never beside a version the
+    /// facilitator stamped.
+    #[test]
+    fn the_lifecycle_signer_announcement_never_lands_in_a_requirement() {
+        use alloy::primitives::Address;
+        let operator = Address::repeat_byte(0x22);
+        let signer = Address::repeat_byte(0x44);
+        let mut escrow = kind(Scheme::Escrow, "eip155:8453");
+        escrow.extra = Some(crate::types::SupportedPaymentKindExtra {
+            fee_payer: None,
+            tokens: None,
+            escrow: Some(crate::types::EscrowSupportedInfo {
+                escrow_address: crate::types::EvmAddress(Address::repeat_byte(0x11)),
+                operator_address: crate::types::EvmAddress(operator),
+                token_collector: crate::types::EvmAddress(Address::repeat_byte(0x33)),
+                lifecycle_signers: Some([(operator, signer)].into_iter().collect()),
+                lifecycle_signers_version: Some(1),
+            }),
+            near_escrow: None,
+        });
+        let (matched, rejected) =
+            negotiate_accepts(&[requirement("escrow", "eip155:8453")], &[escrow.clone()]);
+        assert!(rejected.is_empty());
+        let extra = &matched[0]["extra"];
+        assert_eq!(extra["operatorAddress"], format!("{operator:#x}"));
+        assert!(extra.get("lifecycleSigners").is_none(), "{extra}");
+        assert!(extra.get("lifecycleSignersVersion").is_none(), "{extra}");
+
+        let stranger = Address::repeat_byte(0x66);
+        let forged = json!({ format!("{operator:#x}"): format!("{stranger:#x}") });
+        let mut offer = requirement("escrow", "eip155:8453");
+        offer["extra"] = json!({ "lifecycleSigners": forged.clone() });
+        let (matched, _) = negotiate_accepts(&[offer], &[escrow]);
+        assert_eq!(matched[0]["extra"]["lifecycleSigners"], forged);
+        assert!(matched[0]["extra"].get("lifecycleSignersVersion").is_none());
     }
 }
 

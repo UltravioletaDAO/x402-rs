@@ -59,9 +59,9 @@ Arc uses USDC `0x3600000000000000000000000000000000000000` with 6 payment decima
 
 ## ERC-8004 Reputation (Trustless Agents)
 
-The facilitator supports [ERC-8004](https://eips.ethereum.org/EIPS/eip-8004) for AI agent identity and reputation across **23 networks** (13 mainnets + 10 testnets), spanning both EVM and Solana.
+The facilitator supports [ERC-8004](https://eips.ethereum.org/EIPS/eip-8004) for AI agent identity and reputation across **25 networks** (14 mainnets + 11 testnets), spanning both EVM and Solana.
 
-**EVM networks:** `ethereum`, `base`, `polygon`, `arbitrum`, `optimism`, `celo`, `bsc`, `monad`, `avalanche`, `scroll`, `skale-base`, `arc`, `ethereum-sepolia`, `base-sepolia`, `polygon-amoy`, `arbitrum-sepolia`, `optimism-sepolia`, `celo-sepolia`, `avalanche-fuji`, `skale-base-sepolia`, `arc-testnet`
+**EVM networks:** `ethereum`, `base`, `polygon`, `arbitrum`, `optimism`, `celo`, `bsc`, `monad`, `avalanche`, `scroll`, `skale-base`, `arc`, `robinhood`, `ethereum-sepolia`, `base-sepolia`, `polygon-amoy`, `arbitrum-sepolia`, `optimism-sepolia`, `celo-sepolia`, `avalanche-fuji`, `skale-base-sepolia`, `arc-testnet`, `robinhood-testnet`
 
 **Solana networks:** `solana`, `solana-devnet` (via [QuantuLabs 8004-solana](https://github.com/QuantuLabs/8004-solana) + [ATOM Engine](https://github.com/QuantuLabs/8004-atom))
 
@@ -171,7 +171,11 @@ discovery documents) carry no limit and therefore no headers.
 The ERC-8004 writes that send a transaction (`POST /register`, `POST /feedback`
 and the `/feedback/*` submits) are also limited per network per UTC day. Past
 that limit they answer `429` with code `erc8004_daily_write_limit` and a
-`retry-after` that runs to 00:00 UTC; other networks are not affected.
+`retry-after` that runs to 00:00 UTC; other networks are not affected. On
+`robinhood` and `robinhood-testnet` each transaction those writes send is also
+held to a gas ceiling: one whose gas estimate is above it is not sent, and a
+write refused that way before it sent anything answers `400` with `errorCode`
+`erc8004_gas_over_limit` (`GET /config`, `erc8004DailyWriteCap.maxGasPerWrite`).
 
 Separately from any bucket, admission to each task is checked before any
 route runs, and a refusal means nothing was done; resend the same request:
@@ -227,7 +231,7 @@ constraint rather than as grounds for a `406`.
         (name = "Core", description = "Core x402 payment verification and settlement (exact, upto, escrow schemes)"),
         (name = "Escrow", description = "Gasless escrow lifecycle (authorize, release, refund, state query)"),
         (name = "Discovery", description = "Network and scheme discovery"),
-        (name = "ERC-8004", description = "AI Agent reputation and identity (ERC-8004 Trustless Agents) - 23 networks (EVM + Solana)"),
+        (name = "ERC-8004", description = "AI Agent reputation and identity (ERC-8004 Trustless Agents) - 25 networks (EVM + Solana)"),
         (name = "Bazaar", description = "Decentralized resource discovery registry"),
         (name = "Compliance", description = "OFAC compliance and sanctions screening"),
         (name = "Health", description = "Service health and status"),
@@ -584,7 +588,13 @@ The `action` field controls the operation:
 | `release` | Send escrowed funds to receiver | EIP-712 lifecycle order by the payer or the operator owner (`payload.lifecycleAuth`) |
 | `refundInEscrow` | Return escrowed funds to payer | EIP-712 lifecycle order by the receiver, the operator owner, or the payer once `authorizationExpiry` has passed |
 
-Escrow contracts deployed on 13 networks. See `/supported` for networks with active PaymentOperator deployments.
+Escrow contracts deployed on 14 networks. See `/supported` for networks with active PaymentOperator deployments.
+
+`/settle` relays `authorize`, `release` and `refundInEscrow` only to the PaymentOperators this facilitator declares
+for the network -- each `escrow` entry of `/supported` names one of them. A request whose `paymentInfo.operator`, or
+the address the call would go to (`authorizeAddress`, else `operatorAddress`), is any other answers
+`400 escrow_operator_not_served`, before anything is read or sent. To have an operator added, see "Escrow
+PaymentOperators" in the repository's README.
 
 **NEAR escrow (scheme `escrow` on `near` / `near-testnet`)** is a path of its own, into the Arras escrow
 contracts: served only while `ENABLE_NEAR_ESCROW` is on and a contract is configured for the network
@@ -614,28 +624,31 @@ delegate action whose `max_block_height` is at or below the head the node answer
 reason; an outcome that shows no verdict is `502 settlement_unconfirmed` with the hash. A success carries
 `extensions.nearEscrow` (`action`, `contract`, and `paymentId` or `account`).
 
-**Arc and Arc testnet** run the canonical commerce-payments v1.0.0 set -- AuthCaptureEscrow
+**Arc, Arc testnet and Robinhood Chain (`robinhood`, not its testnet)** run the canonical commerce-payments v1.0.0 set -- AuthCaptureEscrow
 `0xBdEA0D1bcC5966192B070Fdf62aB4EF5b4420cff`, ERC-3009 collector `0x0E3dF9510de65469C4518D7843919c0b8C7A7757`,
 PaymentOperatorFactory v1.0.2 `0xc24153B7ED8DC03e551F29DDEeA5CadFe57e2716` -- and a request there must name
 that escrow and collector. Every write there (`authorize`, `release`, `refundInEscrow`) goes to `paymentInfo.operator`
-itself, and only once that address has code: a request whose `operatorAddress` / `authorizeAddress` is another
-address answers `400 operator_mismatch`, and one whose operator has no code on the network answers
+itself, and only once that address has code: a request whose call would go anywhere else answers
+`400 escrow_operator_not_served` (above), and one whose operator has no code on the network answers
 `422 operator_has_no_code`; neither sends a transaction. Their operators have no `release` / `refundInEscrow`: `release` is sent as
 `capture(paymentInfo, amount, 0x)` and `refundInEscrow` as `void(paymentInfo, 0x)`, which returns the WHOLE
 capturable amount, so `refundInEscrow` must name exactly that amount. Nothing capturable left answers
 `409 nothing_to_void`; an `amount` of `0` answers `422 amount_required_on_generation` (it is never read as
 "all of it"); any other amount answers `422 partial_refund_unsupported_on_generation`; and a chain read that
 fails answers `502 chain_read_unavailable` with `retryable: true`. None of them sends a transaction.
-`authorize` on Arc takes EOA signatures only, and is placed against a listed PaymentOperator only once that
+`authorize` on these networks takes EOA signatures only, and is placed against a listed PaymentOperator only once that
 operator has passed its on-chain self-check: until then it answers `503 operator_not_verified`, retryable --
-the expected case being an operator that is declared but not deployed yet.
+the expected case being an operator that is declared but not deployed yet. On Robinhood Chain the token is
+USDG (`0x5fc5360D0400a0Fd4f2af552ADD042D716F1d168`, EIP-712 domain `Global Dollar` / `1`), and the only one its rail
+moves: on `/settle` a request moving any other `paymentInfo.token` answers `400 escrow_token_not_served`, for all
+three writes and before anything is read or sent.
 
 **Lifecycle orders.** `release` and `refundInEscrow` carry no ERC-3009 signature (the funds are
 already escrowed) but they do move money, so they carry `payload.lifecycleAuth`: an EIP-712
 signature over `LifecycleOrder(string action, uint256 amount, uint256 deadline, bytes32 nonce, PaymentInfo paymentInfo)`
 with domain `{ name: "x402 escrow lifecycle", version: "1", chainId }` and `PaymentInfo` the
 AuthCaptureEscrow type verbatim. The "operator owner" is the operator's `FEE_RECIPIENT()`
-(`FEE_RECEIVER()` on Arc), read on chain. Whether the order is required is governed by `ESCROW_LIFECYCLE_AUTH` (`off` | `log` |
+(`FEE_RECEIVER()` on Arc and Robinhood Chain), read on chain. Whether the order is required is governed by `ESCROW_LIFECYCLE_AUTH` (`off` | `log` |
 `enforce`); `GET /settle` publishes the effective mode. Under `enforce` a missing or invalid order
 is 403 with a bounded `errorReason` (`missing`, `bad_signature`, `expired`, `deadline_too_far`,
 `replayed`, `unauthorized_role`); `owner_unverifiable` is 502 and retryable.
@@ -1027,8 +1040,8 @@ Until 2026-09-03 `escrow`, `commerce` and `upto` appeared **only** under CAIP-2 
 
 `upto` is **not** available on every EVM network that supports `exact`. The proxy address is identical on all chains because it is deployed with CREATE2, but the deployment still has to be replayed per chain, and on Avalanche, Celo, Scroll, Unichain, Optimism Sepolia and HashKey Chain (mainnet and testnet) it never was — the address has no code there. Query `/supported` rather than assuming: it now lists `upto` only where settlement can actually succeed.
 
-**Escrow networks (13):** `base`, `ethereum`, `polygon`, `arbitrum`, `celo`, `monad`, `avalanche`, `optimism`, `skale-base`, `arc`, `base-sepolia`, `ethereum-sepolia`, `arc-testnet`.
-Each lists `commerce`, and `escrow` once per PaymentOperator the facilitator declares for it; on `arc` and `arc-testnet` an operator is listed only once it has passed its on-chain self-check.
+**Escrow networks (14):** `base`, `ethereum`, `polygon`, `arbitrum`, `celo`, `monad`, `avalanche`, `optimism`, `skale-base`, `arc`, `robinhood`, `base-sepolia`, `ethereum-sepolia`, `arc-testnet`.
+Each lists `commerce`, and `escrow` once per PaymentOperator the facilitator declares for it; on `arc`, `arc-testnet` and `robinhood` an operator is listed only once it has passed its on-chain self-check.
 
 **NEAR escrow:** `near` / `near-testnet` list an `escrow` kind only while `ENABLE_NEAR_ESCROW` is on and a contract is configured for the network; they are not PaymentOperator networks. Its `extra.nearEscrow` is plural -- `{contracts, operatorIds, minGasTgas, maxGasTgas, senderPerHour}`, every contract and operator accepted -- while a 402 names one of each in its own `extra.nearEscrow` (see `POST /settle`). `POST /accepts` never merges the plural one into a requirement.
 
@@ -1395,6 +1408,7 @@ each with its own `errorCode`, before anything is sent:
 | `agent_uri_tunnel` | 400 | A tunnelling service (`ngrok`, `trycloudflare`, ...) |
 | `recipient_required`, `recipient_is_facilitator`, `recipient_invalid` (the zero address) | 400 | See above |
 | `recipient_cannot_receive` | 400 | EVM: a contract that does not answer `onERC721Received`; the transfer would revert and leave the identity with the facilitator |
+| `erc8004_gas_over_limit` | 400 | `robinhood`, `robinhood-testnet`: the mint's gas estimate is above the network's ceiling for one transaction; nothing is sent |
 | `recipient_blocked` | 403 | The recipient is on a compliance list; nothing is minted or handed over |
 | `recipient_screening_unavailable`, `recipient_check_unavailable` | 503 | The lists, or the recipient's code, could not be read; retryable |
 | `mint_not_atomic` (in `mint.errorCode`) | 400 | Solana: the mint would not fit one transaction: more than 4 `metadata` entries, or over 1232 bytes with long values |
@@ -1411,7 +1425,7 @@ not the recipient afterwards), the identity is retired on the spot (its `agentUR
 `recipient`) within 24 hours puts the `agentURI` back and retries the delivery of that same
 identity.
 
-**Supported networks:** 23 networks (EVM + Solana). EVM chains use ERC-721 NFTs, Solana uses Metaplex Core NFTs.
+**Supported networks:** 25 networks (EVM + Solana). EVM chains use ERC-721 NFTs, Solana uses Metaplex Core NFTs.
 
 **EVM request:**
 ```json
@@ -1521,7 +1535,7 @@ re-minted — the async path returns the existing job, the sync path returns
     responses(
         (status = 200, description = "Registration result (sync)", body = Object),
         (status = 202, description = "Async registration accepted; poll /register/status/{jobId}", body = Object),
-        (status = 400, description = "Registration failed, or refused before the chain: `errorCode` says which rule (`agent_uri_*`, `recipient_required`, `recipient_is_facilitator`, `recipient_invalid`, `recipient_cannot_receive`)", body = Object),
+        (status = 400, description = "Registration failed, or refused before the chain: `errorCode` says which rule (`agent_uri_*`, `recipient_required`, `recipient_is_facilitator`, `recipient_invalid`, `recipient_cannot_receive`, `erc8004_gas_over_limit`)", body = Object),
         (status = 403, description = "`recipient_blocked`: the recipient is on a compliance list", body = Object),
         (status = 409, description = "A registration for this agent is already in progress, or on Solana `held_identity_not_resumable`: an identity with this `agentUri` is held by the facilitator and this is not a retry of the request that minted it; nothing is sent", body = Object),
         (status = 500, description = "Solana: the identity exists but is still held by the facilitator (`mint.status` is `pending_stats` or `pending_transfer`). Repeat the request to finish it", body = Object),
@@ -1593,7 +1607,7 @@ async fn path_feedback_get() {}
     description = r#"
 Submits on-chain reputation feedback for an AI agent via the ERC-8004 Reputation Registry (EVM) or Agent Registry with ATOM Engine CPI (Solana).
 
-**Supported networks:** 23 networks (EVM + Solana).
+**Supported networks:** 25 networks (EVM + Solana).
 
 **agentId format:** Numeric (42) for EVM, base58 Pubkey string for Solana. Both JSON numbers and strings are accepted.
 
@@ -2068,7 +2082,7 @@ async fn path_feedback_response() {}
     description = r#"
 Queries the reputation summary for an AI agent from the ERC-8004 Reputation Registry.
 
-**EVM networks:** ethereum, base, polygon, arbitrum, optimism, celo, bsc, monad, avalanche, scroll, skale-base, arc + testnets
+**EVM networks:** ethereum, base, polygon, arbitrum, optimism, celo, bsc, monad, avalanche, scroll, skale-base, arc, robinhood + testnets
 
 **Solana networks:** solana, solana-devnet (reads from ATOM Engine for enriched reputation data)
 
@@ -2129,7 +2143,7 @@ async fn path_reputation() {}
     description = r#"
 Retrieves agent identity information from the ERC-8004 Identity Registry.
 
-**EVM networks:** ethereum, base, polygon, arbitrum, optimism, celo, bsc, monad, avalanche, scroll, skale-base, arc + testnets
+**EVM networks:** ethereum, base, polygon, arbitrum, optimism, celo, bsc, monad, avalanche, scroll, skale-base, arc, robinhood + testnets
 
 **Solana networks:** solana, solana-devnet (reads AgentAccount PDA from 8004-solana program)
 
@@ -3486,8 +3500,9 @@ unknown or revoked key is charged like any \
 other caller. A request whose client address (the last `X-Forwarded-For` entry, the one the load \
 balancer appends) is on the IP allowlist skips the same, answered with `x-ratelimit-exempt: \
 ip-allowlist`. Neither the body deadline, nor the task's ceiling of concurrent requests (`503`, every \
-caller), nor the daily write limit (`429 erc8004_daily_write_limit`, it protects the gas the \
-facilitator pays) is skipped.
+caller), nor the daily write limit (`429 erc8004_daily_write_limit`, how many writes the \
+facilitator pays gas for), nor the gas ceiling of each write's transactions where a network has one \
+(`400 erc8004_gas_over_limit`) is skipped.
 
 Rate limited per IP like the other cheap reads.",
     responses(
@@ -3533,7 +3548,12 @@ Rate limited per IP like the other cheap reads.",
                 },
                 "erc8004DailyWriteCap": {
                     "mounted": true, "defaultPerNetwork": 1000,
-                    "perNetwork": { "ethereum": 100, "solana": 150 }
+                    "perNetwork": { "ethereum": 100, "solana": 150 },
+                    "maxGasPerWrite": {
+                        "perNetwork": { "robinhood": 1000000, "robinhood-testnet": 1000000 },
+                        "otherNetworks": "no ceiling", "env": "ERC8004_MAX_GAS_<NETWORK>",
+                        "refusal": { "status": 400, "errorCode": "erc8004_gas_over_limit" }
+                    }
                 }
             })
         ),
@@ -4414,6 +4434,103 @@ mod tests {
             seen += 1;
         }
         assert!(seen > 0, "no `N{stated}` left to check; update this test");
+    }
+
+    /// The two ERC-8004 read endpoints name every EVM mainnet ERC-8004 is
+    /// served on. Typed by hand like the section above, and they had drifted
+    /// the same way: until 2.37.0 they stopped at `scroll` while SKALE Base was
+    /// served. Derived from `supported_networks()`, so a mainnet added there
+    /// without touching these lines fails here.
+    #[test]
+    fn the_erc8004_read_endpoints_name_every_evm_mainnet() {
+        let spec = ApiDoc::openapi();
+        for path in [
+            "/reputation/{network}/{agent_id}",
+            "/identity/{network}/{agent_id}",
+        ] {
+            let description = spec.paths.paths[path]
+                .get
+                .as_ref()
+                .and_then(|operation| operation.description.as_deref())
+                .unwrap_or_else(|| panic!("GET {path} must carry a description"));
+            let line = description
+                .lines()
+                .find(|l| l.starts_with("**EVM networks:**"))
+                .unwrap_or_else(|| panic!("GET {path} must list its EVM networks"));
+            let named: Vec<&str> = line["**EVM networks:**".len()..]
+                .trim()
+                .trim_end_matches("+ testnets")
+                .split(',')
+                .map(str::trim)
+                .collect();
+            for network in crate::erc8004::supported_networks() {
+                if !network.is_mainnet() || crate::erc8004::get_contracts(&network).is_none() {
+                    continue;
+                }
+                let name = network.to_string();
+                assert!(
+                    named.contains(&name.as_str()),
+                    "GET {path} does not name `{name}`, which serves ERC-8004: {line}"
+                );
+            }
+        }
+    }
+
+    /// The networks `/docs` and `GET /register` say hold each ERC-8004
+    /// transaction to a gas ceiling are exactly the ones with a built-in
+    /// ceiling (`erc8004::max_gas`). Typed by hand in three places; a network
+    /// added to the table, or dropped from it, without them fails here.
+    #[tokio::test]
+    async fn the_networks_named_with_a_gas_ceiling_are_the_built_in_ones() {
+        use axum::response::IntoResponse;
+        let names: Vec<String> = crate::erc8004::max_gas::GasCeilings::from_lookup(|_| None)
+            .configured()
+            .into_iter()
+            .map(|(network, _)| network.to_string())
+            .collect();
+        assert!(!names.is_empty());
+        let quoted: Vec<String> = names.iter().map(|n| format!("`{n}`")).collect();
+        let listed = match quoted.split_last() {
+            Some((last, [])) => last.clone(),
+            Some((last, rest)) => format!("{} and {last}", rest.join(", ")),
+            None => unreachable!(),
+        };
+
+        fn strings(value: &serde_json::Value, out: &mut Vec<String>) {
+            match value {
+                serde_json::Value::String(s) => {
+                    out.push(s.split_whitespace().collect::<Vec<_>>().join(" "))
+                }
+                serde_json::Value::Array(items) => items.iter().for_each(|v| strings(v, out)),
+                serde_json::Value::Object(map) => map.values().for_each(|v| strings(v, out)),
+                _ => {}
+            }
+        }
+        let mut texts = Vec::new();
+        strings(
+            &serde_json::to_value(ApiDoc::openapi()).unwrap(),
+            &mut texts,
+        );
+        for phrase in [
+            format!("On {listed} each transaction those writes send is also held to a gas ceiling"),
+            format!("| `erc8004_gas_over_limit` | 400 | {}: ", quoted.join(", ")),
+        ] {
+            assert!(
+                texts.iter().any(|t| t.contains(&phrase)),
+                "/docs does not say: {phrase}"
+            );
+        }
+
+        let response = crate::handlers::get_register_info().await.into_response();
+        let info: serde_json::Value = serde_json::from_slice(
+            &axum::body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        let refusals = info["refusals"]["400"].as_str().unwrap_or_default();
+        let phrase = format!("erc8004_gas_over_limit ({}: ", names.join(", "));
+        assert!(refusals.contains(&phrase), "GET /register: {refusals}");
     }
 
     /// The relayed-feedback availability list in `/docs` is exactly the set of

@@ -161,7 +161,8 @@ pub const DEFAULT_RELAY_DEADLINE_SECS: u64 = 900;
 /// Execution Market has since retired the chain entirely).
 ///
 /// Arc testnet serves ERC-8004 as well, and is absent only because no delegate
-/// has been deployed there.
+/// has been deployed there. So do Robinhood Chain and its testnet (2.56.0):
+/// Execution Market's `feedback-delegate.json` names no deploy on either.
 fn delegate_address(network: &Network) -> Option<Address> {
     match network {
         // Mainnets -- Execution Market v4 deploys, verified on-chain 2026-08-25.
@@ -951,7 +952,9 @@ mod tests {
     /// Scroll and SKALE Base serve ERC-8004 but have no delegate deployed
     /// (SKALE's EVM predates Shanghai, so 7702 cannot land there at all).
     /// Arc testnet serves ERC-8004 with no delegate deployed; Arc mainnet left
-    /// this list when its delegate was deployed.
+    /// this list when its delegate was deployed. Robinhood Chain and its testnet
+    /// serve ERC-8004 with no delegate deployed either; each leaves this list in
+    /// the change that adds its delegate.
     #[test]
     fn the_chains_without_a_delegate_claim_none() {
         for network in [
@@ -960,6 +963,8 @@ mod tests {
             Network::Scroll,
             Network::SkaleBase,
             Network::ArcTestnet,
+            Network::Robinhood,
+            Network::RobinhoodTestnet,
             Network::EthereumSepolia,
             Network::PolygonAmoy,
             Network::ArbitrumSepolia,

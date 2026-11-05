@@ -168,7 +168,7 @@ Base URL: `https://facilitator.ultravioletadao.xyz/`
   Off unless the operator enables it: when `durable-evidence` is absent from the
   `extensions` of `/supported`, these paths answer the generic 404
 - `GET  /identity/{network}/{agentId}` and `GET /reputation/{network}/{agentId}` —
-  ERC-8004 Trustless Agents, live on 13 mainnets and 23 networks in total
+  ERC-8004 Trustless Agents, live on 14 mainnets and 25 networks in total
 
 `/events`, `/transactions` and `/api/stats` are an index, not a ledger. Rows are
 written after settlement resolves and are dropped rather than allowed to block a

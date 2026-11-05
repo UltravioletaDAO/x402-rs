@@ -24,10 +24,7 @@
 use alloy::primitives::{address, Address};
 use serde_json::{json, Value};
 
-use super::{
-    execute_authorize_flow, execute_refund_in_escrow_flow, execute_release_flow,
-    parse_escrow_request, ParsedEscrowRequest,
-};
+use super::settle_escrow_enabled;
 use crate::network::Network;
 use crate::payment_operator::addresses::{
     create3, escrow_for_network, token_collector_for_network, OperatorAddresses, ESCROW_NETWORKS,
@@ -45,29 +42,13 @@ const TOKEN: Address = address!("3333333333333333333333333333333333333333");
 const SALT: u64 = 0x3039;
 const NONCE: u64 = 0x4242;
 
-/// The flows `settle_escrow` dispatches to, minus its feature-flag check, so
-/// the test does not depend on (or race over) `ENABLE_PAYMENT_OPERATOR`.
+/// `settle_escrow` minus its feature-flag check, so the test does not depend
+/// on (or race over) `ENABLE_PAYMENT_OPERATOR`.
 pub(super) async fn settle(
     body: &Value,
     facilitator: &Providers,
 ) -> Result<SettleResponse, OperatorError> {
-    match parse_escrow_request(&body.to_string())? {
-        ParsedEscrowRequest::Authorize {
-            network,
-            payload,
-            extra,
-        } => execute_authorize_flow(network, &payload, &extra, facilitator).await,
-        ParsedEscrowRequest::Release {
-            network,
-            lifecycle,
-            extra,
-        } => execute_release_flow(network, &lifecycle, &extra, facilitator).await,
-        ParsedEscrowRequest::RefundInEscrow {
-            network,
-            lifecycle,
-            extra,
-        } => execute_refund_in_escrow_flow(network, &lifecycle, &extra, facilitator).await,
-    }
+    settle_escrow_enabled(&body.to_string(), facilitator).await
 }
 
 fn word(n: u64) -> String {
@@ -216,13 +197,14 @@ async fn observe_calldata() -> Value {
     Value::Array(entries)
 }
 
-/// Every escrow network this snapshot covers: all of them but Arc, which
-/// joined the scheme after it was recorded.
+/// Every escrow network this snapshot covers: all of them but the canonical
+/// v1 networks (Arc, then Robinhood Chain), which joined the scheme after it
+/// was recorded and speak another ABI.
 fn snapshot_networks() -> Vec<Network> {
     ESCROW_NETWORKS
         .iter()
         .copied()
-        .filter(|n| !matches!(n, Network::Arc | Network::ArcTestnet))
+        .filter(|n| !crate::payment_operator::addresses::is_canonical_v1_network(*n))
         .collect()
 }
 

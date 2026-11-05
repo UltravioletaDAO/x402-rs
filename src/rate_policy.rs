@@ -440,7 +440,11 @@ pub const HUMAN_PAGES: Budget = Budget {
 /// write came from one address: at this burst the batches that succeeded are
 /// served in full save a single request, which its 429's `retry-after` covers.
 /// The writes that send a transaction are ALSO under the per-network daily cap
-/// (`erc8004::daily_cap`), which protects gas and which no identity skips.
+/// (`erc8004::daily_cap`), which no identity skips. The cap bounds how many
+/// writes a network serves in a day, not what they cost: where a network has
+/// a gas ceiling per transaction (`erc8004::max_gas`) that bounds each one,
+/// and the worst day there is the cap x the transactions one write sends (a
+/// registration sends more than one) x the ceiling x the gas price.
 pub const ERC8004_WRITES: Budget = Budget {
     name: "erc8004-writes",
     routes: "POST /register, POST /feedback, POST /feedback/*",
@@ -1423,22 +1427,31 @@ fn unreadable_body(error: &axum::Error) -> axum::response::Response {
 /// The effective policy, as `GET /config` publishes it: every budget with its
 /// default, its override variables and the value in force; the stack identities
 /// by name; the in-flight ceiling; and the ERC-8004 daily write cap when the
-/// writes are mounted. Never a key or a digest.
+/// writes are mounted, with the gas ceilings per write the process holds them
+/// to (`erc8004::max_gas::global`). Never a key or a digest.
 pub fn document(
     policy: &RatePolicy,
     admission: &Admission,
     daily_cap: Option<&crate::erc8004::daily_cap::DailyWriteCap>,
 ) -> Value {
-    document_from(policy, admission, daily_cap, |var| std::env::var(var).ok())
+    document_from(
+        policy,
+        admission,
+        daily_cap,
+        crate::erc8004::max_gas::global(),
+        |var| std::env::var(var).ok(),
+    )
 }
 
 /// [`document`], reading each budget's overrides through `lookup` -- the same
 /// lookup [`Budget::limit_from`] takes, so a test can put an override in force
-/// and see `/config` publish it.
+/// and see `/config` publish it -- and publishing the gas ceilings of
+/// `max_gas`.
 pub fn document_from(
     policy: &RatePolicy,
     admission: &Admission,
     daily_cap: Option<&crate::erc8004::daily_cap::DailyWriteCap>,
+    max_gas: &crate::erc8004::max_gas::GasCeilings,
     lookup: impl Fn(&str) -> Option<String>,
 ) -> Value {
     let budgets: Vec<Value> = BUDGETS
@@ -1469,9 +1482,10 @@ pub fn document_from(
                     .into_iter()
                     .map(|(network, limit)| (network.to_string(), json!(limit)))
                     .collect::<serde_json::Map<String, Value>>(),
-                "counts": "transactions sent per network per UTC day",
+                "counts": "writes that sent a transaction, per network per UTC day (one write can send more than one: a registration's mint and its delivery count once)",
                 "refusal": { "status": 429, "code": "erc8004_daily_write_limit" },
-                "appliesTo": "every caller, stack identities included: it protects the gas the facilitator pays",
+                "appliesTo": "every caller, stack identities included: it bounds how many writes the facilitator pays gas for, not what they cost (maxGasPerWrite bounds each transaction where it is set)",
+                "maxGasPerWrite": max_gas_document(max_gas),
             })
         }
         None => json!({ "mounted": false }),
@@ -1505,6 +1519,23 @@ pub fn document_from(
             "bodyDeadlineAppliesTo": "every caller, stack identities included: the whole body, not the gap between two bytes",
         },
         "erc8004DailyWriteCap": daily,
+    })
+}
+
+/// What `GET /config` says about the gas ceiling of each ERC-8004 transaction
+/// (`erc8004::max_gas`): the ceilings `max_gas` holds.
+fn max_gas_document(max_gas: &crate::erc8004::max_gas::GasCeilings) -> Value {
+    use crate::erc8004::max_gas::{ENV_MAX_GAS_PREFIX, GAS_OVER_LIMIT_CODE};
+    json!({
+        "perNetwork": max_gas
+            .configured()
+            .into_iter()
+            .map(|(network, gas)| (network.to_string(), json!(gas)))
+            .collect::<serde_json::Map<String, Value>>(),
+        "otherNetworks": "no ceiling",
+        "env": format!("{ENV_MAX_GAS_PREFIX}<NETWORK>"),
+        "refusal": { "status": 400, "errorCode": GAS_OVER_LIMIT_CODE },
+        "withoutAnEstimate": "sent with the ceiling as its gas limit",
     })
 }
 
@@ -3091,6 +3122,41 @@ mod tests {
         }
     }
 
+    /// `/config` publishes the gas ceiling of one ERC-8004 transaction in
+    /// force on each network that has one, overrides included, next to the
+    /// daily cap it complements; a network without one is not listed. What
+    /// `document` publishes is the instance the send path reads.
+    #[test]
+    fn the_config_document_publishes_the_erc8004_gas_ceilings_in_force() {
+        let vars: HashMap<&str, &str> = HashMap::from([("ERC8004_MAX_GAS_ROBINHOOD", "250000")]);
+        let lookup = |var: &str| vars.get(var).map(|v| v.to_string());
+        let policy = stack_policy();
+        let admission = Admission::new(&policy, 512, 32, Duration::from_millis(5_000));
+        let cap =
+            crate::erc8004::daily_cap::DailyWriteCap::new(1000, HashMap::new(), Box::new(|| 0));
+        let max_gas = crate::erc8004::max_gas::GasCeilings::from_lookup(lookup);
+        let doc = document_from(&policy, &admission, Some(&cap), &max_gas, lookup);
+        let ceilings = &doc["erc8004DailyWriteCap"]["maxGasPerWrite"];
+        assert_eq!(ceilings["perNetwork"]["robinhood"], 250_000, "{ceilings}");
+        assert_eq!(
+            ceilings["perNetwork"]["robinhood-testnet"], 1_000_000,
+            "{ceilings}"
+        );
+        assert!(ceilings["perNetwork"]["base"].is_null(), "{ceilings}");
+        assert_eq!(ceilings["env"], "ERC8004_MAX_GAS_<NETWORK>");
+        assert_eq!(ceilings["refusal"]["status"], 400);
+        assert_eq!(ceilings["refusal"]["errorCode"], "erc8004_gas_over_limit");
+
+        let served = config_document(&policy);
+        let published = &served["erc8004DailyWriteCap"]["maxGasPerWrite"]["perNetwork"];
+        let in_force: serde_json::Map<String, Value> = crate::erc8004::max_gas::global()
+            .configured()
+            .into_iter()
+            .map(|(network, gas)| (network.to_string(), json!(gas)))
+            .collect();
+        assert_eq!(published, &Value::Object(in_force));
+    }
+
     /// `/config` publishes the override in force, not the default: the same
     /// numbers `Budget::limit_from` gives the bucket, and so the same
     /// `RateLimit-Policy` and the same manifest entry.
@@ -3100,7 +3166,13 @@ mod tests {
         let lookup = |var: &str| vars.get(var).map(|v| v.to_string());
         let policy = stack_policy();
         let admission = Admission::new(&policy, 512, 32, Duration::from_millis(5_000));
-        let doc = document_from(&policy, &admission, None, lookup);
+        let doc = document_from(
+            &policy,
+            &admission,
+            None,
+            &crate::erc8004::max_gas::GasCeilings::from_lookup(lookup),
+            lookup,
+        );
         let budgets = doc["rateLimits"]["budgets"].as_array().unwrap();
         let verify = budgets
             .iter()

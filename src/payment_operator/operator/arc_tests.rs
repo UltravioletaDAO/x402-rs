@@ -19,7 +19,9 @@ use super::{
 use crate::chain::evm::EvmChain;
 use crate::network::Network;
 use crate::payment_operator::abi::{EscrowContract, OperatorContract, OperatorV3Contract};
-use crate::payment_operator::addresses::{canonical_v1, create3, OperatorAddresses};
+use crate::payment_operator::addresses::{
+    canonical_v1, create3, OperatorAddresses, CANONICAL_V1_NETWORKS,
+};
 use crate::payment_operator::autoverify::{self, Verdict};
 use crate::payment_operator::errors::OperatorError;
 use crate::payment_operator::test_rpc::{self, CallAnswer, MockNode, Providers};
@@ -42,25 +44,38 @@ async fn arc(network: Network) -> (MockNode, Providers) {
 }
 
 fn release(network: Network, amount: u128) -> Value {
-    lifecycle_body(
-        "release",
-        &amount.to_string(),
+    paying(
         network,
-        canonical_v1::ESCROW,
-        operator(network),
-        canonical_v1::TOKEN_COLLECTOR,
+        lifecycle_body(
+            "release",
+            &amount.to_string(),
+            network,
+            canonical_v1::ESCROW,
+            operator(network),
+            canonical_v1::TOKEN_COLLECTOR,
+        ),
     )
 }
 
 fn refund(network: Network, amount: u128) -> Value {
-    lifecycle_body(
-        "refundInEscrow",
-        &amount.to_string(),
+    paying(
         network,
-        canonical_v1::ESCROW,
-        operator(network),
-        canonical_v1::TOKEN_COLLECTOR,
+        lifecycle_body(
+            "refundInEscrow",
+            &amount.to_string(),
+            network,
+            canonical_v1::ESCROW,
+            operator(network),
+            canonical_v1::TOKEN_COLLECTOR,
+        ),
     )
+}
+
+/// `body` moving `network`'s payment token ([`payment_token`]): the only one
+/// Robinhood Chain's rail takes.
+fn paying(network: Network, mut body: Value) -> Value {
+    body["payload"]["paymentInfo"]["token"] = json!(payment_token(network).to_string());
+    body
 }
 
 /// Script the escrow's answer for the payment the bodies above describe.
@@ -120,7 +135,7 @@ async fn http(err: &OperatorError) -> (u16, Value, Option<String>) {
 
 #[tokio::test]
 async fn arc_release_encodes_capture() {
-    for network in [Network::Arc, Network::ArcTestnet] {
+    for &network in CANONICAL_V1_NETWORKS {
         let (node, providers) = arc(network).await;
         deployed(&node, network);
         super::forget_operator_code_for_test(network, operator(network));
@@ -146,11 +161,13 @@ async fn arc_release_encodes_capture() {
         assert_eq!(call.paymentInfo.salt, U256::from(0x3039u64));
         // Arc's documented minimum maxFeePerGas: the escrow write is priced by
         // the same floor as an `exact` settle on this chain.
-        assert!(
-            tx.max_fee_per_gas >= 20_000_000_000,
-            "{}",
-            tx.max_fee_per_gas
-        );
+        if matches!(network, Network::Arc | Network::ArcTestnet) {
+            assert!(
+                tx.max_fee_per_gas >= 20_000_000_000,
+                "{}",
+                tx.max_fee_per_gas
+            );
+        }
         // Read first: the operator's code, and nothing else -- no self-check,
         // no state read on a release.
         assert_eq!(node.code_reads(), vec![operator(network)]);
@@ -160,7 +177,7 @@ async fn arc_release_encodes_capture() {
 
 #[tokio::test]
 async fn arc_refund_encodes_void() {
-    for network in [Network::Arc, Network::ArcTestnet] {
+    for &network in CANONICAL_V1_NETWORKS {
         let (node, providers) = arc(network).await;
         escrow_holds(&node, ONE);
         deployed(&node, network);
@@ -384,13 +401,16 @@ fn v3_writes(
     payer: &PrivateKeySigner,
 ) -> [(&'static str, Value); 3] {
     let lifecycle = |action| {
-        lifecycle_body(
-            action,
-            "1000000",
+        paying(
             network,
-            canonical_v1::ESCROW,
-            op,
-            canonical_v1::TOKEN_COLLECTOR,
+            lifecycle_body(
+                action,
+                "1000000",
+                network,
+                canonical_v1::ESCROW,
+                op,
+                canonical_v1::TOKEN_COLLECTOR,
+            ),
         )
     };
     [
@@ -413,6 +433,7 @@ async fn arc_v3_writes_require_operator_code() {
     // The declared operator before it is deployed. A call to an address with
     // no code is mined as a no-op with a successful receipt: release and refund
     // to it must be refused, not reported as settled.
+    // An address without code is read again on every request.
     let declared = operator(network);
     super::forget_operator_code_for_test(network, declared);
     for body in [release(network, ONE), refund(network, ONE)] {
@@ -423,6 +444,7 @@ async fn arc_v3_writes_require_operator_code() {
             "{err:?}"
         );
         assert!(node.sent().is_empty(), "no transaction");
+        assert_eq!(node.code_reads(), vec![declared]);
         let (status, answer, retry_after) = http(&err).await;
         assert_eq!(status, 422);
         assert_eq!(answer["errorReason"], "operator_has_no_code");
@@ -430,61 +452,54 @@ async fn arc_v3_writes_require_operator_code() {
         assert_eq!(retry_after, None);
     }
 
-    // An operator the merchant brings, for all three writes.
-    super::forget_operator_code_for_test(network, UNDECLARED);
-    for (action, body) in v3_writes(network, UNDECLARED, &payer) {
-        node.clear_log();
-        let err = settle(&body, &providers).await.expect_err(action);
-        assert!(
-            matches!(err, OperatorError::OperatorHasNoCode { .. }),
-            "{action}: {err:?}"
-        );
-        assert!(node.sent().is_empty(), "{action}: no transaction");
-        assert_eq!(node.code_reads(), vec![UNDECLARED], "{action}");
-    }
-
     // The node cannot say: retryable 5xx, nothing sent.
     node.fail_reads(true);
-    for (action, body) in v3_writes(network, UNDECLARED, &payer) {
+    for body in [release(network, ONE), refund(network, ONE)] {
         node.clear_log();
-        let err = settle(&body, &providers).await.expect_err(action);
+        let err = settle(&body, &providers).await.expect_err("no answer");
         assert!(
             matches!(err, OperatorError::ChainReadUnavailable(_)),
-            "{action}: {err:?}"
+            "{err:?}"
         );
-        assert!(node.sent().is_empty(), "{action}: no transaction");
+        assert!(node.sent().is_empty(), "no transaction");
         let (status, answer, retry_after) = http(&err).await;
-        assert!((500..600).contains(&status), "{action}: {status}");
+        assert!((500..600).contains(&status), "{status}");
         assert_eq!(answer["retryable"], true);
         assert!(retry_after.is_some());
     }
     node.fail_reads(false);
 
-    // With code there, each write goes out to it.
+    // An operator this facilitator does not declare never gets as far as the
+    // code check, even with code there: all three writes are refused before
+    // any request reaches the node.
     node.set_code(UNDECLARED, vec![0x60, 0x00]);
     for (action, body) in v3_writes(network, UNDECLARED, &payer) {
         node.clear_log();
-        settle(&body, &providers)
-            .await
-            .unwrap_or_else(|e| panic!("{action}: {e:?}"));
-        let sent = node.sent();
-        assert_eq!(sent.len(), 1, "{action}");
-        assert_eq!(sent[0].to, Some(UNDECLARED), "{action}");
+        let err = settle(&body, &providers).await.expect_err(action);
+        assert!(
+            matches!(err, OperatorError::OperatorNotServed { operator, .. } if operator == UNDECLARED),
+            "{action}: {err:?}"
+        );
+        assert!(
+            node.requests().is_empty(),
+            "{action}: {:?}",
+            node.requests()
+        );
     }
-    // Code once seen is not read again.
-    node.clear_log();
-    settle(&release(network, ONE), &providers)
-        .await
-        .expect_err("the declared operator still has no code");
-    settle(&v3_writes(network, UNDECLARED, &payer)[1].1, &providers)
-        .await
-        .expect("release to the deployed operator");
-    assert_eq!(
-        node.code_reads(),
-        vec![declared],
-        "only the one never seen with code"
-    );
-    super::forget_operator_code_for_test(network, UNDECLARED);
+
+    // Deployed, the declared operator gets the write; its code, once seen, is
+    // not read again.
+    deployed(&node, network);
+    for reads in [vec![declared], vec![]] {
+        node.clear_log();
+        settle(&release(network, ONE), &providers)
+            .await
+            .expect("release to the deployed operator");
+        assert_eq!(node.sent().len(), 1);
+        assert_eq!(node.sent()[0].to, Some(declared));
+        assert_eq!(node.code_reads(), reads);
+    }
+    super::forget_operator_code_for_test(network, declared);
 }
 
 #[tokio::test]
@@ -498,6 +513,8 @@ async fn arc_v3_write_target_must_be_the_payment_operator() {
     let payer = PrivateKeySigner::from_bytes(&B256::repeat_byte(0x77)).unwrap();
     let op = operator(network);
 
+    // The call going anywhere but the declared operator is refused before any
+    // request: the address it would go to is not one this facilitator serves.
     for (action, body) in v3_writes(network, op, &payer) {
         for key in ["operatorAddress", "authorizeAddress"] {
             let mut body = body.clone();
@@ -505,18 +522,369 @@ async fn arc_v3_write_target_must_be_the_payment_operator() {
             node.clear_log();
             let err = settle(&body, &providers).await.expect_err(action);
             assert!(
-                matches!(err, OperatorError::OperatorMismatch { expected, actual }
-                    if expected == op && actual == UNDECLARED),
+                matches!(err, OperatorError::OperatorNotServed { operator, .. }
+                    if operator == UNDECLARED),
                 "{action} via {key}: {err:?}"
             );
-            assert!(node.sent().is_empty(), "{action} via {key}: no transaction");
             assert!(
-                node.reads().is_empty() && node.code_reads().is_empty(),
-                "{action} via {key}: refused before any read"
+                node.requests().is_empty(),
+                "{action} via {key}: refused before any request, {:?}",
+                node.requests()
             );
             let (status, answer, _) = http(&err).await;
             assert_eq!(status, 400);
-            assert_eq!(answer["errorReason"], "operator_mismatch");
+            assert_eq!(answer["errorReason"], "escrow_operator_not_served");
+        }
+    }
+    // Between two operators that are both declared, the call still has to go
+    // to paymentInfo.operator itself.
+    let err = super::assert_v3_target_is_operator(UNDECLARED, op).unwrap_err();
+    assert!(
+        matches!(err, OperatorError::OperatorMismatch { expected, actual }
+            if expected == op && actual == UNDECLARED),
+        "{err:?}"
+    );
+    let (status, answer, _) = http(&err).await;
+    assert_eq!(status, 400);
+    assert_eq!(answer["errorReason"], "operator_mismatch");
+}
+
+// ---------------------------------------------------------------------------
+// Only the operators a network declares; on Robinhood Chain, only USDG
+// ---------------------------------------------------------------------------
+
+/// Have the node estimate every operator write (`authorize`, `capture`,
+/// `void`) at `gas`.
+fn estimate_every_write_at(node: &MockNode, gas: u64) {
+    for selector in [
+        OperatorContract::authorizeCall::SELECTOR,
+        OperatorV3Contract::captureCall::SELECTOR,
+        OperatorV3Contract::voidCall::SELECTOR,
+    ] {
+        node.estimate_gas_for(selector, gas);
+    }
+}
+
+/// `body` naming `op` in one of the places a request names its operator.
+fn naming(mut body: Value, place: &str, op: Address) -> Value {
+    match place {
+        "paymentInfo.operator" => body["payload"]["paymentInfo"]["operator"] = json!(op),
+        key => body["paymentRequirements"]["extra"][key] = json!(op),
+    }
+    body
+}
+
+/// The Robinhood counterpart of `arc_v3_writes_require_operator_code`: an
+/// operator Robinhood Chain does not declare is refused for all three writes
+/// before anything reaches the node -- even with code at it, and with writes
+/// the node would estimate high -- wherever the request names it.
+#[tokio::test]
+async fn robinhood_refuses_an_operator_it_does_not_declare_before_the_chain() {
+    let network = Network::Robinhood;
+    let (node, providers) = arc(network).await;
+    escrow_holds(&node, ONE);
+    deployed(&node, network);
+    super::forget_operator_code_for_test(network, UNDECLARED);
+    node.set_code(UNDECLARED, vec![0x60, 0x00]);
+    estimate_every_write_at(&node, 25_000_000);
+    let payer = PrivateKeySigner::from_bytes(&B256::repeat_byte(0x66)).unwrap();
+    let em = operator(network);
+
+    let mut requests = Vec::new();
+    for (action, body) in v3_writes(network, UNDECLARED, &payer) {
+        requests.push((action, "everywhere", body));
+    }
+    for (action, body) in v3_writes(network, em, &payer) {
+        for place in [
+            "paymentInfo.operator",
+            "operatorAddress",
+            "authorizeAddress",
+        ] {
+            requests.push((action, place, naming(body.clone(), place, UNDECLARED)));
+        }
+    }
+    for (action, place, body) in requests {
+        node.clear_log();
+        let err = settle(&body, &providers)
+            .await
+            .expect_err("an operator Robinhood Chain does not declare");
+        assert!(
+            matches!(&err, OperatorError::OperatorNotServed { operator, network }
+                if *operator == UNDECLARED && network == "robinhood"),
+            "{action} via {place}: {err:?}"
+        );
+        assert!(
+            node.requests().is_empty(),
+            "{action} via {place}: nothing reaches the node, {:?}",
+            node.requests()
+        );
+        let (status, answer, retry_after) = http(&err).await;
+        assert_eq!(status, 400, "{action} via {place}");
+        assert_eq!(answer["errorReason"], "escrow_operator_not_served");
+        assert_eq!(answer["retryable"], false);
+        assert_eq!(retry_after, None);
+    }
+    super::forget_operator_code_for_test(network, UNDECLARED);
+}
+
+/// Execution Market's operator on Robinhood Chain moves USDG only: any other
+/// token -- an arbitrary contract, Arc's USDC, the testnet's USDG -- is
+/// refused for all three writes before anything reaches the node.
+#[tokio::test]
+async fn robinhood_refuses_a_token_other_than_usdg_before_the_chain() {
+    let network = Network::Robinhood;
+    let (node, providers) = arc(network).await;
+    escrow_holds(&node, ONE);
+    deployed(&node, network);
+    estimate_every_write_at(&node, 25_000_000);
+    let payer = PrivateKeySigner::from_bytes(&B256::repeat_byte(0x67)).unwrap();
+    let em = operator(network);
+    let usdg_testnet = match crate::network::USDGDeployment::by_network(Network::RobinhoodTestnet)
+        .unwrap()
+        .address()
+    {
+        crate::types::MixedAddress::Evm(address) => address.0,
+        other => panic!("{other}"),
+    };
+    let others = [
+        address!("3333333333333333333333333333333333333333"),
+        payment_token(Network::Arc),
+        usdg_testnet,
+    ];
+    for token in others {
+        node.set_code(token, vec![0x60, 0x00]);
+        for (action, mut body) in v3_writes(network, em, &payer) {
+            body["payload"]["paymentInfo"]["token"] = json!(token);
+            node.clear_log();
+            let err = settle(&body, &providers)
+                .await
+                .expect_err("a token other than USDG");
+            assert!(
+                matches!(&err, OperatorError::TokenNotServed { token: t, network }
+                    if *t == token && network == "robinhood"),
+                "{action} with {token}: {err:?}"
+            );
+            assert!(
+                node.requests().is_empty(),
+                "{action} with {token}: nothing reaches the node, {:?}",
+                node.requests()
+            );
+            let (status, answer, retry_after) = http(&err).await;
+            assert_eq!(status, 400, "{action} with {token}");
+            assert_eq!(answer["errorReason"], "escrow_token_not_served");
+            assert_eq!(answer["retryable"], false);
+            assert_eq!(retry_after, None);
+        }
+    }
+}
+
+/// What the rail serves on Robinhood Chain goes out as before: Execution
+/// Market's operator, USDG, all three writes from the pinned signer.
+#[tokio::test]
+async fn robinhood_relays_execution_markets_operator_with_usdg() {
+    let network = Network::Robinhood;
+    let (node, providers) = arc(network).await;
+    escrow_holds(&node, ONE);
+    let em = operator(network);
+    deploy_v3_operator(&node, em, canonical_v1::ESCROW);
+    autoverify::set_for_test(network, em, None);
+    let pinned = test_rpc::evm(&providers, network).pinned_signer();
+    let payer = PrivateKeySigner::from_bytes(&B256::repeat_byte(0x68)).unwrap();
+    let usdg = crate::payment_operator::addresses::served_escrow_token(network);
+    assert_eq!(
+        usdg,
+        Some(address!("5fc5360D0400a0Fd4f2af552ADD042D716F1d168"))
+    );
+
+    for (action, body) in v3_writes(network, em, &payer) {
+        assert_eq!(
+            body["payload"]["paymentInfo"]["token"],
+            json!(usdg.unwrap().to_string())
+        );
+        node.clear_log();
+        settle(&body, &providers)
+            .await
+            .unwrap_or_else(|e| panic!("{action}: {e:?}"));
+        let sent = node.sent();
+        assert_eq!(sent.len(), 1, "{action}");
+        assert_eq!(sent[0].to, Some(em), "{action}");
+        assert_eq!(sent[0].from, pinned, "{action}");
+        let selector = match action {
+            "authorize" => OperatorContract::authorizeCall::SELECTOR,
+            "release" => OperatorV3Contract::captureCall::SELECTOR,
+            _ => OperatorV3Contract::voidCall::SELECTOR,
+        };
+        assert_eq!(sent[0].input[..4], selector, "{action}");
+    }
+    autoverify::set_for_test(network, em, None);
+}
+
+/// The operator rule holds on every escrow network and the token rule on
+/// Robinhood Chain only: an operator a network does not declare is refused
+/// there whatever the token; each declared one passes with the network's
+/// token, and with any other token everywhere but Robinhood Chain.
+#[test]
+fn every_escrow_network_holds_the_operator_and_only_robinhood_the_token() {
+    use crate::payment_operator::addresses::{
+        escrow_for_network, served_escrow_token, token_collector_for_network, ESCROW_NETWORKS,
+        ONE_TOKEN_ESCROW_NETWORKS,
+    };
+    use crate::payment_operator::types::EscrowLifecyclePayload;
+    assert_eq!(ONE_TOKEN_ESCROW_NETWORKS, &[Network::Robinhood]);
+    let any_token = address!("3333333333333333333333333333333333333333");
+    let check = |network: Network, op: Address, token: Address| {
+        let mut body = lifecycle_body(
+            "release",
+            "1000000",
+            network,
+            escrow_for_network(network).unwrap_or(UNDECLARED),
+            op,
+            token_collector_for_network(network).unwrap_or(UNDECLARED),
+        );
+        body["payload"]["paymentInfo"]["token"] = json!(token);
+        let lifecycle: EscrowLifecyclePayload =
+            serde_json::from_value(body["payload"].clone()).unwrap();
+        let extra: EscrowExtra =
+            serde_json::from_value(body["paymentRequirements"]["extra"].clone()).unwrap();
+        super::assert_served_on_network(network, &extra, &lifecycle.payment_info)
+    };
+    assert_eq!(ESCROW_NETWORKS.len(), 14);
+    for &network in ESCROW_NETWORKS {
+        let token = served_escrow_token(network).unwrap_or(any_token);
+        let verdict = check(network, UNDECLARED, token);
+        assert!(
+            matches!(&verdict, Err(OperatorError::OperatorNotServed { operator, .. })
+                if *operator == UNDECLARED),
+            "{network}: {verdict:?}"
+        );
+        let declared = OperatorAddresses::for_network(network)
+            .unwrap()
+            .payment_operators;
+        assert!(!declared.is_empty(), "{network}");
+        for op in declared {
+            let verdict = check(network, op, token);
+            assert!(verdict.is_ok(), "{network} {op}: {verdict:?}");
+            let verdict = check(network, op, any_token);
+            if network == Network::Robinhood {
+                assert!(
+                    matches!(&verdict, Err(OperatorError::TokenNotServed { token, .. })
+                        if *token == any_token),
+                    "{verdict:?}"
+                );
+            } else {
+                assert!(verdict.is_ok(), "{network} {op}: {verdict:?}");
+            }
+        }
+        let expected = (network == Network::Robinhood).then(|| payment_token(network));
+        assert_eq!(served_escrow_token(network), expected, "{network}");
+    }
+    // A network with no escrow is refused as the flows refuse it.
+    let verdict = check(Network::HyperEvm, UNDECLARED, any_token);
+    assert!(
+        matches!(verdict, Err(OperatorError::UnsupportedNetwork(_))),
+        "{verdict:?}"
+    );
+}
+
+/// End to end on every escrow network -- the per-chain tables, SKALE's
+/// CREATE3 set and the canonical v1 set: an operator the network does not
+/// declare is refused for all three writes before any request reaches the
+/// node, even with code at it; each operator it declares gets them as before,
+/// from the pinned signer.
+#[tokio::test]
+async fn every_escrow_network_relays_only_the_operators_it_declares() {
+    use crate::payment_operator::addresses::{is_canonical_v1_network, ESCROW_NETWORKS};
+    let payer = PrivateKeySigner::from_bytes(&B256::repeat_byte(0x69)).unwrap();
+    for &network in ESCROW_NETWORKS {
+        crate::writer_lease::set_writer_for_test(true);
+        let node = MockNode::start(network).await;
+        let eip1559 = !matches!(network, Network::SkaleBase);
+        let provider = test_rpc::provider(network, &node, eip1559).await;
+        let providers = Providers::one(network, provider);
+        let pinned = test_rpc::evm(&providers, network).pinned_signer();
+        let addrs = OperatorAddresses::for_network(network).unwrap();
+        let canonical = is_canonical_v1_network(network);
+        let (escrow, collector) = (addrs.escrow, addrs.token_collector);
+        let writes = |op: Address| -> [(&'static str, Value); 3] {
+            if canonical {
+                return v3_writes(network, op, &payer);
+            }
+            let lifecycle =
+                |action| lifecycle_body(action, "1000000", network, escrow, op, collector);
+            [
+                ("authorize", authorize_body(network, escrow, op, collector)),
+                ("release", lifecycle("release")),
+                ("refundInEscrow", lifecycle("refundInEscrow")),
+            ]
+        };
+
+        assert!(!addrs.payment_operators.contains(&UNDECLARED));
+        node.set_code(UNDECLARED, vec![0x60, 0x00]);
+        for (action, body) in writes(UNDECLARED) {
+            node.clear_log();
+            let err = settle(&body, &providers)
+                .await
+                .expect_err("an operator the network does not declare");
+            assert!(
+                matches!(&err, OperatorError::OperatorNotServed { operator, .. }
+                    if *operator == UNDECLARED),
+                "{network} {action}: {err:?}"
+            );
+            assert!(
+                node.requests().is_empty(),
+                "{network} {action}: {:?}",
+                node.requests()
+            );
+            let (status, answer, _) = http(&err).await;
+            assert_eq!(status, 400, "{network} {action}");
+            assert_eq!(answer["errorReason"], "escrow_operator_not_served");
+        }
+        // Named in one of the places that count, the other naming a declared
+        // operator: refused the same way.
+        for (action, body) in writes(addrs.payment_operators[0]) {
+            for place in [
+                "paymentInfo.operator",
+                "operatorAddress",
+                "authorizeAddress",
+            ] {
+                node.clear_log();
+                let err = settle(&naming(body.clone(), place, UNDECLARED), &providers)
+                    .await
+                    .expect_err("one place names an operator the network does not declare");
+                assert!(
+                    matches!(&err, OperatorError::OperatorNotServed { operator, .. }
+                        if *operator == UNDECLARED),
+                    "{network} {action} via {place}: {err:?}"
+                );
+                assert!(
+                    node.requests().is_empty(),
+                    "{network} {action} via {place}: {:?}",
+                    node.requests()
+                );
+            }
+        }
+
+        if canonical {
+            escrow_holds(&node, ONE);
+        }
+        for &op in &addrs.payment_operators {
+            if canonical {
+                deploy_v3_operator(&node, op, canonical_v1::ESCROW);
+                autoverify::set_for_test(network, op, None);
+            }
+            for (action, body) in writes(op) {
+                node.clear_log();
+                settle(&body, &providers)
+                    .await
+                    .unwrap_or_else(|e| panic!("{network} {action} to {op}: {e:?}"));
+                let sent = node.sent();
+                assert_eq!(sent.len(), 1, "{network} {action} to {op}");
+                assert_eq!(sent[0].to, Some(op), "{network} {action}");
+                assert_eq!(sent[0].from, pinned, "{network} {action}");
+            }
+            if canonical {
+                autoverify::set_for_test(network, op, None);
+            }
         }
     }
 }
@@ -545,7 +913,7 @@ fn state_query(network: Network, escrow: Address, collector: Address) -> String 
 
 #[tokio::test]
 async fn arc_escrow_state_query_uses_generation_d() {
-    for network in [Network::Arc, Network::ArcTestnet] {
+    for &network in CANONICAL_V1_NETWORKS {
         let (node, providers) = arc(network).await;
         node.on_call(
             canonical_v1::ESCROW,
@@ -672,7 +1040,7 @@ fn extra(escrow: Address, operator: Address, collector: Address) -> EscrowExtra 
 async fn arc_rejects_create3_and_generation_c_addresses() {
     let forbidden: Vec<Address> = create3_set().into_iter().chain(GENERATION_C).collect();
 
-    for network in [Network::Arc, Network::ArcTestnet] {
+    for &network in CANONICAL_V1_NETWORKS {
         // Nothing the code declares for Arc is one of them.
         let addrs = OperatorAddresses::for_network(network).unwrap();
         let mut declared = vec![
@@ -735,13 +1103,16 @@ async fn arc_rejects_create3_and_generation_c_addresses() {
 
         // End to end: a release naming the CREATE3 escrow sends nothing.
         let (node, providers) = arc(network).await;
-        let body = lifecycle_body(
-            "release",
-            "1000000",
+        let body = paying(
             network,
-            create3::ESCROW,
-            op,
-            create3::TOKEN_COLLECTOR,
+            lifecycle_body(
+                "release",
+                "1000000",
+                network,
+                create3::ESCROW,
+                op,
+                create3::TOKEN_COLLECTOR,
+            ),
         );
         let err = settle(&body, &providers).await.expect_err("refused");
         assert!(
@@ -756,8 +1127,9 @@ async fn arc_rejects_create3_and_generation_c_addresses() {
 // authorize: the payer's EOA signature, and a verified operator
 // ---------------------------------------------------------------------------
 
-/// An authorization of Arc USDC on `network` by `payer`, signed by `signer`
-/// under the domain of `signed_for` (normally the network it is sent to).
+/// An authorization of the network's payment token (USDC on Arc, USDG on
+/// Robinhood Chain) on `network` by `payer`, signed by `signer` under the
+/// domain of `signed_for` (normally the network it is sent to).
 fn signed_authorize(
     network: Network,
     signed_for: Network,
@@ -781,10 +1153,7 @@ fn signed_authorize_to(
         op,
         canonical_v1::TOKEN_COLLECTOR,
     );
-    let usdc = crate::network::USDCDeployment::by_network(network)
-        .unwrap()
-        .address();
-    body["payload"]["paymentInfo"]["token"] = json!(usdc.to_string());
+    body["payload"]["paymentInfo"]["token"] = json!(payment_token(network).to_string());
     body["payload"]["authorization"]["from"] = json!(payer.address());
     let payload: crate::payment_operator::types::EscrowPayload =
         serde_json::from_value(body["payload"].clone()).unwrap();
@@ -795,15 +1164,38 @@ fn signed_authorize_to(
     body
 }
 
+/// The token a generation-D payment on `network` moves: the network's USDC,
+/// or USDG where there is no USDC (Robinhood Chain).
+fn payment_token(network: Network) -> Address {
+    let token = crate::network::USDCDeployment::by_network(network)
+        .map(|d| d.address())
+        .or_else(|| crate::network::USDGDeployment::by_network(network).map(|d| d.address()))
+        .unwrap_or_else(|| panic!("{network} has neither USDC nor USDG"));
+    match token {
+        crate::types::MixedAddress::Evm(address) => address.0,
+        other => panic!("{network}: not an EVM token: {other}"),
+    }
+}
+
 /// What the canonical collector verifies, computed from the chain side's
 /// definitions: `find_known_eip712_metadata` for the domain and
 /// `payer_agnostic_hash` for the nonce (checked against the escrow's own
 /// `getHash` in `arc_chain_tests`).
 fn receive_with_authorization_digest(network: Network, info: &ContractPaymentInfo) -> B256 {
-    use alloy::sol_types::{eip712_domain, SolStruct};
-    let chain_id = EvmChain::try_from(network).unwrap().chain_id;
     let (name, version) =
         crate::chain::evm::find_known_eip712_metadata(network, &info.token).expect("known token");
+    digest_under(network, name, version, info)
+}
+
+/// [`receive_with_authorization_digest`] under a domain named by hand.
+fn digest_under(
+    network: Network,
+    name: String,
+    version: String,
+    info: &ContractPaymentInfo,
+) -> B256 {
+    use alloy::sol_types::{eip712_domain, SolStruct};
+    let chain_id = EvmChain::try_from(network).unwrap().chain_id;
     let domain = eip712_domain! {
         name: name,
         version: version,
@@ -860,6 +1252,76 @@ async fn arc_authorize_requires_the_payers_eoa_signature() {
         );
         assert!(node.sent().is_empty());
         assert_eq!(err.http_answer().unwrap().status, 400);
+    }
+    autoverify::set_for_test(network, operator(network), None);
+}
+
+/// Robinhood Chain moves USDG, whose ERC-3009 domain comes from the static
+/// table (`Global Dollar` / `1`, its `version()` reverts on chain): the
+/// payer's EOA signature under that domain and chain is authorized against the
+/// declared operator from the pinned signer; one signed for Arc, or by anyone
+/// else, is refused before anything is sent.
+#[tokio::test]
+async fn robinhood_authorize_takes_the_payers_usdg_signature() {
+    let network = Network::Robinhood;
+    let usdg = address!("5fc5360D0400a0Fd4f2af552ADD042D716F1d168");
+    assert_eq!(payment_token(network), usdg);
+    assert_eq!(
+        crate::chain::evm::find_known_eip712_metadata(network, &usdg),
+        Some(("Global Dollar".to_string(), "1".to_string()))
+    );
+    let (node, providers) = arc(network).await;
+    deploy_v3_operator(&node, operator(network), canonical_v1::ESCROW);
+    autoverify::set_for_test(network, operator(network), None);
+    let pinned = test_rpc::evm(&providers, network).pinned_signer();
+    let payer = PrivateKeySigner::from_bytes(&B256::repeat_byte(0x36)).unwrap();
+    let stranger = PrivateKeySigner::from_bytes(&B256::repeat_byte(0x37)).unwrap();
+
+    let good = signed_authorize(network, network, &payer, &payer);
+    assert_eq!(
+        good["payload"]["paymentInfo"]["token"],
+        json!(usdg.to_string())
+    );
+    settle(&good, &providers)
+        .await
+        .expect("an EOA authorization of USDG by the payer");
+    let sent = node.sent();
+    assert_eq!(sent.len(), 1);
+    assert_eq!(
+        sent[0].input[..4],
+        OperatorContract::authorizeCall::SELECTOR
+    );
+    assert_eq!(sent[0].to, Some(operator(network)));
+    assert_eq!(
+        sent[0].from, pinned,
+        "authorize leaves from the pinned signer"
+    );
+
+    let payload: crate::payment_operator::types::EscrowPayload =
+        serde_json::from_value(good["payload"].clone()).unwrap();
+    let info = ContractPaymentInfo::from_escrow_payload(&payload);
+    let resigned = |digest: B256| {
+        let mut body = good.clone();
+        let signature = payer.sign_hash_sync(&digest).unwrap();
+        body["payload"]["signature"] = json!(Bytes::from(signature.as_bytes().to_vec()));
+        body
+    };
+    let global_dollar = |version: &str| ("Global Dollar".to_string(), version.to_string());
+    let (name, version) = global_dollar("1");
+    let signed_for_arc = resigned(digest_under(Network::Arc, name, version, &info));
+    let (name, version) = global_dollar("2");
+    let another_version = resigned(digest_under(network, name, version, &info));
+    let someone_else = signed_authorize(network, network, &payer, &stranger);
+    for bad in [signed_for_arc, another_version, someone_else] {
+        node.clear_log();
+        let err = settle(&bad, &providers)
+            .await
+            .expect_err("not the payer's signature for Robinhood USDG");
+        assert!(
+            matches!(err, OperatorError::AuthorizationSignatureInvalid(_)),
+            "{err:?}"
+        );
+        assert!(node.sent().is_empty());
     }
     autoverify::set_for_test(network, operator(network), None);
 }

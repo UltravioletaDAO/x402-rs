@@ -60,13 +60,15 @@ pub const DEFAULT_DAILY_WRITE_CAP: u32 = 1000;
 
 /// Built-in limits that differ from [`DEFAULT_DAILY_WRITE_CAP`]. Every value,
 /// like the default, is several times the busiest day of write traffic
-/// measured on that network; `arc` and `arc-testnet` have none yet and start
-/// low.
+/// measured on that network; `arc`, `arc-testnet`, `robinhood` and
+/// `robinhood-testnet` have none yet and start low.
 const BUILT_IN_DAILY_WRITE_CAPS: &[(Network, u32)] = &[
     (Network::Ethereum, 100),
     (Network::Solana, 150),
     (Network::Arc, 100),
     (Network::ArcTestnet, 100),
+    (Network::Robinhood, 100),
+    (Network::RobinhoodTestnet, 100),
 ];
 
 const SECONDS_PER_DAY: u64 = 86_400;
@@ -599,6 +601,8 @@ mod tests {
         assert_eq!(built_in.limit(&Network::Base), DEFAULT_DAILY_WRITE_CAP);
         assert_eq!(built_in.limit(&Network::Arc), 100);
         assert_eq!(built_in.limit(&Network::ArcTestnet), 100);
+        assert_eq!(built_in.limit(&Network::Robinhood), 100);
+        assert_eq!(built_in.limit(&Network::RobinhoodTestnet), 100);
         assert_eq!(built_in.limit(&Network::Ethereum), 100);
         assert_eq!(built_in.limit(&Network::Solana), 150);
 

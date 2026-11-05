@@ -118,6 +118,10 @@ pub struct RegisterJob {
     pub owner: Option<MixedAddress>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    /// The stable `errorCode` of a refusal the run recorded
+    /// ([`set_error_code`]): today only `erc8004_gas_over_limit`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error_code: Option<&'static str>,
     /// In-flight de-dup key; `None` when the request was not eligible for
     /// de-dup (no `agentUri` and no `recipient`). Not serialized.
     #[serde(skip)]
@@ -258,6 +262,7 @@ pub fn begin(network: Network, key: Option<String>) -> BeginOutcome {
         transfer_transaction: None,
         owner: None,
         error: None,
+        error_code: None,
         key: key.clone(),
         updated_at: now(),
     };
@@ -282,6 +287,16 @@ pub fn set_mint_confirmed(
         j.transaction = Some(transaction);
         j.agent_id = Some(agent_id);
         j.owner = Some(owner);
+        j.updated_at = now();
+    }
+}
+
+/// Record the stable `errorCode` of the refusal that ends this job, for the
+/// synchronous answer and for a poll.
+pub fn set_error_code(job_id: &str, code: &'static str) {
+    let mut g = STORE.lock().unwrap();
+    if let Some(j) = g.jobs.get_mut(job_id) {
+        j.error_code = Some(code);
         j.updated_at = now();
     }
 }

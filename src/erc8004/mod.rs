@@ -25,6 +25,7 @@
 //! - Scroll
 //! - SKALE Base Mainnet (gasless L3)
 //! - Arc Mainnet (Circle; gas is paid in USDC)
+//! - Robinhood Chain (Arbitrum Orbit; gas is paid in ETH)
 //!
 //! ## EVM Testnets
 //! - Ethereum Sepolia
@@ -36,6 +37,7 @@
 //! - Avalanche Fuji
 //! - SKALE Base Sepolia
 //! - Arc Testnet
+//! - Robinhood Chain Testnet
 //!
 //! ## Solana (QuantuLabs 8004-solana + ATOM Engine)
 //! - Solana Mainnet
@@ -58,6 +60,7 @@
 mod abi;
 pub mod agent_uri;
 pub mod daily_cap;
+pub mod max_gas;
 pub mod proof;
 pub mod register_jobs;
 pub mod relay;
@@ -92,8 +95,9 @@ pub struct Erc8004Contracts {
 /// Mainnet ValidationRegistry proxy, deployed after the identity/reputation pair.
 ///
 /// Verified live via `eth_getCode` on Ethereum, Base, Polygon, Arbitrum, Optimism,
-/// Celo, BSC, Monad, Avalanche and Scroll (2026-08-21), and on Arc (2026-09-22).
-/// SKALE Base has no code at this address, so it stays `None` there.
+/// Celo, BSC, Monad, Avalanche and Scroll (2026-08-21), on Arc (2026-09-22) and
+/// on Robinhood Chain (2026-11-04). SKALE Base has no code at this address, so it
+/// stays `None` there.
 const MAINNET_VALIDATION_REGISTRY: Address =
     alloy::primitives::address!("8004Cc8439f36fd5F9F049D9fF86523Df6dAAB58");
 
@@ -199,6 +203,21 @@ pub const ARC_MAINNET_CONTRACTS: Erc8004Contracts = Erc8004Contracts {
     validation_registry: Some(MAINNET_VALIDATION_REGISTRY),
 };
 
+// Robinhood Chain (Arbitrum Orbit, chain 4663) - the canonical registries; gas is
+// paid in ETH. Writes take the path ERC-8004 writes take on every EIP-1559 chain
+// (`send_call_estimated`, the wallet's default signer), on the provider and nonce
+// manager that settle USDG there. Read on 2026-11-04
+// against rpc.mainnet.chain.robinhood.com: all three are 130-byte proxies,
+// getVersion() answers 2.0.0 on each, and the identity and reputation proxies
+// point at the EIP-1967 implementations Base runs. The identity registry has the
+// shape the owner lookup assumes on every other chain (totalSupply() reverts, not
+// ERC721Enumerable) and Multicall3 is deployed.
+pub const ROBINHOOD_MAINNET_CONTRACTS: Erc8004Contracts = Erc8004Contracts {
+    identity_registry: alloy::primitives::address!("8004A169FB4a3325136EB29fA0ceB6D2e539a432"),
+    reputation_registry: alloy::primitives::address!("8004BAa17C55a88189AE136b182e5fdA19dE9b63"),
+    validation_registry: Some(MAINNET_VALIDATION_REGISTRY),
+};
+
 // ============================================================================
 // Testnet Contracts - All use same testnet addresses
 // ============================================================================
@@ -276,6 +295,18 @@ pub const ARC_TESTNET_CONTRACTS: Erc8004Contracts = Erc8004Contracts {
     )),
 };
 
+// Robinhood Chain Testnet (chain 46630) - the canonical testnet registries.
+// Read on 2026-11-04 against rpc.testnet.chain.robinhood.com: 130-byte proxies,
+// getVersion() = 2.0.0, identity and reputation on the implementations Base
+// Sepolia runs, and the validation registry is deployed too.
+pub const ROBINHOOD_TESTNET_CONTRACTS: Erc8004Contracts = Erc8004Contracts {
+    identity_registry: alloy::primitives::address!("8004A818BFB912233c491871b3d84c89A494BD9e"),
+    reputation_registry: alloy::primitives::address!("8004B663056A597Dffe9eCcC1965A193B7388713"),
+    validation_registry: Some(alloy::primitives::address!(
+        "8004Cb1BF31DAf7788923b405b754f57acEB4272"
+    )),
+};
+
 /// Get ERC-8004 contract addresses for a network
 pub fn get_contracts(network: &Network) -> Option<Erc8004Contracts> {
     match network {
@@ -292,6 +323,7 @@ pub fn get_contracts(network: &Network) -> Option<Erc8004Contracts> {
         Network::Scroll => Some(SCROLL_MAINNET_CONTRACTS),
         Network::SkaleBase => Some(SKALE_BASE_MAINNET_CONTRACTS),
         Network::Arc => Some(ARC_MAINNET_CONTRACTS),
+        Network::Robinhood => Some(ROBINHOOD_MAINNET_CONTRACTS),
         // Testnets
         Network::EthereumSepolia => Some(ETHEREUM_SEPOLIA_CONTRACTS),
         Network::BaseSepolia => Some(BASE_SEPOLIA_CONTRACTS),
@@ -302,6 +334,7 @@ pub fn get_contracts(network: &Network) -> Option<Erc8004Contracts> {
         Network::AvalancheFuji => Some(AVALANCHE_FUJI_CONTRACTS),
         Network::SkaleBaseSepolia => Some(SKALE_BASE_SEPOLIA_CONTRACTS),
         Network::ArcTestnet => Some(ARC_TESTNET_CONTRACTS),
+        Network::RobinhoodTestnet => Some(ROBINHOOD_TESTNET_CONTRACTS),
         _ => None,
     }
 }
@@ -327,6 +360,7 @@ pub fn supported_networks() -> Vec<Network> {
         Network::Scroll,
         Network::SkaleBase,
         Network::Arc,
+        Network::Robinhood,
         // EVM Testnets
         Network::EthereumSepolia,
         Network::BaseSepolia,
@@ -337,6 +371,7 @@ pub fn supported_networks() -> Vec<Network> {
         Network::AvalancheFuji,
         Network::SkaleBaseSepolia,
         Network::ArcTestnet,
+        Network::RobinhoodTestnet,
         // Solana (QuantuLabs 8004-solana + ATOM Engine)
         Network::Solana,
         Network::SolanaDevnet,
@@ -516,6 +551,41 @@ mod tests {
         }
     }
 
+    /// Robinhood Chain runs the canonical registries on both networks, all
+    /// three of them, served under its v1 name.
+    ///
+    /// Each address was read with `eth_getCode` against the chain's public RPC
+    /// (2026-11-04): a proxy whose identity and reputation implementations are
+    /// the ones Base and Base Sepolia run. The validation registry exists on
+    /// both, so neither side may be `None`.
+    #[test]
+    fn robinhood_uses_the_canonical_registries_on_both_networks() {
+        for (network, canonical, name) in [
+            (Network::Robinhood, ETHEREUM_MAINNET_CONTRACTS, "robinhood"),
+            (
+                Network::RobinhoodTestnet,
+                ETHEREUM_SEPOLIA_CONTRACTS,
+                "robinhood-testnet",
+            ),
+        ] {
+            assert!(is_erc8004_supported(&network), "{network} must be served");
+            let contracts = get_contracts(&network).unwrap();
+            assert_eq!(contracts.identity_registry, canonical.identity_registry);
+            assert_eq!(contracts.reputation_registry, canonical.reputation_registry);
+            assert!(contracts.validation_registry.is_some());
+            assert_eq!(contracts.validation_registry, canonical.validation_registry);
+            assert!(supported_networks().contains(&network));
+            assert!(supported_network_names().contains(&name.to_string()));
+            // What the routes parse: the path segment through `FromStr`, a
+            // request body through serde. Neither takes a CAIP-2 id.
+            assert_eq!(name.parse::<Network>().unwrap(), network);
+            assert_eq!(
+                serde_json::from_value::<Network>(serde_json::json!(name)).unwrap(),
+                network
+            );
+        }
+    }
+
     #[test]
     fn test_all_mainnets_use_deterministic_addresses() {
         let mainnet_networks = vec![
@@ -531,6 +601,7 @@ mod tests {
             Network::Scroll,
             Network::SkaleBase,
             Network::Arc,
+            Network::Robinhood,
         ];
 
         for network in mainnet_networks {
@@ -565,6 +636,7 @@ mod tests {
             Network::AvalancheFuji,
             Network::SkaleBaseSepolia,
             Network::ArcTestnet,
+            Network::RobinhoodTestnet,
         ];
 
         for network in testnet_networks {
@@ -606,21 +678,21 @@ mod tests {
     #[test]
     fn the_supported_network_count_matches_what_openapi_advertises() {
         let networks = supported_networks();
-        assert_eq!(networks.len(), 23, "openapi.rs advertises 23 networks");
+        assert_eq!(networks.len(), 25, "openapi.rs advertises 25 networks");
 
         let solana = networks
             .iter()
             .filter(|n| matches!(n, Network::Solana | Network::SolanaDevnet))
             .count();
         assert_eq!(solana, 2, "Solana mainnet + devnet are part of the count");
-        assert_eq!(networks.len() - solana, 21, "21 EVM networks");
+        assert_eq!(networks.len() - solana, 23, "23 EVM networks");
     }
 
     /// Every network, by name, and nothing else.
     ///
     /// This test never ran until 2.37.0: its `#[test]` had been duplicated onto
     /// the test above, and it went on asserting 20 while the list held 21.
-    /// Twenty-three distinct `contains` plus a length of 23 pin the exact set.
+    /// Twenty-five distinct `contains` plus a length of 25 pin the exact set.
     #[test]
     fn test_supported_networks_list() {
         let networks = supported_networks();
@@ -652,8 +724,11 @@ mod tests {
         // Arc
         assert!(networks.contains(&Network::Arc));
         assert!(networks.contains(&Network::ArcTestnet));
-        // Total count: 17 EVM + 2 SKALE + 2 Arc + 2 Solana = 23
-        assert_eq!(networks.len(), 23);
+        // Robinhood Chain
+        assert!(networks.contains(&Network::Robinhood));
+        assert!(networks.contains(&Network::RobinhoodTestnet));
+        // Total count: 17 EVM + 2 SKALE + 2 Arc + 2 Robinhood + 2 Solana = 25
+        assert_eq!(networks.len(), 25);
     }
 
     #[test]
@@ -686,7 +761,150 @@ mod tests {
         // Arc names
         assert!(names.contains(&"arc".to_string()));
         assert!(names.contains(&"arc-testnet".to_string()));
-        assert_eq!(names.len(), 23);
+        // Robinhood Chain names
+        assert!(names.contains(&"robinhood".to_string()));
+        assert!(names.contains(&"robinhood-testnet".to_string()));
+        assert_eq!(names.len(), 25);
+    }
+
+    /// Every ERC-8004 count and network list typed by hand in a published
+    /// document states what `supported_networks()` serves.
+    ///
+    /// Adding Robinhood Chain moved them in seven files: the landing (markup
+    /// and both dictionaries), `/erc8004`, `llms.txt`, `skill.md`, `auth.md`
+    /// and the two agent cards. Until 2.56.0 only the landing's title and
+    /// stat card were checked (`scripts/verify_landing_canonical.py`), so the
+    /// rest could keep a stale number, as the `/docs` prose once did.
+    #[test]
+    fn every_published_erc8004_count_and_list_is_the_served_one() {
+        use std::collections::BTreeSet;
+
+        // Whitespace collapsed: a wrapped line or a CRLF checkout must not
+        // split the sentence being looked for.
+        fn flat(text: &str) -> String {
+            text.split_whitespace().collect::<Vec<_>>().join(" ")
+        }
+
+        let networks = supported_networks();
+        let total = networks.len();
+        let mainnets: BTreeSet<String> = networks
+            .iter()
+            .filter(|n| n.is_mainnet())
+            .map(|n| n.to_string())
+            .collect();
+        let m = mainnets.len();
+        let testnets = total - m;
+
+        let raw_landing = include_str!("../../static/index.html");
+        let landing = flat(raw_landing);
+        let page = flat(include_str!("../../static/erc8004.html"));
+        let llms = flat(include_str!("../../static/llms.txt"));
+        let skill = flat(include_str!("../../static/skill.md"));
+        let auth = flat(include_str!("../../static/auth.md"));
+        let card = flat(include_str!("../../static/.well-known/agent-card.json"));
+        let legacy_card = flat(include_str!("../../static/.well-known/agent.json"));
+
+        // (document, its text, the sentence, how many times the document states it)
+        let stated = [
+            (
+                "llms.txt",
+                &llms,
+                format!("live on {m} mainnets and {total} networks in total"),
+                1,
+            ),
+            (
+                "skill.md",
+                &skill,
+                format!("Live on {m} mainnets, {total} networks in total"),
+                1,
+            ),
+            (
+                "auth.md",
+                &auth,
+                format!("live on {m} mainnets ({total} networks counting testnets)"),
+                1,
+            ),
+            (
+                "agent-card.json",
+                &card,
+                format!("on {m} mainnets ({total} networks including testnets)"),
+                1,
+            ),
+            (
+                "agent.json",
+                &legacy_card,
+                format!("on {m} mainnets ({total} networks including testnets)"),
+                1,
+            ),
+            // The markup and `en`, then `es`.
+            (
+                "index.html",
+                &landing,
+                format!("validation registries across {total} networks"),
+                2,
+            ),
+            (
+                "index.html",
+                &landing,
+                format!("en {total} redes (EVM + Solana)"),
+                1,
+            ),
+            // The markup, `en` and `es`.
+            ("index.html", &landing, format!("+ {testnets} testnets."), 3),
+            ("index.html", &landing, format!("{total} networks: "), 2),
+            ("index.html", &landing, format!("{total} redes: "), 1),
+            ("erc8004.html", &page, format!("{total} networks: "), 2),
+            ("erc8004.html", &page, format!("{total} redes: "), 1),
+        ];
+        for (document, text, sentence, times) in &stated {
+            assert_eq!(
+                text.matches(sentence.as_str()).count(),
+                *times,
+                "{document} must state `{sentence}` {times} time(s): ERC-8004 is served on \
+                 {m} mainnets, {total} networks"
+            );
+        }
+
+        // The `erc8004Note` lists, in the markup and both dictionaries of each
+        // page: one short name per mainnet (SKALE Base is written `skale`).
+        let short: BTreeSet<String> = mainnets
+            .iter()
+            .map(|name| name.split('-').next().unwrap_or(name.as_str()).to_string())
+            .collect();
+        for (document, text) in [("index.html", &landing), ("erc8004.html", &page)] {
+            let mut lists = 0;
+            for opener in [format!("{total} networks: "), format!("{total} redes: ")] {
+                for (at, _) in text.match_indices(opener.as_str()) {
+                    let rest = &text[at + opener.len()..];
+                    let end = rest
+                        .find(" + testnets")
+                        .expect("the list ends in `+ testnets`");
+                    let named: BTreeSet<String> =
+                        rest[..end].split(", ").map(str::to_string).collect();
+                    assert_eq!(
+                        named,
+                        short,
+                        "{document} lists other mainnets than ERC-8004 serves: {}",
+                        &rest[..end]
+                    );
+                    lists += 1;
+                }
+            }
+            assert_eq!(lists, 3, "{document}: the markup, `en` and `es`");
+        }
+
+        // The landing's grid shows one card per mainnet, named by its id.
+        let grid = raw_landing
+            .split("data-i18n=\"erc8004.networksTitle\"")
+            .nth(1)
+            .and_then(|rest| rest.split("data-i18n=\"erc8004.create2Note\"").next())
+            .expect("the landing carries the ERC-8004 network grid");
+        let cards: BTreeSet<String> = grid
+            .split("data-net-icon=\"")
+            .skip(1)
+            .map(|rest| rest[..rest.find('"').expect("terminated")].to_string())
+            .collect();
+        assert_eq!(cards, mainnets, "the landing's ERC-8004 network grid");
     }
 
     #[test]

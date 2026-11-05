@@ -1,10 +1,12 @@
-//! What Arc and Arc testnet answered about the canonical v1 escrow set.
+//! What Arc, Arc testnet and Robinhood Chain answered about the canonical v1
+//! escrow set.
 //!
-//! `tests/fixtures/escrow/arc-generation-d-chain.json` is recorded by
-//! `scripts/record_arc_escrow_fixture.py` from the addresses
+//! `tests/fixtures/escrow/arc-generation-d-chain.json` (Arc, Arc testnet) and
+//! `tests/fixtures/escrow/robinhood-generation-d-chain.json` (Robinhood Chain)
+//! are recorded by `scripts/record_arc_escrow_fixture.py` from the addresses
 //! `addresses.rs` declares: JSON-RPC answers verbatim, nothing typed by hand.
 //! These tests hold the code to what those answers say; the `#[ignore]` one
-//! asks the chain again.
+//! asks Arc again.
 
 use std::collections::HashSet;
 
@@ -22,12 +24,33 @@ use crate::network::Network;
 use crate::types::Scheme;
 
 const FIXTURE: &str = include_str!("../../tests/fixtures/escrow/arc-generation-d-chain.json");
+const ROBINHOOD_FIXTURE: &str =
+    include_str!("../../tests/fixtures/escrow/robinhood-generation-d-chain.json");
 
-const ARC_NETWORKS: [Network; 2] = [Network::Arc, Network::ArcTestnet];
+/// Every network a fixture was recorded from: the canonical v1 networks.
+const GENERATION_D_NETWORKS: [Network; 3] = [Network::Arc, Network::ArcTestnet, Network::Robinhood];
 
 fn recorded(network: Network) -> Value {
-    let fixture: Value = serde_json::from_str(FIXTURE).expect("fixture is JSON");
-    fixture["networks"][network.to_string()].clone()
+    let source = match network {
+        Network::Robinhood => ROBINHOOD_FIXTURE,
+        _ => FIXTURE,
+    };
+    let fixture: Value = serde_json::from_str(source).expect("fixture is JSON");
+    let rec = fixture["networks"][network.to_string()].clone();
+    assert!(rec.is_object(), "{network} was not recorded");
+    rec
+}
+
+/// A network added to the canonical v1 set has a recording behind it.
+#[test]
+fn every_canonical_v1_network_was_recorded() {
+    assert_eq!(
+        super::addresses::CANONICAL_V1_NETWORKS,
+        GENERATION_D_NETWORKS
+    );
+    for network in GENERATION_D_NETWORKS {
+        recorded(network);
+    }
 }
 
 fn unhex(s: &str) -> Vec<u8> {
@@ -72,7 +95,7 @@ fn canonical_set() -> [Address; 5] {
 
 #[tokio::test]
 async fn every_announced_arc_address_has_code() {
-    for network in ARC_NETWORKS {
+    for network in GENERATION_D_NETWORKS {
         let rec = recorded(network);
         let chain_id = EvmChain::try_from(network).unwrap().chain_id;
         assert_eq!(
@@ -107,6 +130,9 @@ async fn every_announced_arc_address_has_code() {
             if code.is_empty() {
                 // Not deployed when recorded: it must not be announced.
                 assert!(matches!(verdict, Verdict::Mismatch(_)), "{verdict:?}");
+            } else {
+                // Deployed: it must pass the self-check, or it is never announced.
+                assert_eq!(verdict, Verdict::Verified, "{network}: {operator}");
             }
             if verdict == Verdict::Verified {
                 verified.insert(operator);
@@ -233,7 +259,7 @@ fn arc_operator_address_matches_recorded_compute_address() {
         calldata.extend_from_slice(address.into_word().as_slice());
     }
 
-    for network in ARC_NETWORKS {
+    for network in GENERATION_D_NETWORKS {
         let rec = recorded(network);
         let call = &rec["computeAddress"];
         let factory: Address = call["factory"].as_str().unwrap().parse().unwrap();
@@ -261,7 +287,7 @@ fn arc_operator_address_matches_recorded_compute_address() {
 /// canonical escrow answered on each Arc network for the recorded probe.
 #[test]
 fn arc_payer_agnostic_nonce_matches_the_escrow() {
-    for network in ARC_NETWORKS {
+    for network in GENERATION_D_NETWORKS {
         let rec = recorded(network);
         let probe = &rec["getHashProbe"];
         let escrow: Address = probe["escrow"].as_str().unwrap().parse().unwrap();

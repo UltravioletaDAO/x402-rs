@@ -22,7 +22,7 @@
 
 A payment settlement service implementing the [HTTP 402](https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/402) protocol. Users sign payment authorizations off-chain, the facilitator submits them on-chain and pays gas fees.
 
-Includes [ERC-8004](https://eips.ethereum.org/EIPS/eip-8004) on-chain reputation for AI agents across 23 networks (13 mainnets + 10 testnets).
+Includes [ERC-8004](https://eips.ethereum.org/EIPS/eip-8004) on-chain reputation for AI agents across 25 networks (14 mainnets + 11 testnets).
 
 **No custody. No trust. Just payments.**
 
@@ -474,7 +474,7 @@ normative spec: **[docs/plans/dx402/08-SPEC-v0.2.md](docs/plans/dx402/08-SPEC-v0
 
 ## ERC-8004 Trustless Agents (On-Chain Reputation)
 
-The facilitator integrates [ERC-8004](https://eips.ethereum.org/EIPS/eip-8004) for AI agent identity and reputation across 23 networks.
+The facilitator integrates [ERC-8004](https://eips.ethereum.org/EIPS/eip-8004) for AI agent identity and reputation across 25 networks.
 
 ### What is ERC-8004?
 
@@ -484,7 +484,7 @@ Three on-chain registries enabling trust in the agentic economy:
 - **Reputation Registry** - Standardized feedback posting with proof-of-payment
 - **Validation Registry** - Third-party attestation of agent capabilities
 
-### Supported ERC-8004 Networks (23)
+### Supported ERC-8004 Networks (25)
 
 Addresses come from the canonical [erc-8004 reference deployment](https://github.com/erc-8004/erc-8004-contracts)
 and are identical on every EVM chain (CREATE2) -- there is no chain-specific fork:
@@ -509,6 +509,7 @@ and are identical on every EVM chain (CREATE2) -- there is no chain-specific for
 | Scroll | Mainnet | Same (CREATE2) | Same (CREATE2) |
 | SKALE Base | Mainnet | Same (CREATE2) | Same (CREATE2) |
 | Arc | Mainnet | Same (CREATE2) | Same (CREATE2) |
+| Robinhood Chain | Mainnet | Same (CREATE2) | Same (CREATE2) |
 | Solana | Mainnet | Anchor program | Anchor program |
 | Ethereum Sepolia | Testnet | `0x8004A818...4BD9e` | `0x8004B663...8713` |
 | Base Sepolia | Testnet | Same | Same |
@@ -519,6 +520,7 @@ and are identical on every EVM chain (CREATE2) -- there is no chain-specific for
 | Avalanche Fuji | Testnet | Same | Same |
 | SKALE Base Sepolia | Testnet | Same | Same |
 | Arc Testnet | Testnet | Same | Same |
+| Robinhood Chain Testnet | Testnet | Same | Same |
 | Solana Devnet | Testnet | Anchor program | Anchor program |
 
 All EVM mainnet contracts use CREATE2 deterministic deployment (same addresses on every chain). Solana uses a dedicated Anchor program.
@@ -595,6 +597,23 @@ The facilitator supports the [x402r extension](https://github.com/coinbase/x402/
 - **Testing Guide:** [`docs/X402R_ESCROW_TESTING.md`](docs/X402R_ESCROW_TESTING.md)
 - **x402r Proposal:** https://github.com/coinbase/x402/issues/864
 - **x402r Contracts:** https://github.com/BackTrackCo/x402r-contracts
+
+### Escrow PaymentOperators
+
+On `POST /settle`, the `escrow` and `commerce` schemes (`authorize`, `release`, `refundInEscrow`) are relayed only to
+the PaymentOperators this facilitator declares for each network; `GET /supported` lists them under `escrow`. A request
+naming any other operator answers `400 escrow_operator_not_served`, and nothing is read or sent. On Robinhood Chain
+the escrow rail also moves USDG only (`400 escrow_token_not_served`).
+
+To have an operator added, open a pull request that adds its address to the `payment_operators` list of its network
+in `OperatorAddresses::for_network` (`src/payment_operator/addresses.rs`). In the description, include:
+
+- the network and the operator address;
+- a block-explorer link, on that network, where the operator contract's source is verified;
+- a contact (GitHub handle or email) for whoever runs the operator.
+
+On Arc, Arc testnet and Robinhood Chain a declared operator also has to pass the facilitator's on-chain self-check
+before it takes new authorizations.
 
 ---
 

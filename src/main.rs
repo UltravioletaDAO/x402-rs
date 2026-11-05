@@ -761,9 +761,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .layer(policy.layer(&secondary_read_config)),
         );
     if erc8004_writes_enabled {
-        // Read the daily write limits now, so they are logged at startup
-        // rather than on the first write.
+        // Read the daily write limits and the gas ceilings per write now, so
+        // they are logged at startup rather than on the first write.
         let _ = erc8004::daily_cap::global();
+        let _ = erc8004::max_gas::global();
         let erc8004_writes =
             handlers::erc8004_write_routes_governed(&policy).with_state(axum_state);
         http_endpoints = http_endpoints.merge(erc8004_writes);

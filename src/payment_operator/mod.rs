@@ -66,11 +66,14 @@
 //! | TokenCollector | 0x48ADf6E37F9b31dC2AAD0462C5862B5422C736B8 |
 //! | ProtocolFeeConfig | 0x59314674BAbb1a24Eb2704468a9cCdD50668a1C6 |
 //!
-//! ## Arc (eip155:5042) and Arc testnet (eip155:5042002)
+//! ## Arc (eip155:5042), Arc testnet (eip155:5042002) and Robinhood Chain (eip155:4663)
 //!
 //! The canonical commerce-payments v1.0.0 set (`addresses::canonical_v1`),
 //! whose operators `capture` and `void` instead of `release` and
-//! `refundInEscrow` (`operator::OperatorAbi::V3`).
+//! `refundInEscrow` (`operator::OperatorAbi::V3`). Same addresses on the three;
+//! Robinhood Chain moves USDG, and only USDG
+//! (`addresses::ONE_TOKEN_ESCROW_NETWORKS`). Not Robinhood Chain Testnet: no
+//! operator there.
 //!
 //! | Contract | Address |
 //! |----------|---------|
@@ -78,6 +81,12 @@
 //! | PaymentOperatorFactory v1.0.2 | 0xc24153B7ED8DC03e551F29DDEeA5CadFe57e2716 |
 //! | ERC3009TokenCollector | 0x0E3dF9510de65469C4518D7843919c0b8C7A7757 |
 //! | ProtocolFeeConfig | 0xBe2d24614F339a1eB103A399F93AA2a39Ca815Bc |
+//!
+//! # Declared operators only
+//!
+//! `/settle` relays to the PaymentOperators `addresses::OperatorAddresses`
+//! declares for the network, and no other (`operator::assert_served_on_network`,
+//! before anything is read or sent).
 //!
 //! # Reference Implementation
 //!

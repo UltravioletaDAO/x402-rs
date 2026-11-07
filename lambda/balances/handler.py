@@ -128,7 +128,6 @@ PUBLIC_RPCS = {
     "ethereum": "https://ethereum-rpc.publicnode.com",
     "arbitrum": "https://arb1.arbitrum.io/rpc",
     "unichain": "https://unichain-rpc.publicnode.com",
-    "robinhood": "https://rpc.mainnet.chain.robinhood.com",
     "solana": "https://api.mainnet-beta.solana.com",
     "near": "https://free.rpc.fastnear.com",
 }
@@ -138,7 +137,9 @@ def get_network_configs() -> dict[str, dict]:
     """
     Build network configurations.
     Private RPC URLs (with API keys) are loaded from Secrets Manager first,
-    with fallback to environment variables and then public RPCs.
+    with fallback to environment variables and then public RPCs. A key with no
+    entry in PUBLIC_RPCS (robinhood) has no public fallback: without its private
+    RPC the network is not measured (a null balance).
     """
     # Load private RPCs from Secrets Manager for mainnets
     private_rpcs = {}
@@ -149,8 +150,10 @@ def get_network_configs() -> dict[str, dict]:
         if private_rpc:
             private_rpcs[network_key] = private_rpc
             print(f"Loaded private RPC for {network_key}")
-        else:
+        elif network_key in PUBLIC_RPCS:
             print(f"No private RPC for {network_key}, will use public")
+        else:
+            print(f"No private RPC for {network_key}, not measured (no public fallback)")
 
     configs = {
         # EVM Mainnets - with private RPC priority
@@ -406,14 +409,14 @@ def get_network_configs() -> dict[str, dict]:
             "address": MAINNET_ADDRESS,
             "type": "evm"
         },
-        # Robinhood Chain (Arbitrum Orbit L2). Mainnet reads the `robinhood` key of
-        # facilitator-rpc-mainnet (QuickNode) first, like the mainnets above; the
-        # official keyless RPC is only the fallback. We have no private testnet one.
+        # Robinhood Chain (Arbitrum Orbit L2). Mainnet reads only the `robinhood` key
+        # of facilitator-rpc-mainnet (QuickNode) or RPC_URL_ROBINHOOD, never the
+        # public endpoint (owner's rule): without them, or with the private one down,
+        # its balance is null -- not measured. We have no private testnet one.
         "robinhood-mainnet": {
             "rpcs": [
                 private_rpcs.get("robinhood"),
                 os.environ.get("RPC_URL_ROBINHOOD"),
-                PUBLIC_RPCS["robinhood"],
             ],
             "address": MAINNET_ADDRESS,
             "type": "evm"

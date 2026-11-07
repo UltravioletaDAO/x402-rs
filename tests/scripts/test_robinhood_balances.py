@@ -4,7 +4,9 @@ Owner's rule (2026-11-05): QuickNode's private endpoint, never the public one. T
 takes it from the `robinhood` key of facilitator-rpc-mainnet, like the other premium mainnets; the
 official keyless endpoint is only what it falls back to. The URL below is a stand-in.
 """
+from contextlib import redirect_stdout
 import importlib.util
+import io
 import os
 from pathlib import Path
 import unittest
@@ -18,6 +20,8 @@ balances = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(balances)
 
 PRIVATE = "https://private.invalid/robinhood"
+# A short host puts the "key" of the path inside the first 50 characters.
+PRIVATE_WITH_KEY = "https://rh.invalid/KEYPART-not-a-real-key/"
 PUBLIC_MAINNET = "https://rpc.mainnet.chain.robinhood.com"
 PUBLIC_TESTNET = "https://rpc.testnet.chain.robinhood.com"
 
@@ -60,6 +64,21 @@ class RobinhoodBalancesTest(unittest.TestCase):
             got = balances.fetch_evm_balance("robinhood-mainnet", configs["robinhood-mainnet"])
         self.assertEqual(got, ("robinhood-mainnet", "0.0100"))
         self.assertEqual(urls, [PRIVATE])
+
+    def test_a_failed_private_read_falls_back_and_logs_the_host_alone(self):
+        configs, _ = self.configs({"robinhood": PRIVATE_WITH_KEY})
+
+        def rpc(url, data, **kwargs):
+            if url == PRIVATE_WITH_KEY:
+                raise TimeoutError("timed out")
+            return {"result": hex(10**16)}
+
+        out = io.StringIO()
+        with patch.object(balances, "fetch_json", side_effect=rpc), redirect_stdout(out):
+            got = balances.fetch_evm_balance("robinhood-mainnet", configs["robinhood-mainnet"])
+        self.assertEqual(got, ("robinhood-mainnet", "0.0100"))
+        self.assertIn("rh.invalid", out.getvalue())
+        self.assertNotIn("KEYPART", out.getvalue())
 
     def test_without_the_key_it_falls_back_to_the_public_rpc(self):
         configs, _ = self.configs({})

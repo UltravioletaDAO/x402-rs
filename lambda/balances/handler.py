@@ -14,6 +14,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any
 import urllib.request
 import urllib.error
+from urllib.parse import urlsplit
 
 import boto3
 from botocore.exceptions import ClientError
@@ -66,6 +67,15 @@ def get_secret(secret_name: str, key: str | None = None) -> str | None:
 def get_private_rpc(network_key: str) -> str | None:
     """Get private RPC URL from Secrets Manager."""
     return get_secret(MAINNET_SECRET_NAME, network_key)
+
+
+def rpc_host(rpc_url: str) -> str:
+    """The host of an RPC URL, for a log line: a private one carries its key in the
+    path (QuickNode, Alchemy), so the path never reaches the log (src/redact.rs)."""
+    try:
+        return urlsplit(rpc_url).hostname or "<rpc>"
+    except ValueError:
+        return "<rpc>"
 
 
 # Wallet addresses
@@ -388,7 +398,7 @@ def get_network_configs() -> dict[str, dict]:
         },
         # Robinhood Chain (Arbitrum Orbit L2). Mainnet reads the `robinhood` key of
         # facilitator-rpc-mainnet (QuickNode) first, like the mainnets above; the
-        # official keyless RPC is only the fallback. The testnet has no premium one.
+        # official keyless RPC is only the fallback. We have no private testnet one.
         "robinhood-mainnet": {
             "rpcs": [
                 private_rpcs.get("robinhood"),
@@ -489,7 +499,7 @@ def fetch_evm_balance(network: str, config: dict) -> tuple[str, str | None]:
                 balance_eth = balance_wei / 1e18
                 return network, f"{balance_eth:.4f}"
         except Exception as e:
-            print(f"Error fetching {network} from {rpc_url[:50]}...: {e}")
+            print(f"Error fetching {network} from {rpc_host(rpc_url)}: {e}")
             continue
 
     return network, None
@@ -514,7 +524,7 @@ def fetch_solana_balance(network: str, config: dict) -> tuple[str, str | None]:
                 balance_sol = balance_lamports / 1e9
                 return network, f"{balance_sol:.4f}"
         except Exception as e:
-            print(f"Error fetching {network} from {rpc_url[:50]}...: {e}")
+            print(f"Error fetching {network} from {rpc_host(rpc_url)}: {e}")
             continue
 
     return network, None
@@ -544,7 +554,7 @@ def fetch_sui_balance(network: str, config: dict) -> tuple[str, str | None]:
                     balance_sui = balance_mist / 1e9
                     return network, f"{balance_sui:.4f}"
         except Exception as e:
-            print(f"Error fetching {network} from {rpc_url[:50]}...: {e}")
+            print(f"Error fetching {network} from {rpc_host(rpc_url)}: {e}")
             continue
 
     return network, None
@@ -630,7 +640,7 @@ def fetch_xrpl_balance(network: str, config: dict) -> tuple[str, str | None]:
                 balance_xrp = balance_drops / 1e6
                 return network, f"{balance_xrp:.4f}"
         except Exception as e:
-            print(f"Error fetching {network} from {rpc_url[:50]}...: {e}")
+            print(f"Error fetching {network} from {rpc_host(rpc_url)}: {e}")
             continue
 
     return network, None

@@ -6,8 +6,9 @@
 # (CI: job "Build & test", step "Terraform NAT guards", which runs every file in tests/).
 #
 # The table below is the live task definition's (revision 482, measured 2026-10-31): the same 45 names,
-# each pointed at the parameter copied from the secret field it used to read. A name that
-# disappears, a new one, or a parameter that moves goes red here. That each parameter holds the
+# each pointed at the parameter copied from the secret field it used to read, plus RPC_URL_ROBINHOOD
+# (2.57.1), which left a public `environment` value for /facilitator/rpc-mainnet/robinhood: 46. A name
+# that disappears, a new one, or a parameter that moves goes red here. That each parameter holds the
 # same value as its secret is not something a plan can see: scripts/verificar_ssm_igual.py.
 
 mock_provider "aws" {
@@ -102,6 +103,7 @@ run "every_secret_of_production_comes_from_its_ssm_copy" {
       RPC_URL_ETHEREUM                      = "/facilitator/rpc-mainnet/ethereum"
       RPC_URL_ARBITRUM                      = "/facilitator/rpc-mainnet/arbitrum"
       RPC_URL_UNICHAIN                      = "/facilitator/rpc-mainnet/unichain"
+      RPC_URL_ROBINHOOD                     = "/facilitator/rpc-mainnet/robinhood"
       RPC_URL_SOLANA                        = "/facilitator/rpc-mainnet/solana"
       RPC_URL_NEAR                          = "/facilitator/rpc-mainnet/near"
       RPC_URL_ARC                           = "/facilitator/rpc-mainnet/arc"
@@ -118,13 +120,41 @@ run "every_secret_of_production_comes_from_its_ssm_copy" {
       UVD_STACK_KEY_SHA256_DESCRIBE_NET     = "/facilitator/stack-key-digest-describe-net/sha256"
       UVD_STACK_KEY_SHA256_MESHRELAY        = "/facilitator/stack-key-digest-meshrelay/sha256"
     })
-    error_message = "The task definition's secrets must be exactly the 45 names production injects, each on the /facilitator/ parameter copied from the secret field it read before decision 266."
+    error_message = "The task definition's secrets must be exactly the 46 names production injects, each on the /facilitator/ parameter copied from the secret field it read before decision 266 (RPC_URL_ROBINHOOD: the robinhood field of facilitator-rpc-mainnet)."
   }
 
   # A name the `for` above would collapse: two entries for one variable.
   assert {
-    condition     = length(jsondecode(aws_ecs_task_definition.facilitator.container_definitions)[0].secrets) == 45
-    error_message = "The task definition must carry 45 secrets, each name once."
+    condition     = length(jsondecode(aws_ecs_task_definition.facilitator.container_definitions)[0].secrets) == 46
+    error_message = "The task definition must carry 46 secrets, each name once."
+  }
+
+  # One variable cannot be both an `environment` entry and a `secrets` one (arc.tf): each name of
+  # the facilitator is in one of the two lists, never in both.
+  assert {
+    condition = length(setintersection(
+      toset([for e in jsondecode(aws_ecs_task_definition.facilitator.container_definitions)[0].environment : e.name]),
+      toset([for s in jsondecode(aws_ecs_task_definition.facilitator.container_definitions)[0].secrets : s.name]),
+    )) == 0
+    error_message = "No variable of the facilitator may be both in environment and in secrets."
+  }
+
+  # Robinhood Chain mainnet runs on QuickNode's private endpoint, from SSM (owner's rule): its
+  # public endpoint is in no environment value, under any name. The testnet has no premium
+  # endpoint and keeps its public one in `environment`.
+  assert {
+    condition = !anytrue([
+      for e in jsondecode(aws_ecs_task_definition.facilitator.container_definitions)[0].environment :
+      e.name == "RPC_URL_ROBINHOOD" || strcontains(e.value, "rpc.mainnet.chain.robinhood.com")
+    ])
+    error_message = "RPC_URL_ROBINHOOD comes from /facilitator/rpc-mainnet/robinhood: neither the name nor the public mainnet endpoint may be in the environment."
+  }
+
+  assert {
+    condition = contains([
+      for e in jsondecode(aws_ecs_task_definition.facilitator.container_definitions)[0].environment : e.name
+    ], "RPC_URL_ROBINHOOD_TESTNET")
+    error_message = "RPC_URL_ROBINHOOD_TESTNET stays in the environment, on its public endpoint: the testnet has no premium one."
   }
 
   # One SSM grant, on the whole /facilitator/ tree the parameters live in...

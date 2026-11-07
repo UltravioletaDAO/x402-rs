@@ -36,15 +36,18 @@ facilitator's code; the balances Lambda changes.
   would be published.
 - The balances Lambda logs a failed read with the RPC's host alone, never the
   first 50 characters of its URL, which on a short host reach the key in the
-  path, and with the URL replaced by its host in the error's text (every
-  network, not just Robinhood).
+  path, and with the error's type (and an HTTP error's status) instead of its
+  text: urllib and http.client quote the URL, or the piece they reject, key
+  included (every network, not just Robinhood).
 - `terraform/environments/production/tests/ssm_reader.tftest.hcl` holds the 46
   secrets, no variable in both `environment` and `secrets`, the public mainnet
   endpoint in no `environment` value, and the testnet's in `environment`.
   `tests/scripts/test_robinhood_balances.py` holds the Lambda's Robinhood
   mainnet to its private RPC alone (not measured without it or with it down,
-  never the public endpoint), the testnet public alone, and the host-only log
-  line.
+  never the public endpoint; the secret key before `RPC_URL_ROBINHOOD`), the
+  testnet public alone, and a log line with no piece of the URL past its host
+  (credentials, a space in the path, a scheme-less value, an HTTP error).
+  The tftest also holds the testnet's value, not only its name.
 
 ## [2.57.0] - 2026-11-05
 

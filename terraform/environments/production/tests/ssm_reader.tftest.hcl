@@ -145,7 +145,7 @@ run "every_secret_of_production_comes_from_its_ssm_copy" {
   assert {
     condition = !anytrue([
       for e in jsondecode(aws_ecs_task_definition.facilitator.container_definitions)[0].environment :
-      e.name == "RPC_URL_ROBINHOOD" || strcontains(e.value, "rpc.mainnet.chain.robinhood.com")
+      e.name == "RPC_URL_ROBINHOOD" || strcontains(lower(e.value), "rpc.mainnet.chain.robinhood.com")
     ])
     error_message = "RPC_URL_ROBINHOOD comes from /facilitator/rpc-mainnet/robinhood: neither the name nor the public mainnet endpoint may be in the environment."
   }

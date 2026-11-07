@@ -108,6 +108,7 @@ PUBLIC_RPCS = {
     "ethereum": "https://ethereum-rpc.publicnode.com",
     "arbitrum": "https://arb1.arbitrum.io/rpc",
     "unichain": "https://unichain-rpc.publicnode.com",
+    "robinhood": "https://rpc.mainnet.chain.robinhood.com",
     "solana": "https://api.mainnet-beta.solana.com",
     "near": "https://free.rpc.fastnear.com",
 }
@@ -122,7 +123,8 @@ def get_network_configs() -> dict[str, dict]:
     # Load private RPCs from Secrets Manager for mainnets
     private_rpcs = {}
     for network_key in ["base", "avalanche", "polygon", "optimism", "celo",
-                        "hyperevm", "ethereum", "arbitrum", "unichain", "solana", "near"]:
+                        "hyperevm", "ethereum", "arbitrum", "unichain", "robinhood",
+                        "solana", "near"]:
         private_rpc = get_private_rpc(network_key)
         if private_rpc:
             private_rpcs[network_key] = private_rpc
@@ -384,9 +386,15 @@ def get_network_configs() -> dict[str, dict]:
             "address": MAINNET_ADDRESS,
             "type": "evm"
         },
-        # Robinhood Chain (Arbitrum Orbit L2; official RPC is the only keyless endpoint)
+        # Robinhood Chain (Arbitrum Orbit L2). Mainnet reads the `robinhood` key of
+        # facilitator-rpc-mainnet (QuickNode) first, like the mainnets above; the
+        # official keyless RPC is only the fallback. The testnet has no premium one.
         "robinhood-mainnet": {
-            "rpcs": ["https://rpc.mainnet.chain.robinhood.com"],
+            "rpcs": [
+                private_rpcs.get("robinhood"),
+                os.environ.get("RPC_URL_ROBINHOOD"),
+                PUBLIC_RPCS["robinhood"],
+            ],
             "address": MAINNET_ADDRESS,
             "type": "evm"
         },

@@ -1,5 +1,54 @@
 # Changelog
 
+## [2.57.1] - 2026-11-07
+
+Robinhood Chain mainnet (`robinhood`, chain 4663) settles on QuickNode's
+private RPC instead of the public `rpc.mainnet.chain.robinhood.com`: the
+owner's rule is the private endpoint, never a public one. No change to the
+facilitator's code; the balances Lambda changes.
+
+### Configuration
+
+- The task definition reads `RPC_URL_ROBINHOOD` from the SSM SecureString
+  `/facilitator/rpc-mainnet/robinhood`, the copy of the `robinhood` key of the
+  `facilitator-rpc-mainnet` secret, on the key behind
+  `alias/facilitator-bazaar-admin-token` like every other `/facilitator/`
+  parameter (`terraform/environments/production/secrets.tf`,
+  `mainnet_rpc_secrets`). Its plain `environment` entry with the public
+  endpoint is gone from `main.tf`. The execution role's grant already covers
+  it (`ssm:GetParameters` on `/facilitator/*`, `kms:Decrypt` through SSM on
+  that alias): no IAM change.
+- **The parameter has to exist before the merge**, not only before the
+  deploy: any manual "Run workflow" on `main` ships everything merged since
+  the last release, and ECS does not start a task whose `valueFrom` names a
+  parameter that is missing -- for every network, not just Robinhood.
+- `RPC_URL_ROBINHOOD_TESTNET` stays in `environment` on the public testnet
+  endpoint: we have no private Robinhood Chain Testnet endpoint.
+- The facilitator has no built-in default for `RPC_URL_ROBINHOOD`: with the
+  variable absent `EvmProvider::from_env` skips the network
+  (`src/chain/evm.rs`); it never falls back to the public endpoint.
+- The balances Lambda reads Robinhood mainnet from the same secret key (or
+  `RPC_URL_ROBINHOOD`) alone, with no public fallback: without it, or with the
+  private RPC down, Robinhood's balance is null -- not measured -- instead of
+  read from the public endpoint (`lambda/balances/handler.py`). The other
+  mainnets keep their public fallback for now. The landing and `/networks`
+  keep the public endpoint for their in-browser reads: a private URL there
+  would be published.
+- The balances Lambda logs a failed read with the RPC's host alone, never the
+  first 50 characters of its URL, which on a short host reach the key in the
+  path, and with the error's type (and an HTTP error's status) instead of its
+  text: urllib and http.client quote the URL, or the piece they reject, key
+  included (every network, not just Robinhood).
+- `terraform/environments/production/tests/ssm_reader.tftest.hcl` holds the 46
+  secrets, no variable in both `environment` and `secrets`, the public mainnet
+  endpoint in no `environment` value, and the testnet's in `environment`.
+  `tests/scripts/test_robinhood_balances.py` holds the Lambda's Robinhood
+  mainnet to its private RPC alone (not measured without it or with it down,
+  never the public endpoint; the secret key before `RPC_URL_ROBINHOOD`), the
+  testnet public alone, and a log line with no piece of the URL past its host
+  (credentials, a space in the path, a scheme-less value, an HTTP error).
+  The tftest also holds the testnet's value, not only its name.
+
 ## [2.57.0] - 2026-11-05
 
 - **Escrow lifecycle orders: a declared lifecycle signer per operator** (role `declared_signer`). `OperatorAddresses` gains a `lifecycle_signers` column (operator -> signer, per network), **empty on every network**: no address is declared in this release, so every existing role and verdict is unchanged. A row is in force only if its operator is one of that network's `payment_operators`, its signer is not the zero address and its operator has no second row; anything else grants nothing (`OperatorAddresses::lifecycle_signer_map`), and `every_declared_lifecycle_signer_is_valid_for_its_own_network` keeps such a row out of the table. Arc, Arc testnet and Robinhood Chain, which share their addresses, now each have their own arm, so a signer is declared for one network at a time; `no_lifecycle_signer_is_declared_on_both_a_testnet_and_a_mainnet` and `no_test_key_of_the_shared_vector_is_ever_declared` (the vector's keys are public) hold the table from here on. Declaring, rotating or revoking a signer is a pull request to that table (README, "Escrow PaymentOperators").

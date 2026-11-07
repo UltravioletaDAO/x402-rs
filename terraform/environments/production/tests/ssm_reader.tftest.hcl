@@ -152,9 +152,9 @@ run "every_secret_of_production_comes_from_its_ssm_copy" {
 
   assert {
     condition = contains([
-      for e in jsondecode(aws_ecs_task_definition.facilitator.container_definitions)[0].environment : e.name
-    ], "RPC_URL_ROBINHOOD_TESTNET")
-    error_message = "RPC_URL_ROBINHOOD_TESTNET stays in the environment, on its public endpoint: we have no private testnet one."
+      for e in jsondecode(aws_ecs_task_definition.facilitator.container_definitions)[0].environment : "${e.name}=${e.value}"
+    ], "RPC_URL_ROBINHOOD_TESTNET=https://rpc.testnet.chain.robinhood.com")
+    error_message = "RPC_URL_ROBINHOOD_TESTNET stays in the environment, on its public endpoint (https://rpc.testnet.chain.robinhood.com): we have no private testnet one."
   }
 
   # One SSM grant, on the whole /facilitator/ tree the parameters live in...

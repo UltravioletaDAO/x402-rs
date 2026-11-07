@@ -78,6 +78,16 @@ def rpc_host(rpc_url: str) -> str:
         return "<rpc>"
 
 
+def rpc_error(error: Exception, rpc_url: str) -> str:
+    """An exception's text for a log line, with the RPC URL replaced by its host: urllib
+    quotes the URL it cannot open (`unknown url type: '...'`)."""
+    text = str(error)
+    for url in {rpc_url, rpc_url.strip()}:
+        if url:
+            text = text.replace(url, rpc_host(rpc_url))
+    return text
+
+
 # Wallet addresses
 MAINNET_ADDRESS = "0x103040545AC5031A11E8C03dd11324C7333a13C7"
 TESTNET_ADDRESS = "0x34033041a5944B8F10f8E4D8496Bfb84f1A293A8"
@@ -499,7 +509,7 @@ def fetch_evm_balance(network: str, config: dict) -> tuple[str, str | None]:
                 balance_eth = balance_wei / 1e18
                 return network, f"{balance_eth:.4f}"
         except Exception as e:
-            print(f"Error fetching {network} from {rpc_host(rpc_url)}: {e}")
+            print(f"Error fetching {network} from {rpc_host(rpc_url)}: {rpc_error(e, rpc_url)}")
             continue
 
     return network, None
@@ -524,7 +534,7 @@ def fetch_solana_balance(network: str, config: dict) -> tuple[str, str | None]:
                 balance_sol = balance_lamports / 1e9
                 return network, f"{balance_sol:.4f}"
         except Exception as e:
-            print(f"Error fetching {network} from {rpc_host(rpc_url)}: {e}")
+            print(f"Error fetching {network} from {rpc_host(rpc_url)}: {rpc_error(e, rpc_url)}")
             continue
 
     return network, None
@@ -554,7 +564,7 @@ def fetch_sui_balance(network: str, config: dict) -> tuple[str, str | None]:
                     balance_sui = balance_mist / 1e9
                     return network, f"{balance_sui:.4f}"
         except Exception as e:
-            print(f"Error fetching {network} from {rpc_host(rpc_url)}: {e}")
+            print(f"Error fetching {network} from {rpc_host(rpc_url)}: {rpc_error(e, rpc_url)}")
             continue
 
     return network, None
@@ -640,7 +650,7 @@ def fetch_xrpl_balance(network: str, config: dict) -> tuple[str, str | None]:
                 balance_xrp = balance_drops / 1e6
                 return network, f"{balance_xrp:.4f}"
         except Exception as e:
-            print(f"Error fetching {network} from {rpc_host(rpc_url)}: {e}")
+            print(f"Error fetching {network} from {rpc_host(rpc_url)}: {rpc_error(e, rpc_url)}")
             continue
 
     return network, None

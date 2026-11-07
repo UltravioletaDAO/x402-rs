@@ -11,6 +11,7 @@ import os
 from pathlib import Path
 import unittest
 from unittest.mock import patch
+import urllib.request
 
 
 spec = importlib.util.spec_from_file_location(
@@ -22,6 +23,8 @@ spec.loader.exec_module(balances)
 PRIVATE = "https://private.invalid/robinhood"
 # A short host puts the "key" of the path inside the first 50 characters.
 PRIVATE_WITH_KEY = "https://rh.invalid/KEYPART-not-a-real-key/"
+# A value with no scheme: urllib's own ValueError quotes it whole.
+NO_SCHEME_WITH_KEY = "rh.invalid/KEYPART-not-a-real-key/"
 PUBLIC_MAINNET = "https://rpc.mainnet.chain.robinhood.com"
 PUBLIC_TESTNET = "https://rpc.testnet.chain.robinhood.com"
 
@@ -78,6 +81,21 @@ class RobinhoodBalancesTest(unittest.TestCase):
             got = balances.fetch_evm_balance("robinhood-mainnet", configs["robinhood-mainnet"])
         self.assertEqual(got, ("robinhood-mainnet", "0.0100"))
         self.assertIn("rh.invalid", out.getvalue())
+        self.assertNotIn("KEYPART", out.getvalue())
+
+    def test_the_error_text_never_carries_the_url_either(self):
+        configs, _ = self.configs({"robinhood": NO_SCHEME_WITH_KEY})
+
+        def rpc(url, data, **kwargs):
+            if url == NO_SCHEME_WITH_KEY:
+                urllib.request.Request(url, data=data)  # the ValueError urllib raises, URL quoted
+            return {"result": hex(10**16)}
+
+        out = io.StringIO()
+        with patch.object(balances, "fetch_json", side_effect=rpc), redirect_stdout(out):
+            got = balances.fetch_evm_balance("robinhood-mainnet", configs["robinhood-mainnet"])
+        self.assertEqual(got, ("robinhood-mainnet", "0.0100"))
+        self.assertIn("unknown url type", out.getvalue())
         self.assertNotIn("KEYPART", out.getvalue())
 
     def test_without_the_key_it_falls_back_to_the_public_rpc(self):

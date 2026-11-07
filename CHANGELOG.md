@@ -4,7 +4,8 @@
 
 Robinhood Chain mainnet (`robinhood`, chain 4663) settles on QuickNode's
 private RPC instead of the public `rpc.mainnet.chain.robinhood.com`: the
-owner's rule is the private endpoint, never a public one. No code changes.
+owner's rule is the private endpoint, never a public one. No change to the
+facilitator's code; the balances Lambda changes.
 
 ### Configuration
 
@@ -17,24 +18,29 @@ owner's rule is the private endpoint, never a public one. No code changes.
   endpoint is gone from `main.tf`. The execution role's grant already covers
   it (`ssm:GetParameters` on `/facilitator/*`, `kms:Decrypt` through SSM on
   that alias): no IAM change.
-- **The parameter has to exist before the deploy**: ECS does not start a task
-  whose `valueFrom` names a parameter that is missing.
+- **The parameter has to exist before the merge**, not only before the
+  deploy: any manual "Run workflow" on `main` ships everything merged since
+  the last release, and ECS does not start a task whose `valueFrom` names a
+  parameter that is missing -- for every network, not just Robinhood.
 - `RPC_URL_ROBINHOOD_TESTNET` stays in `environment` on the public testnet
-  endpoint: Robinhood Chain Testnet has no premium one.
-- The facilitator has no built-in default for `RPC_URL_ROBINHOOD`: without it
-  `EvmProvider::from_env` skips the network (`src/chain/evm.rs`), so a task
-  that cannot read the parameter never falls back to the public endpoint.
+  endpoint: we have no private Robinhood Chain Testnet endpoint.
+- The facilitator has no built-in default for `RPC_URL_ROBINHOOD`: with the
+  variable absent `EvmProvider::from_env` skips the network
+  (`src/chain/evm.rs`); it never falls back to the public endpoint.
 - The balances Lambda reads Robinhood mainnet from the same secret key first,
-  like the other premium mainnets, and falls back to the public endpoint only
-  when the key is missing (`lambda/balances/handler.py`). The landing and
-  `/networks` keep the public endpoint for their in-browser reads: a private
-  URL there would be published.
+  like the other premium mainnets; the public endpoint is its fallback when
+  the key is missing or the private read fails (`lambda/balances/handler.py`).
+  The landing and `/networks` keep the public endpoint for their in-browser
+  reads: a private URL there would be published.
+- The balances Lambda logs a failed read with the RPC's host alone, never the
+  first 50 characters of its URL, which on a short host reach the key in the
+  path (every network, not just Robinhood).
 - `terraform/environments/production/tests/ssm_reader.tftest.hcl` holds the 46
   secrets, no variable in both `environment` and `secrets`, the public mainnet
   endpoint in no `environment` value, and the testnet's in `environment`.
-  `tests/scripts/test_robinhood_balances.py` holds the Lambda's order: the
+  `tests/scripts/test_robinhood_balances.py` holds the Lambda's order (the
   private RPC first, the public one only as its fallback, the testnet public
-  alone.
+  alone) and the host-only log line.
 
 ## [2.57.0] - 2026-11-05
 

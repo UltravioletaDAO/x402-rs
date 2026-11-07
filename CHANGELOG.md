@@ -27,20 +27,24 @@ facilitator's code; the balances Lambda changes.
 - The facilitator has no built-in default for `RPC_URL_ROBINHOOD`: with the
   variable absent `EvmProvider::from_env` skips the network
   (`src/chain/evm.rs`); it never falls back to the public endpoint.
-- The balances Lambda reads Robinhood mainnet from the same secret key first,
-  like the other premium mainnets; the public endpoint is its fallback when
-  the key is missing or the private read fails (`lambda/balances/handler.py`).
-  The landing and `/networks` keep the public endpoint for their in-browser
-  reads: a private URL there would be published.
+- The balances Lambda reads Robinhood mainnet from the same secret key (or
+  `RPC_URL_ROBINHOOD`) alone, with no public fallback: without it, or with the
+  private RPC down, Robinhood's balance is null -- not measured -- instead of
+  read from the public endpoint (`lambda/balances/handler.py`). The other
+  mainnets keep their public fallback for now. The landing and `/networks`
+  keep the public endpoint for their in-browser reads: a private URL there
+  would be published.
 - The balances Lambda logs a failed read with the RPC's host alone, never the
   first 50 characters of its URL, which on a short host reach the key in the
-  path (every network, not just Robinhood).
+  path, and with the URL replaced by its host in the error's text (every
+  network, not just Robinhood).
 - `terraform/environments/production/tests/ssm_reader.tftest.hcl` holds the 46
   secrets, no variable in both `environment` and `secrets`, the public mainnet
   endpoint in no `environment` value, and the testnet's in `environment`.
-  `tests/scripts/test_robinhood_balances.py` holds the Lambda's order (the
-  private RPC first, the public one only as its fallback, the testnet public
-  alone) and the host-only log line.
+  `tests/scripts/test_robinhood_balances.py` holds the Lambda's Robinhood
+  mainnet to its private RPC alone (not measured without it or with it down,
+  never the public endpoint), the testnet public alone, and the host-only log
+  line.
 
 ## [2.57.0] - 2026-11-05
 

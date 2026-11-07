@@ -140,8 +140,8 @@ run "every_secret_of_production_comes_from_its_ssm_copy" {
   }
 
   # Robinhood Chain mainnet runs on QuickNode's private endpoint, from SSM (owner's rule): its
-  # public endpoint is in no environment value, under any name. The testnet has no premium
-  # endpoint and keeps its public one in `environment`.
+  # public endpoint is in no environment value, under any name. We have no private testnet
+  # endpoint: the testnet keeps its public one in `environment`.
   assert {
     condition = !anytrue([
       for e in jsondecode(aws_ecs_task_definition.facilitator.container_definitions)[0].environment :
@@ -154,7 +154,7 @@ run "every_secret_of_production_comes_from_its_ssm_copy" {
     condition = contains([
       for e in jsondecode(aws_ecs_task_definition.facilitator.container_definitions)[0].environment : e.name
     ], "RPC_URL_ROBINHOOD_TESTNET")
-    error_message = "RPC_URL_ROBINHOOD_TESTNET stays in the environment, on its public endpoint: the testnet has no premium one."
+    error_message = "RPC_URL_ROBINHOOD_TESTNET stays in the environment, on its public endpoint: we have no private testnet one."
   }
 
   # One SSM grant, on the whole /facilitator/ tree the parameters live in...

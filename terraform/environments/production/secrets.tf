@@ -535,7 +535,7 @@ locals {
     # (QuickNode), never the public rpc.mainnet.chain.robinhood.com -- owner's
     # rule, 2026-11-05. Until 2.57.1 it was a plain `environment` entry in
     # main.tf on the public endpoint; a name is either there or here, never
-    # both. Robinhood Chain Testnet has no premium endpoint and stays public.
+    # both. We have no private Robinhood Chain Testnet endpoint: it stays public.
     {
       name      = "RPC_URL_ROBINHOOD"
       valueFrom = "${local.facilitator_parameter_arn_prefix}/rpc-mainnet/robinhood"

@@ -33,7 +33,7 @@ Mainnet launched **2026-07-01**. Permissionless (anyone can deploy contracts).
 Only ONE keyless public RPC exists (the official, rate-limited one); Alchemy/QuickNode/Chainstack serve it with API keys.
 Since 2.57.1 production settles mainnet on QuickNode's private endpoint, read from the SSM parameter
 `/facilitator/rpc-mainnet/robinhood` (the `robinhood` key of `facilitator-rpc-mainnet`); the keyless one above
-is for local runs and the browser. The testnet has no premium endpoint and stays on its public one.
+is for local runs and the browser. We have no private testnet endpoint: the testnet stays on its public one.
 
 ## USDG (Global Dollar) — the settlement stablecoin
 

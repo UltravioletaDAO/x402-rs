@@ -1221,7 +1221,7 @@ resource "aws_ecs_task_definition" "facilitator" {
         },
         # RPC_URL_ROBINHOOD (mainnet) is a `secrets` entry, read from SSM
         # (secrets.tf, mainnet_rpc_secrets): the owner's rule is QuickNode's
-        # private endpoint, never the public one. The testnet has none.
+        # private endpoint, never the public one. We have no private testnet one.
         {
           name  = "RPC_URL_ROBINHOOD_TESTNET"
           value = "https://rpc.testnet.chain.robinhood.com"

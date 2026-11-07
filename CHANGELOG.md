@@ -1,5 +1,41 @@
 # Changelog
 
+## [2.57.1] - 2026-11-07
+
+Robinhood Chain mainnet (`robinhood`, chain 4663) settles on QuickNode's
+private RPC instead of the public `rpc.mainnet.chain.robinhood.com`: the
+owner's rule is the private endpoint, never a public one. No code changes.
+
+### Configuration
+
+- The task definition reads `RPC_URL_ROBINHOOD` from the SSM SecureString
+  `/facilitator/rpc-mainnet/robinhood`, the copy of the `robinhood` key of the
+  `facilitator-rpc-mainnet` secret, on the key behind
+  `alias/facilitator-bazaar-admin-token` like every other `/facilitator/`
+  parameter (`terraform/environments/production/secrets.tf`,
+  `mainnet_rpc_secrets`). Its plain `environment` entry with the public
+  endpoint is gone from `main.tf`. The execution role's grant already covers
+  it (`ssm:GetParameters` on `/facilitator/*`, `kms:Decrypt` through SSM on
+  that alias): no IAM change.
+- **The parameter has to exist before the deploy**: ECS does not start a task
+  whose `valueFrom` names a parameter that is missing.
+- `RPC_URL_ROBINHOOD_TESTNET` stays in `environment` on the public testnet
+  endpoint: Robinhood Chain Testnet has no premium one.
+- The facilitator has no built-in default for `RPC_URL_ROBINHOOD`: without it
+  `EvmProvider::from_env` skips the network (`src/chain/evm.rs`), so a task
+  that cannot read the parameter never falls back to the public endpoint.
+- The balances Lambda reads Robinhood mainnet from the same secret key first,
+  like the other premium mainnets, and falls back to the public endpoint only
+  when the key is missing (`lambda/balances/handler.py`). The landing and
+  `/networks` keep the public endpoint for their in-browser reads: a private
+  URL there would be published.
+- `terraform/environments/production/tests/ssm_reader.tftest.hcl` holds the 46
+  secrets, no variable in both `environment` and `secrets`, the public mainnet
+  endpoint in no `environment` value, and the testnet's in `environment`.
+  `tests/scripts/test_robinhood_balances.py` holds the Lambda's order: the
+  private RPC first, the public one only as its fallback, the testnet public
+  alone.
+
 ## [2.57.0] - 2026-11-05
 
 - **Escrow lifecycle orders: a declared lifecycle signer per operator** (role `declared_signer`). `OperatorAddresses` gains a `lifecycle_signers` column (operator -> signer, per network), **empty on every network**: no address is declared in this release, so every existing role and verdict is unchanged. A row is in force only if its operator is one of that network's `payment_operators`, its signer is not the zero address and its operator has no second row; anything else grants nothing (`OperatorAddresses::lifecycle_signer_map`), and `every_declared_lifecycle_signer_is_valid_for_its_own_network` keeps such a row out of the table. Arc, Arc testnet and Robinhood Chain, which share their addresses, now each have their own arm, so a signer is declared for one network at a time; `no_lifecycle_signer_is_declared_on_both_a_testnet_and_a_mainnet` and `no_test_key_of_the_shared_vector_is_ever_declared` (the vector's keys are public) hold the table from here on. Declaring, rotating or revoking a signer is a pull request to that table (README, "Escrow PaymentOperators").

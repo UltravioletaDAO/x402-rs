@@ -6,13 +6,16 @@ it, or with the private one down, Robinhood is not measured (a null balance) ins
 from the official keyless endpoint. The URLs below are stand-ins.
 """
 from contextlib import redirect_stdout
+import http.client
 import importlib.util
 import io
 import os
 from pathlib import Path
 import unittest
 from unittest.mock import patch
+import urllib.error
 import urllib.request
+from urllib.parse import urlsplit
 
 
 spec = importlib.util.spec_from_file_location(
@@ -26,12 +29,17 @@ PRIVATE = "https://private.invalid/robinhood"
 PRIVATE_WITH_KEY = "https://rh.invalid/KEYPART-not-a-real-key/"
 # A value with no scheme: urllib's own ValueError quotes it whole.
 NO_SCHEME_WITH_KEY = "rh.invalid/KEYPART-not-a-real-key/"
+# Credentials in the URL, and a space in its path: http.client's own InvalidURL quotes the
+# piece it rejects ("nonnumeric port: 'KEYPART@...'", "control characters. '/KEYPART ...'").
+CREDENTIALS_WITH_KEY = "https://user:KEYPART@rh.invalid/x/"
+SPACE_WITH_KEY = "https://rh.invalid/KEYPART not-real/"
+ENV_URL = "https://env.invalid/robinhood"
 PUBLIC_MAINNET_HOST = "rpc.mainnet.chain.robinhood.com"
 PUBLIC_TESTNET = "https://rpc.testnet.chain.robinhood.com"
 
 
 class RobinhoodBalancesTest(unittest.TestCase):
-    def configs(self, private: dict):
+    def configs(self, private: dict, env: dict | None = None):
         asked = []
 
         def get_private_rpc(key):
@@ -39,7 +47,7 @@ class RobinhoodBalancesTest(unittest.TestCase):
             return private.get(key)
 
         out = io.StringIO()
-        with patch.dict(os.environ, {}, clear=True), patch.object(
+        with patch.dict(os.environ, env or {}, clear=True), patch.object(
             balances, "get_private_rpc", side_effect=get_private_rpc
         ), redirect_stdout(out):
             configs = balances.get_network_configs()
@@ -116,8 +124,51 @@ class RobinhoodBalancesTest(unittest.TestCase):
 
         got, _, log = self.read(configs["robinhood-mainnet"], rpc)
         self.assertEqual(got, ("robinhood-mainnet", None))
-        self.assertIn("unknown url type", log)
+        self.assertIn(": ValueError", log)
         self.assertNotIn("KEYPART", log)
+
+    def test_credentials_in_the_url_never_reach_the_log(self):
+        configs, _ = self.configs({"robinhood": CREDENTIALS_WITH_KEY})
+
+        def rpc(url, data):
+            http.client.HTTPSConnection(urlsplit(url).netloc)  # InvalidURL, quoting the "port"
+            return {"result": hex(10**16)}
+
+        got, _, log = self.read(configs["robinhood-mainnet"], rpc)
+        self.assertEqual(got, ("robinhood-mainnet", None))
+        self.assertIn("from rh.invalid: InvalidURL", log)
+        self.assertNotIn("KEYPART", log)
+
+    def test_a_space_in_the_path_never_reaches_the_log(self):
+        configs, _ = self.configs({"robinhood": SPACE_WITH_KEY})
+
+        def rpc(url, data):
+            parts = urlsplit(url)
+            http.client.HTTPSConnection(parts.netloc).putrequest("POST", parts.path)  # InvalidURL
+            return {"result": hex(10**16)}
+
+        got, _, log = self.read(configs["robinhood-mainnet"], rpc)
+        self.assertEqual(got, ("robinhood-mainnet", None))
+        self.assertIn("from rh.invalid: InvalidURL", log)
+        self.assertNotIn("KEYPART", log)
+
+    def test_an_http_error_logs_its_status_and_not_its_url(self):
+        configs, _ = self.configs({"robinhood": PRIVATE_WITH_KEY})
+
+        def rpc(url, data):
+            raise urllib.error.HTTPError(url, 429, "Too Many Requests", {}, None)
+
+        got, _, log = self.read(configs["robinhood-mainnet"], rpc)
+        self.assertEqual(got, ("robinhood-mainnet", None))
+        self.assertIn("from rh.invalid: HTTPError 429", log)
+        self.assertNotIn("KEYPART", log)
+
+    def test_the_secret_key_wins_over_rpc_url_robinhood(self):
+        configs, _ = self.configs({"robinhood": PRIVATE}, env={"RPC_URL_ROBINHOOD": ENV_URL})
+        self.assertEqual(self.rpcs(configs["robinhood-mainnet"]), [PRIVATE, ENV_URL])
+        got, urls, _ = self.read(configs["robinhood-mainnet"], lambda url, data: {"result": hex(10**16)})
+        self.assertEqual(got, ("robinhood-mainnet", "0.0100"))
+        self.assertEqual(urls, [PRIVATE])
 
     def test_another_networks_key_is_not_read_as_robinhood(self):
         configs, _ = self.configs({"arbitrum": PRIVATE})

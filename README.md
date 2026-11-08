@@ -30,14 +30,18 @@ Includes [ERC-8004](https://eips.ethereum.org/EIPS/eip-8004) on-chain reputation
 
 ## Supported Networks
 
-> **Live availability**: Run `python scripts/verify_landing_canonical.py` and inspect `/supported`. Counting identifier strings counts aliases as networks — most networks appear twice, under a v1 name and a CAIP-2 id, and one network can carry several schemes. Drop the CAIP-2 ids before counting:
+> **Live availability**: [`/supported`](https://facilitator.ultravioletadao.xyz/supported) is the source of truth, and this README types no network count of its own: a count written here goes stale with the next release. `/supported` names most networks twice, under a v1 name (`base`) and a CAIP-2 id (`eip155:8453`), and one network can carry several schemes, so count v1 names, not identifier strings. Native Hedera has CAIP-2 ids only (`hedera:mainnet`, `hedera:testnet`): add it to either count by hand.
 >
 > ```bash
-> # mainnets that have a v1 name (22 on 2026-09-17; Hedera has none, so it is not in this count)
+> # mainnets with a v1 name, under any scheme (plus hedera:mainnet)
 > curl -s https://facilitator.ultravioletadao.xyz/supported | jq -r '[.kinds[].network] | unique | .[]' | grep -v ':' | grep -vcE 'testnet|sepolia|devnet|fuji|amoy'
+> # testnets with a v1 name, under any scheme (plus hedera:testnet)
+> curl -s https://facilitator.ultravioletadao.xyz/supported | jq -r '[.kinds[].network] | unique | .[]' | grep -v ':' | grep -cE 'testnet|sepolia|devnet|fuji|amoy'
+> # the canonical map the landing page is held to: payment, escrow and ERC-8004 networks
+> python scripts/verify_landing_canonical.py
 > ```
 >
-> The two tables below listed exactly what `/supported` served on 2026-09-17: 23 mainnets and 20 testnets, Arc and Hedera included. HashKey Chain (mainnet and testnet, 2.52.0) was added after that reading: it is served once the release that carries it is deployed — check `/supported`. Details: [docs/HASHKEY_CHAIN.md](docs/HASHKEY_CHAIN.md).
+> The two tables below were last checked against `/supported` on 2026-11-08, HashKey Chain included ([docs/HASHKEY_CHAIN.md](docs/HASHKEY_CHAIN.md)). That day Ethereum Sepolia was listed under `escrow` and `commerce` only, not `exact`.
 
 ### Arc (independently enabled)
 
@@ -367,7 +371,9 @@ a fee is in force or scheduled, since the payee would then receive less than the
 signed amount.
 
 ### NEAR (NEP-366)
-Meta-transactions with delegate actions for gasless payments.
+Meta-transactions with delegate actions for gasless payments: the payer signs a NEP-366 delegate action, and the
+facilitator relays it and pays the gas. `exact` works this way, and so does the `escrow` scheme toward the Arras
+contracts ([NEAR escrow (Arras)](#near-escrow-arras)).
 
 ### Stellar (Soroban)
 Smart contract-based authorization on Stellar's Soroban VM.
@@ -554,6 +560,10 @@ curl -X POST https://facilitator.ultravioletadao.xyz/feedback \
 
 The facilitator supports the [x402r extension](https://github.com/coinbase/x402/issues/864) for trustless refunds via escrow contracts.
 
+It runs three escrow rails, each with its own table below: the `escrow` scheme on EVM networks, through a declared
+PaymentOperator; the older `refund` extension on Base and Base Sepolia, through a DepositRelay proxy (the escrow flow
+drawn below); and the `escrow` scheme on NEAR, into the Arras contracts.
+
 ### Architecture Overview
 
 ```
@@ -586,10 +596,77 @@ The facilitator supports the [x402r extension](https://github.com/coinbase/x402/
 
 ### Supported Networks
 
+**`escrow` scheme (PaymentOperator).** A payment with `scheme: "escrow"` (or its alias `commerce`) is authorized into
+the network's `AuthCaptureEscrow` through a PaymentOperator the facilitator declares for that network, and released or
+refunded later through the same operator. The networks are `ESCROW_NETWORKS` and the operators
+`OperatorAddresses::for_network`, both in [`src/payment_operator/addresses.rs`](src/payment_operator/addresses.rs); the
+rail is on while `ENABLE_PAYMENT_OPERATOR` is true, as it is in production. `/supported` publishes one `escrow` entry per
+declared operator, with the addresses to use in `extra.escrowAddress`, `extra.operatorAddress` and
+`extra.tokenCollector`; read them there rather than from a copy.
+
+| Network | `network` (v1 / CAIP-2) | Contract set | Notes |
+|---------|-------------------------|--------------|-------|
+| **Ethereum** | `ethereum` / `eip155:1` | per-chain | |
+| **Base** | `base` / `eip155:8453` | per-chain | |
+| **Arbitrum** | `arbitrum` / `eip155:42161` | per-chain | |
+| **Optimism** | `optimism` / `eip155:10` | per-chain | |
+| **Polygon** | `polygon` / `eip155:137` | per-chain | |
+| **Avalanche** | `avalanche` / `eip155:43114` | per-chain | |
+| **Celo** | `celo` / `eip155:42220` | per-chain | |
+| **Monad** | `monad` / `eip155:143` | per-chain | |
+| **SKALE Base** | `skale-base` / `eip155:1187947933` | CREATE3 | |
+| **Arc** | `arc` / `eip155:5042` | canonical commerce-payments v1 | operator announced while it passes the on-chain self-check |
+| **Robinhood Chain** | `robinhood` / `eip155:4663` | canonical commerce-payments v1 | on-chain self-check; USDG only (`400 escrow_token_not_served`) |
+| Base Sepolia | `base-sepolia` / `eip155:84532` | per-chain | testnet |
+| Ethereum Sepolia | `ethereum-sepolia` / `eip155:11155111` | per-chain | testnet; announced, but production configures no RPC for it (no `exact` entry either), so a request there cannot reach the chain |
+
+Every network in this table had an `escrow` entry in `/supported` on 2026-11-08. Arc testnet is declared as well, on the
+canonical set, but its operator is announced only once it passes the self-check, and it was not announced that day.
+Robinhood Chain Testnet carries the canonical set but no declared operator, so it has no `escrow` entry. The `commerce`
+entries name the contract set a merchant deploys its own operator against; `POST /settle` relays only to declared
+operators (see [Escrow PaymentOperators](#escrow-paymentoperators)).
+
+**`refund` extension (DepositRelay).** The flow drawn above: a payment that carries `extensions.refund` is settled to the
+merchant's DepositRelay proxy, which deposits it into the escrow. Code in [`src/escrow.rs`](src/escrow.rs), on while
+`ENABLE_ESCROW` is true, on Base and Base Sepolia only:
+
 | Network | Chain ID | Factory | Escrow | Status |
 |---------|----------|---------|--------|--------|
 | Base | 8453 | `0x41Cc...A814` | `0xC409...f6bC` | Production |
-| Base Sepolia | 84532 | `0xf981...BaC2` | `0xF7F2...0E58` | Testnet |
+| Base Sepolia | 84532 | `0xf981...BaC2` | `0xF7F2...e058` | Testnet |
+
+### NEAR escrow (Arras)
+
+On NEAR the `escrow` scheme pays into the [Arras](https://github.com/UltravioletaDAO/arras) escrow contract. The payer
+signs a NEP-366 delegate action that calls `ft_transfer_call` on the network's USDC, with the escrow contract as the
+receiver and the canonical `msg` the 402 carries in `extra.nearEscrow`. The facilitator relays it and pays the gas, as
+it does for `exact` on NEAR: the payer pays none. Code in [`src/chain/near/escrow.rs`](src/chain/near/escrow.rs).
+
+What this facilitator serves today (`/supported`, `extra.nearEscrow`, carries the live values):
+
+| Network | `network` (v1 / CAIP-2) | Escrow contract | Operators |
+|---------|-------------------------|-----------------|-----------|
+| **NEAR** | `near` / `near:mainnet` | `v1.arras-escrow.near` | `em` |
+| NEAR Testnet | `near-testnet` / `near:testnet` | `arras-v1b-1101.testnet` | `em` |
+
+- **Off in the code** unless `ENABLE_NEAR_ESCROW` is true; production turns it on. The facilitator relays only to the
+  contracts listed in `NEAR_ESCROW_CONTRACTS_MAINNET` / `NEAR_ESCROW_CONTRACTS_TESTNET`, never to one a request names
+  on its own (`near_escrow_contract_not_served`), and only for the operators in `NEAR_ESCROW_OPERATOR_IDS`
+  (`near_escrow_operator_not_served`).
+- **Verify** holds the delegate action to one `ft_transfer_call` on USDC with 1 yoctoNEAR, gas between
+  `extra.nearEscrow.minGasTgas` and `maxGasTgas`, a non-zero amount and a `msg` equal byte for byte to the 402's. Before
+  relaying, it judges the authorization on the escrow's own views (`get_config`, `get_operator`, `get_payment`, the
+  payer's storage balance), so what the escrow would refuse is refused first, each with a `near_escrow_*` reason.
+- **Settle** confirms that the escrow holds the payment from the receipts (the token's transfer to the escrow and the
+  escrow's `authorized` event), never from the transaction status, and returns `extensions.nearEscrow` (`action`,
+  `contract`, `paymentId`).
+- **The lifecycle** (`release`, `refund`, `reclaim`, `withdraw`, `withdraw_for`) is relayed the same way, each call
+  gated by the escrow's own state: the operator's capturers, the payment's payer, its deadlines, a claimable balance.
+- Every relay counts against its sender's `extra.nearEscrow.senderPerHour` per UTC hour.
+
+History: [CHANGELOG 2.53.0](CHANGELOG.md#2530---2026-11-01) (the scheme), [2.54.1](CHANGELOG.md#2541---2026-11-03)
+(served on NEAR mainnet) and [2.55.0](CHANGELOG.md#2550---2026-11-03) (refusing before relaying what the escrow would
+refuse).
 
 ### Documentation
 

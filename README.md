@@ -646,7 +646,7 @@ What this facilitator serves today (`/supported`, `extra.nearEscrow`, carries th
 
 | Network | `network` (v1 / CAIP-2) | Escrow contract | Operators |
 |---------|-------------------------|-----------------|-----------|
-| **NEAR** | `near` / `near:mainnet` | `v1.arras-escrow.near` | `em` |
+| **NEAR** | `near` / `near:mainnet` | `v1.arras-escrow.near`, `v2.arras-escrow.near` | `em` |
 | NEAR Testnet | `near-testnet` / `near:testnet` | `arras-v1b-1101.testnet` | `em` |
 
 - **Off in the code** unless `ENABLE_NEAR_ESCROW` is true; production turns it on. The facilitator relays only to the
@@ -662,11 +662,19 @@ What this facilitator serves today (`/supported`, `extra.nearEscrow`, carries th
   `contract`, `paymentId`).
 - **The lifecycle** (`release`, `refund`, `reclaim`, `withdraw`, `withdraw_for`) is relayed the same way, each call
   gated by the escrow's own state: the operator's capturers, the payment's payer, its deadlines, a claimable balance.
+- **Arras v2** (`v2.arras-escrow.near`) takes v1's `msg` with the same `paymentId` (the id does not name the contract:
+  key a payment by contract and id), and each contract has its own capturers. The facilitator relays only that `msg`,
+  without v2's `dispute_deadline` or `operator_ticket`: an operator with a `ticket_pubkey` on v2 refuses every payment
+  relayed this way (E53). The payer's storage (E14) is judged before relaying on v1 alone: on v2, a payer whose NEP-145
+  balance and the operator's sponsorship both fall short is relayed and refused on chain. v2's own methods
+  (`open_dispute`, `resolve_dispute`, `authorize_from_budget`, ...) are not relayed; a `Disputed` or `Resolved`
+  payment passes no `release`, `refund` or `reclaim` (`near_escrow_payment_not_open`, once the call's other guards
+  pass), and once a dispute is resolved its balances are withdrawn as usual.
 - Every relay counts against its sender's `extra.nearEscrow.senderPerHour` per UTC hour.
 
 History: [CHANGELOG 2.53.0](CHANGELOG.md#2530---2026-11-01) (the scheme), [2.54.1](CHANGELOG.md#2541---2026-11-03)
-(served on NEAR mainnet) and [2.55.0](CHANGELOG.md#2550---2026-11-03) (refusing before relaying what the escrow would
-refuse).
+(served on NEAR mainnet), [2.55.0](CHANGELOG.md#2550---2026-11-03) (refusing before relaying what the escrow would
+refuse) and [2.57.2](CHANGELOG.md#2572---2026-11-11) (Arras v2 on NEAR mainnet).
 
 ### Documentation
 

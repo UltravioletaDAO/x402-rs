@@ -25,6 +25,8 @@ const USDC_MAINNET: &str = "17208628f84f5d6ad33f0da3bbbeb27ffcb398eac501a31bd6ad
 const PAYER: &str = "payer-demo.testnet";
 const WORKER: &str = "worker-demo.testnet";
 const CAPTURER: &str = "em-capturer-v1b.arras-dev.testnet";
+/// v2's capturer of `em`: each contract registers its own.
+const CAPTURER_V2: &str = "em-capturer-v2.arras-dev.testnet";
 const AGENT: &str = "agent-1.testnet";
 const CONTRACT: &str = "arras-v1b-1101.testnet";
 const CONTRACT_V2: &str = "v2.arras-dev.testnet";
@@ -1733,6 +1735,9 @@ fn a_budget_authorization_out_of_shape_is_refused() {
 struct Node {
     /// `broadcast_tx_commit`.
     outcome: Value,
+    /// The escrow account whose views the stub answers ([`CONTRACT`], or
+    /// [`CONTRACT_V2`] in [`Node::v2`]).
+    escrow: &'static str,
     /// `get_payment(V1_ID)`, `get_operator("em")` and `get_config` on the
     /// escrow.
     payment: Value,
@@ -1770,6 +1775,7 @@ impl Node {
     fn new(outcome: Value) -> Self {
         Self {
             outcome,
+            escrow: CONTRACT,
             payment: json!({"operator_id": "em", "payer": PAYER, "receiver": WORKER,
                             "amount": "1000000", "released": "0", "refunded": "0",
                             "status": "Authorized",
@@ -1810,6 +1816,65 @@ impl Node {
         self.payment["reclaim_after"] = json!(ns(NOW - 3_600).to_string());
         self
     }
+
+    /// The same payment, operator and caps on an `arras-v2` escrow at
+    /// [`CONTRACT_V2`], each view with every field `escrow-v2` serializes
+    /// (`contracts/escrow-v2/src/lib.rs` and `views.rs` of the arras
+    /// repository): v2's own capturer, its arbiter and ticket key on the
+    /// operator, and v2's `get_config`. v2's NEP-145 balances are never read.
+    fn v2(outcome: Value) -> Self {
+        let mut node = Self::new(outcome);
+        node.escrow = CONTRACT_V2;
+        node.payment = v2_payment("Authorized", Value::Null);
+        node.operator = json!({"owner": "owner.arras-dev.testnet", "capturers": [CAPTURER_V2],
+                               "fee_bps": 1300, "fee_recipient": "em-fees.arras-dev.testnet",
+                               "min_amount": "10000", "tope_tvl_operador": "1000000000",
+                               "tvl_operador": "0", "tope_tvl_por_payer": "20000000",
+                               "sponsor_pool": "100000000000000000000000",
+                               "sponsor_max_por_payer": "20000000000000000000000",
+                               "arbiter": "em-arbiter-v2.arras-dev.testnet",
+                               "arbiter_window_ns": "604800000000000", "ticket_pubkey": null});
+        node.config = json!({"version": "arras-v2", "owner": "owner.arras-dev.testnet",
+                             "guardian": "guardian.arras-dev.testnet", "paused": false,
+                             "token": USDC_TESTNET, "tope_por_pago": "10000000",
+                             "tope_tvl_global": "1000000000", "tvl_global": "0",
+                             "in_flight": "0", "budgets_total": "0", "payments": 1,
+                             "operators": 1});
+        node.escrow_storage.clear();
+        node
+    }
+}
+
+/// V-1 as `get_payment` answers it on Arras v2: the 16 fields of v1's
+/// `Payment` (of which [`Node::new`] keeps the ones the gate reads) and v2's
+/// `dispute_deadline`, `arbiter_window_ns` and `dispute`, 19 in all.
+/// `status` is one of v2's seven, a plain string.
+fn v2_payment(status: &str, dispute: Value) -> Value {
+    let payment = json!({"operator_id": "em", "payer": PAYER, "receiver": WORKER,
+                         "amount": "1000000", "released": "0", "refunded": "0",
+                         "fee_bps": 1300, "fee_recipient": "em-fees.arras-dev.testnet",
+                         "fee_bps_max": 1300, "created_at": ns(NOW - 86_400).to_string(),
+                         "release_deadline": "1793577600000000000",
+                         "reclaim_after": "1793664000000000000",
+                         "terms_hash": "0".repeat(64), "status": status,
+                         "storage_charged": "6180000000000000000000", "sponsored": false,
+                         "dispute_deadline": "1793664000000000000",
+                         "arbiter_window_ns": "604800000000000", "dispute": dispute});
+    assert_eq!(payment.as_object().unwrap().len(), 19);
+    payment
+}
+
+/// A v2 dispute the payer opened an hour before NOW, resolved at
+/// `resolved_at` (Unix seconds) or still open.
+fn v2_dispute(resolved_at: Option<u64>) -> Value {
+    json!({"opened_by": "Payer", "reason_hash": "ab".repeat(32),
+           "opened_at": ns(NOW - 3_600).to_string(),
+           "resolved_at": resolved_at.map(|t| ns(t).to_string())})
+}
+
+/// `outcome` as it reads when the escrow is [`CONTRACT_V2`].
+fn on_v2(outcome: Value) -> Value {
+    serde_json::from_str(&outcome.to_string().replace(CONTRACT, CONTRACT_V2)).unwrap()
 }
 
 /// Unix seconds as the escrow's nanoseconds.
@@ -1894,12 +1959,12 @@ async fn stub_live(node: Arc<Mutex<Node>>) -> (String, Arc<AtomicUsize>, Views) 
                         })
                     }
                     Some("query")
-                        if call(CONTRACT, "get_payment") && args["payment_id"] == V1_ID =>
+                        if call(node.escrow, "get_payment") && args["payment_id"] == V1_ID =>
                     {
                         view(node.payment.to_string().into_bytes())
                     }
-                    Some("query") if call(CONTRACT, "get_payment") => view(b"null".to_vec()),
-                    Some("query") if call(CONTRACT, "get_operator") => {
+                    Some("query") if call(node.escrow, "get_payment") => view(b"null".to_vec()),
+                    Some("query") if call(node.escrow, "get_operator") => {
                         let operator = match args["operator_id"].as_str() {
                             Some("em") => Some(node.operator.clone()),
                             Some(id) => node.operators.get(id).cloned(),
@@ -1907,10 +1972,10 @@ async fn stub_live(node: Arc<Mutex<Node>>) -> (String, Arc<AtomicUsize>, Views) 
                         };
                         view(operator.map_or(b"null".to_vec(), |o| o.to_string().into_bytes()))
                     }
-                    Some("query") if call(CONTRACT, "get_config") => {
+                    Some("query") if call(node.escrow, "get_config") => {
                         view(node.config.to_string().into_bytes())
                     }
-                    Some("query") if call(CONTRACT, "storage_balance_of") => {
+                    Some("query") if call(node.escrow, "storage_balance_of") => {
                         let available = args["account_id"]
                             .as_str()
                             .and_then(|a| node.escrow_storage.get(a).cloned());
@@ -1921,7 +1986,7 @@ async fn stub_live(node: Arc<Mutex<Node>>) -> (String, Arc<AtomicUsize>, Views) 
                             None => b"null".to_vec(),
                         })
                     }
-                    Some("query") if call(CONTRACT, "get_claimable") => {
+                    Some("query") if call(node.escrow, "get_claimable") => {
                         let owed = args["account"]
                             .as_str()
                             .and_then(|a| node.claimable.get(a).cloned())
@@ -4086,6 +4151,141 @@ async fn a_refusal_before_relaying_logs_no_payer() {
     for who in [PAYER, CAPTURER, "1000000"] {
         assert!(!logs.contains(who), "{who} in {logs}");
     }
+}
+
+// ---------------------------------------------------------------------------
+// Arras v2 next to v1
+// ---------------------------------------------------------------------------
+
+/// [`lifecycle_request`] for a call on [`CONTRACT_V2`].
+fn v2_lifecycle_request(signed: &SignedDelegateAction, action: &str) -> EscrowRequest {
+    let mut req = lifecycle_request(signed, action);
+    req.extra.contract = Some(CONTRACT_V2.to_string());
+    req
+}
+
+/// Arras v2 listed next to v1, as [`cfg`] lists them: an authorization signed
+/// to v2 with v1's msg (v2 takes it, with the same payment id) is judged on
+/// v2's own views and paid as v2 logs it, and v2's capturer has its lifecycle
+/// relayed while v1's is no capturer there.
+#[tokio::test]
+async fn arras_v2_takes_the_v1_msg_and_has_its_own_capturer() {
+    let mut call = authorize_call();
+    with_args(&mut call, |a| a["receiver_id"] = json!(CONTRACT_V2));
+    let mut req = request(Some(&sign(PAYER, USDC_TESTNET, vec![call])));
+    req.extra.contract = Some(CONTRACT_V2.to_string());
+    let node = Node {
+        payment: Value::Null,
+        ..Node::v2(on_v2(authorized_outcome()))
+    };
+    let (provider, sent) = escrow_provider(node).await;
+    let response = provider.settle_escrow(&req).await.unwrap();
+    assert!(response.success, "{response:?}");
+    assert_eq!(sent.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        response.extensions.unwrap()["nearEscrow"],
+        json!({"action": "authorize", "contract": CONTRACT_V2, "paymentId": V1_ID})
+    );
+
+    // The lifecycle reads no ticket: `em` on v2 as mainnet answered on
+    // 2026-11-08, its ticket key set (the Arras repository's docs/MAINNET.md).
+    let released = on_v2(lifecycle_outcome(
+        CAPTURER_V2,
+        returns(""),
+        vec![arras("released", json!({"payment_id": V1_ID}))],
+    ));
+    let mut node = Node::v2(released);
+    node.operator["ticket_pubkey"] = json!("ed25519:9zh27mQwBQbKGYixfqUVEU4xNtz93Sad8crhhFH4B9YF");
+    let (provider, sent) = escrow_provider(node).await;
+    let v1_capturer = sign(CAPTURER, CONTRACT_V2, vec![release_call()]);
+    let response = provider
+        .settle_escrow(&v2_lifecycle_request(&v1_capturer, "release"))
+        .await
+        .unwrap();
+    assert_eq!(refused(&response), "near_escrow_not_capturer");
+    assert_eq!(sent.load(Ordering::SeqCst), 0);
+    let release = sign(CAPTURER_V2, CONTRACT_V2, vec![release_call()]);
+    let response = provider
+        .settle_escrow(&v2_lifecycle_request(&release, "release"))
+        .await
+        .unwrap();
+    assert!(response.success, "{response:?}");
+    assert_eq!(sent.load(Ordering::SeqCst), 1);
+    for (method, args, gas) in [
+        ("refund", json!({"payment_id": V1_ID}), 30),
+        ("withdraw_for", json!({"account": WORKER}), 50),
+    ] {
+        let signed = sign(CAPTURER_V2, CONTRACT_V2, vec![lifecycle(method, args, gas)]);
+        let verdict = provider
+            .verify_escrow(&v2_lifecycle_request(&signed, method))
+            .await
+            .unwrap();
+        assert_valid(&verdict, CAPTURER_V2);
+    }
+}
+
+/// v2's two states v1 does not have: a payment in dispute is frozen (v2
+/// answers E22 to `release`, `refund` and `reclaim` until the dispute is
+/// resolved) and a resolved one is closed. Both parse, and neither is
+/// relayed: `near_escrow_payment_not_open`, nothing sent. What a resolution
+/// credits is withdrawn as any claimable balance.
+#[tokio::test]
+async fn a_disputed_or_resolved_arras_v2_payment_is_not_relayed() {
+    let disputed = v2_payment("Disputed", v2_dispute(None));
+    let mut resolved = v2_payment("Resolved", v2_dispute(Some(NOW - 600)));
+    resolved["refunded"] = json!("1000000");
+    let calls = [
+        ("release", CAPTURER_V2, release_call()),
+        (
+            "refund",
+            CAPTURER_V2,
+            lifecycle("refund", json!({"payment_id": V1_ID}), 30),
+        ),
+        (
+            "reclaim",
+            PAYER,
+            lifecycle("reclaim", json!({"payment_id": V1_ID}), 30),
+        ),
+    ];
+    for (state, payment) in [("Disputed", disputed), ("Resolved", resolved)] {
+        for (method, sender, call) in calls.clone() {
+            let mut node = Node::v2(on_v2(lifecycle_outcome(sender, returns(""), vec![])));
+            node.payment = payment.clone();
+            if method == "reclaim" {
+                node = node.reclaimable();
+            }
+            let (provider, sent) = escrow_provider(node).await;
+            let signed = sign(sender, CONTRACT_V2, vec![call]);
+            let response = provider
+                .settle_escrow(&v2_lifecycle_request(&signed, method))
+                .await
+                .unwrap();
+            assert_eq!(
+                refused(&response),
+                "near_escrow_payment_not_open",
+                "{method} {state}"
+            );
+            assert_eq!(sent.load(Ordering::SeqCst), 0, "{method} {state}");
+        }
+    }
+    let withdrawn = on_v2(withdraw_outcome(
+        CAPTURER_V2,
+        WORKER,
+        true,
+        returns(r#""870000""#),
+    ));
+    let (provider, sent) = escrow_provider(Node::v2(withdrawn)).await;
+    let signed = sign(
+        CAPTURER_V2,
+        CONTRACT_V2,
+        vec![lifecycle("withdraw_for", json!({"account": WORKER}), 50)],
+    );
+    let response = provider
+        .settle_escrow(&v2_lifecycle_request(&signed, "withdraw_for"))
+        .await
+        .unwrap();
+    assert!(response.success, "{response:?}");
+    assert_eq!(sent.load(Ordering::SeqCst), 1);
 }
 
 // ---------------------------------------------------------------------------

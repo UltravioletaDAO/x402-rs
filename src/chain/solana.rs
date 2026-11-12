@@ -1870,6 +1870,8 @@ impl SolanaProvider {
     ///
     /// Security (audit fix B1): the sweep moves exactly `max_amount_required`. A settlement
     /// account holding less is refused before anything is sent; extra funds stay in it.
+    /// payTo's token account is created only by a sweep that closes the settlement account
+    /// to the fee payer, so the fee payer never funds rent it does not get back.
     async fn sweep_settlement_account(
         &self,
         secret_key_str: &str,
@@ -1969,6 +1971,34 @@ impl SolanaProvider {
             ));
         }
 
+        // The settlement ATA is closed (step 3) only when the whole balance moves.
+        let closes_settlement = sweep_amount == on_chain_balance;
+
+        // SECURITY: the fee payer pays transaction fees, never the rent of an account that
+        // does not come back to it. payTo's token account is created (step 1) only when it
+        // does not exist yet AND this transaction closes the settlement ATA with its rent
+        // going to the fee payer, which pays the fee payer back for the new account. An
+        // existing account gets no create instruction at all: if its owner closes it before
+        // the sweep lands, the transfer fails instead of the fee payer funding a new one.
+        let pay_to_ata_exists = self
+            .rpc_client
+            .get_account_with_commitment(&pay_to_ata, self.rpc_client.commitment())
+            .await
+            .map_err(|e| {
+                FacilitatorLocalError::ContractCall(format!(
+                    "failed to read the payTo token account: {e}"
+                ))
+            })?
+            .value
+            .is_some_and(|account| account.owner == token_program);
+        if !pay_to_ata_exists && !closes_settlement {
+            return Err(FacilitatorLocalError::DecodingError(
+                "settlement account: payTo has no token account for this mint, and the sweep \
+                 creates one only when it closes the settlement account"
+                    .to_string(),
+            ));
+        }
+
         tracing::info!(
             network = %self.network(),
             settlement_account = %settlement_pubkey,
@@ -1979,19 +2009,21 @@ impl SolanaProvider {
 
         let mut instructions = Vec::new();
 
-        // 1. Create payTo ATA (idempotent - no-op if exists)
-        instructions.push(Instruction {
-            program_id: ATA_PROGRAM_PUBKEY,
-            accounts: vec![
-                AccountMeta::new(fee_payer, true),
-                AccountMeta::new(pay_to_ata, false),
-                AccountMeta::new_readonly(pay_to, false),
-                AccountMeta::new_readonly(mint, false),
-                AccountMeta::new_readonly(solana_sdk::system_program::id(), false),
-                AccountMeta::new_readonly(token_program, false),
-            ],
-            data: vec![1], // 1 = CreateIdempotent
-        });
+        // 1. Create payTo ATA, only when it is missing and step 3 pays the rent back (above).
+        if !pay_to_ata_exists {
+            instructions.push(Instruction {
+                program_id: ATA_PROGRAM_PUBKEY,
+                accounts: vec![
+                    AccountMeta::new(fee_payer, true),
+                    AccountMeta::new(pay_to_ata, false),
+                    AccountMeta::new_readonly(pay_to, false),
+                    AccountMeta::new_readonly(mint, false),
+                    AccountMeta::new_readonly(solana_sdk::system_program::id(), false),
+                    AccountMeta::new_readonly(token_program, false),
+                ],
+                data: vec![1], // 1 = CreateIdempotent
+            });
+        }
 
         // 2. TransferChecked from settlement ATA to payTo ATA (capped at required_amount).
         instructions.push(
@@ -2018,12 +2050,18 @@ impl SolanaProvider {
         // retains the excess.  In this case we do NOT close the account because close_account
         // fails on a non-zero balance.  The excess remains in the settlement ATA and the
         // client is responsible for reclaiming it via a separate transaction.
-        if sweep_amount == on_chain_balance {
-            let rent_destination = payload
-                .settlement_rent_destination
-                .as_ref()
-                .and_then(|s| Pubkey::from_str(s).ok())
-                .unwrap_or(fee_payer);
+        if closes_settlement {
+            // The rent goes where the client asked, unless step 1 created payTo's account:
+            // then it pays the fee payer back for that account.
+            let rent_destination = if pay_to_ata_exists {
+                payload
+                    .settlement_rent_destination
+                    .as_ref()
+                    .and_then(|s| Pubkey::from_str(s).ok())
+                    .unwrap_or(fee_payer)
+            } else {
+                fee_payer
+            };
 
             instructions.push(
                 spl_token::instruction::close_account(
@@ -3433,6 +3471,8 @@ mod sweep_outcome_tests {
         balance: u64,
         /// What `getTransaction` answers for the cited deposit.
         cited: Value,
+        /// Whether `getAccountInfo` finds payTo's token account.
+        pay_to_ata_exists: bool,
     }
 
     fn stub(node: Node, balance: u64) -> Stub {
@@ -3441,6 +3481,7 @@ mod sweep_outcome_tests {
             sent: Default::default(),
             balance,
             cited: Value::Null,
+            pay_to_ata_exists: true,
         }
     }
 
@@ -3457,6 +3498,17 @@ mod sweep_outcome_tests {
                 "value":{"amount":stub.balance.to_string(),"decimals":6,"uiAmount":null,"uiAmountString":"0"}}))
             .into_response(),
             "getTransaction" => answer(stub.cited.clone()).into_response(),
+            "getAccountInfo" => {
+                let token_account = json!({"lamports":2_039_280u64,
+                    "data":[base64::engine::general_purpose::STANDARD.encode([0u8; 165]),"base64"],
+                    "owner":spl_token::id().to_string(),"executable":false,"rentEpoch":0,"space":165});
+                let value = if stub.pay_to_ata_exists {
+                    token_account
+                } else {
+                    Value::Null
+                };
+                answer(json!({"context":{"slot":1},"value":value})).into_response()
+            }
             "getLatestBlockhash" => answer(json!({"context":{"slot":1},
                 "value":{"blockhash":solana_sdk::hash::Hash::default().to_string(),"lastValidBlockHeight":100}}))
             .into_response(),
@@ -3835,5 +3887,161 @@ mod sweep_outcome_tests {
                 .any(|ix| is_close(ix, &settlement_ata, &rent_back)),
             "the settlement account is closed to the client's rent destination"
         );
+    }
+
+    // ---- Who pays for payTo's token account ---------------------------------
+
+    /// The fee payer funds an associated token account only in a transaction
+    /// that also closes the settlement account with its rent going to the fee
+    /// payer, which pays that account back.
+    fn assert_rent_comes_back(raw: &str, fee_payer: &Pubkey, settlement_ata: &Pubkey) {
+        let instructions = instructions_of(raw);
+        let funds = instructions.iter().any(|(program, accounts, _)| {
+            *program == ATA_PROGRAM_PUBKEY && accounts.first() == Some(fee_payer)
+        });
+        let paid_back = instructions
+            .iter()
+            .any(|ix| is_close(ix, settlement_ata, fee_payer));
+        assert!(
+            !funds || paid_back,
+            "the fee payer funds an account whose rent does not come back to it"
+        );
+    }
+
+    fn creates_an_account(raw: &str) -> bool {
+        instructions_of(raw)
+            .iter()
+            .any(|(program, _, _)| *program == ATA_PROGRAM_PUBKEY)
+    }
+
+    struct Swept {
+        result: Result<SettleResponse, FacilitatorLocalError>,
+        sent: Vec<String>,
+        fee_payer: Pubkey,
+        settlement_ata: Pubkey,
+        pay_to_ata: Pubkey,
+    }
+
+    /// A sweep of a settlement account holding `balance` for a price of
+    /// `required`, to a payTo whose token account exists or not.
+    async fn sweep_to(
+        balance: u64,
+        required: u64,
+        pay_to_ata_exists: bool,
+        rent_destination: Option<&Pubkey>,
+    ) -> Swept {
+        let mut stub = stub(Node::Confirms, balance);
+        stub.pay_to_ata_exists = pay_to_ata_exists;
+        let sent = stub.sent.clone();
+        let provider = provider_for(stub).await;
+        let (mint, pay_to, settlement) =
+            (Pubkey::new_unique(), Pubkey::new_unique(), Keypair::new());
+        let payload = payload_for(Some(&settlement), rent_destination);
+        let result = sweep(&provider, &payload, &requirements(&pay_to, &mint, required)).await;
+        let sent = sent.lock().unwrap().clone();
+        Swept {
+            result,
+            sent,
+            fee_payer: provider.keypair.pubkey(),
+            settlement_ata: ata(&settlement.pubkey(), &mint),
+            pay_to_ata: ata(&pay_to, &mint),
+        }
+    }
+
+    /// A sweep that leaves the settlement account open has no rent to pay the
+    /// fee payer back with, so it never creates payTo's account: it is refused.
+    #[tokio::test]
+    async fn an_overfunded_sweep_never_creates_a_missing_pay_to_account() {
+        let swept = sweep_to(2_000, 1_000, false, None).await;
+
+        for raw in &swept.sent {
+            assert_rent_comes_back(raw, &swept.fee_payer, &swept.settlement_ata);
+        }
+        assert!(
+            swept.sent.is_empty(),
+            "a sweep to a missing account was sent"
+        );
+        assert!(
+            matches!(swept.result, Err(FacilitatorLocalError::DecodingError(_))),
+            "{:?}",
+            swept.result
+        );
+    }
+
+    /// A full sweep may create payTo's account, and then the settlement
+    /// account's rent pays the fee payer back, whatever the client asked for.
+    #[tokio::test]
+    async fn a_sweep_that_creates_the_pay_to_account_sends_the_rent_to_the_fee_payer() {
+        let client = Pubkey::new_unique();
+        let swept = sweep_to(1_000, 1_000, false, Some(&client)).await;
+
+        assert_eq!(swept.sent.len(), 1, "exactly one sweep");
+        assert_rent_comes_back(&swept.sent[0], &swept.fee_payer, &swept.settlement_ata);
+        let instructions = instructions_of(&swept.sent[0]);
+        assert!(
+            instructions.iter().any(|(program, accounts, _)| {
+                *program == ATA_PROGRAM_PUBKEY && accounts.get(1) == Some(&swept.pay_to_ata)
+            }),
+            "payTo's account is created"
+        );
+        assert!(
+            instructions.iter().any(|ix| is_transfer(
+                ix,
+                &swept.settlement_ata,
+                &swept.pay_to_ata,
+                1_000
+            )),
+            "the price moves to payTo"
+        );
+        assert!(swept.result.is_ok(), "{:?}", swept.result);
+    }
+
+    /// An existing payTo account gets no create instruction, so nothing in the
+    /// sweep can make the fee payer fund one.
+    #[tokio::test]
+    async fn an_overfunded_sweep_to_an_existing_account_creates_nothing() {
+        let swept = sweep_to(2_000, 1_000, true, None).await;
+
+        assert_eq!(swept.sent.len(), 1, "exactly one sweep");
+        assert_rent_comes_back(&swept.sent[0], &swept.fee_payer, &swept.settlement_ata);
+        assert!(
+            !creates_an_account(&swept.sent[0]),
+            "an account was created"
+        );
+        let instructions = instructions_of(&swept.sent[0]);
+        assert!(
+            instructions.iter().any(|ix| is_transfer(
+                ix,
+                &swept.settlement_ata,
+                &swept.pay_to_ata,
+                1_000
+            )),
+            "the price moves to payTo"
+        );
+        assert!(swept.result.is_ok(), "{:?}", swept.result);
+    }
+
+    /// A full sweep to an existing account creates nothing and closes the
+    /// settlement account to the rent destination the client named.
+    #[tokio::test]
+    async fn a_full_sweep_to_an_existing_account_returns_the_rent_to_the_client() {
+        let client = Pubkey::new_unique();
+        let swept = sweep_to(1_000, 1_000, true, Some(&client)).await;
+
+        assert_eq!(swept.sent.len(), 1, "exactly one sweep");
+        assert_rent_comes_back(&swept.sent[0], &swept.fee_payer, &swept.settlement_ata);
+        assert!(
+            !creates_an_account(&swept.sent[0]),
+            "an account was created"
+        );
+        assert!(
+            instructions_of(&swept.sent[0]).iter().any(|ix| is_close(
+                ix,
+                &swept.settlement_ata,
+                &client
+            )),
+            "the rent goes to the client's destination"
+        );
+        assert!(swept.result.is_ok(), "{:?}", swept.result);
     }
 }

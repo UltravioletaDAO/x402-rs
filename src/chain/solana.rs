@@ -2234,7 +2234,8 @@ impl Facilitator for SolanaProvider {
         if let ExactPaymentPayload::SolanaSettlementAccount(sa_payload) =
             &request.payment_payload.payload
         {
-            // SECURITY (audit 03): settlement-account scheme is opt-in and OFF by default.
+            // SECURITY (audit 03): kill-switch. The scheme is ON unless
+            // ENABLE_SETTLEMENT_ACCOUNT is "false" or "0" (`is_settlement_account_enabled`).
             if !is_settlement_account_enabled() {
                 return Err(FacilitatorLocalError::Other(
                     "settlement_account_disabled: ENABLE_SETTLEMENT_ACCOUNT=false".to_string(),
@@ -2264,7 +2265,8 @@ impl Facilitator for SolanaProvider {
         if let ExactPaymentPayload::SolanaSettlementAccount(sa_payload) =
             &request.payment_payload.payload
         {
-            // SECURITY (audit 03): settlement-account scheme is opt-in and OFF by default.
+            // SECURITY (audit 03): kill-switch. The scheme is ON unless
+            // ENABLE_SETTLEMENT_ACCOUNT is "false" or "0" (`is_settlement_account_enabled`).
             if !is_settlement_account_enabled() {
                 return Err(FacilitatorLocalError::Other(
                     "settlement_account_disabled: ENABLE_SETTLEMENT_ACCOUNT=false".to_string(),

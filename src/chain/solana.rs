@@ -140,6 +140,22 @@ pub fn is_settlement_account_enabled() -> bool {
         .unwrap_or(true)
 }
 
+/// The settlement keypair a `settleSecretKey` carries (base58, 64 bytes).
+///
+/// Verify and sweep both decode it here, so the account verify binds the
+/// deposit to is the account the sweep signs for. `Keypair::from_bytes`
+/// refuses bytes whose public half is not the one their secret half derives.
+fn settlement_keypair(secret_key_str: &str) -> Result<Keypair, FacilitatorLocalError> {
+    let secret_bytes = solana_sdk::bs58::decode(secret_key_str)
+        .into_vec()
+        .map_err(|e| {
+            FacilitatorLocalError::DecodingError(format!("invalid settleSecretKey: {e}"))
+        })?;
+    Keypair::from_bytes(&secret_bytes).map_err(|e| {
+        FacilitatorLocalError::DecodingError(format!("invalid settleSecretKey keypair: {e}"))
+    })
+}
+
 // TTL for settlement replay records: 7 days in seconds.
 const SOLANA_SETTLE_TTL_SECONDS: u64 = 7 * 24 * 3600;
 
@@ -1478,9 +1494,10 @@ impl SolanaProvider {
     ///
     /// Security model (audit fix B1):
     ///
-    /// 1. OWNER CHECK: Only credits to the ATA whose `owner` field in the token balance
-    ///    record matches `requirements.pay_to` are accepted. This prevents an attacker
-    ///    from depositing USDC into an unrelated account and claiming it as payment.
+    /// 1. OWNER CHECK: only credits whose token balance record names the account that
+    ///    will hold the payment count. Without a `settleSecretKey` that is
+    ///    `requirements.pay_to`; with one, it is the settlement keypair the key carries,
+    ///    and the settlement ATA must also hold at least the price now.
     ///
     /// 2. The `settleSecretKey` model (private key transmitted over the wire) is a
     ///    residual risk that persists after this fix. See `SOLANA_NONCE_STORE` comment
@@ -1597,31 +1614,32 @@ impl SolanaProvider {
         // DIRECTLY in the merchant's wallet. In the no-sweep (settleSecretKey == None) path,
         // funds reach pay_to ONLY if the referenced tx credited pay_to directly -- we require
         // that below. (When a settleSecretKey IS supplied, the sweep moves funds from the
-        // settlement ATA to pay_to with a cap, so a settlement-ATA credit is acceptable.)
+        // settlement ATA to pay_to, so the credit that counts is the one to the settlement ATA.)
         let pay_to_str: Option<String> = match &requirements.pay_to {
             MixedAddress::Solana(pk) => Some(pk.to_string()),
             _ => None,
         };
 
-        // B1 NOTE: The Crossmint settlement-account model deposits USDC into a settlement ATA
-        // (owned by the settlement keypair), NOT directly into pay_to's ATA.  A strict owner==pay_to
-        // check would reject all legitimate Crossmint payments.  Instead, verification confirms
-        // that SOME ATA of the correct mint received at least required_amount.  The binding to
-        // pay_to is enforced in sweep_settlement_account, which hardcodes the transfer destination
-        // to pay_to_ata and caps the amount at required_amount.
-        //
-        // RESIDUAL RISK: An attacker who can inject an arbitrary on-chain USDC credit (e.g., by
-        // being the sender) and provide the settlement keypair can "prove" a payment was made.
-        // The sweep_settlement_account cap (B1 fix) ensures the facilitator never transfers more
-        // than required_amount to pay_to, and replay protection (B1 fix) prevents double-settle.
-        // The attacker loses their own USDC to the merchant -- not a useful attack.
+        // The Crossmint settlement-account model deposits USDC into a settlement ATA (owned by
+        // the settlement keypair), NOT directly into pay_to's ATA, and the sweep then moves it
+        // from there to pay_to. So with a settleSecretKey the credit that counts is the one to
+        // the account that key controls -- the account the sweep pays out of -- never a credit
+        // to any other account in the cited transaction. The settlement keypair is decoded the
+        // same way the sweep decodes it (`settlement_keypair`).
         //
         // RECOMMENDED NEXT STEP: Migrate to a PDA model where the settlement address is derived
         // from (payer, pay_to, nonce) and the facilitator controls the PDA.  This removes the
         // settleSecretKey entirely.  See SOLANA_NONCE_STORE comment block for details.
+        let settlement_owner: Option<Pubkey> = match &payload.settle_secret_key {
+            Some(secret_key_str) => Some(settlement_keypair(secret_key_str)?.pubkey()),
+            None => None,
+        };
+        let settlement_owner_str: Option<String> = settlement_owner.map(|pk| pk.to_string());
         let mut total_credit: u64 = 0;
         // SECURITY (audit 03): credit that landed DIRECTLY in pay_to's ATA (owner == pay_to).
         let mut pay_to_credit: u64 = 0;
+        // Credit that landed in an account owned by the settlement keypair.
+        let mut settlement_credit: u64 = 0;
         let mut payer_pubkey: Option<Pubkey> = None;
 
         for post_bal in post_balances {
@@ -1648,6 +1666,13 @@ impl SolanaProvider {
                 {
                     if owner == pay_to {
                         pay_to_credit += diff;
+                    }
+                }
+                if let (OptionSerializer::Some(ref owner), Some(ref settlement)) =
+                    (&post_bal.owner, &settlement_owner_str)
+                {
+                    if owner == settlement {
+                        settlement_credit += diff;
                     }
                 }
                 tracing::debug!(
@@ -1703,13 +1728,53 @@ impl SolanaProvider {
         // credited pay_to's ATA directly. Without this, an attacker could cite ANY unrelated
         // confirmed USDC transfer (crediting strangers' ATAs) and the facilitator would forge a
         // success while pay_to received nothing. When a settleSecretKey IS supplied, the sweep
-        // (capped, to pay_to) provides the binding, so a settlement-ATA credit is acceptable.
+        // (to pay_to) provides the binding, and the settlement ATA is checked right below.
         if payload.settle_secret_key.is_none() && pay_to_credit < required_amount {
             return Err(FacilitatorLocalError::DecodingError(format!(
                 "settlement account (no sweep): credit to pay_to {} < required {} \
                  (referenced transaction did not pay the merchant directly)",
                 pay_to_credit, required_amount
             )));
+        }
+
+        // SECURITY: when a settleSecretKey IS supplied, the sweep pays pay_to out of the
+        // settlement ATA, so the referenced tx must have deposited the price there, and the
+        // ATA must still hold it now: the sweep moves the price or nothing, and verify
+        // answers what settle would. Read at the commitment the tx itself was read at.
+        if let Some(settlement_owner) = settlement_owner {
+            if settlement_credit < required_amount {
+                return Err(FacilitatorLocalError::DecodingError(format!(
+                    "settlement account (sweep): credit to the settlement account {} < required {} \
+                     (referenced transaction did not fund it)",
+                    settlement_credit, required_amount
+                )));
+            }
+            let (settlement_ata, _) = Pubkey::find_program_address(
+                &[
+                    settlement_owner.as_ref(),
+                    spl_token::id().as_ref(),
+                    asset_pubkey.as_ref(),
+                ],
+                &ATA_PROGRAM_PUBKEY,
+            );
+            let settlement_balance = self
+                .rpc_client
+                .get_token_account_balance_with_commitment(
+                    &settlement_ata,
+                    CommitmentConfig::confirmed(),
+                )
+                .await
+                .map_err(|e| {
+                    FacilitatorLocalError::ContractCall(format!(
+                        "failed to get settlement account balance: {e}"
+                    ))
+                })?;
+            let on_chain_balance: u64 = settlement_balance.value.amount.parse().unwrap_or(0);
+            if on_chain_balance < required_amount {
+                return Err(FacilitatorLocalError::InsufficientFunds(
+                    MixedAddress::Solana(settlement_owner),
+                ));
+            }
         }
 
         let payer = payer_pubkey
@@ -1803,9 +1868,8 @@ impl SolanaProvider {
 
     /// Sweep USDC from a settlement account to payTo using the settlement secret key.
     ///
-    /// Security (audit fix B1): the sweep is capped at `min(on_chain_balance, max_amount_required)`.
-    /// This prevents draining more than the payment requires even if extra funds are present
-    /// in the settlement account.
+    /// Security (audit fix B1): the sweep moves exactly `max_amount_required`. A settlement
+    /// account holding less is refused before anything is sent; extra funds stay in it.
     async fn sweep_settlement_account(
         &self,
         secret_key_str: &str,
@@ -1818,14 +1882,7 @@ impl SolanaProvider {
         use solana_sdk::transaction::Transaction;
 
         // Decode the settlement keypair
-        let secret_bytes = solana_sdk::bs58::decode(secret_key_str)
-            .into_vec()
-            .map_err(|e| {
-                FacilitatorLocalError::DecodingError(format!("invalid settleSecretKey: {e}"))
-            })?;
-        let settlement_keypair = Keypair::from_bytes(&secret_bytes).map_err(|e| {
-            FacilitatorLocalError::DecodingError(format!("invalid settleSecretKey keypair: {e}"))
-        })?;
+        let settlement_keypair = settlement_keypair(secret_key_str)?;
         let settlement_pubkey = settlement_keypair.pubkey();
 
         // Parse asset mint and payTo
@@ -1899,6 +1956,16 @@ impl SolanaProvider {
             // pay_to_credit check in verify_settlement_account.
             return Err(FacilitatorLocalError::ContractCall(
                 "settlement account ATA is empty: no funds to sweep to pay_to".to_string(),
+            ));
+        }
+
+        // SECURITY: the sweep moves the price or nothing. Sweeping a smaller balance would
+        // answer success for a payment pay_to did not receive in full, so it is refused here,
+        // before any transaction is built (the balance can drop after verify: whoever holds
+        // the settlement key can move it).
+        if on_chain_balance < required_amount {
+            return Err(FacilitatorLocalError::InsufficientFunds(
+                MixedAddress::Solana(settlement_pubkey),
             ));
         }
 
@@ -3078,14 +3145,8 @@ mod tests {
         assert_eq!(sweep_amount, on_chain_balance);
     }
 
-    #[test]
-    fn test_sweep_cap_balance_below_required() {
-        // Partial balance: only what arrived is swept.
-        let on_chain_balance: u64 = 500_000;
-        let required_amount: u64 = 1_000_000;
-        let sweep_amount = on_chain_balance.min(required_amount);
-        assert_eq!(sweep_amount, 500_000);
-    }
+    // A balance below the price is never swept: see
+    // `sweep_outcome_tests::a_settlement_account_below_the_price_is_refused_before_anything_is_sent`.
 
     // ---- B1 nonce store replay protection (integration with MemoryNonceStore) --
 
@@ -3360,12 +3421,27 @@ mod sweep_outcome_tests {
         LosesTheSendAnswer,
         AlreadyProcessed,
         Refuses,
+        /// Takes the sweep and reports it confirmed.
+        Confirms,
     }
 
     #[derive(Clone)]
     struct Stub {
         node: Node,
         sent: StdArc<StdMutex<Vec<String>>>,
+        /// What `getTokenAccountBalance` answers for the settlement account.
+        balance: u64,
+        /// What `getTransaction` answers for the cited deposit.
+        cited: Value,
+    }
+
+    fn stub(node: Node, balance: u64) -> Stub {
+        Stub {
+            node,
+            sent: Default::default(),
+            balance,
+            cited: Value::Null,
+        }
     }
 
     async fn rpc(State(stub): State<Stub>, Json(req): Json<Value>) -> axum::response::Response {
@@ -3378,14 +3454,19 @@ mod sweep_outcome_tests {
         };
         match req["method"].as_str().unwrap_or_default() {
             "getTokenAccountBalance" => answer(json!({"context":{"slot":1},
-                "value":{"amount":"1000","decimals":6,"uiAmount":0.001,"uiAmountString":"0.001"}}))
+                "value":{"amount":stub.balance.to_string(),"decimals":6,"uiAmount":null,"uiAmountString":"0"}}))
             .into_response(),
+            "getTransaction" => answer(stub.cited.clone()).into_response(),
             "getLatestBlockhash" => answer(json!({"context":{"slot":1},
                 "value":{"blockhash":solana_sdk::hash::Hash::default().to_string(),"lastValidBlockHeight":100}}))
             .into_response(),
+            "getSignatureStatuses" => answer(json!({"context":{"slot":1},"value":[{
+                "slot":1,"confirmations":null,"status":{"Ok":null},"err":null,
+                "confirmationStatus":"confirmed"}]}))
+            .into_response(),
             "sendTransaction" => {
                 let raw = req["params"][0].as_str().unwrap_or_default().to_string();
-                stub.sent.lock().unwrap().push(raw);
+                stub.sent.lock().unwrap().push(raw.clone());
                 match stub.node {
                     Node::LosesTheSendAnswer => {
                         (axum::http::StatusCode::BAD_GATEWAY, "upstream reset").into_response()
@@ -3398,52 +3479,101 @@ mod sweep_outcome_tests {
                         "Transaction simulation failed: Blockhash not found",
                         json!({"err":"BlockhashNotFound","logs":[]}),
                     ),
+                    Node::Confirms => answer(json!(signature_of(&raw).to_string())).into_response(),
                 }
             }
             _ => answer(Value::Null).into_response(),
         }
     }
 
-    async fn sweep_against(
-        node: Node,
-    ) -> (Result<SettleResponse, FacilitatorLocalError>, Vec<String>) {
-        let sent = StdArc::new(StdMutex::new(Vec::new()));
+    /// Starts the stub node and returns a provider whose RPC it is.
+    async fn provider_for(stub: Stub) -> SolanaProvider {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
-        let app = Router::new().route("/", post(rpc)).with_state(Stub {
-            node,
-            sent: sent.clone(),
-        });
+        let app = Router::new().route("/", post(rpc)).with_state(stub);
         tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
-
-        let provider = SolanaProvider {
+        SolanaProvider {
             keypair: Arc::new(Keypair::new()),
             chain: SolanaChain::try_from(Network::Solana).unwrap(),
             rpc_client: Arc::new(RpcClient::new(format!("http://{addr}/"))),
             max_compute_unit_limit: 400_000,
             max_compute_unit_price: 1_000_000,
-        };
-        let settlement = Keypair::new();
-        let payload = crate::types::SettlementAccountPayload {
-            transaction_signature: Signature::default().to_string(),
-            settle_secret_key: Some(settlement.to_base58_string()),
-            settlement_rent_destination: None,
-        };
-        let requirements: PaymentRequirements = serde_json::from_value(json!({
-            "scheme":"exact","network":"solana","maxAmountRequired":"1000",
+        }
+    }
+
+    fn requirements(pay_to: &Pubkey, asset: &Pubkey, amount: u64) -> PaymentRequirements {
+        serde_json::from_value(json!({
+            "scheme":"exact","network":"solana","maxAmountRequired":amount.to_string(),
             "resource":"https://merchant.example/data","description":"sweep fixture",
-            "mimeType":"application/json","payTo":Pubkey::new_unique().to_string(),
-            "maxTimeoutSeconds":60,"asset":Pubkey::new_unique().to_string()
+            "mimeType":"application/json","payTo":pay_to.to_string(),
+            "maxTimeoutSeconds":60,"asset":asset.to_string()
         }))
-        .unwrap();
+        .unwrap()
+    }
+
+    /// A payload citing a fresh deposit signature.
+    fn payload_for(
+        settlement: Option<&Keypair>,
+        rent_destination: Option<&Pubkey>,
+    ) -> crate::types::SettlementAccountPayload {
+        crate::types::SettlementAccountPayload {
+            transaction_signature: Keypair::new().sign_message(b"deposit").to_string(),
+            settle_secret_key: settlement.map(|k| k.to_base58_string()),
+            settlement_rent_destination: rent_destination.map(|p| p.to_string()),
+        }
+    }
+
+    /// `getTransaction` for a confirmed deposit in which `buyer` sent `amount`
+    /// of `mint` to the token account owned by `credited`.
+    fn deposit(mint: &Pubkey, buyer: &Pubkey, credited: &Pubkey, amount: u64) -> Value {
+        let balance = |index: u8, owner: &Pubkey, amount: u64| {
+            json!({
+                "accountIndex": index,
+                "mint": mint.to_string(),
+                "uiTokenAmount": {"uiAmount": null, "decimals": 6,
+                    "amount": amount.to_string(), "uiAmountString": "0"},
+                "owner": owner.to_string(),
+                "programId": spl_token::id().to_string(),
+            })
+        };
+        json!({
+            "slot": 1,
+            "blockTime": null,
+            "transaction": ["", "base64"],
+            "meta": {
+                "err": null, "status": {"Ok": null}, "fee": 5000,
+                "preBalances": [], "postBalances": [],
+                "preTokenBalances": [balance(1, buyer, amount)],
+                "postTokenBalances": [balance(1, buyer, 0), balance(2, credited, amount)],
+            },
+        })
+    }
+
+    async fn sweep(
+        provider: &SolanaProvider,
+        payload: &crate::types::SettlementAccountPayload,
+        requirements: &PaymentRequirements,
+    ) -> Result<SettleResponse, FacilitatorLocalError> {
         let verification = SettlementAccountVerifyResult {
             payer: SolanaAddress::from(Pubkey::new_unique()),
             tx_signature: Signature::default(),
         };
         let secret = payload.settle_secret_key.clone().unwrap();
-        let result = provider
-            .sweep_settlement_account(&secret, &payload, &requirements, &verification)
-            .await;
+        provider
+            .sweep_settlement_account(&secret, payload, requirements, &verification)
+            .await
+    }
+
+    async fn sweep_against(
+        node: Node,
+    ) -> (Result<SettleResponse, FacilitatorLocalError>, Vec<String>) {
+        let stub = stub(node, 1000);
+        let sent = stub.sent.clone();
+        let provider = provider_for(stub).await;
+        let settlement = Keypair::new();
+        let payload = payload_for(Some(&settlement), None);
+        let requirements = requirements(&Pubkey::new_unique(), &Pubkey::new_unique(), 1000);
+        let result = sweep(&provider, &payload, &requirements).await;
         let sent = sent.lock().unwrap().clone();
         (result, sent)
     }
@@ -3488,5 +3618,222 @@ mod sweep_outcome_tests {
             }
             other => panic!("expected the refusal, got {other:?}"),
         }
+    }
+
+    // ---- What a settlement account must hold before it is paid out --------
+
+    /// A sweep moves the price or nothing: a settlement account holding less
+    /// is refused before any transaction is built.
+    #[tokio::test]
+    async fn a_settlement_account_below_the_price_is_refused_before_anything_is_sent() {
+        let stub = stub(Node::Confirms, 1_000);
+        let sent = stub.sent.clone();
+        let provider = provider_for(stub).await;
+        let settlement = Keypair::new();
+        let payload = payload_for(Some(&settlement), None);
+        let requirements = requirements(&Pubkey::new_unique(), &Pubkey::new_unique(), 1_000_000);
+
+        let result = sweep(&provider, &payload, &requirements).await;
+        let sent = sent.lock().unwrap().clone();
+
+        assert!(sent.is_empty(), "a sweep below the price was sent");
+        match result {
+            Err(FacilitatorLocalError::InsufficientFunds(MixedAddress::Solana(account))) => {
+                assert_eq!(account, settlement.pubkey());
+            }
+            other => panic!("expected insufficient funds, got {other:?}"),
+        }
+    }
+
+    /// The cited deposit counts only if it landed in the account the payload's
+    /// settleSecretKey controls, which is the account the sweep pays out of.
+    #[tokio::test]
+    async fn a_deposit_to_another_account_does_not_verify_a_settlement_account() {
+        let (mint, buyer, elsewhere) = (
+            Pubkey::new_unique(),
+            Pubkey::new_unique(),
+            Pubkey::new_unique(),
+        );
+        let mut stub = stub(Node::Refuses, 1_000);
+        stub.cited = deposit(&mint, &buyer, &elsewhere, 1_000);
+        let provider = provider_for(stub).await;
+        let settlement = Keypair::new();
+        let payload = payload_for(Some(&settlement), None);
+
+        let result = provider
+            .verify_settlement_account(&payload, &requirements(&Pubkey::new_unique(), &mint, 1_000))
+            .await;
+
+        match result {
+            Err(FacilitatorLocalError::DecodingError(reason)) => {
+                assert!(reason.contains("settlement account"), "{reason}");
+            }
+            Ok(_) => panic!("verified a deposit that did not reach the settlement account"),
+            Err(other) => panic!("expected a decoding verdict, got {other:?}"),
+        }
+    }
+
+    /// A deposit that did reach the settlement account is not enough if the
+    /// account no longer holds the price: verify reads what the sweep would move.
+    #[tokio::test]
+    async fn a_settlement_account_holding_less_than_the_price_does_not_verify() {
+        let (mint, buyer) = (Pubkey::new_unique(), Pubkey::new_unique());
+        let settlement = Keypair::new();
+        let mut stub = stub(Node::Refuses, 1);
+        stub.cited = deposit(&mint, &buyer, &settlement.pubkey(), 1_000);
+        let provider = provider_for(stub).await;
+        let payload = payload_for(Some(&settlement), None);
+
+        let result = provider
+            .verify_settlement_account(&payload, &requirements(&Pubkey::new_unique(), &mint, 1_000))
+            .await;
+
+        match result {
+            Err(FacilitatorLocalError::InsufficientFunds(MixedAddress::Solana(account))) => {
+                assert_eq!(account, settlement.pubkey());
+            }
+            Ok(_) => panic!("verified a settlement account that holds less than the price"),
+            Err(other) => panic!("expected insufficient funds, got {other:?}"),
+        }
+    }
+
+    /// The flow a custodial client runs today: a deposit of the price into a
+    /// fresh settlement account it then hands over. Still verifies, with the
+    /// depositor as payer.
+    #[tokio::test]
+    async fn a_deposit_of_the_price_into_the_settlement_account_still_verifies() {
+        let (mint, buyer) = (Pubkey::new_unique(), Pubkey::new_unique());
+        let settlement = Keypair::new();
+        let mut stub = stub(Node::Refuses, 1_000);
+        stub.cited = deposit(&mint, &buyer, &settlement.pubkey(), 1_000);
+        let provider = provider_for(stub).await;
+        let payload = payload_for(Some(&settlement), None);
+
+        let verified = provider
+            .verify_settlement_account(&payload, &requirements(&Pubkey::new_unique(), &mint, 1_000))
+            .await
+            .expect("a deposit of the price into the settlement account verifies");
+
+        assert_eq!(verified.payer.pubkey, buyer);
+    }
+
+    /// Without a settleSecretKey nothing is swept, so the cited transaction must
+    /// have paid payTo itself: unchanged.
+    #[tokio::test]
+    async fn a_direct_payment_to_pay_to_still_verifies_without_a_settle_key() {
+        let (mint, buyer, pay_to) = (
+            Pubkey::new_unique(),
+            Pubkey::new_unique(),
+            Pubkey::new_unique(),
+        );
+        let mut stub = stub(Node::Refuses, 0);
+        stub.cited = deposit(&mint, &buyer, &pay_to, 1_000);
+        let provider = provider_for(stub).await;
+        let payload = payload_for(None, None);
+
+        let verified = provider
+            .verify_settlement_account(&payload, &requirements(&pay_to, &mint, 1_000))
+            .await
+            .expect("a direct payment to payTo verifies");
+
+        assert_eq!(verified.payer.pubkey, buyer);
+    }
+
+    fn ata(owner: &Pubkey, mint: &Pubkey) -> Pubkey {
+        Pubkey::find_program_address(
+            &[owner.as_ref(), spl_token::id().as_ref(), mint.as_ref()],
+            &ATA_PROGRAM_PUBKEY,
+        )
+        .0
+    }
+
+    /// Program, accounts and data of one instruction of a sent transaction.
+    type Ix = (Pubkey, Vec<Pubkey>, Vec<u8>);
+
+    /// A TransferChecked of `amount` from `source` to `destination`.
+    fn is_transfer(ix: &Ix, source: &Pubkey, destination: &Pubkey, amount: u64) -> bool {
+        let (program, accounts, data) = ix;
+        *program == spl_token::id()
+            && data.first() == Some(&12)
+            && data.get(1..9) == Some(&amount.to_le_bytes()[..])
+            && accounts.first() == Some(source)
+            && accounts.get(2) == Some(destination)
+    }
+
+    /// A CloseAccount of `account` that sends its rent to `destination`.
+    fn is_close(ix: &Ix, account: &Pubkey, destination: &Pubkey) -> bool {
+        let (program, accounts, data) = ix;
+        *program == spl_token::id()
+            && data.first() == Some(&9)
+            && accounts.first() == Some(account)
+            && accounts.get(1) == Some(destination)
+    }
+
+    fn instructions_of(raw: &str) -> Vec<Ix> {
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(raw)
+            .unwrap();
+        let tx: VersionedTransaction = bincode::deserialize(&bytes).unwrap();
+        let keys = tx.message.static_account_keys();
+        tx.message
+            .instructions()
+            .iter()
+            .map(|ix| {
+                (
+                    keys[ix.program_id_index as usize],
+                    ix.accounts.iter().map(|i| keys[*i as usize]).collect(),
+                    ix.data.clone(),
+                )
+            })
+            .collect()
+    }
+
+    /// The custodial flow as a client runs it today, through settle: a deposit
+    /// of the price into a fresh settlement account verifies, the sweep moves
+    /// the price to payTo and closes the settlement account to the rent
+    /// destination the client named, and the answer names the sweep.
+    #[tokio::test]
+    async fn a_custodial_payment_still_settles_end_to_end() {
+        let (mint, buyer, pay_to, rent_back) = (
+            Pubkey::new_unique(),
+            Pubkey::new_unique(),
+            Pubkey::new_unique(),
+            Pubkey::new_unique(),
+        );
+        let settlement = Keypair::new();
+        let mut stub = stub(Node::Confirms, 1_000);
+        stub.cited = deposit(&mint, &buyer, &settlement.pubkey(), 1_000);
+        let sent = stub.sent.clone();
+        let provider = provider_for(stub).await;
+        let payload = payload_for(Some(&settlement), Some(&rent_back));
+
+        let settled = provider
+            .settle_settlement_account(&payload, &requirements(&pay_to, &mint, 1_000))
+            .await
+            .expect("a custodial payment settles");
+
+        let sent = sent.lock().unwrap().clone();
+        assert_eq!(sent.len(), 1, "exactly one sweep");
+        assert!(settled.success);
+        assert_eq!(settled.payer, MixedAddress::Solana(buyer));
+        assert_eq!(
+            settled.transaction,
+            Some(TransactionHash::Solana(*signature_of(&sent[0]).as_array()))
+        );
+        let settlement_ata = ata(&settlement.pubkey(), &mint);
+        let pay_to_ata = ata(&pay_to, &mint);
+        let instructions = instructions_of(&sent[0]);
+        assert!(
+            instructions
+                .iter()
+                .any(|ix| is_transfer(ix, &settlement_ata, &pay_to_ata, 1_000)),
+            "the sweep moves the price from the settlement account to payTo"
+        );
+        assert!(
+            instructions
+                .iter()
+                .any(|ix| is_close(ix, &settlement_ata, &rent_back)),
+            "the settlement account is closed to the client's rent destination"
+        );
     }
 }

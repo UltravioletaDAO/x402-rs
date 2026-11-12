@@ -25,7 +25,8 @@
 //! # Configuration
 //!
 //! Built in only for Robinhood Chain and its testnet (2.56.0). Every other
-//! network has none and sends exactly what it sent before.
+//! network has none here; on every network each write is also held to its
+//! call's ceiling in `chain::gas_ceiling`, and the lower of the two applies.
 //! `ERC8004_MAX_GAS_<NETWORK>` sets one network's ceiling, where `<NETWORK>`
 //! is its v1 name in upper case with `-` as `_` (`ERC8004_MAX_GAS_ROBINHOOD`,
 //! `ERC8004_MAX_GAS_ROBINHOOD_TESTNET`), and overrides the built-in value. A

@@ -933,6 +933,7 @@ async fn execute_release(
         calldata.extend_from_slice(&encoded_args);
         let meta_tx = MetaTransaction {
             authorization_list: None,
+            gas_kind: crate::chain::gas_ceiling::GasKind::PaymentOperator,
             to: target,
             calldata: Bytes::from(calldata),
             confirmations: 1,
@@ -1019,6 +1020,7 @@ async fn execute_refund_in_escrow(
         calldata.extend_from_slice(&encoded_args);
         let meta_tx = MetaTransaction {
             authorization_list: None,
+            gas_kind: crate::chain::gas_ceiling::GasKind::PaymentOperator,
             to: target,
             calldata: Bytes::from(calldata),
             confirmations: 1,
@@ -1450,6 +1452,7 @@ async fn send_operator_tx(
 
     let meta_tx = MetaTransaction {
         authorization_list: None,
+        gas_kind: crate::chain::gas_ceiling::GasKind::PaymentOperator,
         to: target,
         calldata: Bytes::from(calldata),
         confirmations: 1,

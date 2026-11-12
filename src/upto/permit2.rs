@@ -486,6 +486,7 @@ async fn execute_settlement(
 
     let meta_tx = MetaTransaction {
         authorization_list: None,
+        gas_kind: crate::chain::gas_ceiling::GasKind::UptoSettle,
         to: UPTO_PERMIT2_PROXY_ADDRESS,
         calldata: Bytes::from(calldata),
         confirmations: 1,

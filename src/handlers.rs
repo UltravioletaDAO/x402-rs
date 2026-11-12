@@ -6495,6 +6495,29 @@ impl IntoResponse for FacilitatorLocalError {
                     .insert(header::RETRY_AFTER, HeaderValue::from_static("5"));
                 resp
             }
+            // A verdict on the request, reached before anything was sent: this
+            // transaction would cost more gas than the facilitator pays for its
+            // kind of call on this network (`chain::gas_ceiling`, published in
+            // `GET /config`). Not retryable as is.
+            FacilitatorLocalError::GasOverLimit {
+                network,
+                estimated,
+                ceiling,
+            } => {
+                tracing::warn!(
+                    %network,
+                    estimated,
+                    ceiling,
+                    "refused: gas estimate above the ceiling for this call; nothing sent"
+                );
+                (
+                    StatusCode::BAD_REQUEST,
+                    Json(ErrorResponse {
+                        error: crate::chain::gas_ceiling::GAS_OVER_LIMIT_CODE.to_string(),
+                    }),
+                )
+                    .into_response()
+            }
             FacilitatorLocalError::Other(ref e) => {
                 let correlation_id = uuid::Uuid::new_v4();
                 tracing::error!(%correlation_id, error = %e, "Other facilitator error");
@@ -7230,8 +7253,12 @@ where
                     .map_err(|e| format!("{e:?}"));
                 match gp {
                     Ok(gas_price) => {
-                        crate::chain::evm::send_call_estimated(call.gas_price(gas_price), network)
-                            .await
+                        crate::chain::evm::send_call_estimated(
+                            call.gas_price(gas_price),
+                            network,
+                            crate::chain::gas_ceiling::GasKind::Erc8004Write,
+                        )
+                        .await
                     }
                     Err(e) => {
                         error!(error = %e, "Failed to get gas price");
@@ -7252,7 +7279,12 @@ where
                     }
                 }
             } else {
-                crate::chain::evm::send_call_estimated(call, network).await
+                crate::chain::evm::send_call_estimated(
+                    call,
+                    network,
+                    crate::chain::gas_ceiling::GasKind::Erc8004Write,
+                )
+                .await
             };
 
             match send_result {
@@ -7889,6 +7921,7 @@ where
         calldata,
         confirmations: 1,
         authorization_list,
+        gas_kind: crate::chain::gas_ceiling::GasKind::Erc8004Relay,
     };
 
     match provider
@@ -7916,6 +7949,18 @@ where
                 }),
             )
                 .into_response()
+        }
+        Err(e @ FacilitatorLocalError::GasOverLimit { .. }) => {
+            // Refused before a nonce: nothing was written.
+            release_feedback_proof(&claim).await;
+            gas_over_limit_refusal(&FeedbackResponse {
+                proof: Some(proof_report),
+                success: false,
+                transaction: None,
+                feedback_index: None,
+                error: Some(e.to_string()),
+                network,
+            })
         }
         Err(e) => {
             error!(network = %network, error = %e, "relayed feedback transaction failed");
@@ -8476,8 +8521,12 @@ where
             let send_result = if !provider.is_eip1559() {
                 match provider.inner().get_gas_price().await {
                     Ok(gas_price) => {
-                        crate::chain::evm::send_call_estimated(call.gas_price(gas_price), network)
-                            .await
+                        crate::chain::evm::send_call_estimated(
+                            call.gas_price(gas_price),
+                            network,
+                            crate::chain::gas_ceiling::GasKind::Erc8004Write,
+                        )
+                        .await
                     }
                     Err(e) => {
                         error!(error = %e, "Failed to get gas price");
@@ -8491,7 +8540,12 @@ where
                     }
                 }
             } else {
-                crate::chain::evm::send_call_estimated(call, network).await
+                crate::chain::evm::send_call_estimated(
+                    call,
+                    network,
+                    crate::chain::gas_ceiling::GasKind::Erc8004Write,
+                )
+                .await
             };
 
             match send_result {
@@ -8858,6 +8912,7 @@ where
         calldata,
         confirmations: 1,
         authorization_list,
+        gas_kind: crate::chain::gas_ceiling::GasKind::Erc8004Relay,
     };
     match provider
         .send_transaction_from(provider.pinned_signer(), meta)
@@ -8881,6 +8936,11 @@ where
             )
                 .into_response()
         }
+        Err(e @ FacilitatorLocalError::GasOverLimit { .. }) => gas_over_limit_refusal(&json!({
+            "success": false,
+            "error": e.to_string(),
+            "network": network,
+        })),
         Err(e) => {
             error!(network = %network, error = %e, "failed to relay a response");
             (
@@ -9121,8 +9181,12 @@ where
             let send_result = if !provider.is_eip1559() {
                 match provider.inner().get_gas_price().await {
                     Ok(gas_price) => {
-                        crate::chain::evm::send_call_estimated(call.gas_price(gas_price), network)
-                            .await
+                        crate::chain::evm::send_call_estimated(
+                            call.gas_price(gas_price),
+                            network,
+                            crate::chain::gas_ceiling::GasKind::Erc8004Write,
+                        )
+                        .await
                     }
                     Err(e) => {
                         error!(error = %e, "Failed to get gas price");
@@ -9136,7 +9200,12 @@ where
                     }
                 }
             } else {
-                crate::chain::evm::send_call_estimated(call, network).await
+                crate::chain::evm::send_call_estimated(
+                    call,
+                    network,
+                    crate::chain::gas_ceiling::GasKind::Erc8004Write,
+                )
+                .await
             };
 
             match send_result {
@@ -13370,27 +13439,57 @@ where
         // register_0 = register(string, MetadataEntry[]) - first overload in ABI
         let call = identity_registry.register_0(agent_uri, metadata_entries);
         if let Some(gp) = legacy_gas_price {
-            crate::chain::evm::send_call_estimated(call.gas_price(gp), network).await
+            crate::chain::evm::send_call_estimated(
+                call.gas_price(gp),
+                network,
+                crate::chain::gas_ceiling::GasKind::Erc8004Register,
+            )
+            .await
         } else {
-            crate::chain::evm::send_call_estimated(call, network).await
+            crate::chain::evm::send_call_estimated(
+                call,
+                network,
+                crate::chain::gas_ceiling::GasKind::Erc8004Register,
+            )
+            .await
         }
     } else if !agent_uri.is_empty() {
         info!("Registering agent with URI only");
         // register_1 = register(string) - second overload in ABI
         let call = identity_registry.register_1(agent_uri);
         if let Some(gp) = legacy_gas_price {
-            crate::chain::evm::send_call_estimated(call.gas_price(gp), network).await
+            crate::chain::evm::send_call_estimated(
+                call.gas_price(gp),
+                network,
+                crate::chain::gas_ceiling::GasKind::Erc8004Register,
+            )
+            .await
         } else {
-            crate::chain::evm::send_call_estimated(call, network).await
+            crate::chain::evm::send_call_estimated(
+                call,
+                network,
+                crate::chain::gas_ceiling::GasKind::Erc8004Register,
+            )
+            .await
         }
     } else {
         info!("Registering agent without URI or metadata");
         // register_2 = register() - third overload in ABI
         let call = identity_registry.register_2();
         if let Some(gp) = legacy_gas_price {
-            crate::chain::evm::send_call_estimated(call.gas_price(gp), network).await
+            crate::chain::evm::send_call_estimated(
+                call.gas_price(gp),
+                network,
+                crate::chain::gas_ceiling::GasKind::Erc8004Register,
+            )
+            .await
         } else {
-            crate::chain::evm::send_call_estimated(call, network).await
+            crate::chain::evm::send_call_estimated(
+                call,
+                network,
+                crate::chain::gas_ceiling::GasKind::Erc8004Register,
+            )
+            .await
         }
     };
 
@@ -14194,9 +14293,19 @@ async fn transfer_agent_nft(
             .get_gas_price()
             .await
             .map_err(|e| not_sent(format!("Failed to get gas price for transfer: {e}")))?;
-        crate::chain::evm::send_call_estimated(transfer_call.gas_price(gas_price), network).await
+        crate::chain::evm::send_call_estimated(
+            transfer_call.gas_price(gas_price),
+            network,
+            crate::chain::gas_ceiling::GasKind::Erc8004Transfer,
+        )
+        .await
     } else {
-        crate::chain::evm::send_call_estimated(transfer_call, network).await
+        crate::chain::evm::send_call_estimated(
+            transfer_call,
+            network,
+            crate::chain::gas_ceiling::GasKind::Erc8004Transfer,
+        )
+        .await
     };
 
     let pending = send_result.map_err(|e| {
@@ -17936,6 +18045,47 @@ mod settle_idempotency_tests {
         let (node, facilitator) = on_base().await;
         let body = refund_body(&node, 1);
         assert_replayed_without_settling_again(&node, &facilitator, "refund-replay", &body).await;
+    }
+
+    /// An escrow `authorize` (or, with `refund`, a `refund` extension deposit)
+    /// whose call costs 50,000,000 gas -- what the contract a request names
+    /// makes it cost -- is held to its call's ceiling (`chain::gas_ceiling`):
+    /// nothing is sent, and the answer is not a success.
+    async fn assert_nothing_sent_above_the_gas_ceiling(refund: bool) {
+        let _g = arm_settling();
+        let _store = store();
+        let (node, facilitator) = on_base().await;
+        let (body, selector, key) = if refund {
+            (
+                refund_body(&node, 31),
+                crate::escrow::DepositRelay::executeDepositCall::SELECTOR,
+                "refund-above-gas-ceiling",
+            )
+        } else {
+            (
+                escrow_body(32),
+                crate::payment_operator::abi::OperatorContract::authorizeCall::SELECTOR,
+                "escrow-above-gas-ceiling",
+            )
+        };
+        node.estimate_gas_for(selector, 50_000_000);
+        let (status, _, answer) = settle_on(&facilitator, key, &body).await;
+        let answer = String::from_utf8_lossy(&answer);
+        assert!(
+            node.sent().is_empty(),
+            "refund={refund}: a transaction went out: {answer}"
+        );
+        assert_ne!(status, StatusCode::OK, "refund={refund}: {answer}");
+    }
+
+    #[tokio::test]
+    async fn an_escrow_settle_estimated_above_its_gas_ceiling_sends_nothing() {
+        assert_nothing_sent_above_the_gas_ceiling(false).await;
+    }
+
+    #[tokio::test]
+    async fn a_refund_settle_estimated_above_its_gas_ceiling_sends_nothing() {
+        assert_nothing_sent_above_the_gas_ceiling(true).await;
     }
 
     /// A settlement that failed leaves nothing to replay: the retry runs again.
@@ -25026,6 +25176,49 @@ mod erc8004_register_gate_tests {
         assert_eq!(
             register_jobs::get_stranded(&key).map(|s| s.agent_id),
             Some(4_105)
+        );
+        register_jobs::clear_stranded(&key);
+    }
+
+    /// A recipient whose hook makes the delivery cost 12,000,000 gets no
+    /// delivery sent: on a network with no ERC-8004 ceiling of its own, the
+    /// `safeTransferFrom` is still held to its call's ceiling
+    /// (`chain::gas_ceiling`) and refused before a nonce is reserved. The
+    /// identity is retired and recorded, as for any delivery that did not go.
+    #[tokio::test]
+    async fn a_delivery_estimated_above_its_gas_ceiling_is_not_sent() {
+        use crate::erc8004::retire::RETIRED_URI;
+        use crate::payment_operator::test_rpc::CallAnswer;
+        use alloy::sol_types::{SolCall, SolValue};
+        let uri = "https://execution.market/agents/gate-test-delivery-above-ceiling";
+        let (gate, node) = gate_where_the_mint_lands(4_107).await;
+        node.estimate_gas_for(
+            IIdentityRegistry::safeTransferFromCall::SELECTOR,
+            12_000_000,
+        );
+        node.on_call(
+            registry(),
+            IIdentityRegistry::ownerOfCall::SELECTOR,
+            CallAnswer::Return(pinned_signer().abi_encode()),
+        );
+        let (status, doc) = register(&gate, body("base", uri, Some(OWNER))).await;
+
+        assert_eq!(
+            transferred_ids(&node),
+            Vec::<u64>::new(),
+            "the delivery went out: {doc}"
+        );
+        assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "{doc}");
+        let sent = node.sent();
+        assert_eq!(
+            set_agent_uri_of(sent.last().unwrap()),
+            Some((4_107, RETIRED_URI.to_string())),
+            "{sent:?}"
+        );
+        let key = reclaim_key(uri);
+        assert_eq!(
+            register_jobs::get_stranded(&key).map(|s| s.agent_id),
+            Some(4_107)
         );
         register_jobs::clear_stranded(&key);
     }

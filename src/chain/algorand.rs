@@ -656,6 +656,17 @@ impl AlgorandProvider {
             });
         }
 
+        // Index 0 is the fee transaction: submit_group() puts the facilitator's
+        // signed copy in its place, so a payment checked there is never broadcast.
+        // From index 1 on, what is checked and what is broadcast are the same bytes
+        // read by the same decoder.
+        if payload.payment_index == 0 {
+            return Err(AlgorandError::InvalidAtomicGroup(
+                "payment index 0 is the fee transaction; the payment must be at index 1 or above"
+                    .to_string(),
+            ));
+        }
+
         // Decode the fee transaction (index 0, unsigned)
         let fee_tx = self.decode_transaction(&payload.payment_group[0])?;
 
@@ -1600,6 +1611,51 @@ mod replay_verify_tests {
         assert!(
             matches!(&response, VerifyResponse::Valid { payer } if *payer == MixedAddress::Algorand(f.payer.clone())),
             "got {response:?}"
+        );
+    }
+
+    /// One msgpack map holding the entries of two maps whose keys differ.
+    fn merged_msgpack_maps(a: &[u8], b: &[u8]) -> Vec<u8> {
+        fn entries(map: &[u8]) -> (usize, &[u8]) {
+            match map[0] {
+                header @ 0x80..=0x8f => (usize::from(header & 0x0f), &map[1..]),
+                0xde => (usize::from(u16::from_be_bytes([map[1], map[2]])), &map[3..]),
+                other => panic!("not a msgpack map header: {other:#04x}"),
+            }
+        }
+        let (a_len, a_entries) = entries(a);
+        let (b_len, b_entries) = entries(b);
+        let mut merged = vec![0xde];
+        merged.extend_from_slice(&u16::try_from(a_len + b_len).unwrap().to_be_bytes());
+        merged.extend_from_slice(a_entries);
+        merged.extend_from_slice(b_entries);
+        merged
+    }
+
+    /// Index 0 is the fee transaction, which settle replaces with the one the
+    /// facilitator signs: a payment checked there is never broadcast. One
+    /// blob that reads both as the fee transaction and as the signed
+    /// transfer must not verify.
+    #[tokio::test]
+    async fn verify_rejects_the_payment_at_the_fee_transaction_index() {
+        scripted_store();
+        let mut f = fixture(b"payment at index 0").await;
+        let ExactPaymentPayload::Algorand(payload) = &mut f.request.payment_payload.payload else {
+            unreachable!("the fixture builds an Algorand payload")
+        };
+        let fee_blob = BASE64.decode(&payload.payment_group[0]).unwrap();
+        let payment_blob = BASE64.decode(&payload.payment_group[1]).unwrap();
+        payload.payment_group[0] = BASE64.encode(merged_msgpack_maps(&fee_blob, &payment_blob));
+        payload.payment_index = 0;
+
+        let err = f
+            .provider
+            .verify(&f.request)
+            .await
+            .expect_err("a payment at the fee transaction's index must not verify");
+        assert!(
+            matches!(&err, FacilitatorLocalError::Other(msg) if msg.contains("payment index 0")),
+            "got {err:?}"
         );
     }
 }

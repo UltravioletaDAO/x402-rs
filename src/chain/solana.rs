@@ -1802,18 +1802,28 @@ impl SolanaProvider {
     /// If not provided, returns the original transaction signature (funds already at payTo).
     ///
     /// Security (audit fix B1): replay protection via the global nonce store.
-    /// The original on-chain `transaction_signature` is stored after the first successful
-    /// settlement.  Subsequent calls with the same signature are rejected with an error.
+    /// The original on-chain `transaction_signature` is claimed once that transaction has
+    /// verified, before anything is sent: a request that fails verification claims nothing,
+    /// and a sweep that moved nothing gives the claim back. Subsequent calls with a claimed
+    /// signature are rejected with an error.
     async fn settle_settlement_account(
         &self,
         payload: &crate::types::SettlementAccountPayload,
         requirements: &PaymentRequirements,
     ) -> Result<SettleResponse, FacilitatorLocalError> {
-        // Step 0: B1 REPLAY PROTECTION -- check and atomically mark the original tx signature.
+        // Step 0: Verify the on-chain transaction (bound to the settlement account when a
+        // settleSecretKey is supplied) BEFORE claiming its signature, so a request that
+        // fails here cannot hold a deposit away from the payment it belongs to.
+        let verification = self
+            .verify_settlement_account(payload, requirements)
+            .await?;
+
+        // Step 1: B1 REPLAY PROTECTION -- check and atomically mark the original tx signature.
         //
         // We key on (network, original_tx_signature) so the same on-chain transaction cannot
         // be settled twice across any facilitator instance.  The check-and-mark is atomic in
-        // DynamoDB (conditional PutItem) and best-effort in the in-memory fallback.
+        // DynamoDB (conditional PutItem) and best-effort in the in-memory fallback. It still
+        // comes before the sweep is sent, so two settles of one deposit sweep at most once.
         let network_str = self.network().to_string();
         let nonce_key = solana_settle_nonce_key(&network_str, &payload.transaction_signature);
         let nonce_store = get_solana_nonce_store().await;
@@ -1831,16 +1841,27 @@ impl SolanaProvider {
                 ))
             })?;
 
-        // Step 1: Verify the on-chain transaction.
-        let verification = self
-            .verify_settlement_account(payload, requirements)
-            .await?;
-
         // Step 2: If settleSecretKey is provided, sweep funds from settlement account to payTo.
         if let Some(ref secret_key_str) = payload.settle_secret_key {
-            return self
+            let swept = self
                 .sweep_settlement_account(secret_key_str, payload, requirements, &verification)
                 .await;
+            // A sweep with no verdict may still land, so it keeps the claim. Every other
+            // failure moved nothing -- refused before the send, refused by the node, or past
+            // its blockhash (`send_and_confirm`) -- so the claim goes back and the same
+            // deposit can be settled again. Best-effort: a failed release keeps it claimed.
+            if let Err(ref error) = swept {
+                if !matches!(error, FacilitatorLocalError::SettlementUnconfirmed(..)) {
+                    if let Err(e) = nonce_store.release(&nonce_key).await {
+                        tracing::warn!(
+                            tx_sig = %payload.transaction_signature,
+                            error = %e,
+                            "Settlement account replay claim not released after a failed sweep"
+                        );
+                    }
+                }
+            }
+            return swept;
         }
 
         // No settleSecretKey: the referenced transaction itself must have credited pay_to's ATA.
@@ -4043,5 +4064,113 @@ mod sweep_outcome_tests {
             "the rent goes to the client's destination"
         );
         assert!(swept.result.is_ok(), "{:?}", swept.result);
+    }
+
+    // ---- When the deposit's signature is claimed -----------------------------
+
+    fn is_replay(result: &Result<SettleResponse, FacilitatorLocalError>) -> bool {
+        matches!(result, Err(FacilitatorLocalError::DecodingError(reason))
+            if reason.contains("replay protection"))
+    }
+
+    /// A settle that fails verification claims nothing: the same deposit then
+    /// settles for the payment it belongs to, and only once.
+    #[tokio::test]
+    async fn a_settle_that_fails_verification_leaves_the_deposit_unclaimed() {
+        let (mint, buyer, pay_to) = (
+            Pubkey::new_unique(),
+            Pubkey::new_unique(),
+            Pubkey::new_unique(),
+        );
+        let settlement = Keypair::new();
+        let mut stub = stub(Node::Confirms, 1_000);
+        stub.cited = deposit(&mint, &buyer, &settlement.pubkey(), 1_000);
+        let provider = provider_for(stub).await;
+        let payload = payload_for(Some(&settlement), None);
+
+        let refused = provider
+            .settle_settlement_account(&payload, &requirements(&pay_to, &mint, 2_000))
+            .await;
+        assert!(refused.is_err() && !is_replay(&refused), "{refused:?}");
+
+        let settled = provider
+            .settle_settlement_account(&payload, &requirements(&pay_to, &mint, 1_000))
+            .await;
+        assert!(settled.as_ref().is_ok_and(|s| s.success), "{settled:?}");
+
+        let again = provider
+            .settle_settlement_account(&payload, &requirements(&pay_to, &mint, 1_000))
+            .await;
+        assert!(is_replay(&again), "{again:?}");
+    }
+
+    /// A sweep the node refused moved nothing, so it gives the claim back and
+    /// the same deposit can be settled again.
+    #[tokio::test]
+    async fn a_sweep_that_moved_nothing_gives_the_deposit_back() {
+        let (mint, buyer, pay_to) = (
+            Pubkey::new_unique(),
+            Pubkey::new_unique(),
+            Pubkey::new_unique(),
+        );
+        let settlement = Keypair::new();
+        let node = |kind| {
+            let mut stub = stub(kind, 1_000);
+            stub.cited = deposit(&mint, &buyer, &settlement.pubkey(), 1_000);
+            stub
+        };
+        let payload = payload_for(Some(&settlement), None);
+        let requirements = requirements(&pay_to, &mint, 1_000);
+
+        let refused = provider_for(node(Node::Refuses))
+            .await
+            .settle_settlement_account(&payload, &requirements)
+            .await;
+        assert!(
+            matches!(refused, Err(FacilitatorLocalError::ContractCall(_))),
+            "{refused:?}"
+        );
+
+        let settled = provider_for(node(Node::Confirms))
+            .await
+            .settle_settlement_account(&payload, &requirements)
+            .await;
+        assert!(settled.as_ref().is_ok_and(|s| s.success), "{settled:?}");
+    }
+
+    /// A sweep with no verdict may still land, so the deposit stays claimed.
+    #[tokio::test]
+    async fn a_sweep_that_may_have_landed_keeps_the_deposit_claimed() {
+        let (mint, buyer, pay_to) = (
+            Pubkey::new_unique(),
+            Pubkey::new_unique(),
+            Pubkey::new_unique(),
+        );
+        let settlement = Keypair::new();
+        let node = |kind| {
+            let mut stub = stub(kind, 1_000);
+            stub.cited = deposit(&mint, &buyer, &settlement.pubkey(), 1_000);
+            stub
+        };
+        let payload = payload_for(Some(&settlement), None);
+        let requirements = requirements(&pay_to, &mint, 1_000);
+
+        let unconfirmed = provider_for(node(Node::LosesTheSendAnswer))
+            .await
+            .settle_settlement_account(&payload, &requirements)
+            .await;
+        assert!(
+            matches!(
+                unconfirmed,
+                Err(FacilitatorLocalError::SettlementUnconfirmed(..))
+            ),
+            "{unconfirmed:?}"
+        );
+
+        let again = provider_for(node(Node::Confirms))
+            .await
+            .settle_settlement_account(&payload, &requirements)
+            .await;
+        assert!(is_replay(&again), "{again:?}");
     }
 }

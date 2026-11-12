@@ -1,12 +1,12 @@
-# The NEAR escrow scheme (src/chain/near/escrow.rs) is on in production toward one Arras v1 escrow
-# per network: v1.arras-escrow.near on mainnet, arras-v1b-1101.testnet on testnet, for the one
-# operator both register (em). v2 is not relayed to on either until it is deployed with no key
-# left on its account. Against a mocked AWS.
+# The NEAR escrow scheme (src/chain/near/escrow.rs) is on in production toward the Arras escrows,
+# each deployed with no key left on its account: v1.arras-escrow.near and v2.arras-escrow.near on
+# mainnet (v2 since its keyless deploy of 2026-11-08), arras-v1b-1101.testnet alone on testnet,
+# for the one operator the escrows register (em). Against a mocked AWS.
 #
 # No credentials and no state: in terraform/environments/production,
 #   terraform init -backend=false && terraform test
 # (CI: job "Build & test", step "Terraform NAT guards", which runs every file in tests/).
-# When v2 is deployed, its contract joins the list in main.tf and the expected value below.
+# Another escrow joins only with its contract in main.tf and in the expected value below.
 
 mock_provider "aws" {
   # As in bazaar_admin_token.tftest.hcl: the task definition validates its role ARNs, and a mock
@@ -34,16 +34,16 @@ run "the_certificates_exist" {
   }
 }
 
-run "the_near_escrow_relays_toward_one_v1_escrow_per_network" {
+run "the_near_escrow_relays_toward_v1_and_v2_on_mainnet_and_v1_on_testnet" {
   command = apply
 
   plan_options {
     target = [aws_ecs_task_definition.facilitator]
   }
 
-  # On, toward v1 on each network, for the operator both escrows register, once each and in this
-  # order. Exact values, not substrings: a v2 contract or an operator added without a review of
-  # this file turns it red.
+  # On, toward v1 and v2 on mainnet and v1 on testnet, for the operator the escrows register, once
+  # each and in this order. Exact values, not substrings: a contract or an operator added or dropped
+  # without a review of this file turns it red.
   assert {
     condition = jsonencode([
       for e in jsondecode(aws_ecs_task_definition.facilitator.container_definitions)[0].environment :
@@ -51,10 +51,10 @@ run "the_near_escrow_relays_toward_one_v1_escrow_per_network" {
       ]) == jsonencode([
       { name = "ENABLE_NEAR_ESCROW", value = "true" },
       { name = "NEAR_ESCROW_OPERATOR_IDS", value = "em" },
-      { name = "NEAR_ESCROW_CONTRACTS_MAINNET", value = "v1.arras-escrow.near" },
+      { name = "NEAR_ESCROW_CONTRACTS_MAINNET", value = "v1.arras-escrow.near,v2.arras-escrow.near" },
       { name = "NEAR_ESCROW_CONTRACTS_TESTNET", value = "arras-v1b-1101.testnet" },
     ])
-    error_message = "The facilitator must run the NEAR escrow toward v1 alone on each network, for em, once each: ENABLE_NEAR_ESCROW=true, NEAR_ESCROW_OPERATOR_IDS=em, NEAR_ESCROW_CONTRACTS_MAINNET=v1.arras-escrow.near and NEAR_ESCROW_CONTRACTS_TESTNET=arras-v1b-1101.testnet."
+    error_message = "The facilitator must run the NEAR escrow toward v1 and v2 on mainnet and v1 on testnet, for em, once each: ENABLE_NEAR_ESCROW=true, NEAR_ESCROW_OPERATOR_IDS=em, NEAR_ESCROW_CONTRACTS_MAINNET=v1.arras-escrow.near,v2.arras-escrow.near and NEAR_ESCROW_CONTRACTS_TESTNET=arras-v1b-1101.testnet."
   }
 
   # Public values, never secrets, and no other container sets them.

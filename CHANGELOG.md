@@ -1,5 +1,50 @@
 # Changelog
 
+## [2.57.2] - 2026-11-11
+
+The NEAR `escrow` scheme relays to Arras v2 on NEAR mainnet as well,
+`v2.arras-escrow.near`, next to v1. No production code changes.
+
+### Configuration
+
+- Production (`terraform/environments/production/main.tf`) sets
+  `NEAR_ESCROW_CONTRACTS_MAINNET=v1.arras-escrow.near,v2.arras-escrow.near`.
+  v2 was deployed on 2026-11-08 with every key of its account deleted (the
+  Arras repository's `docs/EVIDENCE.md`), the condition 2.54.1 set for it to
+  join. Testnet stays on `arras-v1b-1101.testnet` alone, and the operator on
+  `em` alone. Once deployed, `/supported` lists both contracts in
+  `extra.nearEscrow.contracts` on `near` and `near:mainnet`.
+- v1's `msg` is a valid v2 `msg` with the same `paymentId`, so the contract a
+  payer signs to picks the escrow; each contract is judged on its own views,
+  and its lifecycle is gated by its own capturers
+  (`get_operator("em").capturers`). v1's requests are unchanged.
+- The facilitator relays only v1's 9-key `msg`: v2's optional
+  `dispute_deadline` and `operator_ticket` are refused
+  (`near_escrow_msg_invalid`). An operator with a `ticket_pubkey` on v2
+  therefore refuses every payment relayed this way (v2's `E53`): the token
+  refunds the payer, and the relayer pays the gas. Without the ticket, v2
+  stands as v1 does toward anyone filling `em`'s TVL caps or its sponsorship
+  pool, a pool funded with 0.1 NEAR at deploy (v1's: 0.5).
+- The payer's storage (`E14`) is judged before relaying on `arras-v1` alone:
+  on v2, a payer whose NEP-145 balance on the escrow and the operator's
+  sponsorship both fall short passes `/verify`, is relayed, and v2 refuses
+  it on chain (refunded, `success: false`).
+- A v2 payment in `Disputed` or `Resolved` (states v1 does not have) passes no
+  `release`, `refund` or `reclaim`: `near_escrow_payment_not_open` once the
+  call's other guards pass, as v2 refuses them (`E22`). v2's own methods
+  (`open_dispute`, `resolve_dispute`, `authorize_from_budget`, ...) are not
+  relayed.
+- The payment id does not name the contract: the same id can exist on v1 and
+  on v2. A client keys its payments by contract and id.
+
+### Tests
+
+- `tests/near_escrow.tftest.hcl` holds the new mainnet list, exactly.
+- `arras_v2_takes_the_v1_msg_and_has_its_own_capturer` and
+  `a_disputed_or_resolved_arras_v2_payment_is_not_relayed`
+  (`src/chain/near/escrow/tests.rs`) run the provider against a node answering
+  v2's views as `escrow-v2` serializes them, a 19-field `Payment` included.
+
 ## [2.57.1] - 2026-11-07
 
 Robinhood Chain mainnet (`robinhood`, chain 4663) settles on QuickNode's

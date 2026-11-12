@@ -1289,13 +1289,20 @@ resource "aws_ecs_task_definition" "facilitator" {
         # ============================================================
         # NEAR escrow scheme (Arras contracts)
         # ============================================================
-        # Off in the code by default; on here toward one v1 escrow per
-        # network. Mainnet names v1.arras-escrow.near alone (Arras v1,
-        # deployed with no keys left on the account). v2 joins the list
-        # only once it is deployed and its account holds no key: until
-        # then nothing is relayed to it. The operators served are the
-        # ones both escrows register (`get_operator`): `em` alone, until
-        # another is registered on chain.
+        # Off in the code by default; on here toward the Arras escrows of
+        # each network, every one deployed with no key left on its
+        # account. Mainnet names v1.arras-escrow.near and, since its
+        # deploy on 2026-11-08, v2.arras-escrow.near (Arras v2, its keys
+        # deleted at deploy: arras docs/EVIDENCE.md); testnet, v1 alone.
+        # A v1 msg is a valid v2 msg with the same payment id, so the
+        # contract a payer signs to picks the escrow, and each contract's
+        # lifecycle is gated by its own `get_operator(...).capturers`.
+        # The facilitator relays only that 9-key msg: on v2, an operator
+        # with a `ticket_pubkey` refuses every payment it relays (E53),
+        # and the payer's storage (E14) is judged before relaying on v1
+        # alone.
+        # The operators served are the ones the escrows register
+        # (`get_operator`): `em` alone, until another is registered.
         # ============================================================
         {
           name  = "ENABLE_NEAR_ESCROW"
@@ -1307,7 +1314,7 @@ resource "aws_ecs_task_definition" "facilitator" {
         },
         {
           name  = "NEAR_ESCROW_CONTRACTS_MAINNET"
-          value = "v1.arras-escrow.near"
+          value = "v1.arras-escrow.near,v2.arras-escrow.near"
         },
         {
           name  = "NEAR_ESCROW_CONTRACTS_TESTNET"

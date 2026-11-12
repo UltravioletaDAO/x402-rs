@@ -558,6 +558,8 @@ impl AlgorandProvider {
     /// - Taking over the facilitator's account (rekey_to)
     /// - Signing as a sender that is NOT the facilitator (sender check -- B2)
     /// - Paying an unbounded fee from the facilitator wallet (fee cap -- B2)
+    /// - Moving funds or acting for the facilitator's account: only a payment
+    ///   of zero microAlgos, with no lease, is ever signed
     fn validate_fee_transaction(&self, tx: &AlgoTransaction) -> Result<(), AlgorandError> {
         // B2 invariant 1: The fee transaction MUST be sent FROM the facilitator address.
         // An attacker could otherwise embed Payment(facilitator -> attacker, amount) in the
@@ -598,7 +600,18 @@ impl AlgorandProvider {
             });
         }
 
-        // Check the transaction type for forbidden fields
+        // A lease would take a (sender, lease) lock on the facilitator's account
+        // chosen by the client; the fee transaction never needs one.
+        if tx.lease.is_some() {
+            return Err(AlgorandError::ForbiddenFeeField {
+                field: "lease".to_string(),
+            });
+        }
+
+        // The fee transaction may only be a payment that moves nothing. Any amount,
+        // or any other type, would spend the facilitator's funds or act for its
+        // account under its signature. The receiver is left free: with a zero
+        // amount nothing reaches it.
         match &tx.txn_type {
             TransactionType::Payment(payment) => {
                 // close_remainder_to would send remaining funds to attacker
@@ -607,18 +620,16 @@ impl AlgorandProvider {
                         field: "close_remainder_to".to_string(),
                     });
                 }
-            }
-            TransactionType::AssetTransferTransaction(xfer) => {
-                // asset_close_to would send ASA balance to attacker
-                if xfer.close_to.is_some() {
+                if payment.amount.0 != 0 {
                     return Err(AlgorandError::ForbiddenFeeField {
-                        field: "close_to".to_string(),
+                        field: "amount".to_string(),
                     });
                 }
             }
             _ => {
-                // For other transaction types, we don't have specific forbidden fields
-                // but we should be cautious
+                return Err(AlgorandError::InvalidAtomicGroup(
+                    "Fee transaction must be a payment transaction".to_string(),
+                ));
             }
         }
 
@@ -1263,7 +1274,7 @@ mod replay_verify_tests {
     use algonaut::crypto::HashDigest;
     use algonaut::transaction::builder::TxnFee;
     use algonaut::transaction::tx_group::TxGroup;
-    use algonaut::transaction::{Pay, TransferAsset, TxnBuilder};
+    use algonaut::transaction::{AcceptAsset, Pay, RegisterKey, TransferAsset, TxnBuilder};
     use std::collections::HashSet;
     use std::sync::Mutex;
 
@@ -1354,6 +1365,21 @@ mod replay_verify_tests {
     /// transaction, then the payer's signed USDC transfer. `note` gives each
     /// test its own group_id.
     async fn fixture(note: &[u8]) -> Fixture {
+        fixture_with(
+            note,
+            |facilitator| Pay::new(facilitator, facilitator, MicroAlgos(0)).build(),
+            None,
+        )
+        .await
+    }
+
+    /// `fixture` with the fee transaction's body, built from the
+    /// facilitator's address, and its lease chosen by the test.
+    async fn fixture_with(
+        note: &[u8],
+        fee_txn: impl FnOnce(AlgoAddress) -> TransactionType,
+        fee_lease: Option<HashDigest>,
+    ) -> Fixture {
         let provider = AlgorandProvider::try_new(
             Account::generate().mnemonic(),
             Some(algod_stub().await),
@@ -1373,13 +1399,15 @@ mod replay_verify_tests {
             first_valid: Round(CURRENT_ROUND - 10),
             last_valid: Round(CURRENT_ROUND + 500),
         };
-        let mut fee_tx = TxnBuilder::with_fee(
+        let mut fee_builder = TxnBuilder::with_fee(
             &params,
             TxnFee::Fixed(MicroAlgos(2_000)),
-            Pay::new(facilitator, facilitator, MicroAlgos(0)).build(),
-        )
-        .build()
-        .unwrap();
+            fee_txn(facilitator),
+        );
+        if let Some(lease) = fee_lease {
+            fee_builder = fee_builder.lease(lease);
+        }
+        let mut fee_tx = fee_builder.build().unwrap();
         let mut payment_tx = TxnBuilder::with_fee(
             &params,
             TxnFee::zero(),
@@ -1479,6 +1507,99 @@ mod replay_verify_tests {
         assert!(
             matches!(&err, FacilitatorLocalError::Other(msg) if msg.contains("unavailable")),
             "got {err:?}"
+        );
+    }
+
+    /// The facilitator signs the fee transaction the client built, so it may
+    /// only be a payment that moves nothing: any amount, or any other type,
+    /// would spend the facilitator's funds or act for its account.
+    #[tokio::test]
+    async fn verify_rejects_a_fee_transaction_that_is_not_a_zero_amount_payment() {
+        scripted_store();
+        let other = Account::generate().address();
+        type FeeTxn = Box<dyn FnOnce(AlgoAddress) -> TransactionType>;
+        let cases: Vec<(&str, FeeTxn, &str)> = vec![
+            (
+                "pay with an amount",
+                Box::new(move |f| Pay::new(f, other, MicroAlgos(1_000_000)).build()),
+                "forbidden fields: amount",
+            ),
+            (
+                "asset transfer",
+                Box::new(move |f| TransferAsset::new(f, USDC_ASA_ID_TESTNET, 1, other).build()),
+                "must be a payment",
+            ),
+            (
+                "asset opt-in",
+                Box::new(|f| AcceptAsset::new(f, USDC_ASA_ID_TESTNET).build()),
+                "must be a payment",
+            ),
+            (
+                "key registration",
+                Box::new(|f| RegisterKey::offline(f).build()),
+                "must be a payment",
+            ),
+        ];
+        let mut verified = Vec::new();
+        for (case, fee_txn, reason) in cases {
+            let f = fixture_with(case.as_bytes(), fee_txn, None).await;
+            match f.provider.verify(&f.request).await {
+                Ok(response) => verified.push(format!("{case}: {response:?}")),
+                Err(err) => assert!(
+                    matches!(&err, FacilitatorLocalError::Other(msg) if msg.contains(reason)),
+                    "{case}: got {err:?}"
+                ),
+            }
+        }
+        assert!(
+            verified.is_empty(),
+            "fee transactions that verified: {verified:#?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn verify_rejects_a_fee_transaction_with_a_lease() {
+        scripted_store();
+        let f = fixture_with(
+            b"fee lease",
+            |f| Pay::new(f, f, MicroAlgos(0)).build(),
+            Some(HashDigest([9u8; 32])),
+        )
+        .await;
+
+        let err = f
+            .provider
+            .verify(&f.request)
+            .await
+            .expect_err("a fee transaction with a lease must not verify");
+        assert!(
+            matches!(&err, FacilitatorLocalError::Other(msg) if msg.contains("forbidden fields: lease")),
+            "got {err:?}"
+        );
+    }
+
+    /// The receiver of the fee payment is not pinned to the facilitator: a
+    /// zero amount moves nothing to it, and the original client design
+    /// (docs/ALGORAND_IMPLEMENTATION_PLAN.md) addressed it to the payer.
+    #[tokio::test]
+    async fn verify_accepts_a_zero_amount_fee_payment_to_another_receiver() {
+        scripted_store();
+        let other = Account::generate().address();
+        let f = fixture_with(
+            b"fee to another receiver",
+            move |f| Pay::new(f, other, MicroAlgos(0)).build(),
+            None,
+        )
+        .await;
+
+        let response = f
+            .provider
+            .verify(&f.request)
+            .await
+            .expect("a zero-amount fee payment verifies whatever its receiver");
+        assert!(
+            matches!(&response, VerifyResponse::Valid { payer } if *payer == MixedAddress::Algorand(f.payer.clone())),
+            "got {response:?}"
         );
     }
 }

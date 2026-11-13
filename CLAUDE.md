@@ -281,7 +281,8 @@ This is a Cargo workspace with multiple crates:
    - **Merge strategy**: Preserve ALL custom networks when pulling upstream
 
 5. **Rust Edition** - edition 2021 (`Cargo.toml:5`)
-   - This is NOT a low-MSRV guarantee: locked deps require **Rust >= 1.91** (aws-smithy-* 1.91.1). There is no `rust-version` key and the toolchain is unpinned `stable` (rust-toolchain.toml, ci.yaml, `FROM rust:bullseye`).
+   - This is NOT a low-MSRV guarantee: locked deps require **Rust >= 1.91** (aws-smithy-* 1.91.1). There is no `rust-version` key.
+   - **The toolchain is PINNED to one exact version: `channel = "1.99.1"` in `rust-toolchain.toml`**, which rustup obeys over the CI runner's `rustup default` and over the image's own toolchain (measured 2026-11-13). `dtolnay/rust-toolchain@1.99.1` in ci.yaml and `FROM rust:1.99.1-bookworm` in the Dockerfile name the same version so nothing downloads a second compiler; `tests/scripts/test_ci_toolchain_pin.py` fails when the three disagree, and when anything sets `RUSTUP_TOOLCHAIN` or passes `+toolchain` (both beat the file). Floating `stable` broke the 2.57.2 release: 1.100.0 cannot compile `algonaut_client` 0.4.2 (E0277, rust-lang/rust#148922). Moving the pin is a PR of its own: the three places at once, the full CI gate on it.
    - Edition 2024 needs only 1.85, so MSRV no longer blocks it - only syntax/lint churn does.
    - Downgraded in the v0.9.1 merge for broader compatibility
 
@@ -1060,7 +1061,7 @@ This complete checklist covers:
 
 - **NEVER compile or deploy the facilitator on your own initiative** - make the code change, tell the user, wait for them to build/deploy. But know what shipping means here: **a manual "Run workflow" on `main` deploys to production, and nothing else does.** `.github/workflows/ci.yaml` then tests, builds the image, pushes it to ECR and `terraform apply -auto-approve`s it onto ECS, then waits for the rollout. The gate is armed today (the AWS repo secrets exist, so `preflight` emits `deploy=true`); only a red `test` job blocks it. Since X402-CI-GATES a merge is NOT a release (before, every push to `main` touching a build input shipped on its own): `main` sits ahead of production until somebody starts the deploy, and that run ships everything merged since the last one. A failed or not-yet-started deploy leaves `main` ahead of production - compare `curl -s https://facilitator.ultravioletadao.xyz/version` with `git log -1` before assuming your commit is live.
 - **Never add emojis to Rust code** - they do NOT break compilation (Rust source is UTF-8), but they corrupt CloudWatch log output and terminal rendering. Use `[OK]`/`[FAIL]`/`[WARN]`. Same rule as Common Pitfalls #6.
-- **Rust Edition**: edition 2021 (`Cargo.toml:5`). The real toolchain floor is **Rust >= 1.91** (highest `rust-version` among locked deps, e.g. aws-smithy-* 1.91.1), NOT 1.82. Edition 2024 needs only 1.85, so MSRV no longer blocks the migration - only syntax/lint churn does.
+- **Rust Edition**: edition 2021 (`Cargo.toml:5`). The real toolchain floor is **Rust >= 1.91** (highest `rust-version` among locked deps, e.g. aws-smithy-* 1.91.1), NOT 1.82; the toolchain itself is pinned (Critical Customizations #5). Edition 2024 needs only 1.85, so MSRV no longer blocks the migration - only syntax/lint churn does.
   - See v0.9.1 merge for details (commit 75b37e6)
 - **Version Bumping**: the release version lives in the `VERSION` file at the repo
   root, **not** in `Cargo.toml`. Check the deployed version first, then bump

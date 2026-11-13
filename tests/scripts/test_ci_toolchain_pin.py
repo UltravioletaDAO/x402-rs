@@ -19,7 +19,11 @@ The file is what rustup obeys, over the runner's `rustup default` and over the
 image's own toolchain (both measured on 2026-11-13); the other two only decide
 whether a second compiler gets downloaded next to it. What does beat the file
 is RUSTUP_TOOLCHAIN and an explicit `+toolchain` (measured too), so no
-workflow may set or pass either, nor run rustup to pick or fetch another one.
+workflow or Dockerfile may set or pass either, nor run rustup to pick or fetch
+another one. Nor may a second toolchain file appear where cargo runs: rustup
+prefers an extensionless `rust-toolchain` next to the .toml, and the nearest
+file to the directory wins (the justfile runs cargo inside crates/ and
+examples/).
 
 Offline and without credentials: they read the files as text, and the
 workflows through the same PyYAML loader as scripts/ci_paths_selftest.py.
@@ -48,8 +52,9 @@ DOCKERFILES = [REPO / "Dockerfile", *sorted((REPO / "docker").glob("Dockerfile*"
 EXACT = re.compile(r"[0-9]+\.[0-9]+\.[0-9]+")
 
 TOOLCHAIN_ACTION = "dtolnay/rust-toolchain"
-# Actions with "rust" in their name that install no compiler.
-NOT_INSTALLERS = {"Swatinem/rust-cache"}
+# Actions with "rust" in their name that install no compiler. Lower case:
+# GitHub resolves owner/repo of `uses:` without regard to case.
+NOT_INSTALLERS = {"swatinem/rust-cache"}
 
 # Shell that picks or fetches a compiler other than the file's, or overrides it.
 OVERRIDE = re.compile(
@@ -66,6 +71,10 @@ FROM = re.compile(r"^[ \t]*FROM[ \t]+(?:--\S+[ \t]+)*(?P<image>\S+)", re.I | re.
 
 def read(path: Path) -> str:
     return path.read_text(encoding="utf-8").replace("\r\n", "\n")
+
+
+def is_toolchain_action(step: dict) -> bool:
+    return str(step.get("uses", "")).split("@", 1)[0].lower() == TOOLCHAIN_ACTION
 
 
 def channel() -> str:
@@ -115,6 +124,14 @@ class TheFilePinsAnExactVersion(unittest.TestCase):
         # `path` points rustup at a local toolchain directory: nothing pins what is in it.
         self.assertNotIn("path", tomllib.loads(read(TOOLCHAIN_FILE))["toolchain"])
 
+    def test_it_is_the_only_toolchain_file_where_cargo_runs(self):
+        # The root, and every crate and example the justfile runs cargo in.
+        dirs = [REPO, *sorted(REPO.glob("crates/*")), *sorted(REPO.glob("examples/*"))]
+        found = [p for d in dirs if d.is_dir()
+                 for p in (d / "rust-toolchain", d / "rust-toolchain.toml") if p.exists()]
+        self.assertEqual(found, [TOOLCHAIN_FILE],
+                         "a second toolchain file wins over the root's rust-toolchain.toml where it sits")
+
 
 class EveryWorkflowInstallsTheFilesVersion(unittest.TestCase):
     def test_every_toolchain_action_names_the_files_version(self):
@@ -122,7 +139,7 @@ class EveryWorkflowInstallsTheFilesVersion(unittest.TestCase):
         found = 0
         for wf, job, index, step in steps():
             uses = str(step.get("uses", ""))
-            if not uses.startswith(TOOLCHAIN_ACTION + "@"):
+            if not is_toolchain_action(step):
                 continue
             found += 1
             where = f"{wf}:{job}[{index}]"
@@ -142,8 +159,7 @@ class EveryWorkflowInstallsTheFilesVersion(unittest.TestCase):
                 if not cargo:
                     continue
                 compiling += 1
-                action = [i for i, s in enumerate(job_steps)
-                          if str(s.get("uses", "")).startswith(TOOLCHAIN_ACTION + "@")]
+                action = [i for i, s in enumerate(job_steps) if is_toolchain_action(s)]
                 self.assertTrue(action and action[0] < cargo[0],
                                 f"{wf_name}:{job_name} runs cargo without installing the pinned toolchain first")
         self.assertGreaterEqual(compiling, 1, "no workflow job runs cargo: this guard checks nothing")
@@ -151,8 +167,8 @@ class EveryWorkflowInstallsTheFilesVersion(unittest.TestCase):
     def test_no_other_action_installs_rust(self):
         for wf, job, index, step in steps():
             uses = str(step.get("uses", ""))
-            action = uses.split("@", 1)[0]
-            if "rust" in action.lower() and action not in NOT_INSTALLERS | {TOOLCHAIN_ACTION}:
+            action = uses.split("@", 1)[0].lower()
+            if "rust" in action and action not in NOT_INSTALLERS | {TOOLCHAIN_ACTION}:
                 self.fail(f"{wf}:{job}[{index}] uses {uses}: teach this guard what it installs")
 
     def test_no_step_overrides_or_fetches_another_toolchain(self):
@@ -177,6 +193,15 @@ class TheImageBuildsWithTheFilesVersion(unittest.TestCase):
             tag = image_parts(image)[1]
             self.assertRegex(tag, rf"^{re.escape(pinned)}-[a-z]+$",
                              f"{path.name}: FROM {image} -- name {pinned}-<debian suite>")
+
+    def test_no_dockerfile_overrides_the_file(self):
+        # ENV/ARG RUSTUP_TOOLCHAIN, or a RUN that picks another toolchain. Comments are prose.
+        for path in DOCKERFILES:
+            if not path.exists():
+                continue
+            code = "\n".join(l for l in read(path).splitlines() if not l.lstrip().startswith("#"))
+            match = OVERRIDE.search(code)
+            self.assertIsNone(match, f"{path.name}: {match and match.group(0)!r} beats rust-toolchain.toml")
 
     def test_the_builder_and_runtime_stages_share_a_debian_suite(self):
         images = from_images()

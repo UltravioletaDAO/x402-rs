@@ -4175,4 +4175,79 @@ mod sweep_outcome_tests {
             .await;
         assert!(is_replay(&again), "{again:?}");
     }
+
+    // ---- Which keypair a settleSecretKey decodes to ---------------------------
+
+    /// base58 of raw bytes, the way a client encodes the 64-byte keypair
+    /// (secret half, then public half) it sends as settleSecretKey.
+    fn base58(bytes: &[u8]) -> String {
+        solana_sdk::bs58::encode(bytes).into_string()
+    }
+
+    /// The public half of the settlement keypair is derived from the secret
+    /// half, never read from the bytes: 64 bytes whose public half is another
+    /// key's are refused, though both halves are well formed.
+    #[test]
+    fn a_settle_secret_key_whose_public_half_is_not_derived_from_its_secret_half_is_refused() {
+        let settlement = Keypair::new();
+        let foreign = Keypair::new();
+        let mut bytes = settlement.to_bytes();
+        bytes[32..].copy_from_slice(&foreign.pubkey().to_bytes());
+
+        match settlement_keypair(&base58(&bytes)) {
+            Err(FacilitatorLocalError::DecodingError(reason)) => {
+                assert!(reason.contains("settleSecretKey"), "{reason}");
+            }
+            Ok(keypair) => panic!(
+                "accepted a public half the secret half does not derive (decoded {})",
+                keypair.pubkey()
+            ),
+            Err(other) => panic!("expected a decoding error, got {other:?}"),
+        }
+    }
+
+    /// A well-formed settleSecretKey, encoded as the payload carries it or as
+    /// plain base58 of its 64 bytes, decodes to the keypair it encodes.
+    #[test]
+    fn a_well_formed_settle_secret_key_decodes_to_its_keypair() {
+        let settlement = Keypair::new();
+        for wire in [
+            settlement.to_base58_string(),
+            base58(&settlement.to_bytes()),
+        ] {
+            let keypair = match settlement_keypair(&wire) {
+                Ok(keypair) => keypair,
+                Err(error) => panic!("refused a well-formed settleSecretKey: {error:?}"),
+            };
+            assert_eq!(keypair.pubkey(), settlement.pubkey());
+            assert!(
+                keypair.secret_bytes() == settlement.secret_bytes(),
+                "the secret half changed"
+            );
+        }
+    }
+
+    /// Anything but base58 of exactly 64 bytes is refused: text outside the
+    /// base58 alphabet, nothing, the secret half alone, a byte short and a
+    /// byte over.
+    #[test]
+    fn a_settle_secret_key_that_is_not_64_bytes_of_base58_is_refused() {
+        let bytes = Keypair::new().to_bytes();
+        let mut one_over = bytes.to_vec();
+        one_over.push(0);
+        let cases = [
+            ("outside the base58 alphabet", "0OIl+/".to_string()),
+            ("empty", String::new()),
+            ("the secret half alone", base58(&bytes[..32])),
+            ("63 bytes", base58(&bytes[..63])),
+            ("65 bytes", base58(&one_over)),
+        ];
+        for (case, wire) in cases {
+            match settlement_keypair(&wire) {
+                Err(FacilitatorLocalError::DecodingError(_)) => {}
+                Ok(keypair) => panic!("{case}: decoded a keypair for {}", keypair.pubkey()),
+                Err(other) => panic!("{case}: expected a decoding error, got {other:?}"),
+            }
+        }
+    }
 }

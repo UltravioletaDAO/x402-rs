@@ -181,8 +181,12 @@ jobs:
       # holds the manifest's production profile to terraform/environments/production.
       # Stdlib only and offline: it runs before the build, so a stale number
       # fails in a second. `python3 scripts/network_copy.py --write` fixes most
-      # findings; --generate after a change of networks in the code.
-      - name: Published network counts and lists come from config/network_capabilities.json
+      # findings; --generate after a change of networks in the code. "drift" in
+      # the name is what the local pre-CI runs before a push. A change to the
+      # README, CLAUDE.md or the operator guide alone does not start this
+      # workflow (owner's rule: docs-only changes trigger nothing), so a number
+      # typed there is checked by the next run that does.
+      - name: Network counts drift (published counts and lists come from config/network_capabilities.json)
         run: |
           python3 scripts/network_copy.py --check
           python3 -m unittest discover -s tests/scripts -p 'test_network_copy.py'

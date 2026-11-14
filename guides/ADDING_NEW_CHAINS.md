@@ -60,14 +60,19 @@ ERC-8004 tests in `src/erc8004/mod.rs` pin that set on purpose, and change with 
   disagrees with the profile (a payment network whose provider production does
   not configure, `ENABLE_UPTO` off, ...). A list that is not a capability's set,
   such as a token's coverage or a past behaviour, goes in its `PENDING` table with
-  its reason; it excuses that exact list only.
+  its reason; it excuses that exact list only. It runs first in CI's test job
+  (and in the local pre-CI before a push); a change to the README, `CLAUDE.md` or
+  this guide alone does not start that job (docs-only changes build nothing), so
+  a number typed there is caught by the next run that does.
 
 Those tables and cards carry presentation the manifest does not have (chain id,
 explorer, faucet, balance, addresses): the check tells you the row or card that is
 missing, you write it. What it cannot see: a count written in words ("eleven
-networks"), and the testnet rows of README's escrow table, which record what
-`/supported` announced on a date (an operator is announced once it passes an
-on-chain self-check, at runtime).
+networks") or in other units ("N L2s"); a claim with a quantifier and no number
+("on all EVM networks"); lists of fewer than four networks, lists written with
+"/", and bulleted lists outside the bound blocks; and the testnet rows of
+README's escrow table, which record what `/supported` announced on a date (an
+operator is announced once it passes an on-chain self-check, at runtime).
 
 ## Prerequisites Checklist
 

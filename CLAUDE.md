@@ -53,8 +53,8 @@ curl -s https://facilitator.ultravioletadao.xyz/supported | jq '[.kinds[].networ
 # v1 names only - closer to a real chain count
 curl -s https://facilitator.ultravioletadao.xyz/supported | jq -r '[.kinds[].network]|unique|.[]' | grep -v ':' | wc -l
 
-# Canonical mainnet payment-network count (`payments` in config/network_capabilities.json,
-# held to /supported by this script when it reads it live). The old jq substring filter does NOT
+# Canonical mainnet payment-network count (`payments` in config/network_capabilities.json;
+# read live, /supported is compared to it, a difference is a note, not a failure). The old jq substring filter does NOT
 # work - CAIP-2 ids carry no "sepolia"/"testnet" substring, so it returned 55.
 python scripts/verify_landing_canonical.py
 ```

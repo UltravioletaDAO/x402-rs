@@ -128,6 +128,10 @@ class BoundCounts(unittest.TestCase):
         self.assertIsNone(report.findings[0].fix)
         report = check(DOC, "Upto is live on 8 mainnets, 11 networks in total.")
         self.assertEqual(kinds(report), ["loose-count", "loose-count"])
+        # "ERC-8004" in the sentence, but upto is the subject of the count.
+        report = check(DOC, "ERC-8004 sits next to upto, which is live on 8 mainnets and 11 networks in total.")
+        self.assertEqual(kinds(report), ["loose-count", "loose-count"])
+        self.assertEqual([f.fix for f in report.findings], [None, None])
 
     def test_each_number_of_a_phrase_is_its_own_field(self):
         e = CAPS["erc8004"]
@@ -355,6 +359,8 @@ class LinkPreviews(unittest.TestCase):
         self.assertIn("preview", kinds(check("static/x402.html", reversed_attrs)))
         card = "<meta name='twitter:image:src' content='https://example.com/card.png'>"
         self.assertEqual(kinds(check("static/x402.html", card)), ["preview"])
+        unquoted = "<meta property=og:image content=https://example.com/card.png>"
+        self.assertEqual(kinds(check("static/x402.html", unquoted)), ["preview"])
 
 
 class Exceptions(unittest.TestCase):
@@ -370,6 +376,9 @@ class Exceptions(unittest.TestCase):
         # names five of its families.
         stale = "The families are EVM, SVM, NEAR, Stellar, Algorand, Sui and XRPL."
         self.assertEqual(kinds(check("static/skill.md", stale)), ["wrong-list"])
+        # The same five names in another order are another sentence.
+        reordered = "The other families are XRPL, Sui, Algorand, Stellar and NEAR."
+        self.assertEqual(kinds(check("static/skill.md", reordered)), ["unbound-list"])
 
     def test_an_exception_that_no_longer_occurs_is_an_error(self):
         stale = dict(nc.PENDING)
@@ -430,6 +439,16 @@ class Profile(unittest.TestCase):
             f.write("\nx_on = true\n")
         env = nc.terraform_env(self.tf)
         self.assertEqual((env.get("RPC_URL_FIRST"), env.get("RPC_URL_SECOND")), ("a", "b"))
+
+    def test_a_declaration_behind_a_condition_this_reader_cannot_evaluate_counts_as_absent(self):
+        (self.tf / "zz_compound.tf").write_text(
+            'locals {\n  y_list = var.a_on && var.b_on ? [\n    { name = "RPC_URL_COMPOUND", value = "a" },\n'
+            '  ] : []\n  z_list = !var.c_on ? [{ name = "RPC_URL_NEGATED", value = "b" }] : []\n}\n',
+            encoding="utf-8",
+        )
+        env = nc.terraform_env(self.tf)
+        self.assertNotIn("RPC_URL_COMPOUND", env)
+        self.assertNotIn("RPC_URL_NEGATED", env)
 
     def test_the_balances_lambda_environment_is_not_the_tasks(self):
         with (self.tf / "lambda-balances.tf").open("a", encoding="utf-8") as f:

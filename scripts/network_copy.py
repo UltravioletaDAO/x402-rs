@@ -135,6 +135,10 @@ def _KEY(key: str) -> str:  # noqa: N802 -- reads as part of a pattern
     return re.escape(key) + r'"(?:>|: ") ?'
 
 
+# "ERC-8004" as the subject of the same sentence: no other capability named
+# between it and the count ("ERC-8004 sits next to upto, which is live on ...").
+_ERC8004_SUBJECT = r"ERC-8004(?:(?!upto|escrow|payment|x402r)[^.\n]){0,80}?"
+
 _EVM_MAINNETS = r"### EVM Chains \(Mainnet\) {list} (?=### EVM)"
 _EVM_TESTNETS = r"### EVM Chains \(Testnet\) {list} (?=Ethereum Sepolia is announced|### SVM)"
 
@@ -162,11 +166,11 @@ PHRASES: Tuple[Phrase, ...] = (
     # upto sentence with ERC-8004's numbers.
     Phrase(
         "erc8004",
-        r"ERC-8004[^.\n]{0,80}?live on {mainnets} mainnets(?: and|,) {count} networks in total",
+        _ERC8004_SUBJECT + r"live on {mainnets} mainnets(?: and|,) {count} networks in total",
     ),
     Phrase(
         "erc8004",
-        r"ERC-8004[^.\n]{0,80}?live on {mainnets} mainnets \({count} networks counting testnets\)",
+        _ERC8004_SUBJECT + r"live on {mainnets} mainnets \({count} networks counting testnets\)",
     ),
     Phrase(
         "erc8004",
@@ -836,7 +840,7 @@ def check_unbound_lists(manifest: Manifest, view: View, taken: List[Tuple[int, i
 
 
 _META_TAG = re.compile(r"<meta\b[^>]*>", re.I)
-_ATTR = re.compile(r"""([\w:-]+)\s*=\s*(?:"([^"]*)"|'([^']*)')""")
+_ATTR = re.compile(r"""([\w:-]+)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'>]+))""")
 _TITLE = re.compile(r"<title[^>]*>(?P<content>[^<]*)</title>", re.I)
 # A preview image, under any of the keys platforms read; og:image:alt is text.
 _IMAGE_KEYS = ("og:image", "og:image:url", "og:image:secure_url", "twitter:image", "twitter:image:src")
@@ -847,7 +851,7 @@ def check_link_preview(rel: str, raw: str, report: Report) -> None:
     platform that unfurls it and ages there) and its image is the logo."""
     entries: List[Tuple[int, str, str]] = []
     for tag in _META_TAG.finditer(raw):
-        attrs = {a.group(1).lower(): a.group(2) if a.group(2) is not None else a.group(3)
+        attrs = {a.group(1).lower(): next(v for v in a.groups()[1:] if v is not None)
                  for a in _ATTR.finditer(tag.group(0))}
         key = (attrs.get("property") or attrs.get("name") or "").lower()
         if (key.startswith(("og:", "twitter:")) or key == "description") and "content" in attrs:
@@ -876,15 +880,16 @@ def _same_text(a: str, b: str) -> bool:
 
 
 def _same_items(a: str, b: str) -> bool:
-    def items(text: str) -> Set[str]:
-        return {i.strip("*` ").lower() for i in split_list(text)}
+    def items(text: str) -> List[str]:
+        return [i.strip("*` ").lower() for i in split_list(text)]
 
     return items(a) == items(b)
 
 
 def _excepted(rel: str, text: str, report: Report, kind: str) -> bool:
     """A PENDING text excuses exactly itself: a count by its words, a list by its
-    set of items, so a list that gains or loses a network is judged again."""
+    items in their order, so a list that gains, loses or reorders a network (a
+    different sentence) is judged again."""
     same = _same_items if kind == "list" else _same_text
     for key in PENDING:
         if key[0] == rel and same(key[1], text):
@@ -917,11 +922,16 @@ def _tf_scalars(text: str) -> Dict[str, str]:
     return out
 
 
-def _conditional_spans(text: str) -> List[Tuple[int, int, str]]:
-    """(open, close, flag) of every `var.flag ? [ ... ]` / `var.flag ? { ... }`:
-    the bracket that opens the true branch to the one that closes it."""
+def _conditional_spans(text: str) -> List[Tuple[int, int, Optional[str]]]:
+    """(open, close, flag) of every `<condition> ? [ ... ]` / `? { ... }`: the
+    bracket that opens the true branch to the one that closes it. `flag` is the
+    variable when the condition is a bare `var.flag`; None when it is anything
+    else (`var.a && var.b`, `!var.b`, `local.x`), which this reader does not
+    evaluate: what it guards then counts as absent, so a gate behind it fails
+    loudly instead of passing as configured."""
     spans = []
-    for m in re.finditer(r"var\.(\w+)\s*\?\s*[\[{]", text):
+    for m in re.finditer(r"(?:=|\(|,)\s*(?P<cond>[^?\n]+?)\s*\?\s*[\[{]", text):
+        bare = re.fullmatch(r"var\.(\w+)", m.group("cond").strip())
         depth, j = 0, m.end() - 1
         while j < len(text):
             if text[j] in "[{":
@@ -931,7 +941,7 @@ def _conditional_spans(text: str) -> List[Tuple[int, int, str]]:
                 if depth == 0:
                     break
             j += 1
-        spans.append((m.end() - 1, j, m.group(1)))
+        spans.append((m.end() - 1, j, bare.group(1) if bare else None))
     return spans
 
 
@@ -962,8 +972,8 @@ def terraform_env(tf_dir: Path) -> Dict[str, Optional[str]]:
         switched = _conditional_spans(text)
         for m in re.finditer(r'\bname\s*=\s*"([A-Z][A-Z0-9_]*)"', text):
             # Inside `var.x ? [ ... ]` (any entry, at any distance) it counts only
-            # when x is true.
-            if any(s < m.start() < e and var(flag) != "true" for s, e, flag in switched):
+            # when x is true; inside any other condition, never.
+            if any(s < m.start() < e and (flag is None or var(flag) != "true") for s, e, flag in switched):
                 continue
             after = text[m.end(): m.end() + 400].split("}")[0]
             literal = re.search(r'\bvalue\s*=\s*"([^"]*)"', after)

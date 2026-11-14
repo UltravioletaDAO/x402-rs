@@ -1,5 +1,31 @@
 # Changelog
 
+## [2.57.3] - 2026-11-14
+
+Algorand: `/verify` and `/settle` hold the atomic group to a stricter shape
+before the facilitator signs its fee transaction. A group whose fee
+transaction is a zero-amount payment without a lease, with the payment at
+index 1 or above, verifies and settles as before.
+
+### Fixed
+
+- The fee transaction (index 0), which the client builds and the facilitator
+  signs, may only be a payment of zero microAlgos with no lease: another
+  transaction type is refused with `Fee transaction must be a payment
+  transaction`, an amount or a lease as a forbidden field (`amount`,
+  `lease`). Its receiver stays free. The checks it already passed (sender,
+  fee cap, `rekey_to`, `close_remainder_to`) are unchanged.
+- `paymentIndex` 0 is refused: index 0 is the fee transaction, and the
+  payment must be at index 1 or above.
+- `/settle` applies both before it claims the group in the replay store,
+  signs or broadcasts anything.
+
+### Tests
+
+- `replay_verify_tests` (`src/chain/algorand.rs`) holds each refusal on
+  `verify` and on `settle`, and a control that a group `settle` accepts is
+  claimed and reaches algod's broadcast.
+
 ## [2.57.2] - 2026-11-11
 
 The NEAR `escrow` scheme relays to Arras v2 on NEAR mainnet as well,

@@ -1273,10 +1273,11 @@ mod tests {
 
 /// `verify` against the replay state `settle` writes.
 ///
-/// Uses nothing newer than `verify`, the global nonce store and the provider
-/// constructor, so the module also runs against the code before the check.
-/// algod is a local stub answering `GET /v2/status`; transactions are built
-/// with algonaut's builder, which needs no node.
+/// Uses nothing newer than `verify`, `settle`, the global nonce store and the
+/// provider constructor, so the module also runs against the code before the
+/// check. algod is a local stub answering `GET /v2/status` and recording,
+/// then refusing, any other request; transactions are built with algonaut's
+/// builder, which needs no node.
 #[cfg(test)]
 mod replay_verify_tests {
     use super::*;
@@ -1343,8 +1344,15 @@ mod replay_verify_tests {
         scripted
     }
 
-    /// An algod node at CURRENT_ROUND.
-    async fn algod_stub() -> String {
+    /// The requests an algod stub received besides `GET /v2/status`, as
+    /// "METHOD /path": a broadcast is `POST /v2/transactions`.
+    type AlgodCalls = Arc<Mutex<Vec<String>>>;
+
+    /// An algod node at CURRENT_ROUND. Any other request is recorded and
+    /// refused with a 400, which a broadcast reads as algod refusing the group.
+    async fn algod_stub() -> (String, AlgodCalls) {
+        let calls = AlgodCalls::default();
+        let recorded = calls.clone();
         let status = serde_json::json!({
             "catchup-time": 0,
             "last-round": CURRENT_ROUND,
@@ -1355,14 +1363,27 @@ mod replay_verify_tests {
             "stopped-at-unsupported-round": false,
             "time-since-last-round": 0,
         });
-        let app = axum::Router::new().route(
-            "/v2/status",
-            axum::routing::get(move || async move { axum::Json(status) }),
-        );
+        let app = axum::Router::new()
+            .route(
+                "/v2/status",
+                axum::routing::get(move || async move { axum::Json(status) }),
+            )
+            .fallback(
+                move |method: axum::http::Method, uri: axum::http::Uri| async move {
+                    recorded
+                        .lock()
+                        .unwrap()
+                        .push(format!("{method} {}", uri.path()));
+                    (
+                        axum::http::StatusCode::BAD_REQUEST,
+                        axum::Json(serde_json::json!({"message": "algod stub: not served"})),
+                    )
+                },
+            );
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
-        format!("http://{addr}/")
+        (format!("http://{addr}/"), calls)
     }
 
     struct Fixture {
@@ -1370,6 +1391,7 @@ mod replay_verify_tests {
         request: VerifyRequest,
         group_id: [u8; 32],
         payer: String,
+        algod_calls: AlgodCalls,
     }
 
     /// A group as a client sends it: the facilitator's unsigned fee
@@ -1391,9 +1413,10 @@ mod replay_verify_tests {
         fee_txn: impl FnOnce(AlgoAddress) -> TransactionType,
         fee_lease: Option<HashDigest>,
     ) -> Fixture {
+        let (algod_url, algod_calls) = algod_stub().await;
         let provider = AlgorandProvider::try_new(
             Account::generate().mnemonic(),
-            Some(algod_stub().await),
+            Some(algod_url),
             Network::AlgorandTestnet,
         )
         .unwrap();
@@ -1466,6 +1489,32 @@ mod replay_verify_tests {
             request,
             group_id,
             payer: payer.address().to_string(),
+            algod_calls,
+        }
+    }
+
+    /// Settles `f`'s group, which settle must refuse with `reason`; the error
+    /// names what happened instead: a request to algod besides its status, a
+    /// claim on the group in the nonce store, or another answer. submit_group()
+    /// claims the group before it signs the fee transaction, so an unclaimed
+    /// group was never signed.
+    async fn settle_refused(
+        f: &Fixture,
+        store: &ScriptedStore,
+        reason: &str,
+    ) -> Result<(), String> {
+        let outcome = f.provider.settle(&f.request).await;
+        let sent = f.algod_calls.lock().unwrap().clone();
+        let key = algorand_nonce_key(f.provider.chain_name(), &f.group_id);
+        let claimed = store.used.lock().unwrap().contains(&key);
+        let refused =
+            matches!(&outcome, Err(FacilitatorLocalError::Other(msg)) if msg.contains(reason));
+        if sent.is_empty() && !claimed && refused {
+            Ok(())
+        } else {
+            Err(format!(
+                "algod got {sent:?}, group claimed: {claimed}, settle answered {outcome:?}"
+            ))
         }
     }
 
@@ -1521,15 +1570,15 @@ mod replay_verify_tests {
         );
     }
 
-    /// The facilitator signs the fee transaction the client built, so it may
-    /// only be a payment that moves nothing: any amount, or any other type,
-    /// would spend the facilitator's funds or act for its account.
-    #[tokio::test]
-    async fn verify_rejects_a_fee_transaction_that_is_not_a_zero_amount_payment() {
-        scripted_store();
+    /// A fee transaction's body, built from the facilitator's address.
+    type FeeTxn = Box<dyn FnOnce(AlgoAddress) -> TransactionType>;
+
+    /// Fee transactions that are not a zero-amount payment, each with the
+    /// reason verify and settle give for refusing it.
+    fn fee_transactions_that_are_not_a_zero_amount_payment(
+    ) -> Vec<(&'static str, FeeTxn, &'static str)> {
         let other = Account::generate().address();
-        type FeeTxn = Box<dyn FnOnce(AlgoAddress) -> TransactionType>;
-        let cases: Vec<(&str, FeeTxn, &str)> = vec![
+        vec![
             (
                 "pay with an amount",
                 Box::new(move |f| Pay::new(f, other, MicroAlgos(1_000_000)).build()),
@@ -1550,9 +1599,17 @@ mod replay_verify_tests {
                 Box::new(|f| RegisterKey::offline(f).build()),
                 "must be a payment",
             ),
-        ];
+        ]
+    }
+
+    /// The facilitator signs the fee transaction the client built, so it may
+    /// only be a payment that moves nothing: any amount, or any other type,
+    /// would spend the facilitator's funds or act for its account.
+    #[tokio::test]
+    async fn verify_rejects_a_fee_transaction_that_is_not_a_zero_amount_payment() {
+        scripted_store();
         let mut verified = Vec::new();
-        for (case, fee_txn, reason) in cases {
+        for (case, fee_txn, reason) in fee_transactions_that_are_not_a_zero_amount_payment() {
             let f = fixture_with(case.as_bytes(), fee_txn, None).await;
             match f.provider.verify(&f.request).await {
                 Ok(response) => verified.push(format!("{case}: {response:?}")),
@@ -1632,6 +1689,18 @@ mod replay_verify_tests {
         merged
     }
 
+    /// Puts at index 0 one blob that reads both as `f`'s fee transaction and
+    /// as its signed transfer, and points the payment index at it.
+    fn put_the_payment_at_the_fee_transaction_index(f: &mut Fixture) {
+        let ExactPaymentPayload::Algorand(payload) = &mut f.request.payment_payload.payload else {
+            unreachable!("the fixture builds an Algorand payload")
+        };
+        let fee_blob = BASE64.decode(&payload.payment_group[0]).unwrap();
+        let payment_blob = BASE64.decode(&payload.payment_group[1]).unwrap();
+        payload.payment_group[0] = BASE64.encode(merged_msgpack_maps(&fee_blob, &payment_blob));
+        payload.payment_index = 0;
+    }
+
     /// Index 0 is the fee transaction, which settle replaces with the one the
     /// facilitator signs: a payment checked there is never broadcast. One
     /// blob that reads both as the fee transaction and as the signed
@@ -1640,13 +1709,7 @@ mod replay_verify_tests {
     async fn verify_rejects_the_payment_at_the_fee_transaction_index() {
         scripted_store();
         let mut f = fixture(b"payment at index 0").await;
-        let ExactPaymentPayload::Algorand(payload) = &mut f.request.payment_payload.payload else {
-            unreachable!("the fixture builds an Algorand payload")
-        };
-        let fee_blob = BASE64.decode(&payload.payment_group[0]).unwrap();
-        let payment_blob = BASE64.decode(&payload.payment_group[1]).unwrap();
-        payload.payment_group[0] = BASE64.encode(merged_msgpack_maps(&fee_blob, &payment_blob));
-        payload.payment_index = 0;
+        put_the_payment_at_the_fee_transaction_index(&mut f);
 
         let err = f
             .provider
@@ -1656,6 +1719,78 @@ mod replay_verify_tests {
         assert!(
             matches!(&err, FacilitatorLocalError::Other(msg) if msg.contains("payment index 0")),
             "got {err:?}"
+        );
+    }
+
+    /// settle checks the fee transaction as verify does, before it claims,
+    /// signs or broadcasts the group.
+    #[tokio::test]
+    async fn settle_rejects_a_fee_transaction_that_is_not_a_zero_amount_payment() {
+        let store = scripted_store();
+        let mut settled = Vec::new();
+        for (case, fee_txn, reason) in fee_transactions_that_are_not_a_zero_amount_payment() {
+            let f = fixture_with(format!("settle: {case}").as_bytes(), fee_txn, None).await;
+            if let Err(problem) = settle_refused(&f, &store, reason).await {
+                settled.push(format!("{case}: {problem}"));
+            }
+        }
+        assert!(
+            settled.is_empty(),
+            "fee transactions settle did not refuse: {settled:#?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn settle_rejects_a_fee_transaction_with_a_lease() {
+        let store = scripted_store();
+        let f = fixture_with(
+            b"settle: fee lease",
+            |f| Pay::new(f, f, MicroAlgos(0)).build(),
+            Some(HashDigest([9u8; 32])),
+        )
+        .await;
+
+        settle_refused(&f, &store, "forbidden fields: lease")
+            .await
+            .unwrap_or_else(|problem| panic!("a fee transaction with a lease: {problem}"));
+    }
+
+    #[tokio::test]
+    async fn settle_rejects_the_payment_at_the_fee_transaction_index() {
+        let store = scripted_store();
+        let mut f = fixture(b"settle: payment at index 0").await;
+        put_the_payment_at_the_fee_transaction_index(&mut f);
+
+        settle_refused(&f, &store, "payment index 0")
+            .await
+            .unwrap_or_else(|problem| {
+                panic!("a payment at the fee transaction's index: {problem}")
+            });
+    }
+
+    /// What the refusals above rely on: a group settle accepts is claimed
+    /// and reaches algod's broadcast, which the stub records.
+    #[tokio::test]
+    async fn settle_claims_and_broadcasts_a_zero_amount_fee_payment_to_another_receiver() {
+        let store = scripted_store();
+        let other = Account::generate().address();
+        let f = fixture_with(
+            b"settle: fee to another receiver",
+            move |f| Pay::new(f, other, MicroAlgos(0)).build(),
+            None,
+        )
+        .await;
+
+        let outcome = f.provider.settle(&f.request).await;
+        let key = algorand_nonce_key(f.provider.chain_name(), &f.group_id);
+        assert!(
+            store.used.lock().unwrap().contains(&key),
+            "the group was not claimed; settle answered {outcome:?}"
+        );
+        assert_eq!(
+            *f.algod_calls.lock().unwrap(),
+            ["POST /v2/transactions"],
+            "settle answered {outcome:?}"
         );
     }
 }

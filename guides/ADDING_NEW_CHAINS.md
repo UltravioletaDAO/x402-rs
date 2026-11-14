@@ -20,6 +20,55 @@ earlier point.** A green `cargo build` proves nothing: three networks in the enu
 compile, parse and serialize today and are served nowhere. See
 [Success criteria](#success-criteria).
 
+## How many networks: one file, one command, one check
+
+Every count and list of networks the facilitator publishes (the landing and its
+pages, `/docs`, the agent documents and cards, the README, this repository's
+instructions) is held to **`config/network_capabilities.json`**, which says per
+capability how many networks and which: `served`, `payments` (`exact`), `upto`,
+`escrow_x402r`, `escrow_near`, `erc8004`, `erc8004_canonical`, `erc8004_relay`,
+plus the payment networks' chain `families`. Tests are not published text: the
+ERC-8004 tests in `src/erc8004/mod.rs` pin that set on purpose, and change with it.
+
+- **The file is generated, never edited.** `src/network_manifest.rs` computes it
+  from the functions the payment, escrow and ERC-8004 paths call
+  (`Network::variants()`, `exactServed` in `config/supported_tokens.json`,
+  `ESCROW_NETWORKS`, `UPTO_DEPLOYED_NETWORKS`, `erc8004::supported_networks`, ...)
+  under production's profile, and its test (in CI's `cargo test`) fails when the
+  committed file is not what the code computes.
+- **One command, after the code change** (from WSL or Linux, it runs `cargo test`):
+
+  ```bash
+  python scripts/network_copy.py --generate
+  ```
+
+  It rewrites the manifest, then every published count and list bound to a
+  capability (the landing's "Escrow Deployed on N Networks", the ERC-8004 lists,
+  `llms.txt`, the agent cards, `/docs`), and rebuilds `static/llms-full.txt`.
+  `--write` does the second half alone; `--inventory` prints every count and list
+  of networks it sees, with its binding.
+- **One check, in CI before the build** (stdlib, offline, a second):
+  `python scripts/network_copy.py --check`. It fails on a count or a list that is
+  not the manifest's, on a number of networks bound to no capability ("N
+  networks" with nothing saying of what: write "N payment networks" or drop the
+  number), on a bound table or grid that misses a network (README's Mainnets,
+  Testnets and ERC-8004 tables and the mainnet rows of its escrow table, the
+  landing's network cards and its ERC-8004 and escrow grids, `/docs`' non-EVM
+  networks), on a link preview (`og:*`, `twitter:*`, `<title>`, meta description)
+  that states a number at all, on a feature set that differs between the
+  manifest, CI and the `Dockerfile`, and when `terraform/environments/production`
+  disagrees with the profile (a payment network whose provider production does
+  not configure, `ENABLE_UPTO` off, ...). A list that is not a capability's set,
+  such as a token's coverage or a past behaviour, goes in its `PENDING` table with
+  its reason; it excuses that exact list only.
+
+Those tables and cards carry presentation the manifest does not have (chain id,
+explorer, faucet, balance, addresses): the check tells you the row or card that is
+missing, you write it. What it cannot see: a count written in words ("eleven
+networks"), and the testnet rows of README's escrow table, which record what
+`/supported` announced on a date (an operator is announced once it passes an
+on-chain self-check, at runtime).
+
 ## Prerequisites Checklist
 
 Before starting, gather the following information:
@@ -871,7 +920,7 @@ and `static/x402.js`.
 | 10 | `config/supported_tokens.json` | displayName, icon, explorer + explorerPaths, tokens (exactly what `/supported` publishes), chainId, facilitatorWallet. Its `exactServed` (default `true`) also puts an EVM network with an ERC-3009 token on the facilitator receipt rail (`GET /receipts`); add the new pairs to `every_network_and_token_on_the_rail_stays_on_it` (`src/receipts/tests.rs`) | yes — `networks_json` tests: a missing entry or a token list that differs from `/supported` is red; and that receipts test while a new EVM pair is missing from its list |
 | 11 | `lambda/balances/handler.py` | `get_network_configs()`: RPC + wallet | no |
 | 12 | `terraform/environments/production/main.tf` | `RPC_URL_*` in the task definition | no — **and this is what keeps it out of `/supported`** |
-| 13 | `scripts/verify_landing_canonical.py` | `--expect-mainnets` default (`:306`) and the docstring count (`:11`) | the guard itself, in CI |
+| 13 | `config/network_capabilities.json` | regenerated, with every published count and list: `python scripts/network_copy.py --generate` (`scripts/verify_landing_canonical.py` reads its counts from it) | yes — `network_manifest` test in `cargo test`, `network_copy.py --check` in CI |
 | 14 | `.env.example` | both RPC URLs | no |
 | 15 | `README.md` | network counts and tables | no |
 | 16 | `VERSION` | the release bump | CI fails the run if it is empty |
@@ -960,6 +1009,7 @@ canonical mainnet count.
       the logo instead of a monogram
 - [ ] Network cards display on the landing page with the correct styling
 - [ ] Balances load for both mainnet and testnet
+- [ ] `python scripts/network_copy.py --generate` run, and `--check` passes
 - [ ] `python scripts/verify_landing_canonical.py` passes
 - [ ] `/version` matches the `VERSION` you pushed
 - [ ] `docs/CHANGELOG.md` entry written

@@ -8,12 +8,18 @@ sources and fails (exit 1) if the landing page drifts from them.
 
 Canonical sources
 -----------------
-  * Payment networks  -> GET /supported (the live facilitator)         [23 mainnets; 24 once 2.52.0 serves HashKey]
-  * Escrow networks   -> src/payment_operator/addresses.rs             [9 mainnets]
-  * ERC-8004 networks -> src/erc8004/mod.rs (supported_networks)       [13 mainnets / 23 total]
+  * Payment networks  -> GET /supported (the live facilitator), held to
+                         `payments` in config/network_capabilities.json
+  * Escrow networks   -> `escrow_x402r` in config/network_capabilities.json
+  * ERC-8004 networks -> `erc8004` in config/network_capabilities.json
 
-The bracketed figures are this script's own CANONICAL MAP output on 2026-09-23,
-not a target: run it for today's.
+config/network_capabilities.json is generated from the code
+(src/network_manifest.rs: ESCROW_NETWORKS, erc8004::supported_networks, ...)
+by `python scripts/network_copy.py --generate`, and CI fails when it and the
+code disagree. This script used to parse the Rust sources with regexes and to
+carry the expected mainnet count as a typed default; both now come from that
+one file. `scripts/network_copy.py --check` holds every OTHER published count
+and list of networks to it.
 
 The landing page is the CONSUMER; these three are the PRODUCERS. If they ever
 disagree, this script tells you exactly where.
@@ -116,43 +122,29 @@ def supported_mainnet_chains(data: dict) -> set[str]:
 
 
 # ---------------------------------------------------------------------------
-# Producer 2 & 3: escrow + ERC-8004 networks parsed from Rust source
+# Producer 2 & 3: escrow + ERC-8004 networks, from the capability manifest
 # ---------------------------------------------------------------------------
-def _network_variants(text: str) -> list[str]:
-    return re.findall(r"Network::([A-Za-z0-9]+)", text)
+MANIFEST = REPO / "config" / "network_capabilities.json"
 
 
-def _slice_block(text: str, start_pat: str) -> str:
-    """Return text from the first match of start_pat to the next ']' or '}'."""
-    m = re.search(start_pat, text)
-    if not m:
-        return ""
-    rest = text[m.end():]
-    end = re.search(r"[\]\}]", rest)
-    return rest[: end.start()] if end else rest
+def _capability(key: str) -> dict:
+    return json.loads(MANIFEST.read_text(encoding="utf-8"))["capabilities"][key]
 
 
 def escrow_mainnets() -> set[str]:
-    """Mainnet networks that have a PaymentOperator escrow deployment."""
-    src = (REPO / "src" / "payment_operator" / "addresses.rs").read_text(encoding="utf-8")
-    # The supported list is the array of Network:: entries near the top of the
-    # escrow-address resolver. Take every Network:: in the file's match/list and
-    # drop testnets -- escrow deployment is keyed on these variants.
-    block = _slice_block(src, r"escrow_for_network|SUPPORTED|pub fn escrow")
-    variants = _network_variants(block) or _network_variants(src)
-    return {v for v in variants if not is_testnet(v)}
+    """Mainnet networks with an x402r PaymentOperator escrow (`commerce`)."""
+    return set(_capability("escrow_x402r")["mainnet_networks"])
 
 
 def erc8004_networks() -> tuple[set[str], set[str]]:
-    """(mainnet variants, all variants) with an ERC-8004 deployment."""
-    src = (REPO / "src" / "erc8004" / "mod.rs").read_text(encoding="utf-8")
-    block = _slice_block(src, r"pub fn supported_networks\s*\(")
-    variants = _network_variants(block)
-    if not variants:  # fallback: the get_contracts match
-        block = _slice_block(src, r"pub fn get_contracts")
-        variants = _network_variants(block)
-    allv = set(variants)
-    return {v for v in allv if not is_testnet(v)}, allv
+    """(mainnet ids, all ids) with an ERC-8004 deployment."""
+    cap = _capability("erc8004")
+    return set(cap["mainnet_networks"]), set(cap["networks"])
+
+
+def payment_mainnets() -> int:
+    """How many mainnets take payments, as the manifest counts them."""
+    return int(_capability("payments")["mainnets"])
 
 
 # ---------------------------------------------------------------------------
@@ -309,9 +301,9 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--url", default=DEFAULT_URL, help="facilitator base URL")
     ap.add_argument("--supported-file", help="read /supported JSON from a file instead of HTTP")
-    ap.add_argument("--expect-mainnets", type=int, default=24,
-                    help="expected canonical mainnet payment-network count (default 24: the 23 "
-                         "measured 2026-09-23 plus HashKey Chain, 2.52.0)")
+    ap.add_argument("--expect-mainnets", type=int, default=None,
+                    help="expected canonical mainnet payment-network count (default: `payments` "
+                         "mainnets in config/network_capabilities.json)")
     ap.add_argument("--offline", action="store_true",
                     help="skip GET /supported (the only producer that needs the network) "
                          "and check everything else, including the EN/ES cross-check")
@@ -339,8 +331,10 @@ def main() -> int:
     try:
         escrow = escrow_mainnets()
         erc_main, erc_all = erc8004_networks()
+        if args.expect_mainnets is None:
+            args.expect_mainnets = payment_mainnets()
     except Exception as e:  # noqa: BLE001
-        print(f"[FAIL] could not parse Rust sources: {e}", file=sys.stderr)
+        print(f"[FAIL] could not read {MANIFEST.relative_to(REPO)}: {e}", file=sys.stderr)
         return 2
 
     land = landing_numbers()
@@ -353,9 +347,9 @@ def main() -> int:
           f"{'not read (--offline)' if pay_count is None else pay_count}")
     if chains:
         print(f"    -> {', '.join(sorted(chains))}")
-    print(f"  escrow mainnets   (payment_operator)      : {len(escrow)}")
+    print(f"  escrow mainnets   (manifest escrow_x402r) : {len(escrow)}")
     print(f"    -> {', '.join(sorted(escrow))}")
-    print(f"  erc-8004 mainnets (erc8004/mod.rs)        : {len(erc_main)}")
+    print(f"  erc-8004 mainnets (manifest erc8004)      : {len(erc_main)}")
     print(f"  erc-8004 total    (mainnet + testnet)     : {len(erc_all)}")
     print("-" * 70)
     print("LANDING PAGE  (static/index.html)")
@@ -377,7 +371,8 @@ def main() -> int:
     # ----- assertions -----
     if pay_count is not None and pay_count != args.expect_mainnets:
         notes.append(f"/supported has {pay_count} mainnets, expected {args.expect_mainnets} "
-                     f"(update --expect-mainnets if you intentionally changed the network set)")
+                     f"(config/network_capabilities.json counts what the code serves: a "
+                     f"difference is a deploy pending, or a network production does not configure)")
     if land["sdk_mainnets"] is not None and pay_count is not None \
             and land["sdk_mainnets"] != pay_count:
         errors.append(f"landing types '{land['sdk_mainnets']} mainnets' "

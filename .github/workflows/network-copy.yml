@@ -1,0 +1,47 @@
+name: Published network counts
+
+# scripts/network_copy.py holds every published count and list of networks to
+# config/network_capabilities.json (generated from the code by
+# src/network_manifest.rs). ci.yaml runs it first in its test job, but ci.yaml
+# runs only when a build input changes, and a few files the check covers are
+# not one: a pull request that only edits the README, CLAUDE.md or the
+# operator guide would merge a stale number unchecked, and the next code change
+# would go red for it. This workflow covers exactly those files: stdlib Python,
+# no Rust, no secrets, seconds (owner's rule of 2026-09-11, every workflow runs
+# only when what it processes changes). The pages, /docs and the manifest are
+# build inputs, so ci.yaml covers them.
+
+on:
+  push:
+    branches: ['main']
+    paths:
+      - 'README.md'
+      - 'CLAUDE.md'
+      - 'guides/ADDING_NEW_CHAINS.md'
+      - 'paybox-plugin/README.md'
+      - '.github/workflows/network-copy.yml'
+  pull_request:
+    branches: ['main']
+    paths:
+      - 'README.md'
+      - 'CLAUDE.md'
+      - 'guides/ADDING_NEW_CHAINS.md'
+      - 'paybox-plugin/README.md'
+      - '.github/workflows/network-copy.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: network-copy-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  check:
+    name: Published network counts and lists come from config/network_capabilities.json
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check
+        run: python3 scripts/network_copy.py --check

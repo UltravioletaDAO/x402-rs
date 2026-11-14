@@ -105,6 +105,7 @@ def triggers(workflow: dict, event: str, changed: list[str]) -> bool:
 # A workflow left out of the dict is not asserted on.
 CI = "ci.yaml"
 NOACC = "no-account-id.yml"
+NETCOPY = "network-copy.yml"
 
 CASES: list[tuple[str, list[str], dict[str, bool]]] = [
     # -- must NOT build/test/deploy -----------------------------------------
@@ -123,6 +124,13 @@ CASES: list[tuple[str, list[str], dict[str, bool]]] = [
     ("the whole docs tree at once",
      ["docs/DX402.md", "docs/plans/dx402/08-SPEC-v0.2.md", "README.md",
       "guides/ADDING_NEW_CHAINS.md", "scripts/bench/cost_model.py"], {CI: False}),
+
+    # -- the network-count check covers the published docs ci.yaml skips -----
+    ("README only, network counts", ["README.md"], {NETCOPY: True}),
+    ("CLAUDE.md only, network counts", ["CLAUDE.md"], {NETCOPY: True}),
+    ("the operator guide, network counts", ["guides/ADDING_NEW_CHAINS.md"], {NETCOPY: True}),
+    ("a history doc does not start it", ["docs/CHANGELOG.md", "docs/handoffs/x.md"], {NETCOPY: False}),
+    ("a build input leaves it to ci.yaml", ["src/openapi.rs", "static/index.html"], {NETCOPY: False}),
 
     # -- must build/test/deploy --------------------------------------------
     ("a facilitator source file", ["src/handlers.rs"], {CI: True}),
@@ -153,6 +161,8 @@ CASES: list[tuple[str, list[str], dict[str, bool]]] = [
     ("an alarm file", ["terraform/environments/production/alerts-solana-mint.tf"], {CI: True}),
     ("the balances Lambda", ["lambda/balances/handler.py"], {CI: True}),
     ("the landing checker the test job runs", ["scripts/verify_landing_canonical.py"], {CI: True}),
+    ("the network-count checker the test job runs", ["scripts/network_copy.py"], {CI: True}),
+    ("the network capability manifest", ["config/network_capabilities.json"], {CI: True}),
     ("the custodied-identity audit the test job tests",
      ["scripts/erc8004_custodied_identities.py"], {CI: True}),
     ("the drift gate's IAM script", ["scripts/drift_gate_iam.py"], {CI: True}),

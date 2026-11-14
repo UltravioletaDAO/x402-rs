@@ -71,6 +71,17 @@ pub mod version;
 pub mod writer_lease;
 pub mod zama;
 
+// config/network_capabilities.json, computed from the code and held to it.
+// Test-only, and only under the families CI builds (see the module docs).
+#[cfg(all(
+    test,
+    feature = "algorand",
+    feature = "sui",
+    feature = "xrpl",
+    feature = "hedera"
+))]
+mod network_manifest;
+
 // Hidden re-exports just for macro expansion.
 #[doc(hidden)]
 pub mod __reexports {

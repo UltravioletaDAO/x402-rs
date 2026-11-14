@@ -7,7 +7,16 @@
 # The two stages are a PAIR and must move together: openssl-sys links the system
 # libssl, which is 1.1 on bullseye and 3 on bookworm. Bumping only the runtime stage
 # yields an image that builds clean and then cannot start.
-FROM --platform=$BUILDPLATFORM rust:bookworm AS builder
+#
+# The tag names the compiler and must be rust-toolchain.toml's channel. The file is
+# what decides: rustup reads it inside the image too (measured 2026-11-13: on
+# rust:1.99.1-bookworm a `channel = "stable"` file downloaded and used 1.100.0, and
+# on rust:1.100.0-bookworm a `channel = "1.99.1"` file downloaded 1.99.1). A base
+# with the file's version means the build downloads no compiler at all. Plain
+# `rust:bookworm` floats with stable: it was 1.100.0 by 2026-11-12, which cannot
+# compile algonaut_client 0.4.2. tests/scripts/test_ci_toolchain_pin.py holds this
+# tag to the file.
+FROM --platform=$BUILDPLATFORM rust:1.99.1-bookworm AS builder
 
 # FACILITATOR_VERSION is deliberately NOT declared in this stage. It changes on
 # every release, and an ARG/ENV carrying it here would key every layer below it —

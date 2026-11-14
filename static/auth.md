@@ -20,7 +20,7 @@ sell anything — it checks a signature that someone else's buyer produced and l
 resulting transfer on-chain. The thing being authorized is the *payment*, and the
 payment carries its own authorization: the payer's signature over an EIP-3009
 `transferWithAuthorization` (or the equivalent primitive on Solana, NEAR, Stellar,
-Sui, Algorand and XRPL). The facilitator verifies that signature against the token's
+Sui, Algorand, XRPL and Hedera). The facilitator verifies that signature against the token's
 EIP-712 domain, the nonce, the amount and the validity window. Nothing about *your*
 identity as the caller changes the answer.
 

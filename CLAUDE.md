@@ -36,7 +36,7 @@ This is the **x402-rs Payment Facilitator** - a standalone Rust-based service en
 
 **Key characteristics**:
 - Production-ready service deployed on AWS ECS
-- Multi-chain support (EVM + SVM/Solana incl. Fogo + NEAR + Stellar + Algorand + Sui + XRPL)
+- Multi-chain support: EVM, SVM, NEAR, Stellar, Algorand, Sui, XRPL and Hedera (SVM is Solana and Fogo). How many networks per capability: `config/network_capabilities.json`, generated from the code (see "Adding a New Network")
 - Custom Ultravioleta DAO branding (landing page, logos)
 - Forked from upstream [x402-rs/x402-rs](https://github.com/x402-rs/x402-rs)
 
@@ -53,7 +53,8 @@ curl -s https://facilitator.ultravioletadao.xyz/supported | jq '[.kinds[].networ
 # v1 names only - closer to a real chain count
 curl -s https://facilitator.ultravioletadao.xyz/supported | jq -r '[.kinds[].network]|unique|.[]' | grep -v ':' | wc -l
 
-# Canonical mainnet payment-network count (21). The old jq substring filter does NOT
+# Canonical mainnet payment-network count (`payments` in config/network_capabilities.json;
+# read live, /supported is compared to it, a difference is a note, not a failure). The old jq substring filter does NOT
 # work - CAIP-2 ids carry no "sepolia"/"testnet" substring, so it returned 55.
 python scripts/verify_landing_canonical.py
 ```
@@ -180,9 +181,9 @@ python scripts/compare_usdc_contracts.py
 
 **src/network.rs**: Network definitions (48 `Network` enum variants since 2.52.0 added HashKey Chain, Hedera and XRPL behind their features; 45 in the all-features copy of `variants()` - Sei, SeiTestnet and XdcMainnet are enum-only; `variants_copies_tests` holds the four feature-gated copies to one list). Verify: `curl -s https://facilitator.ultravioletadao.xyz/supported | jq -r '[.kinds[].network]|unique|.[]' | grep -v ':' | wc -l`
 - `Network` enum with chain IDs and display names
-- `NetworkFamily` (Evm, Solana, Near, Stellar, Xrpl, Algorand, Sui - 7 variants, `src/network.rs:275`) for multi-family dispatch
+- `NetworkFamily` (Evm, Solana, Near, Stellar, Hedera, Xrpl, Algorand, Sui; `src/network.rs:325`) for multi-family dispatch
 - Static USDC/token deployment addresses per network
-- **CRITICAL**: nearly everything beyond Base/Avalanche/Solana is ours - HyperEVM, Polygon, Optimism, Celo, Ethereum, Arbitrum, Unichain, Monad, BSC, Scroll, SKALE, Robinhood, HashKey, XDC, Sei, NEAR, Stellar, XRPL, Fogo, Algorand, Sui. Preserve ALL of them on upstream merges.
+- **CRITICAL**: nearly every network beyond Base/Avalanche/Solana is ours (the whole set is `served` in `config/network_capabilities.json`; XDC and Sei are ours too, enum-only). Preserve ALL of them on upstream merges.
 
 **src/handlers.rs**: HTTP request handlers
 - `get_root()` (`src/handlers.rs:1248`) - **Custom handler** serving the Ultravioleta DAO landing page via `include_str!("../static/index.html")`. `get_index()` (`:1289`) is a thin alias - the `include_str!` is NOT inside it.
@@ -200,7 +201,7 @@ python scripts/compare_usdc_contracts.py
 
 **src/facilitator_local.rs**: Local facilitator implementation
 - `FacilitatorLocal` implements `Facilitator` trait
-- Delegates to the 7 chain modules in `src/chain/` (evm, solana, near, stellar, sui, algorand, xrpl - see `src/chain/mod.rs`)
+- Delegates to one chain module per family in `src/chain/` (evm, solana, near, stellar, sui, algorand, xrpl, hedera - see `src/chain/mod.rs`)
 - Manages provider cache for RPC connections
 
 **src/chain/**: Chain-specific payment logic
@@ -281,7 +282,8 @@ This is a Cargo workspace with multiple crates:
    - **Merge strategy**: Preserve ALL custom networks when pulling upstream
 
 5. **Rust Edition** - edition 2021 (`Cargo.toml:5`)
-   - This is NOT a low-MSRV guarantee: locked deps require **Rust >= 1.91** (aws-smithy-* 1.91.1). There is no `rust-version` key and the toolchain is unpinned `stable` (rust-toolchain.toml, ci.yaml, `FROM rust:bullseye`).
+   - This is NOT a low-MSRV guarantee: locked deps require **Rust >= 1.91** (aws-smithy-* 1.91.1). There is no `rust-version` key.
+   - **The toolchain is PINNED to one exact version: `channel = "1.99.1"` in `rust-toolchain.toml`**, which rustup obeys over the CI runner's `rustup default` and over the image's own toolchain (measured 2026-11-13). `dtolnay/rust-toolchain@1.99.1` in ci.yaml and `FROM rust:1.99.1-bookworm` in the Dockerfile name the same version so nothing downloads a second compiler; `tests/scripts/test_ci_toolchain_pin.py` fails when the three disagree, and when anything sets `RUSTUP_TOOLCHAIN` or passes `+toolchain` (both beat the file). Floating `stable` broke the 2.57.2 release: 1.100.0 cannot compile `algonaut_client` 0.4.2 (E0277, rust-lang/rust#148922). Moving the pin is a PR of its own: the three places at once, the full CI gate on it.
    - Edition 2024 needs only 1.85, so MSRV no longer blocks it - only syntax/lint churn does.
    - Downgraded in the v0.9.1 merge for broader compatibility
 
@@ -645,7 +647,7 @@ git merge upstream/main      # Follow docs/CUSTOMIZATIONS.md strategy
 
 ### Other Security Rules
 
-- **Pre-commit anti-llaves**: `git config core.hooksPath .githooks` (once per clone) activates the hook that blocks a commit whose staged diff adds `0x` + 64 hex - INC-2026-03-30, two wallets drained by hardcoded private keys in public repos. Detail in `.githooks/README.md`.
+- **Pre-commit anti-llaves**: `git config core.hooksPath .githooks` (once per clone) activates the hook that blocks a commit whose staged diff adds `0x` + 64 hex - INC-2026-03-30, two wallets drained by hardcoded private keys in public repos. The same hook runs `scripts/network_copy.py --staged` on what is being committed when the commit touches a file that check owns: a docs-only change starts no CI run. Detail in `.githooks/README.md`.
 - **NEVER** commit `.env` file with actual private keys
 - **NEVER** commit `.unused/` directory - it's in `.gitignore` and CONTAINS SECRETS
 - Use testnet keys for local development only
@@ -836,7 +838,7 @@ with them (spec v0.2 §18.1), never as a sixth hash.
 - `GET /identity/:network/owner/:address` - Resolve an agent by owner (EVM + SVM)
 - `GET /identity/:network/total-supply` - Registered agents
 
-The supported-network set is `supported_networks()` in `src/erc8004/mod.rs` (currently **25**: 14 mainnets + 11 testnets, Solana, Arc and Robinhood Chain included) — read it there, never from a hardcoded count. `src/openapi.rs` states that count and names every network in prose; `the_erc8004_prose_names_every_supported_network` (in `src/openapi.rs`) fails when either drifts, so change both together. The landing states it too, and `scripts/verify_landing_canonical.py --offline` (a CI step) checks those. The counts and network lists typed in the landing, `/erc8004`, `llms.txt`, `skill.md`, `auth.md` and both agent cards are held to the same set by `every_published_erc8004_count_and_list_is_the_served_one` (in `src/erc8004/mod.rs`).
+The supported-network set is `supported_networks()` in `src/erc8004/mod.rs` (Solana, Arc and Robinhood Chain included; its count is `erc8004` in `config/network_capabilities.json`) — read it there, never from a hardcoded count. `src/openapi.rs` states that count and names every network in prose; `the_erc8004_prose_names_every_supported_network` (in `src/openapi.rs`) fails when either drifts, so change both together. The landing states it too, and `scripts/verify_landing_canonical.py --offline` (a CI step) checks those. The counts and network lists typed in the landing, `/erc8004`, `llms.txt`, `skill.md`, `auth.md` and both agent cards are held to the same set by `every_published_erc8004_count_and_list_is_the_served_one` (in `src/erc8004/mod.rs`).
 
 **The owner lookup has no index on the chain behind it, and that shapes everything.** The
 registries expose no `owner -> agentId` mapping, are NOT `ERC721Enumerable`
@@ -1036,6 +1038,7 @@ This complete checklist covers:
 13. **VERIFY STABLECOIN MATRIX** - Run `python scripts/stablecoin_matrix.py` and update README stablecoin tables
 14. **UPDATE `config/supported_tokens.json`** - Add the new network with chainId, displayName, icon, tokens, explorer + explorerPaths, and facilitatorWallet (this is what `/networks.json` and every page's icon and explorer link read). Copy wallet address from `lambda/balances/handler.py` — NEVER type from memory. Its `exactServed` (default `true`) also puts an EVM network with an ERC-3009 token on the facilitator receipt rail (`receipts::evm_exact_tokens`, `GET /receipts`): admission, announcement and normalization follow it; add the new pairs to `every_network_and_token_on_the_rail_stays_on_it`. Taking a network or token OFF the rail is a money change, not a config edit: resends of its stored receipts would run as ordinary settles (`docs/facilitator-receipts.md`, "EVM coverage").
 15. **UPDATE `lambda/balances/handler.py`** - Add the new network to `get_network_configs()` with RPC and wallet address.
+16. **REGENERATE THE COUNTS** - `python scripts/network_copy.py --generate` (WSL/Linux: it runs `cargo test`) rewrites `config/network_capabilities.json` from the code and every published count and list of networks from it; `--check` (CI's first test step, and `.githooks/pre-commit` on a commit that touches a file it owns) fails on any count or list that is not the manifest's, on a README row or landing card that is missing, and on a link preview that states a number. Never type a count of networks: bind it to its capability in one of the check's `PHRASES` ("Escrow Deployed on N Networks") or drop it. Details: `guides/ADDING_NEW_CHAINS.md`, "How many networks".
 
 **CRITICAL**: Always update these files when adding a new network OR stablecoin:
 - `config/supported_tokens.json` - JSON source of truth for all chains and wallets
@@ -1060,7 +1063,7 @@ This complete checklist covers:
 
 - **NEVER compile or deploy the facilitator on your own initiative** - make the code change, tell the user, wait for them to build/deploy. But know what shipping means here: **a manual "Run workflow" on `main` deploys to production, and nothing else does.** `.github/workflows/ci.yaml` then tests, builds the image, pushes it to ECR and `terraform apply -auto-approve`s it onto ECS, then waits for the rollout. The gate is armed today (the AWS repo secrets exist, so `preflight` emits `deploy=true`); only a red `test` job blocks it. Since X402-CI-GATES a merge is NOT a release (before, every push to `main` touching a build input shipped on its own): `main` sits ahead of production until somebody starts the deploy, and that run ships everything merged since the last one. A failed or not-yet-started deploy leaves `main` ahead of production - compare `curl -s https://facilitator.ultravioletadao.xyz/version` with `git log -1` before assuming your commit is live.
 - **Never add emojis to Rust code** - they do NOT break compilation (Rust source is UTF-8), but they corrupt CloudWatch log output and terminal rendering. Use `[OK]`/`[FAIL]`/`[WARN]`. Same rule as Common Pitfalls #6.
-- **Rust Edition**: edition 2021 (`Cargo.toml:5`). The real toolchain floor is **Rust >= 1.91** (highest `rust-version` among locked deps, e.g. aws-smithy-* 1.91.1), NOT 1.82. Edition 2024 needs only 1.85, so MSRV no longer blocks the migration - only syntax/lint churn does.
+- **Rust Edition**: edition 2021 (`Cargo.toml:5`). The real toolchain floor is **Rust >= 1.91** (highest `rust-version` among locked deps, e.g. aws-smithy-* 1.91.1), NOT 1.82; the toolchain itself is pinned (Critical Customizations #5). Edition 2024 needs only 1.85, so MSRV no longer blocks the migration - only syntax/lint churn does.
   - See v0.9.1 merge for details (commit 75b37e6)
 - **Version Bumping**: the release version lives in the `VERSION` file at the repo
   root, **not** in `Cargo.toml`. Check the deployed version first, then bump

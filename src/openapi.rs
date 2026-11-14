@@ -35,7 +35,9 @@ The x402 facilitator enables gasless micropayments across multiple blockchain ne
 Ethereum, Base, Polygon, Optimism, Avalanche, Arbitrum, Celo, HyperEVM, Unichain, Monad, Scroll, Robinhood Chain (settles Paxos USDG - no native USDC), BSC, SKALE Base, Arc (`arc` / `eip155:5042`, USDC/EURC exact EOA payments; served only where `RPC_URL_ARC` is configured; check `/supported`), HashKey Chain (`hashkey` / `eip155:177`, Bridged USDC, EIP-712 domain `Bridged USDC` / `2`; EOA signatures only, no EIP-6492)
 
 ### EVM Chains (Testnet)
-Ethereum Sepolia, Base Sepolia, Polygon Amoy, Optimism Sepolia, Avalanche Fuji, Arbitrum Sepolia, Celo Sepolia, HyperEVM Testnet, Unichain Sepolia, SKALE Base Sepolia, Monad Testnet, Robinhood Chain Testnet, Arc Testnet (`arc-testnet` / `eip155:5042002`, Circle — USDC is the native gas token; served only where `RPC_URL_ARC_TESTNET` is configured, so check `/supported` rather than this list), HashKey Chain Testnet (`hashkey-testnet` / `eip155:133`, USDC with EIP-712 domain `USD Coin` / `2`, not mainnet's name)
+Base Sepolia, Polygon Amoy, Optimism Sepolia, Avalanche Fuji, Arbitrum Sepolia, Celo Sepolia, HyperEVM Testnet, Unichain Sepolia, SKALE Base Sepolia, Robinhood Chain Testnet, Arc Testnet (`arc-testnet` / `eip155:5042002`, Circle — USDC is the native gas token; served only where `RPC_URL_ARC_TESTNET` is configured, so check `/supported` rather than this list), HashKey Chain Testnet (`hashkey-testnet` / `eip155:133`, USDC with EIP-712 domain `USD Coin` / `2`, not mainnet's name)
+
+Ethereum Sepolia is announced in `/supported` for the x402r `escrow` and `commerce` schemes, but production configures no RPC for it: nothing settles there, and it takes no `exact` payments.
 
 ### SVM Chains (Solana Virtual Machine)
 - **Solana**: Mainnet (`solana`) and Devnet (`solana-devnet`)

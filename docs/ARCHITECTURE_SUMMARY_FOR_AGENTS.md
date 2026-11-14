@@ -14,7 +14,7 @@ x402-rs/
 ├── src/
 │   ├── main.rs                  # HTTP server entrypoint (Axum)
 │   ├── types.rs                 # Protocol types (PaymentPayload, VerifyRequest, etc.)
-│   ├── network.rs               # Network enum + USDC deployments (35+ networks)
+│   ├── network.rs               # Network enum + USDC deployments
 │   ├── facilitator.rs           # Core Facilitator trait (verify, settle, supported)
 │   ├── facilitator_local.rs     # FacilitatorLocal implementation
 │   ├── handlers.rs              # Axum HTTP handlers (/verify, /settle, /health, etc.)
@@ -70,6 +70,14 @@ pub enum NetworkFamily {
     Solana,   // SPL token transfers + Fogo (SVM)
     Near,     // NEP-366 meta-transactions
     Stellar,  // Soroban authorization entries
+    #[cfg(feature = "hedera")]
+    Hedera,
+    #[cfg(feature = "xrpl")]
+    Xrpl,
+    #[cfg(feature = "algorand")]
+    Algorand,
+    #[cfg(feature = "sui")]
+    Sui,
 }
 ```
 
@@ -80,6 +88,14 @@ pub enum NetworkProvider {
     Solana(SolanaProvider),
     Near(NearProvider),
     Stellar(StellarProvider),
+    #[cfg(feature = "hedera")]
+    Hedera(HederaProvider),
+    #[cfg(feature = "xrpl")]
+    Xrpl(XrplProvider),
+    #[cfg(feature = "algorand")]
+    Algorand(AlgorandProvider),
+    #[cfg(feature = "sui")]
+    Sui(SuiProvider),
 }
 ```
 
@@ -157,7 +173,7 @@ Network::Base => {
 }
 ```
 
-### 2.2 EVM Chain Support (23 networks)
+### 2.2 EVM Chain Support
 
 **File**: `src/chain/evm.rs` (~1800 lines)
 
@@ -205,7 +221,7 @@ pub struct EvmChain {
 - Increments nonce immediately when tx is sent
 - Resets nonce if tx fails (to retry with same nonce)
 
-### 2.3 Solana/Fogo Support (3 networks)
+### 2.3 Solana/Fogo Support
 
 **File**: `src/chain/solana.rs`
 
@@ -232,7 +248,7 @@ pub struct SolanaProvider {
 - Separate USDC token addresses (Fogo mainnet/testnet)
 - Added in v1.7.6 (PR #2)
 
-### 2.4 NEAR Protocol Support (2 networks)
+### 2.4 NEAR Protocol Support
 
 **File**: `src/chain/near.rs`
 
@@ -278,7 +294,7 @@ for non_delegate_action in &signed_delegate_action.delegate_action.actions {
 let signer: Signer = InMemorySigner::from_secret_key(account_id, secret_key).into();
 ```
 
-### 2.5 Stellar/Soroban Support (2 networks)
+### 2.5 Stellar/Soroban Support
 
 **File**: `src/chain/stellar.rs`
 
@@ -323,7 +339,7 @@ pub struct StellarChain {
 pub struct PaymentPayload {
     pub x402_version: X402Version,  // Currently V1 only
     pub scheme: Scheme,              // "exact" (only supported scheme)
-    pub network: Network,            // Base, Avalanche, Solana, NEAR, Stellar, etc.
+    pub network: Network,            // e.g. Base, Avalanche, Solana, NEAR, Stellar
     pub payload: ExactPaymentPayload,
 }
 
@@ -503,8 +519,8 @@ JSON response to client
 - Comprehensive `Display`, `Serialize`, `Deserialize` implementations
 
 **`src/network.rs`** (790 lines):
-- `Network` enum: 35+ variants (Base, Avalanche, Solana, NEAR, Stellar, Fogo, etc.)
-- `NetworkFamily` enum: `Evm`, `Solana`, `Near`, `Stellar`
+- `Network` enum: one variant per network (e.g. Base, Avalanche, Solana, NEAR, Stellar, Fogo)
+- `NetworkFamily` enum: `Evm`, `Solana`, `Near`, `Stellar`, `Hedera`, `Xrpl`, `Algorand`, `Sui` (the last four behind their cargo features)
 - `USDCDeployment`: Static USDC contract addresses per network
 - `TokenDeployment`, `TokenAsset`, `TokenDeploymentEip712`
 - `Network::variants()`: Returns all supported networks
@@ -544,7 +560,7 @@ JSON response to client
 
 **`src/chain/evm.rs`** (~1800 lines):
 - `EvmProvider`: Alloy-based EVM implementation
-- `EvmChain`: Network + chain ID mapping (35+ EVM chains)
+- `EvmChain`: Network + chain ID mapping (one per EVM network)
 - EIP-3009 `transferWithAuthorization` logic
 - EIP-712 typed data signing/verification
 - EIP-1271 smart contract signature verification
@@ -786,7 +802,7 @@ RPC_URL_AVALANCHE_MAINNET=https://api.avax.network/ext/bc/C/rpc
 RPC_URL_SOLANA_MAINNET=https://api.mainnet-beta.solana.com
 RPC_URL_NEAR_MAINNET=https://rpc.mainnet.near.org
 RPC_URL_STELLAR_MAINNET=https://soroban-rpc.mainnet.stellar.gateway.fm
-# ... (35+ networks)
+# ... (one per network)
 ```
 
 **Server configuration**:
@@ -959,7 +975,7 @@ k6 run --vus 100 --duration 5m k6_load_test.js
 
 ### 11.1 When Adding New Features
 
-1. **Identify the chain family**: EVM, Solana, NEAR, or Stellar?
+1. **Identify the chain family**: EVM, Solana, NEAR, Stellar, Algorand, Sui, XRPL or Hedera?
 2. **Add network variant**: Update `Network` enum in `src/network.rs`
 3. **Add USDC deployment**: Static lazy initialization in `network.rs`
 4. **Implement chain logic**: Extend existing provider or create new one

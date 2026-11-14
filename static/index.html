@@ -2425,7 +2425,7 @@
                             <div style="display: flex; gap: 0.6rem; flex-wrap: wrap; align-items: baseline;"><span style="min-width: 170px; font-size: 0.72rem; font-weight: 600; color: #8b5cf6;" data-i18n="erc8004.addr.reputationTestnet">Reputation (testnet)</span><code style="font-family: 'JetBrains Mono', monospace; font-size: 0.7rem; color: var(--text); word-break: break-all;">0x8004B663056A597Dffe9eCcC1965A193B7388713</code></div>
                             <div style="display: flex; gap: 0.6rem; flex-wrap: wrap; align-items: baseline;"><span style="min-width: 170px; font-size: 0.72rem; font-weight: 600; color: #8b5cf6;" data-i18n="erc8004.addr.validationTestnet">Validation (testnet)</span><code style="font-family: 'JetBrains Mono', monospace; font-size: 0.7rem; color: var(--text); word-break: break-all;">0x8004Cb1BF31DAf7788923b405b754f57acEB4272</code></div>
                         </div>
-                        <p style="font-size: 0.68rem; color: var(--text-muted); margin: 0.85rem 0 0 0; line-height: 1.5;" data-i18n="erc8004.addressesNote">Same addresses on Ethereum, Base, Polygon, Arbitrum, Optimism, Celo, BNB Chain, Monad, Avalanche, Scroll and Arc. SKALE Base carries Identity and Reputation only. Source: the erc-8004 reference deployment, not a chain-specific fork.</p>
+                        <p style="font-size: 0.68rem; color: var(--text-muted); margin: 0.85rem 0 0 0; line-height: 1.5;" data-i18n="erc8004.addressesNote">Same addresses on Ethereum, Base, Polygon, Arbitrum, Optimism, Celo, BNB Chain, Monad, Avalanche, Scroll, Arc and Robinhood Chain. SKALE Base carries Identity and Reputation only. Source: the erc-8004 reference deployment, not a chain-specific fork.</p>
                     </div>
                     <div style="display: flex; flex-wrap: wrap; gap: 0.75rem; justify-content: center; margin-top: 1.25rem;">
                         <a href="https://eips.ethereum.org/EIPS/eip-8004" target="_blank"
@@ -2596,7 +2596,7 @@
                     </div>
                     <h3 class="section-title" style="background: linear-gradient(135deg, #3b82f6, #06b6d4); -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text;" data-i18n="upto.title">Usage-Based Payments</h3>
                     <p class="section-description" data-i18n="upto.description">
-                        Authorize a maximum payment upfront, pay only for what you use. Built on Uniswap Permit2 for gasless variable-amount settlements across all EVM networks.
+                        Authorize a maximum payment upfront, pay only for what you use. Built on Uniswap Permit2 for gasless variable-amount settlements on the EVM networks where its proxy is deployed (see /supported).
                     </p>
                 </div>
 
@@ -3185,10 +3185,10 @@
                 "erc8004.addr.identityTestnet": "Identity (testnet)",
                 "erc8004.addr.reputationTestnet": "Reputation (testnet)",
                 "erc8004.addr.validationTestnet": "Validation (testnet)",
-                "erc8004.addressesNote": "Same addresses on Ethereum, Base, Polygon, Arbitrum, Optimism, Celo, BNB Chain, Monad, Avalanche, Scroll and Arc. SKALE Base carries Identity and Reputation only. Source: the erc-8004 reference deployment, not a chain-specific fork.",
+                "erc8004.addressesNote": "Same addresses on Ethereum, Base, Polygon, Arbitrum, Optimism, Celo, BNB Chain, Monad, Avalanche, Scroll, Arc and Robinhood Chain. SKALE Base carries Identity and Reputation only. Source: the erc-8004 reference deployment, not a chain-specific fork.",
                 "upto.badge": "Upto Scheme (Permit2)",
                 "upto.title": "Usage-Based Payments",
-                "upto.description": "Authorize a maximum payment upfront, pay only for what you use. Built on Uniswap Permit2 for gasless variable-amount settlements across all EVM networks.",
+                "upto.description": "Authorize a maximum payment upfront, pay only for what you use. Built on Uniswap Permit2 for gasless variable-amount settlements on the EVM networks where its proxy is deployed (see /supported).",
                 "upto.payAsYouGo.title": "Pay As You Go",
                 "upto.payAsYouGo.desc": "Client signs a max amount via Permit2. Server charges only the actual usage. Zero-cost if nothing is consumed.",
                 "upto.permit2.title": "Permit2 Powered",
@@ -3365,10 +3365,10 @@
                 "erc8004.addr.identityTestnet": "Identidad (testnet)",
                 "erc8004.addr.reputationTestnet": "Reputaci\u00f3n (testnet)",
                 "erc8004.addr.validationTestnet": "Validaci\u00f3n (testnet)",
-                "erc8004.addressesNote": "Las mismas direcciones en Ethereum, Base, Polygon, Arbitrum, Optimism, Celo, BNB Chain, Monad, Avalanche, Scroll y Arc. SKALE Base solo tiene Identidad y Reputaci\u00f3n. Fuente: el despliegue de referencia erc-8004, no un fork espec\u00edfico de una cadena.",
+                "erc8004.addressesNote": "Las mismas direcciones en Ethereum, Base, Polygon, Arbitrum, Optimism, Celo, BNB Chain, Monad, Avalanche, Scroll, Arc y Robinhood Chain. SKALE Base solo tiene Identidad y Reputaci\u00f3n. Fuente: el despliegue de referencia erc-8004, no un fork espec\u00edfico de una cadena.",
                 "upto.badge": "Esquema Upto (Permit2)",
                 "upto.title": "Pagos Basados en Uso",
-                "upto.description": "Autoriza un monto maximo por adelantado, paga solo lo que uses. Construido sobre Uniswap Permit2 para liquidaciones gasless de monto variable en todas las redes EVM.",
+                "upto.description": "Autoriza un monto maximo por adelantado, paga solo lo que uses. Construido sobre Uniswap Permit2 para liquidaciones gasless de monto variable en las redes EVM donde está desplegado su proxy (ver /supported).",
                 "upto.payAsYouGo.title": "Paga por Uso",
                 "upto.payAsYouGo.desc": "El cliente firma un monto maximo via Permit2. El servidor cobra solo el uso real. Costo cero si no se consume nada.",
                 "upto.permit2.title": "Impulsado por Permit2",

@@ -1,5 +1,6 @@
 #!/bin/sh
-# pre-commit: block private keys and corpus PII before they reach the repo.
+# pre-commit: block private keys and corpus PII before they reach the repo,
+# then hold the published counts of networks to their manifest (at the end).
 # Activate once per clone:  git config core.hooksPath .githooks
 #
 # The patterns tracked here are GENERIC ONLY:
@@ -24,6 +25,35 @@ repo_root=$(git rev-parse --show-toplevel 2>/dev/null) || exit 0
 local_list="${PRECOMMIT_LOCAL_LIST:-$repo_root/.githooks/pre-commit.local}"
 [ -f "$local_list" ] || local_list=""
 
+# Published counts and lists of networks, run last (and also by a commit with
+# no added line, such as one that only deletes). When the commit touches a file
+# scripts/network_copy.py owns (README.md, CLAUDE.md, the operator guide, the
+# living docs, the landing, ...) or one of its inputs, the check runs on what is
+# being committed (the index). A change of docs alone starts no CI run, so this
+# is where a number typed there is caught. Without a Python 3 it is skipped with
+# a warning: CI still runs it on every change that builds.
+network_copy_check() {
+    [ -f "$repo_root/scripts/network_copy.py" ] || return 0
+    py=""
+    for cand in python3 python; do
+        # `python3` on Windows can be the Store alias, which runs nothing.
+        if "$cand" -c 'import sys; sys.exit(0 if sys.version_info >= (3, 8) else 1)' >/dev/null 2>&1; then
+            py=$cand
+            break
+        fi
+    done
+    if [ -z "$py" ]; then
+        echo "[pre-commit] WARN: no Python 3 on PATH; scripts/network_copy.py --staged did not run." >&2
+        return 0
+    fi
+    if ! "$py" "$repo_root/scripts/network_copy.py" --staged >&2; then
+        echo "[pre-commit] COMMIT BLOCKED: a published count or list of networks in this commit is not" >&2
+        echo "  config/network_capabilities.json's. Fix the text, or run: python3 scripts/network_copy.py --write" >&2
+        return 1
+    fi
+    return 0
+}
+
 # Fail closed if this awk cannot do {n} intervals (the hex64 rule would silently
 # never match). 64 zeros is a valid hex payload and not a key.
 if ! printf '0x%064d\n' 0 | awk '/0x[0-9a-fA-F]{64}/{f=1} END{exit !f}' 2>/dev/null; then
@@ -34,7 +64,10 @@ fi
 # Added lines only ("+" but not "+++"), zero context, no colour, no external
 # diff driver. ACMR = no deletions. Binary files produce no "+" lines.
 diff=$(git diff --cached -U0 --no-color --no-ext-diff --src-prefix=a/ --dst-prefix=b/ --diff-filter=ACMR) || exit 0
-[ -n "$diff" ] || exit 0
+if [ -z "$diff" ]; then
+    network_copy_check || exit 1
+    exit 0
+fi
 
 report=$(printf '%s\n' "$diff" | awk -v list="$local_list" '
 BEGIN {
@@ -79,4 +112,5 @@ if [ "$status" -ne 0 ]; then
     echo "  local-list -> corpus path / disk / handle from the local list; aggregate only" >&2
     exit 1
 fi
+network_copy_check || exit 1
 exit 0

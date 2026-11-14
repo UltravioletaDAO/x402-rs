@@ -64,6 +64,7 @@ on:
       - 'lambda/**'              # the balances-Lambda step applies it when it changes
       # Read by the test job:
       - 'scripts/verify_landing_canonical.py'
+      - 'scripts/network_copy.py'
       - 'scripts/erc8004_custodied_identities.py'
       # Read by the drift gate (and tested by the test job):
       - 'scripts/drift_gate_iam.py'
@@ -101,6 +102,7 @@ on:
       - 'lambda/**'              # the balances-Lambda step applies it when it changes
       # Read by the test job:
       - 'scripts/verify_landing_canonical.py'
+      - 'scripts/network_copy.py'
       - 'scripts/erc8004_custodied_identities.py'
       # Read by the drift gate (and tested by the test job):
       - 'scripts/drift_gate_iam.py'
@@ -172,6 +174,22 @@ jobs:
       # calls production turns a production outage into a red build, which is
       # the worst possible moment to block a deploy. Everything else -- escrow,
       # ERC-8004 and the whole EN/ES cross-check -- runs from the repository.
+      # Every count and list of networks a page, an agent document, /docs or the
+      # README states comes from config/network_capabilities.json, which
+      # src/network_manifest.rs generates from the code (its test, in the cargo
+      # step below, fails when the file and the code disagree). The check also
+      # holds the manifest's production profile to terraform/environments/production.
+      # Stdlib only and offline: it runs before the build, so a stale number
+      # fails in a second. `python3 scripts/network_copy.py --write` fixes most
+      # findings; --generate after a change of networks in the code. "drift" in
+      # the name is what the local pre-CI runs before a push. A change to the
+      # README, CLAUDE.md or the operator guide alone does not start this
+      # workflow (owner's rule: docs-only changes trigger nothing), so a number
+      # typed there is checked by the next run that does.
+      - name: Network counts drift (published counts and lists come from config/network_capabilities.json)
+        run: |
+          python3 scripts/network_copy.py --check
+          python3 -m unittest discover -s tests/scripts -p 'test_network_copy.py'
       - name: Landing page matches its canonical sources (offline)
         run: python3 scripts/verify_landing_canonical.py --offline
       - name: Frontend capability and icon regressions

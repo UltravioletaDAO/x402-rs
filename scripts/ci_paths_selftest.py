@@ -123,7 +123,6 @@ CASES: list[tuple[str, list[str], dict[str, bool]]] = [
     ("the whole docs tree at once",
      ["docs/DX402.md", "docs/plans/dx402/08-SPEC-v0.2.md", "README.md",
       "guides/ADDING_NEW_CHAINS.md", "scripts/bench/cost_model.py"], {CI: False}),
-
     # -- must build/test/deploy --------------------------------------------
     ("a facilitator source file", ["src/handlers.rs"], {CI: True}),
     ("a chain module", ["src/chain/evm.rs"], {CI: True}),
@@ -153,6 +152,8 @@ CASES: list[tuple[str, list[str], dict[str, bool]]] = [
     ("an alarm file", ["terraform/environments/production/alerts-solana-mint.tf"], {CI: True}),
     ("the balances Lambda", ["lambda/balances/handler.py"], {CI: True}),
     ("the landing checker the test job runs", ["scripts/verify_landing_canonical.py"], {CI: True}),
+    ("the network-count checker the test job runs", ["scripts/network_copy.py"], {CI: True}),
+    ("the network capability manifest", ["config/network_capabilities.json"], {CI: True}),
     ("the custodied-identity audit the test job tests",
      ["scripts/erc8004_custodied_identities.py"], {CI: True}),
     ("the drift gate's IAM script", ["scripts/drift_gate_iam.py"], {CI: True}),

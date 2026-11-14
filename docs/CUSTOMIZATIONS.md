@@ -24,7 +24,7 @@ This document catalogs ALL customizations made to the upstream x402-rs facilitat
 **Description**:
 - Complete replacement of upstream's simple text response with full HTML page
 - Ultravioleta DAO branding, dark theme, professional design
-- Network grid with logos (Avalanche, Base, Celo, Ethereum, HyperEVM, Optimism, Polygon)
+- Network grid with logos: one card per network `/supported` serves (`scripts/network_copy.py` holds the cards to `served` in `config/network_capabilities.json`)
 - Embedded CSS (no external dependencies)
 
 **Technical Details**:

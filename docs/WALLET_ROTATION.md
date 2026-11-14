@@ -51,7 +51,7 @@ The rotation was performed using the automated script at `scripts/rotate-facilit
    ```
    - Generated new wallet: `0x103040545AC5031A11E8C03dd11324C7333a13C7`
    - Private key saved to temporary file `.facilitator_wallet_temp.json` (gitignored)
-   - Displayed funding instructions for all 4 networks
+   - Displayed funding instructions for each network
 
 2. **Fund New Wallet**
    - **Testnet funding** (from old wallet via automated transfer):
@@ -71,7 +71,7 @@ The rotation was performed using the automated script at `scripts/rotate-facilit
    - Deleted temporary local file
 
 4. **Verification**
-   - Confirmed all 4 networks initialized with new wallet
+   - Confirmed every network initialized with new wallet
    - Verified `/health` endpoint responds correctly
    - Checked CloudWatch logs for successful initialization
 
@@ -154,7 +154,7 @@ aws secretsmanager get-secret-value \
 ### Check Facilitator Health
 
 ```bash
-# Health endpoint (should return all 4 networks)
+# Health endpoint (liveness only: {"status":"healthy"}; /health/ready reads each EVM chain)
 curl -s https://facilitator.ultravioletadao.xyz/health | python -m json.tool
 
 # Supported networks
@@ -244,4 +244,4 @@ To rotate the wallet in the future:
 
 **Last Updated:** 2025-10-26
 **Performed By:** Automated via Claude Code
-**Status:** ✅ Production operational on all 4 networks
+**Status:** ✅ Production operational on every network

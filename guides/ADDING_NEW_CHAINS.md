@@ -24,7 +24,7 @@ compile, parse and serialize today and are served nowhere. See
 
 Every count and list of networks the facilitator publishes (the landing and its
 pages, `/docs`, the agent documents and cards, the README, this repository's
-instructions) is held to **`config/network_capabilities.json`**, which says per
+instructions and the living docs they point to) is held to **`config/network_capabilities.json`**, which says per
 capability how many networks and which: `served`, `payments` (`exact`), `upto`,
 `escrow_x402r`, `escrow_near`, `erc8004`, `erc8004_canonical`, `erc8004_relay`,
 plus the payment networks' chain `families`. Tests are not published text: the
@@ -61,9 +61,13 @@ ERC-8004 tests in `src/erc8004/mod.rs` pin that set on purpose, and change with 
   not configure, `ENABLE_UPTO` off, ...). A list that is not a capability's set,
   such as a token's coverage or a past behaviour, goes in its `PENDING` table with
   its reason; it excuses that exact list only. It runs first in CI's test job
-  (and in the local pre-CI before a push); a change to the README, `CLAUDE.md` or
-  this guide alone does not start that job (docs-only changes build nothing), so
-  a number typed there is caught by the next run that does.
+  (and in the local pre-CI before a push), and in `.githooks/pre-commit`
+  (`git config core.hooksPath .githooks`, once per clone) on what is being
+  committed, whenever a commit touches a file it owns or one of its inputs
+  (`--staged`). A change to the README, `CLAUDE.md`, the docs or this guide alone
+  starts no CI run (docs-only changes build nothing), so that hook is where its
+  number is caught; a commit made without the hook is caught by the next CI run
+  that builds.
 
 Those tables and cards carry presentation the manifest does not have (chain id,
 explorer, faucet, balance, addresses): the check tells you the row or card that is
@@ -940,8 +944,8 @@ and `static/x402.js`.
 | `scripts/stablecoin_matrix.py` | same — add the symbol to the allow-list |
 | `static/{token}.png` + `ICONO_DE_TOKEN` in `static/x402.js` | same |
 | `src/upto/types.rs` (`UPTO_DEPLOYED_NETWORKS`, `:60`) | the Permit2 proxy is genuinely deployed there — verify with `eth_getCode` against two independent RPCs, a wrong entry reports success while moving zero tokens |
-| `src/payment_operator/addresses.rs` (`ESCROW_NETWORKS`, `:185`) | the chain joins escrow — also bump the `len() == 11` assertion at `:452` and the landing's escrow heading, EN + ES |
-| `src/erc8004/mod.rs` (`supported_networks()`) | the chain joins ERC-8004 — also the landing stat card, EN + ES |
+| `src/payment_operator/addresses.rs` (`ESCROW_NETWORKS`, `:185`) | the chain joins escrow — also bump its `ESCROW_NETWORKS.len()` assertion and add its card to the landing's escrow grid; `--generate` rewrites the heading, EN + ES, and the counts |
+| `src/erc8004/mod.rs` (`supported_networks()`) | the chain joins ERC-8004 — also its card in the landing's ERC-8004 grid; `--generate` rewrites the stat card and the counts |
 
 **Not** in the inventory, against a common assumption:
 

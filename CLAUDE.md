@@ -647,7 +647,7 @@ git merge upstream/main      # Follow docs/CUSTOMIZATIONS.md strategy
 
 ### Other Security Rules
 
-- **Pre-commit anti-llaves**: `git config core.hooksPath .githooks` (once per clone) activates the hook that blocks a commit whose staged diff adds `0x` + 64 hex - INC-2026-03-30, two wallets drained by hardcoded private keys in public repos. Detail in `.githooks/README.md`.
+- **Pre-commit anti-llaves**: `git config core.hooksPath .githooks` (once per clone) activates the hook that blocks a commit whose staged diff adds `0x` + 64 hex - INC-2026-03-30, two wallets drained by hardcoded private keys in public repos. The same hook runs `scripts/network_copy.py --staged` on what is being committed when the commit touches a file that check owns: a docs-only change starts no CI run. Detail in `.githooks/README.md`.
 - **NEVER** commit `.env` file with actual private keys
 - **NEVER** commit `.unused/` directory - it's in `.gitignore` and CONTAINS SECRETS
 - Use testnet keys for local development only
@@ -1038,7 +1038,7 @@ This complete checklist covers:
 13. **VERIFY STABLECOIN MATRIX** - Run `python scripts/stablecoin_matrix.py` and update README stablecoin tables
 14. **UPDATE `config/supported_tokens.json`** - Add the new network with chainId, displayName, icon, tokens, explorer + explorerPaths, and facilitatorWallet (this is what `/networks.json` and every page's icon and explorer link read). Copy wallet address from `lambda/balances/handler.py` — NEVER type from memory. Its `exactServed` (default `true`) also puts an EVM network with an ERC-3009 token on the facilitator receipt rail (`receipts::evm_exact_tokens`, `GET /receipts`): admission, announcement and normalization follow it; add the new pairs to `every_network_and_token_on_the_rail_stays_on_it`. Taking a network or token OFF the rail is a money change, not a config edit: resends of its stored receipts would run as ordinary settles (`docs/facilitator-receipts.md`, "EVM coverage").
 15. **UPDATE `lambda/balances/handler.py`** - Add the new network to `get_network_configs()` with RPC and wallet address.
-16. **REGENERATE THE COUNTS** - `python scripts/network_copy.py --generate` (WSL/Linux: it runs `cargo test`) rewrites `config/network_capabilities.json` from the code and every published count and list of networks from it; `--check` (CI's first test step) fails on any count or list that is not the manifest's, on a README row or landing card that is missing, and on a link preview that states a number. Never type a count of networks: bind it to its capability in one of the check's `PHRASES` ("Escrow Deployed on N Networks") or drop it. Details: `guides/ADDING_NEW_CHAINS.md`, "How many networks".
+16. **REGENERATE THE COUNTS** - `python scripts/network_copy.py --generate` (WSL/Linux: it runs `cargo test`) rewrites `config/network_capabilities.json` from the code and every published count and list of networks from it; `--check` (CI's first test step, and `.githooks/pre-commit` on a commit that touches a file it owns) fails on any count or list that is not the manifest's, on a README row or landing card that is missing, and on a link preview that states a number. Never type a count of networks: bind it to its capability in one of the check's `PHRASES` ("Escrow Deployed on N Networks") or drop it. Details: `guides/ADDING_NEW_CHAINS.md`, "How many networks".
 
 **CRITICAL**: Always update these files when adding a new network OR stablecoin:
 - `config/supported_tokens.json` - JSON source of truth for all chains and wallets

@@ -6,7 +6,10 @@ Run: python3 tests/scripts/test_network_copy.py  (or unittest discover -p 'test_
 
 from __future__ import annotations
 
+import os
+import re
 import shutil
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -96,6 +99,16 @@ class TheTreeAndTheManifest(unittest.TestCase):
             self.assertEqual(cap["mainnets"], len(cap["mainnet_networks"]), k)
             self.assertTrue(set(cap["networks"]) <= served, k)
         self.assertEqual(MANIFEST.data["families"]["count"], len(MANIFEST.families))
+
+    def test_every_living_doc_claude_md_lists_is_covered(self):
+        text = (REPO / "CLAUDE.md").read_text(encoding="utf-8")
+        section = text.split("\n## Important Documentation", 1)[1].split("\n## ", 1)[0]
+        listed = re.findall(r"^- \*\*((?:docs|guides)/[^*]+\.md)\*\*", section, re.M)
+        self.assertGreaterEqual(len(listed), 5, section[:200])
+        for rel in listed:
+            with self.subTest(rel=rel):
+                self.assertTrue(rel in nc.HISTORY or nc.in_globs(rel, nc.COVERED), rel)
+        self.assertEqual(sorted(set(nc.HISTORY) - set(listed)), [])
 
     def test_the_landing_checker_reads_its_counts_from_the_manifest(self):
         import verify_landing_canonical as vlc
@@ -220,6 +233,26 @@ class LooseCounts(unittest.TestCase):
             "x402 networks and eip155:8453 network ids.",
             "One chain, two or more chains.",
             "const seen = {mainnet:0, testnet:0};",
+        ):
+            with self.subTest(text=text):
+                self.assertEqual(kinds(check("static/skill.md", text)), [])
+
+    def test_a_hyphenated_count_and_a_lowercase_label_are_counts(self):
+        for text in (
+            "A 24-network facilitator.",
+            "Built for 12-chain setups.",
+            "Supported networks: 24",
+            "ERC-8004 networks: 25 in all.",
+        ):
+            with self.subTest(text=text):
+                self.assertEqual(kinds(check("static/skill.md", text)), ["loose-count"])
+
+    def test_an_id_with_a_hyphen_or_an_object_key_is_no_count(self):
+        for text in (
+            "The ERC-8004-networks page.",
+            "Every x402-network id.",
+            "const seen = { mainnet: 0, testnet: 0 };",
+            "chains: 3",
         ):
             with self.subTest(text=text):
                 self.assertEqual(kinds(check("static/skill.md", text)), [])
@@ -417,6 +450,16 @@ class Profile(unittest.TestCase):
         self.assertEqual(len(messages), 1, messages)
         self.assertIn("scroll", messages[0])
 
+    def test_hedera_mainnet_switched_off_is_reported(self):
+        # Hedera's provider exists only when its switch is "true": a declared
+        # HEDERA_ENABLED_MAINNET = "false" configures nothing.
+        self.edit("production.auto.tfvars", "hedera_enabled_mainnet    = true", "hedera_enabled_mainnet    = false")
+        self.assertEqual(nc.terraform_env(self.tf).get("HEDERA_ENABLED_MAINNET"), "false")
+        messages = [f.message for f in self.findings()]
+        self.assertEqual(len(messages), 1, messages)
+        self.assertIn("hedera:mainnet", messages[0])
+        self.assertIn("HEDERA_ENABLED_MAINNET", messages[0])
+
     def test_a_conditional_declaration_counts_only_when_its_switch_is_on(self):
         env = nc.terraform_env(self.tf)
         self.assertIn("RPC_URL_ARC", env)
@@ -497,6 +540,129 @@ class Features(unittest.TestCase):
         ci = self.tmp / ".github" / "workflows" / "ci.yaml"
         ci.write_text(ci.read_text(encoding="utf-8").replace("CARGO_FEATURES:", "OTHER:", 1), encoding="utf-8")
         self.assertEqual(self.findings(), ["features"])
+
+
+# The scratch repositories below are git repositories of their own: no GIT_*
+# variable of the caller (a WSL worktree exports GIT_DIR) may point their git
+# commands back at this one.
+CLEAN_ENV = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+FAMILIES = "EVM, SVM, NEAR, Stellar, Algorand, Sui, XRPL and Hedera"  # CLAUDE.md, "Key characteristics"
+SEVEN_FAMILIES = "EVM, SVM, NEAR, Stellar, Algorand, Sui and XRPL"
+
+
+def tracked_files() -> list:
+    out = subprocess.run(["git", "ls-files", "-z"], cwd=REPO, capture_output=True, text=True, encoding="utf-8")
+    if out.returncode == 0 and out.stdout.strip("\0"):
+        return [rel for rel in out.stdout.split("\0") if rel]
+    # An export without .git: the same globs, read from the tree.
+    return sorted({p.relative_to(REPO).as_posix() for g in nc.COVERED + nc.INPUTS for p in REPO.glob(g) if p.is_file()})
+
+
+@unittest.skipUnless(shutil.which("git") and shutil.which("sh"), "needs git and sh")
+class StagedHook(unittest.TestCase):
+    """.githooks/pre-commit runs the check on what is being committed. Each test
+    builds a scratch repository holding the files the check reads and the hook,
+    commits them, stages a change and runs the hook the way git does."""
+
+    def setUp(self):
+        self.root = Path(tempfile.mkdtemp()).resolve()
+        self.addCleanup(shutil.rmtree, self.root, True)
+        self.nohooks = Path(tempfile.mkdtemp()).resolve()  # the base commits run no hook
+        self.addCleanup(shutil.rmtree, self.nohooks, True)
+        files = [rel for rel in tracked_files() if nc.in_globs(rel, nc.COVERED + nc.INPUTS)]
+        files.append(".githooks/pre-commit")
+        for rel in files:
+            dst = self.root / rel
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(REPO / rel, dst)
+        self.git("init", "-q")
+        self.assertEqual(Path(self.git("rev-parse", "--show-toplevel").strip()).resolve(), self.root)
+        self.commit(files)
+
+    def git(self, *args: str, stdin: str = None) -> str:
+        return subprocess.run(
+            ["git", *args], cwd=self.root, env=CLEAN_ENV, input=stdin, capture_output=True,
+            text=True, encoding="utf-8", check=True,
+        ).stdout
+
+    def commit(self, files) -> None:
+        self.git("add", "--pathspec-from-file=-", "--pathspec-file-nul", stdin="\0".join(files))
+        self.git("-c", "user.name=test", "-c", "user.email=test@example.invalid", "-c", "commit.gpgsign=false",
+                 "-c", "core.hooksPath=" + self.nohooks.as_posix(), "commit", "-q", "-m", "base")
+
+    def replace(self, rel: str, old: str, new: str) -> None:
+        path = self.root / rel
+        text = path.read_bytes().decode("utf-8")
+        self.assertIn(old, text)
+        path.write_bytes(text.replace(old, new, 1).encode("utf-8"))
+
+    def append(self, rel: str) -> None:
+        path = self.root / rel
+        path.write_bytes(path.read_bytes() + b"\nOne more line.\n")
+
+    def hook(self) -> subprocess.CompletedProcess:
+        return subprocess.run(
+            ["sh", ".githooks/pre-commit"], cwd=self.root, env=CLEAN_ENV, capture_output=True,
+            text=True, encoding="utf-8", errors="replace", timeout=300,
+        )
+
+    def test_a_commit_that_drops_a_family_from_claude_md_is_blocked(self):
+        self.replace("CLAUDE.md", FAMILIES, SEVEN_FAMILIES)
+        self.git("add", "--", "CLAUDE.md")
+        run = self.hook()
+        self.assertEqual(run.returncode, 1, run.stderr)
+        self.assertIn("CLAUDE.md", run.stderr)
+        self.assertIn("COMMIT BLOCKED", run.stderr)
+
+    def test_a_clean_commit_passes_with_the_check_run(self):
+        self.append("CLAUDE.md")
+        self.git("add", "--", "CLAUDE.md")
+        run = self.hook()
+        self.assertEqual(run.returncode, 0, run.stderr)
+        self.assertIn("[OK]", run.stderr)
+
+    def test_the_index_is_judged_not_the_working_tree(self):
+        good = (self.root / "CLAUDE.md").read_bytes()
+        self.replace("CLAUDE.md", FAMILIES, SEVEN_FAMILIES)
+        self.git("add", "--", "CLAUDE.md")
+        (self.root / "CLAUDE.md").write_bytes(good)  # fixed, not staged
+        self.assertEqual(self.hook().returncode, 1)
+        # And a mistake left unstaged does not block a good staged change.
+        self.append("CLAUDE.md")
+        self.git("add", "--", "CLAUDE.md")
+        self.replace("CLAUDE.md", FAMILIES, SEVEN_FAMILIES)
+        run = self.hook()
+        self.assertEqual(run.returncode, 0, run.stderr)
+        self.assertIn("[OK]", run.stderr)
+
+    def test_a_commit_that_touches_nothing_the_check_owns_runs_no_check(self):
+        # A wrong list already committed blocks every commit that touches a
+        # file the check owns, and no other.
+        self.replace("CLAUDE.md", FAMILIES, SEVEN_FAMILIES)
+        self.commit(["CLAUDE.md"])
+        (self.root / "notes.txt").write_text("x\n", encoding="utf-8")
+        self.git("add", "--", "notes.txt")
+        run = self.hook()
+        self.assertEqual(run.returncode, 0, run.stderr)
+        self.assertNotIn("network", run.stderr)
+        self.append("README.md")
+        self.git("add", "--", "README.md")
+        self.assertEqual(self.hook().returncode, 1)
+
+    def test_a_change_to_the_manifest_alone_runs_the_check(self):
+        self.replace(nc.MANIFEST_REL, '"ENABLE_ZAMA": "false"', '"ENABLE_ZAMA": "true"')
+        self.git("add", "--", nc.MANIFEST_REL)
+        run = self.hook()
+        self.assertEqual(run.returncode, 1, run.stderr)
+        self.assertIn("ENABLE_ZAMA", run.stderr)
+
+    def test_a_commit_that_only_deletes_runs_the_check(self):
+        # No added line: the key scan has nothing to read, the check still runs
+        # (static/skill.md carries texts that PENDING excuses).
+        self.git("rm", "-q", "--", "static/skill.md")
+        run = self.hook()
+        self.assertEqual(run.returncode, 1, run.stderr)
+        self.assertIn("stale-exception", run.stderr)
 
 
 class Write(unittest.TestCase):

@@ -25,6 +25,10 @@ Modes (stdlib only, run from anywhere):
                the manifest was computed under (the default mode)
   --inventory  print every count and list of networks in COVERED (TSV: file, line,
                kind, status, text)
+  --staged     --check on what is being committed (the index, not the working
+               tree), and only when the commit touches a COVERED file or one of
+               INPUTS; silent otherwise. .githooks/pre-commit runs it: a change of
+               docs alone starts no CI run, so this is where its number is caught
 """
 
 from __future__ import annotations
@@ -36,6 +40,7 @@ import os
 import re
 import subprocess
 import sys
+import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Sequence, Set, Tuple
@@ -50,12 +55,24 @@ LOGO = "https://facilitator.ultravioletadao.xyz/logo.png"
 
 # The published text this check owns: every page and document a visitor, an
 # agent or a catalog reads, the strings that reach /docs and the MCP tools, and
-# the repository's own instructions. Historical records (CHANGELOG, docs/handoffs,
-# plans, reports) state what was true on their date and are never rewritten.
+# the repository's own instructions and the living docs CLAUDE.md points to
+# ("Important Documentation"). Historical records (CHANGELOG, docs/handoffs,
+# plans, reports, the extraction plan, each network's integration notes) state
+# what was true on their date and are never rewritten.
 COVERED = (
     "README.md",
     "CLAUDE.md",
     "guides/ADDING_NEW_CHAINS.md",
+    "docs/ARCHITECTURE_SUMMARY_FOR_AGENTS.md",
+    "docs/CUSTOMIZATIONS.md",
+    "docs/DEPLOYMENT.md",
+    "docs/DX402.md",
+    "docs/EIP3009_TIMESTAMP_BEST_PRACTICES.md",
+    "docs/ERC8004_SOLANA_INTEGRATION.md",
+    "docs/ERC8004_SOLANA_SDK_GUIDE.md",
+    "docs/TESTING.md",
+    "docs/UPSTREAM_MERGE_STRATEGY.md",
+    "docs/WALLET_ROTATION.md",
     "static/*.html",
     "static/*.md",
     "static/*.txt",
@@ -68,6 +85,12 @@ COVERED = (
     "paybox-plugin/README.md",
     "paybox-plugin/src/catalogo.generated.ts",
 )
+# The docs CLAUDE.md lists under "Important Documentation" that are history,
+# not living text: a test holds every other doc on that list to COVERED.
+HISTORY = {
+    "docs/CHANGELOG.md": "release notes, each true of its release",
+    "docs/EXTRACTION_MASTER_PLAN.md": "the plan and log of the 2025 extraction from the monorepo",
+}
 # Written by another generator from covered sources: checked, never rewritten
 # here (their generator would undo it), so a wrong number in one of them means
 # "fix the source and re-run its generator". --write re-runs the first.
@@ -75,6 +98,24 @@ GENERATED = {
     "static/llms-full.txt": "scripts/build_llms_full.sh",
     "paybox-plugin/src/catalogo.generated.ts": "src/mcp.rs (paybox-plugin/README.md)",
 }
+# The other files whose content changes the check's verdict: the manifest and
+# the registry it is read with, this script, and what the profile and the
+# feature set are held to. --staged runs when a commit touches one of them too.
+INPUTS = (
+    MANIFEST_REL,
+    "config/supported_tokens.json",
+    "scripts/network_copy.py",
+    TERRAFORM_REL + "/*.tf",
+    TERRAFORM_REL + "/*.auto.tfvars",
+    ".github/workflows/ci.yaml",
+    "Dockerfile",
+)
+
+
+def in_globs(rel: str, globs: Sequence[str]) -> bool:
+    """`rel` (a repository path, `/`-separated) is one of `globs`, at the same depth."""
+    return any(fnmatch.fnmatchcase(rel, g) and rel.count("/") == g.count("/") for g in globs)
+
 
 # ---------------------------------------------------------------------------
 # Vocabulary
@@ -299,6 +340,13 @@ PENDING: Dict[Tuple[str, str], str] = {
         "DX402: the families whose address is already an ed25519 key. A property of the "
         "signature scheme, not a capability."
     ),
+    (
+        "docs/ARCHITECTURE_SUMMARY_FOR_AGENTS.md",
+        "Evm(EvmProvider), Solana(SolanaProvider), Near(NearProvider), Stellar(StellarProvider)",
+    ): (
+        "The variants of NetworkProvider no cargo feature gates (src/chain/mod.rs), quoted "
+        "as code; the other four follow, each behind its feature attribute."
+    ),
 }
 # The USDC EIP-712 domain names, by chain: a fact about a token's contract.
 for _rel in ("CLAUDE.md", "static/skill.md", "static/llms-full.txt"):
@@ -342,8 +390,16 @@ LOOSE_AFTER = (
     re.compile(_UNIT_AHEAD + r"(?:[ -](?!" + _STOP + r"\b)[A-Za-z][\w-]*){0,2}\s*\((\d{1,3})\)", re.I),
     # A displayed label is capitalised: `{mainnet:0}` in a script is not one.
     re.compile(r"\b(?:Networks?|Mainnets?|Testnets?|Chains?|Redes|Cadenas)\s*:\s+(\d{1,3})\b(?![\w.:/-])"),
+    # In lower case, a label has a word before it ("Supported networks: 24"); a
+    # key of an object literal (`{ mainnet: 0 }`) follows `{`, `,` or a line start.
+    re.compile(r"\b[A-Za-z][\w-]* (?:networks?|mainnets?|testnets?|chains?|redes|cadenas)\s*:\s+(\d{1,3})\b(?![\w.:/-])"),
 )
-LOOSE_PATTERNS = (LOOSE_COUNT,) + LOOSE_AFTER
+# The number joined to its unit by a hyphen ("a 24-network facilitator");
+# "ERC-8004-networks" and "x402-network" join no count to it.
+LOOSE_HYPHEN = re.compile(
+    r"(?<![\w.$/:=#-])(\d{1,3})\+?-(?:networks?|mainnets?|testnets?|chains?|blockchains?)\b(?!-)", re.I
+)
+LOOSE_PATTERNS = (LOOSE_COUNT,) + LOOSE_AFTER + (LOOSE_HYPHEN,)
 MIN_LIST = 4
 # A list introduced as an example claims no set.
 ILLUSTRATION = re.compile(
@@ -609,17 +665,19 @@ def resolve_items(manifest: Manifest, items: Iterable[str]) -> Tuple[List[str], 
 # ---------------------------------------------------------------------------
 
 
-def covered_files(repo: Path) -> List[str]:
-    tracked = subprocess.run(
-        ["git", "ls-files"], cwd=repo, capture_output=True, text=True, check=False
-    ).stdout.split("\n")
-    if not any(tracked):
-        tracked = [p.relative_to(repo).as_posix() for p in repo.rglob("*") if p.is_file()]
+def covered_files(repo: Path, tracked: Optional[Sequence[str]] = None) -> List[str]:
+    """The COVERED files among `tracked` (default: what git tracks in `repo`)."""
+    if tracked is None:
+        tracked = subprocess.run(
+            ["git", "ls-files"], cwd=repo, capture_output=True, text=True, check=False
+        ).stdout.split("\n")
+        if not any(tracked):
+            tracked = [p.relative_to(repo).as_posix() for p in repo.rglob("*") if p.is_file()]
     out = []
     for rel in tracked:
         if not rel:
             continue
-        if any(fnmatch.fnmatchcase(rel, g) and rel.count("/") == g.count("/") for g in COVERED):
+        if in_globs(rel, COVERED):
             path = repo / rel
             if path.is_file() and path.suffix.lower() not in (".png", ".ico", ".woff2", ".svg"):
                 out.append(rel)
@@ -1064,10 +1122,14 @@ def check_features(manifest: Manifest, repo: Path, report: Report) -> None:
 # ---------------------------------------------------------------------------
 
 
-def run_check(repo: Path, files: Optional[List[str]] = None) -> Tuple[Report, Manifest]:
+def run_check(
+    repo: Path, files: Optional[List[str]] = None, tracked: Optional[Sequence[str]] = None
+) -> Tuple[Report, Manifest]:
+    """The whole check on `repo` (its COVERED files among `tracked`, then the
+    exceptions, the profile and the features), or only `files` when given."""
     manifest = load_manifest(repo)
     report = Report()
-    for rel in files if files is not None else covered_files(repo):
+    for rel in files if files is not None else covered_files(repo, tracked):
         # Bytes, not read_text: a CRLF checkout keeps its offsets, so --write
         # replaces exactly the digits it found.
         raw = (repo / rel).read_bytes().decode("utf-8")
@@ -1082,6 +1144,30 @@ def run_check(repo: Path, files: Optional[List[str]] = None) -> Tuple[Report, Ma
         check_profile(manifest, repo, report)
         check_features(manifest, repo, report)
     return report, manifest
+
+
+def check_staged(repo: Path) -> Optional[Tuple[Report, Manifest]]:
+    """The whole check on what is being committed, or None when the commit
+    touches neither a COVERED file nor one of INPUTS. It reads the index (the
+    one the commit writes, `GIT_INDEX_FILE` in a hook), never the working tree:
+    the files it judges are exported from there, byte for byte, to a scratch
+    directory, so a fix left unstaged does not pass a staged mistake."""
+
+    def git(*args: str, stdin: Optional[bytes] = None) -> bytes:
+        return subprocess.run(
+            ["git", *args], cwd=repo, input=stdin, capture_output=True, check=True
+        ).stdout
+
+    owned = COVERED + INPUTS
+    staged = git("diff", "--cached", "--name-only", "--no-renames", "-z").decode("utf-8").split("\0")
+    if not any(rel and in_globs(rel, owned) for rel in staged):
+        return None
+    indexed = [rel for rel in git("ls-files", "-z").decode("utf-8").split("\0") if rel and in_globs(rel, owned)]
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        git("-c", "core.autocrlf=false", "checkout-index", "--prefix=" + root.as_posix() + "/", "-z", "--stdin",
+            stdin="\0".join(indexed).encode("utf-8"))
+        return run_check(root, tracked=indexed)
 
 
 def apply_fixes(repo: Path, report: Report) -> List[str]:
@@ -1130,14 +1216,30 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     mode.add_argument("--write", action="store_true")
     mode.add_argument("--generate", action="store_true")
     mode.add_argument("--inventory", action="store_true")
+    mode.add_argument("--staged", action="store_true")
     ap.add_argument("--repo", default=str(REPO), help=argparse.SUPPRESS)
     args = ap.parse_args(argv)
     repo = Path(args.repo).resolve()
+    # A hook's output can be a pipe in a narrow code page (Windows): a finding
+    # that quotes a non-ASCII text must not turn into a crash.
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(errors="backslashreplace")
 
     if args.generate:
         generate_manifest(repo)
     try:
-        report, manifest = run_check(repo)
+        if args.staged:
+            result = check_staged(repo)
+            if result is None:
+                return 0
+            report, manifest = result
+        else:
+            report, manifest = run_check(repo)
+    except subprocess.CalledProcessError as e:
+        print(f"[FAIL] {' '.join(e.cmd)[:120]} failed: {e.stderr.decode('utf-8', 'replace').strip()}",
+              file=sys.stderr)
+        return 2
     except (OSError, ValueError, KeyError) as e:
         print(f"[FAIL] could not read {MANIFEST_REL}: {e}", file=sys.stderr)
         return 2
@@ -1161,7 +1263,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     )
     if report.findings:
         print_findings(report)
-        print(f"\n[FAIL] {len(report.findings)} finding(s). Manifest: {summary}; "
+        print(f"\n[FAIL] {len(report.findings)} finding(s)"
+              + (" in what is being committed (the index)" if args.staged else "")
+              + f". Manifest: {summary}; "
               f"{manifest.data['families']['count']} payment families. "
               "Fix the text, or run `python scripts/network_copy.py --write` (--generate after a "
               "change of networks in the code).")

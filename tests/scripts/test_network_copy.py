@@ -664,6 +664,15 @@ class StagedHook(unittest.TestCase):
         self.assertEqual(run.returncode, 1, run.stderr)
         self.assertIn("stale-exception", run.stderr)
 
+    def test_a_rename_out_of_the_covered_files_runs_the_check(self):
+        # git reads a moved file as a rename to its new name only; the old,
+        # covered one counts too.
+        (self.root / "notes").mkdir()
+        self.git("mv", "--", "static/skill.md", "notes/skill.md")
+        run = self.hook()
+        self.assertEqual(run.returncode, 1, run.stderr)
+        self.assertIn("stale-exception", run.stderr)
+
 
 class Write(unittest.TestCase):
     def test_a_crlf_file_keeps_its_line_ends_and_gets_exactly_the_digits(self):

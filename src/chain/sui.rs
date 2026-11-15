@@ -21,6 +21,7 @@
 //! - Testnet: `0xa1ec7fc00a6f40db9693ad1415d0c193ad3906494428cf252621037bd7117e29::usdc::USDC`
 
 use std::str::FromStr;
+use std::sync::Arc;
 
 use shared_crypto::intent::{Intent, IntentMessage};
 use sui_types::base_types::{ObjectID, ObjectRef, SuiAddress};
@@ -43,6 +44,7 @@ use crate::from_env::{
     ENV_SUI_PRIVATE_KEY_TESTNET,
 };
 use crate::network::Network;
+use crate::nonce_store::{NonceStore, NonceStoreError};
 use crate::types::{
     ExactPaymentPayload, ExactSuiPayload, MixedAddress, Scheme, SettleRequest, SettleResponse,
     SupportedPaymentKind, SupportedPaymentKindExtra, SupportedPaymentKindsResponse, VerifyRequest,
@@ -75,6 +77,32 @@ pub const MAX_SPONSORED_GAS_PRICE: u64 = 10_000;
 /// so a budget needs about 4_150_000: this is ~12 times that.
 pub const MAX_SPONSORED_GAS_BUDGET: u64 = 50_000_000;
 
+/// How long a settle's claim on a transaction digest is kept: 7 days, the
+/// settle claim Solana's settlement accounts keep (`SOLANA_SETTLE_TTL_SECONDS`).
+///
+/// A Sui transaction with no expiration stays executable until its owned
+/// inputs move on, so the claim is not tied to a validity window. Past it, a
+/// settle of the same transaction still finds its inputs moved on
+/// (`check_inputs_current`) or the chain holding it before anything is sent
+/// (`Execution::AlreadyExecuted`). In the code, not config: it moves money.
+pub const SETTLE_CLAIM_TTL_SECONDS: u64 = 7 * 24 * 3600;
+
+/// The `errorReason` of a settle whose transaction another settle already
+/// took, or the chain already executed.
+pub const ALREADY_SUBMITTED: &str = "transaction_already_submitted";
+
+/// The claim store settles take a transaction digest in, shared with the rest
+/// of the service like the other families' (`NONCE_STORE_TABLE_NAME`: the
+/// DynamoDB table `facilitator-nonces` in production). Without a table it is
+/// this process's memory, and the claim holds for this task only.
+static SETTLE_CLAIMS: tokio::sync::OnceCell<Arc<dyn NonceStore>> =
+    tokio::sync::OnceCell::const_new();
+
+/// The claim key of a transaction digest on `network`.
+fn settle_claim_key(network: Network, digest: &str) -> String {
+    format!("sui-settle#{}#{}", network, digest)
+}
+
 /// Sui network provider for payment verification and settlement.
 ///
 /// Handles sponsored transactions for gasless USDC payments on Sui.
@@ -89,6 +117,8 @@ pub struct SuiProvider {
     keypair: SuiKeyPair,
     /// USDC coin type for this network.
     usdc_coin_type: String,
+    /// Where settles claim a transaction digest. `None`: [`SETTLE_CLAIMS`].
+    claims: Option<Arc<dyn NonceStore>>,
 }
 
 impl SuiProvider {
@@ -111,6 +141,25 @@ impl SuiProvider {
             signer_address,
             keypair,
             usdc_coin_type,
+            claims: None,
+        }
+    }
+
+    /// The same provider, claiming in `store` instead of the shared store.
+    #[cfg(test)]
+    fn with_claims(mut self, store: Arc<dyn NonceStore>) -> Self {
+        self.claims = Some(store);
+        self
+    }
+
+    /// The store settles claim a transaction digest in.
+    async fn claims(&self) -> Arc<dyn NonceStore> {
+        match &self.claims {
+            Some(store) => store.clone(),
+            None => SETTLE_CLAIMS
+                .get_or_init(crate::nonce_store::create_nonce_store)
+                .await
+                .clone(),
         }
     }
 
@@ -174,54 +223,31 @@ impl SuiProvider {
 
     /// Verify the sender's signature on the transaction.
     ///
-    /// This extracts the public key from the signature and verifies it matches
-    /// the expected sender address. Full signature verification is performed
-    /// by the Sui network on transaction submission.
+    /// `verify_secure` checks the signature over the transaction's intent
+    /// message (what a Sui wallet signs and the validators check) against the
+    /// public key it carries, and that this key is the sender's. `Signature`
+    /// is Ed25519, Secp256k1 or Secp256r1 (`ToFromBytes`), so the scheme it
+    /// reports is never zkLogin, the one scheme `verify_secure` does not tie
+    /// to the sender's address.
     fn verify_signature(
         &self,
-        _tx_data: &TransactionData,
+        tx_data: &TransactionData,
         signature: &Signature,
         expected_sender: &SuiAddress,
     ) -> Result<(), FacilitatorLocalError> {
-        use sui_types::crypto::PublicKey;
-
-        // Extract the public key from the signature
-        // Sui signatures contain: [scheme_flag | signature | public_key]
-        let sig_bytes = signature.as_ref();
-        if sig_bytes.is_empty() {
-            return Err(FacilitatorLocalError::InvalidSignature(
-                MixedAddress::Sui(expected_sender.to_string()),
-                "Empty signature".to_string(),
-            ));
-        }
-
-        // Get the public key from the signature and derive the address
-        let public_key =
-            PublicKey::try_from_bytes(signature.scheme(), signature.public_key_bytes()).map_err(
-                |e| {
-                    FacilitatorLocalError::InvalidSignature(
-                        MixedAddress::Sui(expected_sender.to_string()),
-                        format!("Failed to extract public key from signature: {}", e),
-                    )
-                },
-            )?;
-
-        let signer_address = SuiAddress::from(&public_key);
-
-        // Verify the signer matches the expected sender
-        if signer_address != *expected_sender {
-            return Err(FacilitatorLocalError::InvalidSignature(
-                MixedAddress::Sui(expected_sender.to_string()),
-                format!(
-                    "Signature signer {} does not match expected sender {}",
-                    signer_address, expected_sender
-                ),
-            ));
-        }
+        let intent = IntentMessage::new(Intent::sui_transaction(), tx_data.clone());
+        signature
+            .verify_secure(&intent, *expected_sender, signature.scheme())
+            .map_err(|e| {
+                FacilitatorLocalError::InvalidSignature(
+                    MixedAddress::Sui(expected_sender.to_string()),
+                    format!("Sui transaction signature does not verify: {}", e),
+                )
+            })?;
 
         debug!(
             sender = %expected_sender,
-            "Sui transaction signature verified - signer matches sender"
+            "Sui transaction signature verified"
         );
 
         Ok(())
@@ -810,7 +836,7 @@ impl SuiProvider {
         tx_data: TransactionData,
         sender_signature: Signature,
         sender: SuiAddress,
-    ) -> Result<Settled, FacilitatorLocalError> {
+    ) -> Submission {
         // For sponsored transactions, we need BOTH signatures:
         // 1. sender_signature - already provided by the user
         // 2. sponsor_signature - facilitator signs as gas owner
@@ -828,15 +854,21 @@ impl SuiProvider {
         // The signed transaction travels as its BCS bytes -- the exact bytes both
         // signatures cover -- with the signatures as their raw `flag || sig || pk`
         // bytes. Order matters: sender signature first, then sponsor signature.
-        let transaction_bcs = bcs::to_bytes(&tx_data).map_err(|e| {
-            FacilitatorLocalError::Other(format!("Failed to serialize Sui transaction: {}", e))
-        })?;
+        let transaction_bcs = match bcs::to_bytes(&tx_data) {
+            Ok(bytes) => bytes,
+            Err(e) => {
+                return Submission::Sent(Err(FacilitatorLocalError::Other(format!(
+                    "Failed to serialize Sui transaction: {}",
+                    e
+                ))))
+            }
+        };
         // Known before execution: an execution whose outcome is unknown is
         // reported under it rather than as a failure the caller would retry,
         // and it is what every endpoint is asked about before a (re)send.
         let digest = tx_data.digest().to_string();
 
-        match self
+        let sent = match self
             .rpc
             .execute(
                 transaction_bcs,
@@ -874,6 +906,14 @@ impl SuiProvider {
                     failure: Some(failure),
                 })
             }
+            Execution::AlreadyExecuted => {
+                warn!(
+                    digest = %digest,
+                    sender = %sender,
+                    "Sui transaction executed before this settle sent it; not a new settlement"
+                );
+                return Submission::AlreadyExecuted;
+            }
             Execution::Refused(reason) => Err(FacilitatorLocalError::Other(format!(
                 "Failed to execute Sui transaction: {}",
                 reason
@@ -893,7 +933,8 @@ impl SuiProvider {
                 "No Sui RPC endpoint took the transaction: {}",
                 why
             ))),
-        }
+        };
+        Submission::Sent(sent)
     }
 }
 
@@ -903,6 +944,61 @@ impl SuiProvider {
 struct Settled {
     digest: String,
     failure: Option<String>,
+}
+
+/// What a settle's own submission came to.
+#[derive(Debug)]
+enum Submission {
+    /// Sent by this settle: what [`settle_outcome`] reads.
+    Sent(Result<Settled, FacilitatorLocalError>),
+    /// The chain held the transaction, executed, before this settle sent
+    /// anything: an earlier settle's payment, not this one's.
+    AlreadyExecuted,
+}
+
+/// Whether a sent settlement certainly executed nothing: the answer is a
+/// failure that names no transaction (`settle_outcome`'s plain `Err` arm).
+/// An unconfirmed execution may be final, and an executed one is final.
+fn executed_nothing(sent: &Result<Settled, FacilitatorLocalError>) -> bool {
+    matches!(sent, Err(e) if !matches!(e, FacilitatorLocalError::SettlementUnconfirmed(..)))
+}
+
+/// The settle answer when the claim store does not answer: nothing was sent.
+fn claim_store_unavailable(
+    error: NonceStoreError,
+    digest: &str,
+    payer: MixedAddress,
+    network: Network,
+) -> SettleResponse {
+    let correlation_id = uuid::Uuid::new_v4();
+    error!(%correlation_id, network = %network, %digest, %error, "Sui settle claim store unavailable; nothing sent");
+    SettleResponse {
+        success: false,
+        error_reason: Some(crate::types::FacilitatorErrorReason::FreeForm(format!(
+            "Settlement failed: settlement_unavailable (ref: {correlation_id})"
+        ))),
+        payer,
+        transaction: None,
+        network,
+        proof_of_payment: None,
+        extensions: None,
+    }
+}
+
+/// The settle answer for a transaction another settle already took or the
+/// chain already executed: a refusal that names no transaction.
+fn already_submitted(payer: MixedAddress, network: Network) -> SettleResponse {
+    SettleResponse {
+        success: false,
+        error_reason: Some(crate::types::FacilitatorErrorReason::FreeForm(
+            ALREADY_SUBMITTED.to_string(),
+        )),
+        payer,
+        transaction: None,
+        network,
+        proof_of_payment: None,
+        extensions: None,
+    }
 }
 
 impl NetworkProviderOps for SuiProvider {
@@ -1099,9 +1195,8 @@ impl Facilitator for SuiProvider {
                 payload.coin_object_id, e
             ))
         })?;
-        // Settle does not repeat this: execution refuses an input that has
-        // moved on, except for this very transaction, whose second settle an
-        // endpoint answers with the effects of the first (as JSON-RPC did).
+        // Settle repeats this read: it is also what refuses a settle of a
+        // transaction that executed long ago (its gas coin, at least, moved on).
         self.check_inputs_current(&tx_data).await?;
         self.check_balance(&payer_addr, required_amount, &spent_coin_id)
             .await?;
@@ -1136,14 +1231,62 @@ impl Facilitator for SuiProvider {
                 payload.coin_object_id, e
             ))
         })?;
+        // One settle per signed transaction, across every task of the
+        // service: the claim is taken with the store's conditional put before
+        // anything is sent. The digest does not cover the signatures, so a
+        // re-signed copy is the same transaction.
+        let digest = tx_data.digest().to_string();
+        let claim = settle_claim_key(self.network, &digest);
+        let claims = self.claims().await;
+        // A claim already held is answered before the reads below, which
+        // would refuse a transaction that executed for another reason. An
+        // unanswered read decides nothing: the conditional put below does.
+        match claims.is_used(&claim).await {
+            Ok(false) => {}
+            Ok(true) => {
+                warn!(network = %self.network, payer = %payer, %digest, "Sui transaction already taken by another settle; not sending it");
+                return Ok(already_submitted(payer, self.network));
+            }
+            Err(e) => {
+                warn!(network = %self.network, %digest, error = %e, "Sui settle claim not readable; the claim itself decides")
+            }
+        }
+
+        // A transaction that already executed has inputs that moved on.
+        self.check_inputs_current(&tx_data).await?;
         self.check_balance(&sender, required_amount, &spent_coin_id)
             .await?;
 
-        // Submit the sponsored transaction
-        let submitted = self
+        match claims
+            .check_and_mark_used(&claim, SETTLE_CLAIM_TTL_SECONDS)
+            .await
+        {
+            Ok(()) => {}
+            Err(NonceStoreError::NonceAlreadyUsed(_)) => {
+                warn!(network = %self.network, payer = %payer, %digest, "Sui transaction already taken by another settle; not sending it");
+                return Ok(already_submitted(payer, self.network));
+            }
+            // Fail closed: without the claim, nothing is sent.
+            Err(e) => return Ok(claim_store_unavailable(e, &digest, payer, self.network)),
+        }
+
+        let sent = match self
             .submit_sponsored_transaction(tx_data, signature, sender)
-            .await;
-        settle_outcome(submitted, payer, self.network)
+            .await
+        {
+            // The claim stays: the payment it settled is not this one.
+            Submission::AlreadyExecuted => return Ok(already_submitted(payer, self.network)),
+            Submission::Sent(sent) => sent,
+        };
+        // Given back only when nothing executed, so the caller can settle the
+        // same transaction again. Best-effort: a claim that stays only costs
+        // a retry.
+        if executed_nothing(&sent) {
+            if let Err(e) = claims.release(&claim).await {
+                warn!(network = %self.network, %digest, error = %e, "Sui settle claim not released");
+            }
+        }
+        settle_outcome(sent, payer, self.network)
     }
 
     async fn supported(&self) -> Result<SupportedPaymentKindsResponse, Self::Error> {
@@ -1237,6 +1380,7 @@ mod tests {
             signer_address: signer,
             keypair: kp,
             usdc_coin_type: USDC_COIN_TYPE_TESTNET.to_string(),
+            claims: Some(Arc::new(crate::nonce_store::MemoryNonceStore::new())),
         }
     }
 
@@ -1832,8 +1976,23 @@ mod replay_verify_tests {
         node
     }
 
-    /// The facilitator: the all-zero Ed25519 seed, sponsoring from `urls`.
+    /// The facilitator: the all-zero Ed25519 seed, sponsoring from `urls`,
+    /// with a claim store of its own (one task of the service).
     pub(super) fn provider_at(urls: Vec<String>, read_timeout: std::time::Duration) -> SuiProvider {
+        provider_claiming_in(
+            urls,
+            read_timeout,
+            std::sync::Arc::new(crate::nonce_store::MemoryNonceStore::new()),
+        )
+    }
+
+    /// [`provider_at`] claiming in `claims`: two providers given the same
+    /// store are two tasks of the service sharing its claim table.
+    pub(super) fn provider_claiming_in(
+        urls: Vec<String>,
+        read_timeout: std::time::Duration,
+        claims: std::sync::Arc<dyn crate::nonce_store::NonceStore>,
+    ) -> SuiProvider {
         // flag 0x00 = Ed25519, then a 32-byte seed.
         let keypair = SuiKeyPair::from_bytes(&[0u8; 33]).unwrap();
         let signer = SuiAddress::from(&keypair.public());
@@ -1848,6 +2007,7 @@ mod replay_verify_tests {
             signer,
             keypair,
         )
+        .with_claims(claims)
     }
 
     pub(super) async fn provider_with(inputs: Inputs, holdings: Holdings) -> SuiProvider {
@@ -2158,6 +2318,140 @@ mod replay_verify_tests {
             vec!["BatchGetObjects", "GetObject", "GetBalance"]
         );
     }
+
+    // --- The payer's signature (verify_secure). ---
+
+    /// `keypair`'s signature of `tx` under `intent`, as its raw
+    /// `flag || signature || public key` bytes.
+    pub(super) fn sign(tx: &TransactionData, keypair: &SuiKeyPair, intent: Intent) -> Vec<u8> {
+        Signature::new_secure(&IntentMessage::new(intent, tx.clone()), keypair)
+            .as_ref()
+            .to_vec()
+    }
+
+    /// [`request`] with the payload's signature replaced by `signature`.
+    pub(super) fn signed_with(provider: &SuiProvider, signature: &[u8]) -> VerifyRequest {
+        use base64::{engine::general_purpose::STANDARD, Engine};
+        let (mut request, _) = request(provider);
+        match &mut request.payment_payload.payload {
+            ExactPaymentPayload::Sui(payload) => {
+                payload.sender_signature = STANDARD.encode(signature)
+            }
+            _ => unreachable!("request() builds a Sui payload"),
+        }
+        request
+    }
+
+    pub(super) fn invalid_signature(err: &FacilitatorLocalError) -> bool {
+        matches!(err, FacilitatorLocalError::InvalidSignature(..))
+    }
+
+    async fn verify_signed(signature: Vec<u8>) -> (FacilitatorLocalError, Vec<&'static str>) {
+        let (url, node) = stub::serve(node(Inputs::Current, Holdings::usdc())).await;
+        let provider = provider_at(vec![url], std::time::Duration::from_secs(5));
+        let err = provider
+            .verify(&signed_with(&provider, &signature))
+            .await
+            .expect_err("not the sender's signature of this transaction");
+        (err, node.calls())
+    }
+
+    /// The sender's public key beside signature bytes that are not a
+    /// signature of this transaction: refused, before any read.
+    #[tokio::test]
+    async fn verify_rejects_garbage_signature_bytes_beside_the_senders_public_key() {
+        let tx = transaction(
+            provider_at(vec![], std::time::Duration::from_secs(1)).signer_address,
+            sender(),
+        );
+        let genuine = sign(&tx, &sender_keypair(), Intent::sui_transaction());
+        // flag || signature (64 bytes) || public key: only the signature changes.
+        let mut zeroed = genuine.clone();
+        zeroed[1..65].fill(0);
+        let mut one_bit = genuine.clone();
+        one_bit[64] ^= 1;
+        for forged in [zeroed, one_bit] {
+            assert_eq!(
+                forged[65..],
+                genuine[65..],
+                "the sender's public key, untouched"
+            );
+            let (err, calls) = verify_signed(forged).await;
+            assert!(invalid_signature(&err), "got {err:?}");
+            assert!(calls.is_empty(), "{calls:?}");
+        }
+    }
+
+    /// The sender's real signature, of another transaction.
+    #[tokio::test]
+    async fn verify_rejects_the_senders_signature_of_another_transaction() {
+        let mut other = transaction(
+            provider_at(vec![], std::time::Duration::from_secs(1)).signer_address,
+            sender(),
+        );
+        let TransactionData::V1(v1) = &mut other;
+        v1.gas_data.budget += 1;
+        let (err, calls) =
+            verify_signed(sign(&other, &sender_keypair(), Intent::sui_transaction())).await;
+        assert!(invalid_signature(&err), "got {err:?}");
+        assert!(calls.is_empty(), "{calls:?}");
+    }
+
+    /// The sender's signature over these very bytes, made as a personal
+    /// message: a wallet's signature for another purpose is not a payment.
+    #[tokio::test]
+    async fn verify_rejects_the_senders_signature_under_another_intent() {
+        let tx = transaction(
+            provider_at(vec![], std::time::Duration::from_secs(1)).signer_address,
+            sender(),
+        );
+        let (err, calls) =
+            verify_signed(sign(&tx, &sender_keypair(), Intent::personal_message())).await;
+        assert!(invalid_signature(&err), "got {err:?}");
+        assert!(calls.is_empty(), "{calls:?}");
+    }
+
+    /// A good signature of this transaction by a key that is not the sender's.
+    #[tokio::test]
+    async fn verify_rejects_a_signature_by_another_key() {
+        let tx = transaction(
+            provider_at(vec![], std::time::Duration::from_secs(1)).signer_address,
+            sender(),
+        );
+        let mut seed = [7u8; 33];
+        seed[0] = 0;
+        let stranger = SuiKeyPair::from_bytes(&seed).unwrap();
+        let (err, calls) = verify_signed(sign(&tx, &stranger, Intent::sui_transaction())).await;
+        assert!(invalid_signature(&err), "got {err:?}");
+        assert!(calls.is_empty(), "{calls:?}");
+    }
+
+    /// Every scheme a `Signature` carries is verified, not only Ed25519: its
+    /// own signature passes, one flipped bit does not.
+    #[test]
+    fn verify_signature_checks_every_scheme_a_signature_carries() {
+        let provider = provider_at(vec![], std::time::Duration::from_secs(1));
+        for flag in [0u8, 1, 2] {
+            let mut seed = [9u8; 33];
+            seed[0] = flag;
+            let keypair = SuiKeyPair::from_bytes(&seed).unwrap();
+            let signer = SuiAddress::from(&keypair.public());
+            let tx = transaction(provider.signer_address, signer);
+            let genuine = sign(&tx, &keypair, Intent::sui_transaction());
+            let good = Signature::from_bytes(&genuine).unwrap();
+            assert_eq!(good.scheme().flag(), flag);
+            provider
+                .verify_signature(&tx, &good, &signer)
+                .unwrap_or_else(|e| panic!("flag {flag}: its own signature: {e:?}"));
+            let mut flipped = genuine.clone();
+            flipped[2] ^= 1;
+            let bad = Signature::from_bytes(&flipped).unwrap();
+            let err = provider
+                .verify_signature(&tx, &bad, &signer)
+                .expect_err("a flipped bit");
+            assert!(invalid_signature(&err), "flag {flag}: got {err:?}");
+        }
+    }
 }
 
 #[cfg(test)]
@@ -2190,7 +2484,8 @@ mod replay_verify_bound_tests {
 #[cfg(test)]
 mod execution_outcome_tests {
     use super::replay_verify_tests::{
-        node, provider_at, request, request_with_gas, sender, transaction, Holdings, Inputs,
+        node, provider_at, provider_claiming_in, request, request_with_gas, sender, transaction,
+        Holdings, Inputs,
     };
     use super::stub::{self, Node, Reply};
     use super::*;
@@ -2465,5 +2760,484 @@ mod execution_outcome_tests {
         assert!(!response.success, "{response:?}");
         assert!(response.transaction.is_none());
         assert_eq!(node.count("ExecuteTransaction"), 0);
+    }
+
+    // --- One settle per signed transaction. ---
+
+    /// A claim store two settles reach together: `check_and_mark_used` waits
+    /// until both are at it, as settles that passed verify and every read
+    /// before either sent anything.
+    #[derive(Debug)]
+    struct Rendezvous {
+        claims: crate::nonce_store::MemoryNonceStore,
+        both: tokio::sync::Barrier,
+    }
+
+    #[async_trait::async_trait]
+    impl NonceStore for Rendezvous {
+        async fn check_and_mark_used(
+            &self,
+            key: &str,
+            ttl_seconds: u64,
+        ) -> Result<(), NonceStoreError> {
+            self.both.wait().await;
+            self.claims.check_and_mark_used(key, ttl_seconds).await
+        }
+        async fn is_used(&self, key: &str) -> Result<bool, NonceStoreError> {
+            self.claims.is_used(key).await
+        }
+        async fn release(&self, key: &str) -> Result<(), NonceStoreError> {
+            self.claims.release(key).await
+        }
+        async fn health_check(&self) -> Result<(), NonceStoreError> {
+            Ok(())
+        }
+        fn store_type(&self) -> &'static str {
+            "memory"
+        }
+    }
+
+    /// A claim store that cannot be written or read.
+    #[derive(Debug)]
+    struct Unwritable;
+
+    #[async_trait::async_trait]
+    impl NonceStore for Unwritable {
+        async fn check_and_mark_used(&self, _: &str, _: u64) -> Result<(), NonceStoreError> {
+            Err(NonceStoreError::WriteError("scripted".to_string()))
+        }
+        async fn is_used(&self, _: &str) -> Result<bool, NonceStoreError> {
+            Err(NonceStoreError::ReadError("scripted".to_string()))
+        }
+        async fn health_check(&self) -> Result<(), NonceStoreError> {
+            Err(NonceStoreError::ConnectionFailed("scripted".to_string()))
+        }
+        fn store_type(&self) -> &'static str {
+            "dynamodb"
+        }
+    }
+
+    /// A claim store that reads (nothing held) but cannot take a claim.
+    #[derive(Debug, Default)]
+    struct Unclaimable {
+        claims: crate::nonce_store::MemoryNonceStore,
+    }
+
+    #[async_trait::async_trait]
+    impl NonceStore for Unclaimable {
+        async fn check_and_mark_used(&self, _: &str, _: u64) -> Result<(), NonceStoreError> {
+            Err(NonceStoreError::WriteError("scripted".to_string()))
+        }
+        async fn is_used(&self, key: &str) -> Result<bool, NonceStoreError> {
+            self.claims.is_used(key).await
+        }
+        async fn health_check(&self) -> Result<(), NonceStoreError> {
+            Ok(())
+        }
+        fn store_type(&self) -> &'static str {
+            "dynamodb"
+        }
+    }
+
+    fn already_submitted_answer(response: &SettleResponse) -> bool {
+        !response.success
+            && response.transaction.is_none()
+            && matches!(
+                &response.error_reason,
+                Some(crate::types::FacilitatorErrorReason::FreeForm(reason)) if reason == ALREADY_SUBMITTED
+            )
+    }
+
+    fn claim_of(provider: &SuiProvider) -> String {
+        settle_claim_key(Network::SuiTestnet, &digest_of(provider))
+    }
+
+    #[test]
+    fn the_settle_claim_names_the_network_and_the_digest() {
+        assert_eq!(
+            settle_claim_key(Network::SuiTestnet, "D1"),
+            "sui-settle#sui-testnet#D1"
+        );
+        assert_eq!(settle_claim_key(Network::Sui, "D1"), "sui-settle#sui#D1");
+    }
+
+    /// Two tasks of the service settle the same signed transaction at once,
+    /// both past verify: one success, one send, and the other is refused.
+    #[tokio::test]
+    async fn two_settles_of_one_transaction_at_once_pay_once() {
+        let digest = digest_of(&provider_at(vec![], std::time::Duration::from_secs(1)));
+        let (url, node) = stub::serve(settle_node(
+            |d| Reply::Answer(Ok(executed(d, true))),
+            digest.clone(),
+        ))
+        .await;
+        let claims: std::sync::Arc<dyn NonceStore> = std::sync::Arc::new(Rendezvous {
+            claims: crate::nonce_store::MemoryNonceStore::new(),
+            both: tokio::sync::Barrier::new(2),
+        });
+        let five = std::time::Duration::from_secs(5);
+        let first = provider_claiming_in(vec![url.clone()], five, claims.clone());
+        let second = provider_claiming_in(vec![url], five, claims);
+        let (request, _) = request(&first);
+        for task in [&first, &second] {
+            let verdict = task.verify(&request).await.expect("verifies");
+            assert!(
+                matches!(verdict, VerifyResponse::Valid { .. }),
+                "{verdict:?}"
+            );
+        }
+
+        let (a, b) = tokio::time::timeout(std::time::Duration::from_secs(20), async {
+            tokio::join!(first.settle(&request), second.settle(&request))
+        })
+        .await
+        .expect("both settles end");
+        let answers = [a.expect("a verdict"), b.expect("a verdict")];
+        assert_eq!(
+            answers.iter().filter(|r| r.success).count(),
+            1,
+            "{answers:?}"
+        );
+        assert_eq!(
+            answers
+                .iter()
+                .filter(|r| already_submitted_answer(r))
+                .count(),
+            1,
+            "{answers:?}"
+        );
+        let paid = answers.iter().find(|r| r.success).unwrap();
+        assert_eq!(
+            paid.transaction,
+            Some(crate::types::TransactionHash::Sui(digest))
+        );
+        assert_eq!(node.count("ExecuteTransaction"), 1);
+    }
+
+    /// The same signed transaction settled again after it paid: refused,
+    /// nothing sent, never the first success again.
+    #[tokio::test]
+    async fn a_second_settle_after_a_payment_is_refused_and_sends_nothing() {
+        let (first, _, node, provider) = settle(|d| Reply::Answer(Ok(executed(d, true)))).await;
+        assert!(first.expect("settled").success);
+        let (request, _) = request(&provider);
+        let again = provider.settle(&request).await.expect("a verdict");
+        assert!(already_submitted_answer(&again), "{again:?}");
+        assert_eq!(node.count("ExecuteTransaction"), 1);
+        // Refused on the claim, before reading anything again.
+        assert_eq!(node.count("BatchGetObjects"), 1);
+    }
+
+    /// The usual repeat: after the first settle executed, the node holds the
+    /// spent coin at a newer version. The repeat still answers
+    /// `transaction_already_submitted`, because the claim is read first.
+    #[tokio::test]
+    async fn a_repeat_after_the_inputs_moved_on_is_already_submitted() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let digest = digest_of(&provider_at(vec![], std::time::Duration::from_secs(1)));
+        let ran = std::sync::Arc::new(AtomicBool::new(false));
+        let mut node = settle_node(|d| Reply::Answer(Ok(executed(d, true))), digest.clone());
+        let current = std::mem::replace(
+            &mut node.batch_get_objects,
+            Box::new(|_| unreachable!("replaced below")),
+        );
+        let moved_on = super::replay_verify_tests::node(Inputs::CoinAdvanced, Holdings::usdc())
+            .batch_get_objects;
+        let executed_yet = ran.clone();
+        node.batch_get_objects = Box::new(move |request| {
+            if executed_yet.load(Ordering::SeqCst) {
+                moved_on(request)
+            } else {
+                current(request)
+            }
+        });
+        let executing = ran.clone();
+        node.execute = Box::new(move |_| {
+            executing.store(true, Ordering::SeqCst);
+            Reply::Answer(Ok(executed(&digest, true)))
+        });
+        let (url, node) = stub::serve(node).await;
+        let provider = provider_at(vec![url], std::time::Duration::from_secs(5));
+        let (request, _) = request(&provider);
+        assert!(provider.settle(&request).await.expect("settled").success);
+        assert!(ran.load(Ordering::SeqCst));
+        let again = provider.settle(&request).await.expect("a verdict");
+        assert!(already_submitted_answer(&again), "{again:?}");
+        assert_eq!(node.count("ExecuteTransaction"), 1);
+    }
+
+    /// The claim is the transaction, not the request around it: the same
+    /// signed bytes for another resource are the same transaction.
+    #[tokio::test]
+    async fn the_same_transaction_for_another_resource_is_refused() {
+        let (first, _, node, provider) = settle(|d| Reply::Answer(Ok(executed(d, true)))).await;
+        assert!(first.expect("settled").success);
+        let (mut request, _) = request(&provider);
+        request.payment_requirements.resource =
+            url::Url::parse("https://example.com/another").unwrap();
+        request.payment_requirements.description = "another resource".to_string();
+        let again = provider.settle(&request).await.expect("a verdict");
+        assert!(already_submitted_answer(&again), "{again:?}");
+        assert_eq!(node.count("ExecuteTransaction"), 1);
+    }
+
+    /// A provider built for the service (no store of its own) claims in the
+    /// service's one shared store.
+    #[tokio::test]
+    async fn providers_without_a_store_of_their_own_share_the_service_store() {
+        let build = || {
+            let keypair = SuiKeyPair::from_bytes(&[0u8; 33]).unwrap();
+            let signer = SuiAddress::from(&keypair.public());
+            SuiProvider::new(
+                Network::SuiTestnet,
+                SuiRpc::new(
+                    Network::SuiTestnet,
+                    vec![],
+                    std::time::Duration::from_secs(1),
+                    std::time::Duration::from_secs(1),
+                ),
+                signer,
+                keypair,
+            )
+        };
+        let (a, b) = (build(), build());
+        assert!(std::sync::Arc::ptr_eq(&a.claims().await, &b.claims().await));
+    }
+
+    /// A transaction the chain already executed before this settle (a task
+    /// whose claim is gone): not this settle's payment, whatever its verdict.
+    #[tokio::test]
+    async fn a_settle_of_a_transaction_the_chain_already_executed_is_not_a_payment() {
+        use sui_rpc::proto::sui::rpc::v2::GetTransactionResponse;
+        for verdict in [true, false] {
+            let digest = digest_of(&provider_at(vec![], std::time::Duration::from_secs(1)));
+            let mut node = settle_node(|d| Reply::Answer(Ok(executed(d, true))), digest.clone());
+            node.get_transaction = Box::new(move |_| {
+                let mut response = GetTransactionResponse::default();
+                response.transaction = executed(&digest, verdict).transaction;
+                Reply::Answer(Ok(response))
+            });
+            let (url, node) = stub::serve(node).await;
+            let provider = provider_at(vec![url], std::time::Duration::from_secs(5));
+            let (request, _) = request(&provider);
+            let response = provider.settle(&request).await.expect("a verdict");
+            assert!(
+                already_submitted_answer(&response),
+                "{verdict}: {response:?}"
+            );
+            assert_eq!(node.count("ExecuteTransaction"), 0);
+            // Not given back: the transaction did execute.
+            assert!(provider
+                .claims()
+                .await
+                .is_used(&claim_of(&provider))
+                .await
+                .unwrap());
+        }
+    }
+
+    /// A refused settle executed nothing: its claim is given back, and the
+    /// same transaction can be sent again.
+    #[tokio::test]
+    async fn a_refused_settle_gives_its_claim_back() {
+        let (result, _, node, provider) = settle(|_| {
+            Reply::Answer(Err(tonic::Status::invalid_argument(
+                "Invalid user signature: bad signature",
+            )))
+        })
+        .await;
+        assert!(!result.expect("a verdict").success);
+        assert!(!provider
+            .claims()
+            .await
+            .is_used(&claim_of(&provider))
+            .await
+            .unwrap());
+        let (request, _) = request(&provider);
+        let again = provider.settle(&request).await.expect("a verdict");
+        assert!(!already_submitted_answer(&again), "{again:?}");
+        assert_eq!(node.count("ExecuteTransaction"), 2);
+    }
+
+    /// No endpoint took it: nothing was sent, the claim is given back.
+    #[tokio::test]
+    async fn a_settle_no_endpoint_took_gives_its_claim_back() {
+        let digest = digest_of(&provider_at(vec![], std::time::Duration::from_secs(1)));
+        let mut node = settle_node(|d| Reply::Answer(Ok(executed(d, true))), digest);
+        node.get_transaction = Box::new(|_| Reply::Answer(Err(tonic::Status::unavailable("down"))));
+        let (url, _) = stub::serve(node).await;
+        let provider = provider_at(vec![url], std::time::Duration::from_secs(5));
+        let (request, _) = request(&provider);
+        assert!(!provider.settle(&request).await.expect("a verdict").success);
+        assert!(!provider
+            .claims()
+            .await
+            .is_used(&claim_of(&provider))
+            .await
+            .unwrap());
+    }
+
+    /// An outcome that may be final keeps the claim: a second settle sends
+    /// nothing and is refused.
+    #[tokio::test]
+    async fn an_unconfirmed_settle_keeps_its_claim() {
+        let (result, _, node, provider) = settle(|_| {
+            Reply::Answer(Err(tonic::Status::unavailable(
+                "timed-out before finality could be reached",
+            )))
+        })
+        .await;
+        assert!(matches!(
+            result,
+            Err(FacilitatorLocalError::SettlementUnconfirmed(..))
+        ));
+        let (request, _) = request(&provider);
+        let again = provider.settle(&request).await.expect("a verdict");
+        assert!(already_submitted_answer(&again), "{again:?}");
+        assert_eq!(node.count("ExecuteTransaction"), 1);
+    }
+
+    /// Executed and failed on chain is final too: the claim stays.
+    #[tokio::test]
+    async fn a_settle_that_failed_on_chain_keeps_its_claim() {
+        let (result, _, node, provider) = settle(|d| Reply::Answer(Ok(executed(d, false)))).await;
+        assert!(!result.expect("a verdict").success);
+        let (request, _) = request(&provider);
+        let again = provider.settle(&request).await.expect("a verdict");
+        assert!(already_submitted_answer(&again), "{again:?}");
+        assert_eq!(node.count("ExecuteTransaction"), 1);
+    }
+
+    /// Without the claim nothing is sent: a store that cannot be written
+    /// fails closed.
+    #[tokio::test]
+    async fn a_settle_whose_claim_cannot_be_taken_sends_nothing() {
+        let digest = digest_of(&provider_at(vec![], std::time::Duration::from_secs(1)));
+        let (url, node) = stub::serve(settle_node(
+            |d| Reply::Answer(Ok(executed(d, true))),
+            digest,
+        ))
+        .await;
+        let provider = provider_claiming_in(
+            vec![url],
+            std::time::Duration::from_secs(5),
+            std::sync::Arc::new(Unwritable),
+        );
+        let (request, _) = request(&provider);
+        let response = provider.settle(&request).await.expect("a verdict");
+        assert!(!response.success, "{response:?}");
+        assert!(response.transaction.is_none());
+        let reason = format!("{:?}", response.error_reason);
+        assert!(reason.contains("settlement_unavailable"), "{reason}");
+        assert_eq!(node.count("ExecuteTransaction"), 0);
+        assert_eq!(node.count("GetTransaction"), 0);
+    }
+
+    /// A store that answers the read but refuses the claim: nothing is sent.
+    #[tokio::test]
+    async fn a_settle_whose_claim_is_refused_by_the_store_sends_nothing() {
+        let digest = digest_of(&provider_at(vec![], std::time::Duration::from_secs(1)));
+        let (url, node) = stub::serve(settle_node(
+            |d| Reply::Answer(Ok(executed(d, true))),
+            digest,
+        ))
+        .await;
+        let provider = provider_claiming_in(
+            vec![url],
+            std::time::Duration::from_secs(5),
+            std::sync::Arc::new(Unclaimable::default()),
+        );
+        let (request, _) = request(&provider);
+        let response = provider.settle(&request).await.expect("a verdict");
+        assert!(!response.success, "{response:?}");
+        assert!(response.transaction.is_none());
+        let reason = format!("{:?}", response.error_reason);
+        assert!(reason.contains("settlement_unavailable"), "{reason}");
+        // The reads ran; the claim is what stopped it.
+        assert_eq!(node.count("BatchGetObjects"), 1);
+        assert_eq!(node.count("ExecuteTransaction"), 0);
+        assert_eq!(node.count("GetTransaction"), 0);
+    }
+
+    /// A transaction whose inputs moved on (it executed long ago) is refused
+    /// by settle's own read, before any claim or send.
+    #[tokio::test]
+    async fn a_settle_whose_inputs_moved_on_takes_no_claim_and_sends_nothing() {
+        let mut node = node(Inputs::CoinAdvanced, Holdings::usdc());
+        node.get_transaction =
+            Box::new(|_| Reply::Answer(Err(tonic::Status::not_found("Transaction not found"))));
+        let digest = digest_of(&provider_at(vec![], std::time::Duration::from_secs(1)));
+        node.execute = Box::new(move |_| Reply::Answer(Ok(executed(&digest, true))));
+        let (url, node) = stub::serve(node).await;
+        let provider = provider_at(vec![url], std::time::Duration::from_secs(5));
+        let (request, _) = request(&provider);
+        let err = provider
+            .settle(&request)
+            .await
+            .expect_err("its inputs are gone");
+        assert!(
+            matches!(&err, FacilitatorLocalError::Other(msg) if msg.contains("already used")),
+            "{err:?}"
+        );
+        assert_eq!(node.count("ExecuteTransaction"), 0);
+        assert!(!provider
+            .claims()
+            .await
+            .is_used(&claim_of(&provider))
+            .await
+            .unwrap());
+    }
+
+    /// Two different transactions of the same payer each settle: the claim is
+    /// per transaction, not per payer or per provider.
+    #[tokio::test]
+    async fn two_different_transactions_both_settle() {
+        let mut node = node(Inputs::Current, Holdings::usdc());
+        node.get_transaction =
+            Box::new(|_| Reply::Answer(Err(tonic::Status::not_found("Transaction not found"))));
+        node.execute = Box::new(|request| {
+            let bytes = request
+                .transaction
+                .as_ref()
+                .and_then(|t| t.bcs.as_ref())
+                .and_then(|b| b.value.as_deref())
+                .unwrap();
+            let tx: TransactionData = bcs::from_bytes(bytes).unwrap();
+            Reply::Answer(Ok(executed(&tx.digest().to_string(), true)))
+        });
+        let (url, node) = stub::serve(node).await;
+        let provider = provider_at(vec![url], std::time::Duration::from_secs(5));
+        for budget in [10_000_000, 10_000_001] {
+            let (request, _) = request_with_gas(&provider, 1_000, budget);
+            let response = provider.settle(&request).await.expect("a verdict");
+            assert!(response.success, "budget {budget}: {response:?}");
+        }
+        assert_eq!(node.count("ExecuteTransaction"), 2);
+    }
+
+    /// Settle checks the signature too: a forged one is never co-signed or
+    /// sent, and reaches no endpoint.
+    #[tokio::test]
+    async fn a_settle_with_a_forged_signature_reaches_no_endpoint() {
+        use super::replay_verify_tests::{invalid_signature, sender_keypair, sign, signed_with};
+        let digest = digest_of(&provider_at(vec![], std::time::Duration::from_secs(1)));
+        let (url, node) = stub::serve(settle_node(
+            |d| Reply::Answer(Ok(executed(d, true))),
+            digest,
+        ))
+        .await;
+        let provider = provider_at(vec![url], std::time::Duration::from_secs(5));
+        let mut forged = sign(
+            &transaction(provider.signer_address, sender()),
+            &sender_keypair(),
+            Intent::sui_transaction(),
+        );
+        forged[1..65].fill(0);
+        let err = provider
+            .settle(&signed_with(&provider, &forged))
+            .await
+            .expect_err("a forged signature");
+        assert!(invalid_signature(&err), "{err:?}");
+        assert!(node.calls().is_empty(), "{:?}", node.calls());
     }
 }

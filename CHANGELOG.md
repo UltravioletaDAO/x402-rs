@@ -47,6 +47,46 @@ Native Hedera: one `success: true` per transaction id.
   table's conditional writes, a Mirror Node on a local port and consensus
   nodes on closed local ports.
 
+## [2.57.5] - 2026-11-15
+
+Sui: settles are idempotent per signed transaction, and the payer's signature
+is verified.
+
+### Fixed
+
+- `/verify` and `/settle` verify the payer's signature over the transaction
+  with `verify_secure`, against the intent a Sui wallet signs. A signature
+  that does not verify is `invalid_signature`, before any read or send.
+- `/settle` claims the transaction's digest in the facilitator's shared claim
+  store (`NONCE_STORE_TABLE_NAME`, the store Stellar's and Algorand's settles
+  and Solana's settlement-account sweep claim in) before anything is sent, and
+  keeps the claim 7 days (`SETTLE_CLAIM_TTL_SECONDS`). A settle of a
+  transaction that another settle already took, or that the chain already
+  holds executed, answers `success: false` with
+  `errorReason: "transaction_already_submitted"` and sends nothing. The claim
+  is given back when nothing executed (the chain refused the transaction, or
+  no endpoint took it) and kept when the outcome is final or unknown, so a
+  settle repeated after `502 settlement_unconfirmed` answers
+  `transaction_already_submitted` too (on EVM the token refuses a repeated
+  authorization): the digest that `502` carried is the one to look up. A
+  claim store that cannot take the claim fails closed: nothing is sent.
+- `/settle` reads the transaction's owned inputs, as `/verify` does: past the
+  claim, a transaction whose inputs moved on is refused as `/verify` refuses
+  it, before anything is sent.
+- `docs/settle-errors.md` and `/skill.md` describe `transaction_already_submitted`.
+
+### Tests
+
+- `src/chain/sui.rs`: two settles of one transaction at once on two tasks
+  sharing the claim store, a settle repeated after a payment (also once the
+  inputs moved on, and for another resource), a transaction the chain already
+  executed, which outcomes give the claim back, claim stores that cannot read
+  or take a claim, and forged, misdirected and foreign-key signatures (every
+  scheme a `Signature` carries), all against the scripted gRPC node.
+- `src/chain/sui/rpc.rs`: a digest known before anything was sent, with or
+  without a verdict, on the first endpoint or a later one, is
+  `AlreadyExecuted`; an answer about another transaction is skipped.
+
 ## [2.57.4] - 2026-11-15
 
 Sui: `/verify` and `/settle` work again. Every public Sui node stopped serving

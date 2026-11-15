@@ -723,7 +723,13 @@ schemes' `502`, a settle forwarded to the signing task whose answer was lost
 (`reason: forward_unconfirmed`), and the receipt rail's failures after its send
 latched. Look the transaction up and deliver if it settled; only one not found
 after the chain's finality window is gone. A failure with neither
-`retryable: false` nor a `transaction` was produced before anything was sent.
+`retryable: false` nor a `transaction` was produced before anything was sent,
+with one exception: `transaction_already_submitted` (Sui, `200` with
+`success: false`) means another settle already took that signed transaction,
+or the chain already executed it. It is not a payment for this request, so do
+not deliver on it; nor does it say nothing was paid, so before asking for a new
+signature check your own records and the chain for that transaction. An
+`Idempotency-Key` gets the first answer back instead.
 
 **Send an `Idempotency-Key` and the retry is safe.** Choose one opaque string per
 intended purchase, keep it across retries and restarts, and send it as a header:

@@ -683,8 +683,10 @@ async fn local_mirror(
     let usdc = "0.0.429274";
     let key = |k: &hiero_sdk::PrivateKey| json!({"_type": "ED25519", "key": hex::encode(k.public_key().to_bytes_raw())});
     let payee = hiero_sdk::PrivateKey::from_bytes_ed25519(&[8; 32]).unwrap();
-    let association = |balance: u64| json!({"links": {"next": null}, "tokens": [{"token_id": usdc,
-        "decimals": 6, "freeze_status": "UNFROZEN", "kyc_status": "GRANTED", "balance": balance}]});
+    let association = |balance: u64| {
+        json!({"links": {"next": null}, "tokens": [{"token_id": usdc,
+        "decimals": 6, "freeze_status": "UNFROZEN", "kyc_status": "GRANTED", "balance": balance}]})
+    };
     let fixed: std::collections::HashMap<String, Value> = [
         ("/api/v1/accounts/0.0.1001".to_string(), json!({"account": "0.0.1001", "deleted": false,
             "key": key(payer), "balance": {"balance": 0}})),
@@ -708,13 +710,17 @@ async fn local_mirror(
         let (fixed, ledger) = (fixed.clone(), ledger.clone());
         let (transaction_path, mirror_id) = (transaction_path.clone(), mirror_id.clone());
         async move {
-            ledger.hits.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            ledger
+                .hits
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             if uri.path() == transaction_path {
                 ledger.asked();
                 let known = ledger.known.lock().unwrap().clone();
                 let rows: Vec<Value> = known
-                    .map(|hash| json!({"transaction_id": mirror_id, "nonce": 0,
-                        "transaction_hash": hash, "result": ledger.result}))
+                    .map(|hash| {
+                        json!({"transaction_id": mirror_id, "nonce": 0,
+                        "transaction_hash": hash, "result": ledger.result})
+                    })
                     .into_iter()
                     .collect();
                 return axum::Json(json!({"transactions": rows})).into_response();
@@ -868,7 +874,9 @@ impl Store for Race {
         if self.second_waits && self.reserves.fetch_add(1, Ordering::SeqCst) == 1 {
             self.terminal.acquire().await.unwrap().forget();
         }
-        self.table.reserve(key, network, intent, owner, budget).await
+        self.table
+            .reserve(key, network, intent, owner, budget)
+            .await
     }
     async fn save(&self, key: &str, record: &Record) -> Result<()> {
         self.table.save(key, record).await?;
@@ -930,7 +938,10 @@ impl Payment {
             .zip(ports)
             .map(|(variant, port)| {
                 let node = codec::account(variant.body.node_account_id.as_ref()).unwrap();
-                (format!("127.0.0.1:{port}"), node.to_string().parse().unwrap())
+                (
+                    format!("127.0.0.1:{port}"),
+                    node.to_string().parse().unwrap(),
+                )
             })
             .collect();
         let transaction_id = transaction_id_of(&decoded);
@@ -965,7 +976,10 @@ impl Payment {
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("tests/hedera-e2e/vectors/03-hts-usdc-ecdsa-multinode.json");
         let vector: Value = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
-        vector["payload"]["transaction"].as_str().unwrap().to_owned()
+        vector["payload"]["transaction"]
+            .as_str()
+            .unwrap()
+            .to_owned()
     }
     /// A payment the client signed just now: valid, not on chain, no record.
     /// The official client's transaction with only its start moved to now and
@@ -1046,7 +1060,10 @@ async fn a_new_payment_settles_once_and_answers_its_success() {
         Some(payment.transaction_id.clone())
     );
     assert_eq!(response.payer.to_string(), "0.0.1001");
-    assert!(payment.ledger.knows(), "the settle sent its co-signed bytes");
+    assert!(
+        payment.ledger.knows(),
+        "the settle sent its co-signed bytes"
+    );
     let record = payment.table.get(&payment.key);
     assert_eq!(record.state, State::Confirmed);
     assert_eq!(record.consensus_status.as_deref(), Some("SUCCESS"));
@@ -1072,7 +1089,11 @@ async fn a_second_settle_after_a_confirmed_payment_is_refused_and_sends_nothing(
     assert_eq!(wire["success"], json!(false));
     assert_eq!(wire["errorReason"], json!("transaction_already_submitted"));
     assert!(wire.get("transaction").is_none_or(Value::is_null), "{wire}");
-    assert_eq!(payment.ledger.hits(), hits, "the repeat asked the ledger nothing");
+    assert_eq!(
+        payment.ledger.hits(),
+        hits,
+        "the repeat asked the ledger nothing"
+    );
     let after = payment.table.get(&payment.key);
     assert_eq!(after.owner, confirmed.owner);
     assert_eq!(after.state, State::Confirmed);
@@ -1091,7 +1112,11 @@ async fn two_settles_of_a_new_payment_at_once_answer_one_success() {
     .await
     .expect("both settles answer");
     let answers = [first.unwrap(), second.unwrap()];
-    assert_eq!(answers.iter().filter(|r| r.success).count(), 1, "{answers:?}");
+    assert_eq!(
+        answers.iter().filter(|r| r.success).count(),
+        1,
+        "{answers:?}"
+    );
     assert_eq!(
         answers.iter().filter(|r| already_submitted(r)).count(),
         1,
@@ -1113,7 +1138,11 @@ async fn a_settle_that_read_the_record_before_another_confirmed_it_is_not_a_paym
     .await
     .expect("one settle confirms the payment and the other then reserves");
     let answers = [first.unwrap(), second.unwrap()];
-    assert_eq!(answers.iter().filter(|r| r.success).count(), 1, "{answers:?}");
+    assert_eq!(
+        answers.iter().filter(|r| r.success).count(),
+        1,
+        "{answers:?}"
+    );
     assert_eq!(
         answers.iter().filter(|r| already_submitted(r)).count(),
         1,
@@ -1202,7 +1231,11 @@ async fn a_settle_that_resumes_another_settles_bytes_and_finds_their_outcome_is_
     let response = payment.provider.settle(&payment.request).await.unwrap();
     assert!(already_submitted(&response), "{response:?}");
     let record = payment.table.get(&payment.key);
-    assert_eq!(record.state, State::Confirmed, "the verdict is still recorded");
+    assert_eq!(
+        record.state,
+        State::Confirmed,
+        "the verdict is still recorded"
+    );
     assert_eq!(record.consensus_status.as_deref(), Some("SUCCESS"));
     assert_ne!(record.owner, "a settle that answered 502");
 }
@@ -1218,7 +1251,10 @@ async fn a_settle_that_resumes_another_settles_expired_bytes_without_an_outcome_
     assert!(!payment.ledger.knows(), "nothing was sent");
     let record = payment.table.get(&payment.key);
     assert_eq!(record.state, State::Uncertain);
-    assert!(record.lease_until > store::now(), "recovery takes it from here");
+    assert!(
+        record.lease_until > store::now(),
+        "recovery takes it from here"
+    );
 }
 
 /// A record another settle still holds: this settle reserves, asks and sends
@@ -1331,7 +1367,11 @@ async fn a_settle_that_resumes_valid_bytes_already_on_chain_sends_nothing_and_is
     assert!(already_submitted(&response), "{response:?}");
     assert_eq!(payment.table.submitted(), 0, "the settle sent nothing");
     let record = payment.table.get(&payment.key);
-    assert_eq!(record.state, State::Confirmed, "the verdict is still recorded");
+    assert_eq!(
+        record.state,
+        State::Confirmed,
+        "the verdict is still recorded"
+    );
 }
 
 /// A settle that takes over bytes it can no longer send, whose outcome only
@@ -1409,7 +1449,9 @@ async fn a_settle_whose_transaction_id_binds_another_intent_is_refused_as_before
         payment.table.put(&payment.key, other);
         let error = payment.provider.settle(&payment.request).await.unwrap_err();
         assert!(
-            error.to_string().contains("transaction ID binds another intent"),
+            error
+                .to_string()
+                .contains("transaction ID binds another intent"),
             "{error}"
         );
     }

@@ -173,8 +173,10 @@ async fn usdc_only_policy_rejects_new_hbar_but_preserves_historical_receipts() {
     assert_eq!(tokens[0].address.to_string(), "0.0.429274");
     assert_eq!(tokens[0].decimals, 6);
 
-    // An already-confirmed HBAR payment returns its original receipt without
-    // reserving, co-signing or broadcasting another transaction.
+    // A settle of an already-confirmed HBAR payment finds its record, not the
+    // asset policy, and is not a new payment: `transaction_already_submitted`,
+    // without reserving, co-signing or broadcasting another transaction. The
+    // portable receipt still recovers the confirmed result from the record.
     let (_, intent) = provider.inspect(&request, false).unwrap();
     let transaction_id = intent.transaction_id.clone();
     provider.store = Arc::new(ReadOnlyPolicyStore(Some(Record {
@@ -182,8 +184,9 @@ async fn usdc_only_policy_rejects_new_hbar_but_preserves_historical_receipts() {
         state: State::Confirmed, signed: None, consensus_status: Some("SUCCESS".into()),
     })));
     let response = provider.settle(&request).await.unwrap();
-    assert!(response.success);
-    assert_eq!(response.transaction.unwrap().to_string(), transaction_id);
+    assert!(already_submitted(&response), "{response:?}");
+    assert_eq!(response.payer.to_string(), "0.0.1001");
+    assert_eq!(provider.receipt_evidence(&transaction_id).await, Some(true));
 }
 
 #[test]
@@ -381,12 +384,10 @@ async fn live_receipt_persistence_failure_recovers_original_payment() {
         recovered.signed, pending.signed,
         "no re-signing or new ID during recovery"
     );
+    // Recovery, not this retry, confirmed it: the retry is not a second payment.
+    // The id to look up is the one the unconfirmed answer carried.
     let retry = restarted.settle(&request.request).await.unwrap();
-    assert!(retry.success);
-    assert_eq!(
-        retry.transaction.unwrap().to_string(),
-        intent.transaction_id
-    );
+    assert!(already_submitted(&retry), "{retry:?}");
     println!("Recovered original payment: {}", intent.transaction_id);
 }
 
@@ -572,4 +573,845 @@ fn every_health_failure_has_a_bounded_reason() {
         HealthFailure::SponsorKeyMismatch.reason(),
         "signer_key_mismatch"
     );
+}
+
+// --- Settles of a transaction that already has a record ---------------------
+//
+// No network: a settlement table with the conditional writes of
+// `store::DynamoStore`, a Mirror Node on a local port, and consensus nodes on
+// closed local ports (a send fails there and the Mirror decides, as `resolve`
+// reads it). The Mirror knows the payment's transaction only once the chain
+// "has" it: from the start for bytes another settle left, or from the moment a
+// settle records them as submitted, just before it sends.
+
+fn reason(response: &SettleResponse) -> Option<&str> {
+    match &response.error_reason {
+        Some(FacilitatorErrorReason::FreeForm(reason)) => Some(reason.as_str()),
+        _ => None,
+    }
+}
+
+/// Refused as already submitted: not a payment, and no transaction to deliver on.
+fn already_submitted(response: &SettleResponse) -> bool {
+    !response.success
+        && response.transaction.is_none()
+        && reason(response) == Some(ALREADY_SUBMITTED)
+}
+
+/// Base64 SHA-384 of the first entry of a signed transaction list: the
+/// `transaction_hash` the Mirror Node reports for it.
+fn first_entry_hash(signed: &str) -> String {
+    use sha2::Sha384;
+    let list = hiero_sdk_proto::sdk::TransactionList::decode(
+        Decoded::from_base64(signed).unwrap().bytes.as_slice(),
+    )
+    .unwrap();
+    STANDARD.encode(Sha384::digest(
+        &list.transaction_list[0].signed_transaction_bytes,
+    ))
+}
+
+/// `<account>@<seconds>.<nanos>` of a decoded transaction, as `codec` names it.
+fn transaction_id_of(decoded: &Decoded) -> String {
+    let id = decoded.variants[0].body.transaction_id.as_ref().unwrap();
+    let start = id.transaction_valid_start.as_ref().unwrap();
+    format!(
+        "{}@{}.{:09}",
+        codec::account(id.account_id.as_ref()).unwrap(),
+        start.seconds,
+        start.nanos
+    )
+}
+
+/// What the chain holds of one payment, as the local Mirror Node reports it.
+#[derive(Clone)]
+struct Ledger {
+    /// The hash of the transaction's first entry, once the chain has it.
+    known: Arc<std::sync::Mutex<Option<String>>>,
+    /// A hash the chain gets 3.5 s after the first question about the
+    /// transaction: later than any read a settle makes before sending (3 s
+    /// from before its first question), inside the read that follows.
+    late: Arc<std::sync::Mutex<Option<String>>>,
+    first_question: Arc<std::sync::Mutex<Option<std::time::Instant>>>,
+    result: &'static str,
+    hits: Arc<std::sync::atomic::AtomicUsize>,
+}
+impl Ledger {
+    fn new(result: &'static str) -> Self {
+        Self {
+            known: Arc::default(),
+            late: Arc::default(),
+            first_question: Arc::default(),
+            result,
+            hits: Arc::default(),
+        }
+    }
+    fn learn(&self, signed: &str) {
+        *self.known.lock().unwrap() = Some(first_entry_hash(signed));
+    }
+    fn learn_late(&self, signed: &str) {
+        *self.late.lock().unwrap() = Some(first_entry_hash(signed));
+    }
+    /// Called on every question about the transaction.
+    fn asked(&self) {
+        let now = std::time::Instant::now();
+        let first = *self.first_question.lock().unwrap().get_or_insert(now);
+        if now.duration_since(first) >= Duration::from_millis(3500) {
+            if let Some(hash) = self.late.lock().unwrap().take() {
+                *self.known.lock().unwrap() = Some(hash);
+            }
+        }
+    }
+    fn knows(&self) -> bool {
+        self.known.lock().unwrap().is_some()
+    }
+    fn hits(&self) -> usize {
+        self.hits.load(std::sync::atomic::Ordering::SeqCst)
+    }
+}
+
+/// A Mirror Node on a local port: the accounts and token of a native-USDC
+/// payment from 0.0.1001 to 0.0.2002 sponsored by 0.0.3003, and the payment's
+/// transaction once `ledger` knows it. Counts every request.
+async fn local_mirror(
+    ledger: Ledger,
+    transaction_id: &str,
+    payer: &hiero_sdk::PrivateKey,
+    sponsor: &hiero_sdk::PrivateKey,
+) -> url::Url {
+    use axum::response::IntoResponse;
+    let usdc = "0.0.429274";
+    let key = |k: &hiero_sdk::PrivateKey| json!({"_type": "ED25519", "key": hex::encode(k.public_key().to_bytes_raw())});
+    let payee = hiero_sdk::PrivateKey::from_bytes_ed25519(&[8; 32]).unwrap();
+    let association = |balance: u64| json!({"links": {"next": null}, "tokens": [{"token_id": usdc,
+        "decimals": 6, "freeze_status": "UNFROZEN", "kyc_status": "GRANTED", "balance": balance}]});
+    let fixed: std::collections::HashMap<String, Value> = [
+        ("/api/v1/accounts/0.0.1001".to_string(), json!({"account": "0.0.1001", "deleted": false,
+            "key": key(payer), "balance": {"balance": 0}})),
+        ("/api/v1/accounts/0.0.2002".to_string(), json!({"account": "0.0.2002", "deleted": false,
+            "receiver_sig_required": false, "key": key(&payee), "balance": {"balance": 0}})),
+        ("/api/v1/accounts/0.0.3003".to_string(), json!({"account": "0.0.3003", "deleted": false,
+            "key": key(sponsor), "balance": {"balance": 100 * DEFAULT_MAX_TRANSACTION_FEE_TINYBARS}})),
+        (format!("/api/v1/tokens/{usdc}"), json!({"token_id": usdc, "type": "FUNGIBLE_COMMON",
+            "deleted": false, "pause_status": "UNPAUSED", "decimals": "6",
+            "custom_fees": {"created_timestamp": "1.000000000", "fixed_fees": [], "fractional_fees": []}})),
+        ("/api/v1/accounts/0.0.1001/tokens".to_string(), association(1_000_000)),
+        ("/api/v1/accounts/0.0.2002/tokens".to_string(), association(0)),
+    ]
+    .into_iter()
+    .collect();
+    let (account, start) = transaction_id.split_once('@').unwrap();
+    let (seconds, nanos) = start.split_once('.').unwrap();
+    let mirror_id = format!("{account}-{seconds}-{nanos}");
+    let transaction_path = format!("/api/v1/transactions/{mirror_id}");
+    let app = axum::Router::new().fallback(move |uri: axum::http::Uri| {
+        let (fixed, ledger) = (fixed.clone(), ledger.clone());
+        let (transaction_path, mirror_id) = (transaction_path.clone(), mirror_id.clone());
+        async move {
+            ledger.hits.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            if uri.path() == transaction_path {
+                ledger.asked();
+                let known = ledger.known.lock().unwrap().clone();
+                let rows: Vec<Value> = known
+                    .map(|hash| json!({"transaction_id": mirror_id, "nonce": 0,
+                        "transaction_hash": hash, "result": ledger.result}))
+                    .into_iter()
+                    .collect();
+                return axum::Json(json!({"transactions": rows})).into_response();
+            }
+            match fixed.get(uri.path()) {
+                Some(body) => axum::Json(body.clone()).into_response(),
+                None => axum::http::StatusCode::NOT_FOUND.into_response(),
+            }
+        }
+    });
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}/", listener.local_addr().unwrap())
+        .parse()
+        .unwrap();
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    url
+}
+
+/// The settlement table, in this process, with `store::DynamoStore`'s
+/// conditions: `reserve` creates a record or takes over one whose lease ran
+/// out (never a terminal one), and `save` writes only for the record's owner,
+/// never over a terminal record. A record saved as submitted is about to be
+/// sent: from then on the ledger has it.
+struct MemoryTable {
+    rows: std::sync::Mutex<std::collections::HashMap<String, Record>>,
+    ledger: Ledger,
+    /// Records saved as submitted: sends that were about to happen.
+    submitted: std::sync::atomic::AtomicUsize,
+}
+impl MemoryTable {
+    fn new(ledger: Ledger) -> Self {
+        Self {
+            rows: Default::default(),
+            ledger,
+            submitted: Default::default(),
+        }
+    }
+    fn submitted(&self) -> usize {
+        self.submitted.load(std::sync::atomic::Ordering::SeqCst)
+    }
+    fn put(&self, key: &str, record: Record) {
+        self.rows.lock().unwrap().insert(key.into(), record);
+    }
+    fn get(&self, key: &str) -> Record {
+        self.rows.lock().unwrap()[key].clone()
+    }
+}
+#[async_trait::async_trait]
+impl Store for MemoryTable {
+    async fn read(&self, key: &str) -> Result<Option<Record>> {
+        Ok(self.rows.lock().unwrap().get(key).cloned())
+    }
+    async fn reserve(
+        &self,
+        key: &str,
+        _: &str,
+        intent: &Intent,
+        owner: &str,
+        budget: u64,
+    ) -> Result<Record> {
+        let at = store::now();
+        let mut rows = self.rows.lock().unwrap();
+        if let Some(existing) = rows.get_mut(key) {
+            if existing.intent.fingerprint != intent.fingerprint {
+                return Err("transaction ID already binds another intent".into());
+            }
+            if !existing.terminal() && existing.lease_until < at {
+                existing.owner = owner.into();
+                existing.lease_until = at + store::LEASE_SECONDS;
+            }
+            return Ok(existing.clone());
+        }
+        if at.saturating_add(5) > intent.expires_at || intent.fee > budget {
+            return Err("expired payment or sponsor quota exceeded".into());
+        }
+        let record = Record {
+            intent: intent.clone(),
+            owner: owner.into(),
+            lease_until: at + store::LEASE_SECONDS,
+            state: State::Reserved,
+            signed: None,
+            consensus_status: None,
+        };
+        rows.insert(key.into(), record.clone());
+        Ok(record)
+    }
+    async fn save(&self, key: &str, record: &Record) -> Result<()> {
+        let mut rows = self.rows.lock().unwrap();
+        match rows.get(key) {
+            Some(current)
+                if current.owner == record.owner
+                    && current.intent.fingerprint == record.intent.fingerprint
+                    && !current.terminal() =>
+            {
+                rows.insert(key.into(), record.clone());
+                if record.state == State::Submitted {
+                    self.submitted
+                        .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    self.ledger.learn(record.signed.as_deref().unwrap());
+                }
+                Ok(())
+            }
+            _ => Err("conditional check failed".into()),
+        }
+    }
+    async fn pending(&self, _: &str) -> Result<Vec<(String, Record)>> {
+        Ok(vec![])
+    }
+    async fn health(&self) -> Result<()> {
+        Ok(())
+    }
+}
+
+/// The table, with the settles of a race lined up: all of them read the record
+/// before any reserves it. With `second_waits`, the second reservation waits
+/// until a terminal record is saved, so it finds the other settle's result.
+struct Race {
+    table: Arc<MemoryTable>,
+    read_together: tokio::sync::Barrier,
+    second_waits: bool,
+    reserves: std::sync::atomic::AtomicUsize,
+    terminal: tokio::sync::Semaphore,
+}
+impl Race {
+    fn new(table: Arc<MemoryTable>, settles: usize, second_waits: bool) -> Self {
+        Self {
+            table,
+            read_together: tokio::sync::Barrier::new(settles),
+            second_waits,
+            reserves: std::sync::atomic::AtomicUsize::new(0),
+            terminal: tokio::sync::Semaphore::new(0),
+        }
+    }
+}
+#[async_trait::async_trait]
+impl Store for Race {
+    async fn read(&self, key: &str) -> Result<Option<Record>> {
+        let record = self.table.read(key).await;
+        self.read_together.wait().await;
+        record
+    }
+    async fn reserve(
+        &self,
+        key: &str,
+        network: &str,
+        intent: &Intent,
+        owner: &str,
+        budget: u64,
+    ) -> Result<Record> {
+        use std::sync::atomic::Ordering;
+        if self.second_waits && self.reserves.fetch_add(1, Ordering::SeqCst) == 1 {
+            self.terminal.acquire().await.unwrap().forget();
+        }
+        self.table.reserve(key, network, intent, owner, budget).await
+    }
+    async fn save(&self, key: &str, record: &Record) -> Result<()> {
+        self.table.save(key, record).await?;
+        if record.terminal() {
+            self.terminal.add_permits(1);
+        }
+        Ok(())
+    }
+    async fn pending(&self, network: &str) -> Result<Vec<(String, Record)>> {
+        self.table.pending(network).await
+    }
+    async fn health(&self) -> Result<()> {
+        Ok(())
+    }
+}
+
+/// One native-USDC testnet payment, its settlement table and its ledger.
+struct Payment {
+    request: VerifyRequest,
+    table: Arc<MemoryTable>,
+    provider: HederaProvider,
+    key: String,
+    transaction_id: String,
+    ledger: Ledger,
+    /// The bytes a settle co-signs: the client's transaction and the sponsor's
+    /// signature.
+    cosigned: String,
+}
+impl Payment {
+    fn sponsor() -> hiero_sdk::PrivateKey {
+        // The key `HederaProvider::for_health_tests` sponsors with.
+        hiero_sdk::PrivateKey::from_bytes_ed25519(&[7; 32]).unwrap()
+    }
+    fn payer() -> hiero_sdk::PrivateKey {
+        hiero_sdk::PrivateKey::from_bytes_ed25519(&[9; 32]).unwrap()
+    }
+    async fn build(transaction: String, result: &'static str) -> Self {
+        let requirements = json!({"scheme": "exact", "network": "hedera:testnet",
+            "asset": "0.0.429274", "amount": "150000", "payTo": "0.0.2002",
+            "maxTimeoutSeconds": 180, "extra": {"feePayer": "0.0.3003"}});
+        let request = serde_json::from_value::<crate::types_v2::VerifyRequestEnvelope>(json!({
+            "x402Version": 2,
+            "paymentPayload": {"x402Version": 2, "accepted": requirements,
+                "payload": {"transaction": transaction}},
+            "paymentRequirements": requirements,
+        }))
+        .unwrap()
+        .to_v1()
+        .unwrap();
+        let decoded = Decoded::from_base64(&transaction).unwrap();
+        // The transaction's own consensus nodes, each on a closed local port.
+        let mut ports = BTreeSet::new();
+        while ports.len() < decoded.variants.len() {
+            ports.insert(closed_port());
+        }
+        let nodes: std::collections::HashMap<String, hiero_sdk::AccountId> = decoded
+            .variants
+            .iter()
+            .zip(ports)
+            .map(|(variant, port)| {
+                let node = codec::account(variant.body.node_account_id.as_ref()).unwrap();
+                (format!("127.0.0.1:{port}"), node.to_string().parse().unwrap())
+            })
+            .collect();
+        let transaction_id = transaction_id_of(&decoded);
+        let ledger = Ledger::new(result);
+        let mirror = local_mirror(
+            ledger.clone(),
+            &transaction_id,
+            &Self::payer(),
+            &Self::sponsor(),
+        )
+        .await;
+        let table = Arc::new(MemoryTable::new(ledger.clone()));
+        let mut provider = HederaProvider::for_health_tests(Network::HederaTestnet, mirror, nodes);
+        provider.config.settle_timeout = Duration::from_secs(15);
+        provider.store = table.clone();
+        let (_, intent) = provider.inspect(&request, false).unwrap();
+        assert_eq!(intent.transaction_id, transaction_id);
+        let key = provider.record_key(&intent);
+        let cosigned = STANDARD.encode(decoded.cosign(&Self::sponsor()).unwrap());
+        Self {
+            request,
+            table,
+            provider,
+            key,
+            transaction_id,
+            ledger,
+            cosigned,
+        }
+    }
+    /// The official client's native-USDC transaction (2025, long expired).
+    fn vector_transaction() -> String {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/hedera-e2e/vectors/03-hts-usdc-ecdsa-multinode.json");
+        let vector: Value = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+        vector["payload"]["transaction"].as_str().unwrap().to_owned()
+    }
+    /// A payment the client signed just now: valid, not on chain, no record.
+    /// The official client's transaction with only its start moved to now and
+    /// every node variant signed again by `payer()`.
+    async fn new(result: &'static str) -> Self {
+        let payer = Self::payer();
+        let bytes = STANDARD.decode(Self::vector_transaction()).unwrap();
+        let mut list = hiero_sdk_proto::sdk::TransactionList::decode(bytes.as_slice()).unwrap();
+        let start = store::now() as i64 - 5;
+        for entry in &mut list.transaction_list {
+            let mut signed =
+                pb::SignedTransaction::decode(entry.signed_transaction_bytes.as_slice()).unwrap();
+            let mut body = pb::TransactionBody::decode(signed.body_bytes.as_slice()).unwrap();
+            let valid_start = body
+                .transaction_id
+                .as_mut()
+                .and_then(|id| id.transaction_valid_start.as_mut())
+                .unwrap();
+            valid_start.seconds = start;
+            valid_start.nanos = 0;
+            signed.body_bytes = body.encode_to_vec();
+            let signature = payer.sign(&signed.body_bytes);
+            signed.sig_map = Some(pb::SignatureMap {
+                sig_pair: vec![pb::SignaturePair {
+                    pub_key_prefix: payer.public_key().to_bytes_raw(),
+                    signature: Some(pb::signature_pair::Signature::Ed25519(signature)),
+                }],
+            });
+            entry.signed_transaction_bytes = signed.encode_to_vec();
+        }
+        Self::build(STANDARD.encode(list.encode_to_vec()), result).await
+    }
+    /// The vector as it is, long expired: bytes nobody can send any more, left
+    /// by a settle that answered `502 settlement_unconfirmed`. With `on_chain`,
+    /// the chain has them.
+    async fn left_by_another(result: &'static str, on_chain: bool) -> Self {
+        let payment = Self::build(Self::vector_transaction(), result).await;
+        payment.leave(State::Uncertain, "a settle that answered 502", 0);
+        if on_chain {
+            payment.ledger.learn(&payment.cosigned);
+        }
+        payment
+    }
+    /// Puts the record another settle left: the co-signed bytes, in `state`,
+    /// owned by `owner` until `lease_until`.
+    fn leave(&self, state: State, owner: &str, lease_until: u64) {
+        let (_, intent) = self.provider.inspect(&self.request, false).unwrap();
+        self.table.put(
+            &self.key,
+            Record {
+                intent,
+                owner: owner.into(),
+                lease_until,
+                state,
+                signed: Some(self.cosigned.clone()),
+                consensus_status: None,
+            },
+        );
+    }
+    /// The same provider on another view of the table: another task, or replica.
+    fn provider_on(&self, store: Arc<dyn Store>) -> HederaProvider {
+        let mut provider = self.provider.clone();
+        provider.store = store;
+        provider
+    }
+}
+
+/// A legitimate payment settles: admitted, co-signed, sent and confirmed by
+/// the one settle that reserved it.
+#[tokio::test]
+async fn a_new_payment_settles_once_and_answers_its_success() {
+    let payment = Payment::new("SUCCESS").await;
+    let response = payment.provider.settle(&payment.request).await.unwrap();
+    assert!(response.success, "{response:?}");
+    assert!(response.error_reason.is_none(), "{response:?}");
+    assert_eq!(
+        response.transaction.map(|t| t.to_string()),
+        Some(payment.transaction_id.clone())
+    );
+    assert_eq!(response.payer.to_string(), "0.0.1001");
+    assert!(payment.ledger.knows(), "the settle sent its co-signed bytes");
+    let record = payment.table.get(&payment.key);
+    assert_eq!(record.state, State::Confirmed);
+    assert_eq!(record.consensus_status.as_deref(), Some("SUCCESS"));
+}
+
+/// A second settle of a confirmed payment is not a second payment: it answers
+/// `transaction_already_submitted`, asks nothing and writes nothing.
+#[tokio::test]
+async fn a_second_settle_after_a_confirmed_payment_is_refused_and_sends_nothing() {
+    let payment = Payment::new("SUCCESS").await;
+    let first = payment.provider.settle(&payment.request).await.unwrap();
+    assert!(first.success, "{first:?}");
+    let confirmed = payment.table.get(&payment.key);
+    let hits = payment.ledger.hits();
+
+    let second = payment.provider.settle(&payment.request).await.unwrap();
+    assert!(already_submitted(&second), "{second:?}");
+    assert_eq!(second.payer.to_string(), "0.0.1001");
+    assert_eq!(second.network, Network::HederaTestnet);
+    // On the wire: the token, spelled out, and no transaction to look up and
+    // deliver on.
+    let wire = serde_json::to_value(&second).unwrap();
+    assert_eq!(wire["success"], json!(false));
+    assert_eq!(wire["errorReason"], json!("transaction_already_submitted"));
+    assert!(wire.get("transaction").is_none_or(Value::is_null), "{wire}");
+    assert_eq!(payment.ledger.hits(), hits, "the repeat asked the ledger nothing");
+    let after = payment.table.get(&payment.key);
+    assert_eq!(after.owner, confirmed.owner);
+    assert_eq!(after.state, State::Confirmed);
+}
+
+/// Two settles of one new payment at once: the one that reserves it pays;
+/// the other finds it held and is refused, without a transaction.
+#[tokio::test]
+async fn two_settles_of_a_new_payment_at_once_answer_one_success() {
+    let payment = Payment::new("SUCCESS").await;
+    let race: Arc<dyn Store> = Arc::new(Race::new(payment.table.clone(), 2, false));
+    let (a, b) = (payment.provider_on(race.clone()), payment.provider_on(race));
+    let (first, second) = tokio::time::timeout(Duration::from_secs(90), async {
+        tokio::join!(a.settle(&payment.request), b.settle(&payment.request))
+    })
+    .await
+    .expect("both settles answer");
+    let answers = [first.unwrap(), second.unwrap()];
+    assert_eq!(answers.iter().filter(|r| r.success).count(), 1, "{answers:?}");
+    assert_eq!(
+        answers.iter().filter(|r| already_submitted(r)).count(),
+        1,
+        "{answers:?}"
+    );
+    assert_eq!(payment.table.get(&payment.key).state, State::Confirmed);
+}
+
+/// The race between a settle's read and its reservation: the other settle
+/// confirms the payment in between. Only that one answers its success.
+#[tokio::test]
+async fn a_settle_that_read_the_record_before_another_confirmed_it_is_not_a_payment() {
+    let payment = Payment::new("SUCCESS").await;
+    let race: Arc<dyn Store> = Arc::new(Race::new(payment.table.clone(), 2, true));
+    let (a, b) = (payment.provider_on(race.clone()), payment.provider_on(race));
+    let (first, second) = tokio::time::timeout(Duration::from_secs(90), async {
+        tokio::join!(a.settle(&payment.request), b.settle(&payment.request))
+    })
+    .await
+    .expect("one settle confirms the payment and the other then reserves");
+    let answers = [first.unwrap(), second.unwrap()];
+    assert_eq!(answers.iter().filter(|r| r.success).count(), 1, "{answers:?}");
+    assert_eq!(
+        answers.iter().filter(|r| already_submitted(r)).count(),
+        1,
+        "{answers:?}"
+    );
+    assert_eq!(payment.table.get(&payment.key).state, State::Confirmed);
+}
+
+/// The same race, but the chain refuses the payment: both settles answer the
+/// chain's verdict, neither is a success nor already submitted.
+#[tokio::test]
+async fn a_settle_that_read_the_record_before_another_failed_it_answers_the_verdict() {
+    let payment = Payment::new("INSUFFICIENT_TOKEN_BALANCE").await;
+    let race: Arc<dyn Store> = Arc::new(Race::new(payment.table.clone(), 2, true));
+    let (a, b) = (payment.provider_on(race.clone()), payment.provider_on(race));
+    let (first, second) = tokio::time::timeout(Duration::from_secs(90), async {
+        tokio::join!(a.settle(&payment.request), b.settle(&payment.request))
+    })
+    .await
+    .expect("one settle records the verdict and the other then reserves");
+    for answer in [first, second] {
+        let response = answer.unwrap();
+        assert!(!response.success, "{response:?}");
+        assert_eq!(
+            reason(&response),
+            Some("hedera_consensus_INSUFFICIENT_TOKEN_BALANCE")
+        );
+    }
+    assert_eq!(payment.table.get(&payment.key).state, State::Failed);
+}
+
+/// Four settles of one new payment at once, on four tasks over one table:
+/// exactly one success, and the other three already submitted.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn concurrent_settles_of_one_payment_answer_one_success() {
+    let payment = Payment::new("SUCCESS").await;
+    let race: Arc<dyn Store> = Arc::new(Race::new(payment.table.clone(), 4, false));
+    let mut tasks = tokio::task::JoinSet::new();
+    for _ in 0..4 {
+        let provider = payment.provider_on(race.clone());
+        let request = payment.request.clone();
+        tasks.spawn(async move { provider.settle(&request).await });
+    }
+    let (mut successes, mut refused) = (0, 0);
+    while let Some(joined) = tokio::time::timeout(Duration::from_secs(90), tasks.join_next())
+        .await
+        .expect("every settle answers")
+    {
+        let response = joined.unwrap().unwrap();
+        if response.success {
+            successes += 1;
+        } else {
+            assert!(already_submitted(&response), "{response:?}");
+            refused += 1;
+        }
+    }
+    assert_eq!((successes, refused), (1, 3));
+    assert_eq!(payment.table.get(&payment.key).state, State::Confirmed);
+}
+
+/// A settle that stopped after persisting its co-signed bytes and before
+/// sending them: its retry takes the record over, finds no outcome, sends the
+/// same bytes itself, and that send is the payment. It answers its success.
+#[tokio::test]
+async fn a_retry_after_a_settle_that_stopped_before_sending_sends_and_answers_its_success() {
+    let payment = Payment::new("SUCCESS").await;
+    payment.leave(State::Prepared, "a settle that stopped before sending", 0);
+    let response = payment.provider.settle(&payment.request).await.unwrap();
+    assert!(response.success, "{response:?}");
+    assert_eq!(
+        response.transaction.map(|t| t.to_string()),
+        Some(payment.transaction_id.clone())
+    );
+    assert!(payment.ledger.knows(), "the retry sent the persisted bytes");
+    let record = payment.table.get(&payment.key);
+    assert_eq!(record.state, State::Confirmed);
+    assert_eq!(record.signed.as_deref(), Some(payment.cosigned.as_str()));
+}
+
+/// A settle that takes over bytes another settle left and finds their outcome
+/// on chain before sending anything: it records the verdict, and the outcome
+/// is that settle's, not a payment for this one.
+#[tokio::test]
+async fn a_settle_that_resumes_another_settles_bytes_and_finds_their_outcome_is_refused() {
+    let payment = Payment::left_by_another("SUCCESS", true).await;
+    let response = payment.provider.settle(&payment.request).await.unwrap();
+    assert!(already_submitted(&response), "{response:?}");
+    let record = payment.table.get(&payment.key);
+    assert_eq!(record.state, State::Confirmed, "the verdict is still recorded");
+    assert_eq!(record.consensus_status.as_deref(), Some("SUCCESS"));
+    assert_ne!(record.owner, "a settle that answered 502");
+}
+
+/// A settle that takes over bytes another settle left, cannot send them any
+/// more and finds no outcome: still unknown, and not this settle's either.
+#[tokio::test]
+async fn a_settle_that_resumes_another_settles_expired_bytes_without_an_outcome_is_refused() {
+    let mut payment = Payment::left_by_another("SUCCESS", false).await;
+    payment.provider.config.settle_timeout = Duration::from_secs(4);
+    let response = payment.provider.settle(&payment.request).await.unwrap();
+    assert!(already_submitted(&response), "{response:?}");
+    assert!(!payment.ledger.knows(), "nothing was sent");
+    let record = payment.table.get(&payment.key);
+    assert_eq!(record.state, State::Uncertain);
+    assert!(record.lease_until > store::now(), "recovery takes it from here");
+}
+
+/// A record another settle still holds: this settle reserves, asks and sends
+/// nothing, and its answer names no transaction to deliver on.
+#[tokio::test]
+async fn a_settle_of_a_payment_another_settle_holds_is_refused_and_sends_nothing() {
+    let payment = Payment::left_by_another("SUCCESS", true).await;
+    payment.leave(
+        State::Submitted,
+        "a settle still running",
+        store::now() + store::LEASE_SECONDS,
+    );
+    let response = payment.provider.settle(&payment.request).await.unwrap();
+    assert!(already_submitted(&response), "{response:?}");
+    assert_eq!(payment.ledger.hits(), 0);
+    let after = payment.table.get(&payment.key);
+    assert_eq!(after.owner, "a settle still running");
+    assert_eq!(after.state, State::Submitted);
+}
+
+/// A payment that failed on chain is not a success either way: its repeat
+/// still answers the chain's verdict with its transaction, as before.
+#[tokio::test]
+async fn a_repeat_of_a_payment_that_failed_on_chain_answers_its_verdict() {
+    let payment = Payment::new("INSUFFICIENT_TOKEN_BALANCE").await;
+    for _ in 0..2 {
+        let response = payment.provider.settle(&payment.request).await.unwrap();
+        assert!(!response.success, "{response:?}");
+        assert_eq!(
+            reason(&response),
+            Some("hedera_consensus_INSUFFICIENT_TOKEN_BALANCE")
+        );
+        assert_eq!(
+            response.transaction.map(|t| t.to_string()),
+            Some(payment.transaction_id.clone())
+        );
+    }
+    assert_eq!(payment.table.get(&payment.key).state, State::Failed);
+
+    // Found at the first read, the verdict is answered without reserving.
+    let failed = payment.table.get(&payment.key);
+    let read_only = payment.provider_on(Arc::new(ReadOnlyPolicyStore(Some(failed))));
+    let response = read_only.settle(&payment.request).await.unwrap();
+    assert!(!response.success, "{response:?}");
+    assert_eq!(
+        reason(&response),
+        Some("hedera_consensus_INSUFFICIENT_TOKEN_BALANCE")
+    );
+}
+
+/// The table, except that the write before a send is refused.
+struct NoSubmit(Arc<MemoryTable>);
+#[async_trait::async_trait]
+impl Store for NoSubmit {
+    async fn read(&self, key: &str) -> Result<Option<Record>> {
+        self.0.read(key).await
+    }
+    async fn reserve(
+        &self,
+        key: &str,
+        network: &str,
+        intent: &Intent,
+        owner: &str,
+        budget: u64,
+    ) -> Result<Record> {
+        self.0.reserve(key, network, intent, owner, budget).await
+    }
+    async fn save(&self, key: &str, record: &Record) -> Result<()> {
+        if record.state == State::Submitted {
+            return Err("injected outage before the send".into());
+        }
+        self.0.save(key, record).await
+    }
+    async fn pending(&self, network: &str) -> Result<Vec<(String, Record)>> {
+        self.0.pending(network).await
+    }
+    async fn health(&self) -> Result<()> {
+        Ok(())
+    }
+}
+
+/// When the write before a send fails, nothing is sent. The settle that
+/// co-signed the bytes reports them under the id, since recovery may still
+/// send them; one that took over another settle's bytes is refused.
+#[tokio::test]
+async fn a_settle_whose_write_before_sending_fails_sends_nothing() {
+    let payment = Payment::new("SUCCESS").await;
+    let blocked = payment.provider_on(Arc::new(NoSubmit(payment.table.clone())));
+    let error = blocked.settle(&payment.request).await.unwrap_err();
+    assert!(
+        matches!(error, FacilitatorLocalError::SettlementUnconfirmed(..)),
+        "{error:?}"
+    );
+
+    payment.leave(State::Prepared, "a settle that stopped before sending", 0);
+    let response = blocked.settle(&payment.request).await.unwrap();
+    assert!(already_submitted(&response), "{response:?}");
+    assert!(!payment.ledger.knows(), "nothing was sent");
+}
+
+/// A settle that takes over bytes another settle left, still valid, whose
+/// outcome is already on chain: it sends nothing (it never records them as
+/// submitted) and the outcome is not its own.
+#[tokio::test]
+async fn a_settle_that_resumes_valid_bytes_already_on_chain_sends_nothing_and_is_refused() {
+    let payment = Payment::new("SUCCESS").await;
+    payment.leave(State::Uncertain, "a settle that answered 502", 0);
+    payment.ledger.learn(&payment.cosigned);
+    let response = payment.provider.settle(&payment.request).await.unwrap();
+    assert!(already_submitted(&response), "{response:?}");
+    assert_eq!(payment.table.submitted(), 0, "the settle sent nothing");
+    let record = payment.table.get(&payment.key);
+    assert_eq!(record.state, State::Confirmed, "the verdict is still recorded");
+}
+
+/// A settle that takes over bytes it can no longer send, whose outcome only
+/// shows after its read before sending: the outcome is still not its own.
+#[tokio::test]
+async fn a_settle_that_resumes_expired_bytes_whose_outcome_shows_late_is_refused() {
+    let mut payment = Payment::left_by_another("SUCCESS", false).await;
+    payment.provider.config.settle_timeout = Duration::from_secs(12);
+    payment.ledger.learn_late(&payment.cosigned);
+    let response = payment.provider.settle(&payment.request).await.unwrap();
+    assert!(already_submitted(&response), "{response:?}");
+    assert_eq!(payment.table.get(&payment.key).state, State::Confirmed);
+}
+
+/// The table, except that a terminal record is never saved.
+struct NoTerminal(Arc<MemoryTable>);
+#[async_trait::async_trait]
+impl Store for NoTerminal {
+    async fn read(&self, key: &str) -> Result<Option<Record>> {
+        self.0.read(key).await
+    }
+    async fn reserve(
+        &self,
+        key: &str,
+        network: &str,
+        intent: &Intent,
+        owner: &str,
+        budget: u64,
+    ) -> Result<Record> {
+        self.0.reserve(key, network, intent, owner, budget).await
+    }
+    async fn save(&self, key: &str, record: &Record) -> Result<()> {
+        if record.terminal() {
+            return Err("injected outage at the verdict".into());
+        }
+        self.0.save(key, record).await
+    }
+    async fn pending(&self, network: &str) -> Result<Vec<(String, Record)>> {
+        self.0.pending(network).await
+    }
+    async fn health(&self) -> Result<()> {
+        Ok(())
+    }
+}
+
+/// A settle that takes over another settle's bytes, finds their outcome
+/// (before sending, or later) and cannot record it: still not its own, and
+/// not an unconfirmed send of its own either.
+#[tokio::test]
+async fn a_settle_that_resumes_another_settles_bytes_and_cannot_record_their_outcome_is_refused() {
+    let payment = Payment::left_by_another("SUCCESS", true).await;
+    let blocked = payment.provider_on(Arc::new(NoTerminal(payment.table.clone())));
+    let response = blocked.settle(&payment.request).await.unwrap();
+    assert!(already_submitted(&response), "{response:?}");
+    assert_eq!(payment.table.get(&payment.key).state, State::Uncertain);
+
+    let payment = Payment::left_by_another("SUCCESS", false).await;
+    payment.ledger.learn_late(&payment.cosigned);
+    let mut blocked = payment.provider_on(Arc::new(NoTerminal(payment.table.clone())));
+    blocked.config.settle_timeout = Duration::from_secs(12);
+    let response = blocked.settle(&payment.request).await.unwrap();
+    assert!(already_submitted(&response), "{response:?}");
+    assert_eq!(payment.table.get(&payment.key).state, State::Uncertain);
+}
+
+/// A transaction id the table binds to another intent is refused, as before,
+/// whatever state that record is in.
+#[tokio::test]
+async fn a_settle_whose_transaction_id_binds_another_intent_is_refused_as_before() {
+    let payment = Payment::left_by_another("SUCCESS", true).await;
+    for state in [State::Uncertain, State::Confirmed] {
+        let mut other = payment.table.get(&payment.key);
+        other.intent.fingerprint = "another intent".into();
+        other.state = state;
+        payment.table.put(&payment.key, other);
+        let error = payment.provider.settle(&payment.request).await.unwrap_err();
+        assert!(
+            error.to_string().contains("transaction ID binds another intent"),
+            "{error}"
+        );
+    }
+    assert_eq!(payment.ledger.hits(), 0);
 }

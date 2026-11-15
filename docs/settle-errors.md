@@ -52,6 +52,12 @@ two mean "nothing was sent".
 | `503` `writer_lease_unavailable` or `reason: forward_failed` + `Retry-After: 5` | This task may not sign, and the task that may was not reached. |
 | `503` with `safeToRetry: true` | The receipt rail sent nothing: storage or signing failed before admission, or the admission was released before any transaction existed. |
 
+## Already taken: do not deliver, do not ask for a new signature yet
+
+| Answer | Meaning |
+|---|---|
+| `200` `success: false` + `errorReason: transaction_already_submitted` | Sui: another settle already took this signed transaction, or the chain already executed it (a settle repeated after `502 settlement_unconfirmed` gets this answer too). It is not a payment for this request: do not deliver on it. It does not say nothing was paid either: before asking for a new signature, check your own records and the chain for that transaction, and deliver only if it settled and you never delivered for it. Send an `Idempotency-Key` to get the first answer back instead. |
+
 ## Refused: fix the request
 
 | Answer | Meaning |

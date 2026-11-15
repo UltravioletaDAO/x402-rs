@@ -26,9 +26,14 @@
 //! - A read (objects, balance, a transaction lookup) that fails on one endpoint
 //!   for any reason is asked of the next. Reads change nothing.
 //! - An execution is sent to an endpoint only after that endpoint answered a
-//!   lookup of the transaction's digest. Found: it already executed and nothing
-//!   is sent. Not found: the endpoint is reachable and does not know it. Any
-//!   other answer: nothing was sent there, so the next endpoint is tried.
+//!   lookup of the transaction's digest. Found before this call sent anything,
+//!   with or without a verdict: an earlier call executed it, nothing is sent
+//!   anywhere and the answer is [`Execution::AlreadyExecuted`], never this
+//!   call's own execution. Found after a send: that send's effects. Not found:
+//!   the endpoint is reachable and does not know it. An answer about another
+//!   transaction, or about none, before any send: as an endpoint that did not
+//!   answer. Any other answer: nothing was sent there, so the next endpoint is
+//!   tried.
 //! - A refusal from the chain (`InvalidArgument`, `FailedPrecondition`: a bad
 //!   signature, unusable inputs, objects locked by another transaction) is the
 //!   verdict. The transaction is never sent anywhere else.
@@ -165,10 +170,14 @@ pub enum ObjectRead {
 /// What became of a sponsored transaction handed to [`SuiRpc::execute`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Execution {
-    /// The chain executed it. `failure` is the on-chain error when the
-    /// transaction executed but its commands did not take effect (gas is still
-    /// charged and the digest exists).
+    /// The chain executed what this call sent. `failure` is the on-chain error
+    /// when the transaction executed but its commands did not take effect (gas
+    /// is still charged and the digest exists).
     Executed { failure: Option<String> },
+    /// An endpoint held the transaction, executed, before this call sent
+    /// anything (with or without its verdict): an earlier call executed it,
+    /// so this one is not a new execution. Nothing was sent.
+    AlreadyExecuted,
     /// The chain refused it before execution. Final: nothing executed.
     Refused(String),
     /// It may have executed: an endpoint took it and no endpoint answered with
@@ -289,6 +298,9 @@ struct Endpoint {
 enum Lookup {
     /// The endpoint knows the transaction; the verdict, or why there is none.
     Found(Result<Option<String>, String>),
+    /// The endpoint answered about another transaction, or about none: not
+    /// evidence that it knows this one.
+    Malformed(String),
     NotFound,
     Unreadable(String),
 }
@@ -532,8 +544,19 @@ impl SuiRpc {
         .await
         {
             Ok(Ok(response)) => match response.into_inner().transaction {
+                Some(transaction)
+                    if transaction
+                        .digest
+                        .as_deref()
+                        .is_some_and(|answered| answered != digest) =>
+                {
+                    Lookup::Malformed(format!(
+                        "answered for transaction {}, not {digest}",
+                        transaction.digest.as_deref().unwrap_or_default()
+                    ))
+                }
                 Some(transaction) => Lookup::Found(effects_verdict(&transaction, digest)),
-                None => Lookup::Found(Err("answer carries no transaction".to_string())),
+                None => Lookup::Malformed("answer carries no transaction".to_string()),
             },
             Ok(Err(status)) if status.code() == Code::NotFound => Lookup::NotFound,
             Ok(Err(status)) => Lookup::Unreadable(describe(&status)),
@@ -583,15 +606,36 @@ impl SuiRpc {
             let endpoint = &endpoints[index];
 
             match self.lookup(endpoint, digest).await {
+                // Known to the chain before this call sent it anywhere, with
+                // or without a verdict: an earlier call's execution, not this
+                // one's. Nothing is sent, here or anywhere else.
+                Lookup::Found(verdict) if first_send.is_none() => {
+                    self.prefer(index);
+                    info!(network = %self.network, endpoint = %endpoint.label, %digest, verdict = ?verdict, "Sui transaction already executed before this call; not sending it");
+                    return Execution::AlreadyExecuted;
+                }
                 Lookup::Found(Ok(failure)) => {
                     self.prefer(index);
-                    info!(network = %self.network, endpoint = %endpoint.label, %digest, "Sui transaction already executed; not sending it again");
+                    info!(network = %self.network, endpoint = %endpoint.label, %digest, "Sui transaction executed by this call's send; not sending it again");
                     return Execution::Executed { failure };
                 }
                 Lookup::Found(Err(why)) => {
                     // It executed, but this answer has no verdict: nothing is
                     // sent here, and from now on the answer can only be the
                     // effects an endpoint reports, or Unconfirmed.
+                    unknown.get_or_insert(format!("{}: {why}", endpoint.name));
+                    continue;
+                }
+                // Before any send, an answer about another transaction (or
+                // none) says nothing about this one: this endpoint is skipped,
+                // as one that did not answer.
+                Lookup::Malformed(why) if first_send.is_none() => {
+                    warn!(network = %self.network, endpoint = %endpoint.label, %digest, error = %why, "Sui digest lookup answered about another transaction; nothing sent to this endpoint");
+                    not_sent.push(format!("{}: {why}", endpoint.name));
+                    continue;
+                }
+                // After a send it may still hide that send's outcome.
+                Lookup::Malformed(why) => {
                     unknown.get_or_insert(format!("{}: {why}", endpoint.name));
                     continue;
                 }
@@ -1371,15 +1415,126 @@ mod tests {
         let d = digest();
         node.get_transaction = Box::new(move |_| found(&d, false));
         let (url, node) = stub::serve(node).await;
-        match run(&rpc(vec![url])).await {
-            Execution::Executed {
-                failure: Some(failure),
-            } => {
-                assert!(failure.contains("InsufficientCoinBalance"), "{failure}")
-            }
-            other => panic!("expected the executed failure, got {other:?}"),
-        }
+        assert_eq!(run(&rpc(vec![url])).await, Execution::AlreadyExecuted);
         assert_eq!(node.calls(), vec!["GetTransaction"]);
+    }
+
+    /// A transaction that executed before this call is not this call's
+    /// execution, even when it succeeded: the answer is never `Executed`.
+    #[tokio::test]
+    async fn a_transaction_executed_before_this_call_is_not_its_execution() {
+        let mut node = Node::default();
+        let d = digest();
+        node.get_transaction = Box::new(move |_| found(&d, true));
+        let (url, node) = stub::serve(node).await;
+        assert_eq!(run(&rpc(vec![url])).await, Execution::AlreadyExecuted);
+        assert_eq!(node.calls(), vec!["GetTransaction"]);
+    }
+
+    /// "Before this call" is before any send, not "on the first endpoint": a
+    /// first endpoint that cannot be asked sends nothing, so the second one
+    /// holding the transaction still means an earlier call executed it.
+    #[tokio::test]
+    async fn found_on_the_next_endpoint_before_any_send_is_an_earlier_execution() {
+        let mut unreadable = Node::default();
+        unreadable.get_transaction =
+            Box::new(|_| Reply::Answer(Err(tonic::Status::internal("down"))));
+        let (first, first_node) = stub::serve(unreadable).await;
+        let mut holder = Node::default();
+        let d = digest();
+        holder.get_transaction = Box::new(move |_| found(&d, true));
+        let (second, second_node) = stub::serve(holder).await;
+        assert_eq!(
+            run(&rpc(vec![first, second])).await,
+            Execution::AlreadyExecuted
+        );
+        assert_eq!(first_node.count("ExecuteTransaction"), 0);
+        assert_eq!(second_node.calls(), vec!["GetTransaction"]);
+    }
+
+    /// Known without a verdict before any send is known all the same: nothing
+    /// is sent anywhere, and a verdict found later does not make it this
+    /// call's execution.
+    #[tokio::test]
+    async fn a_transaction_known_before_any_send_is_never_this_calls_execution() {
+        let mut node = Node::default();
+        let lookups = Arc::new(AtomicUsize::new(0));
+        let seen = lookups.clone();
+        let d = digest();
+        node.get_transaction = Box::new(move |_| {
+            if seen.fetch_add(1, Ordering::SeqCst) == 0 {
+                let mut response = GetTransactionResponse::default();
+                response.transaction = Some(executed(&d, None));
+                Reply::Answer(Ok(response))
+            } else {
+                found(&d, true)
+            }
+        });
+        let (url, node) = stub::serve(node).await;
+        assert_eq!(run(&rpc(vec![url])).await, Execution::AlreadyExecuted);
+        assert_eq!(node.count("ExecuteTransaction"), 0);
+    }
+
+    /// Before any send, an answer about another transaction or about none is
+    /// not evidence: that endpoint is skipped and the next one takes it.
+    #[tokio::test]
+    async fn an_answer_about_another_transaction_before_any_send_is_skipped() {
+        for answer in [Some(TransactionDigest::new([8u8; 32]).to_string()), None] {
+            let mut odd = Node::default();
+            odd.get_transaction = Box::new(move |_| {
+                let mut response = GetTransactionResponse::default();
+                response.transaction = answer.as_deref().map(|other| executed(other, Some(true)));
+                Reply::Answer(Ok(response))
+            });
+            let (first, first_node) = stub::serve(odd).await;
+            let (second, second_node) = stub::serve(executes(true)).await;
+            assert_eq!(
+                run(&rpc(vec![first, second])).await,
+                Execution::Executed { failure: None }
+            );
+            assert_eq!(first_node.count("ExecuteTransaction"), 0);
+            assert_eq!(second_node.count("ExecuteTransaction"), 1);
+        }
+    }
+
+    /// The only endpoint answering about another transaction: nothing was
+    /// sent anywhere, so the answer is "nothing sent", not "unknown".
+    #[tokio::test]
+    async fn an_answer_about_another_transaction_alone_sends_nothing() {
+        let mut odd = Node::default();
+        odd.get_transaction = Box::new(|_| {
+            let mut response = GetTransactionResponse::default();
+            response.transaction = Some(executed(
+                &TransactionDigest::new([8u8; 32]).to_string(),
+                Some(true),
+            ));
+            Reply::Answer(Ok(response))
+        });
+        let (url, node) = stub::serve(odd).await;
+        assert!(matches!(
+            run(&rpc(vec![url])).await,
+            Execution::Unreachable(_)
+        ));
+        assert_eq!(node.count("ExecuteTransaction"), 0);
+    }
+
+    /// A door refusal is a send for what follows: the next endpoint holding
+    /// the transaction may be holding that very send.
+    #[tokio::test]
+    async fn found_after_a_door_refusal_is_this_calls_execution() {
+        let (first, _) = stub::serve(execution_fails(|| {
+            tonic::Status::permission_denied("proxy")
+        }))
+        .await;
+        let mut holder = Node::default();
+        let d = digest();
+        holder.get_transaction = Box::new(move |_| found(&d, true));
+        let (second, second_node) = stub::serve(holder).await;
+        assert_eq!(
+            run(&rpc(vec![first, second])).await,
+            Execution::Executed { failure: None }
+        );
+        assert_eq!(second_node.count("ExecuteTransaction"), 0);
     }
 
     #[tokio::test]
@@ -1395,13 +1550,13 @@ mod tests {
             tonic::Status::unavailable("unavailable")
         }))
         .await;
-        assert!(matches!(
+        assert_eq!(
             run(&rpc(vec![first, second])).await,
-            Execution::Unconfirmed(_)
-        ));
+            Execution::AlreadyExecuted
+        );
         assert_eq!(first_node.count("ExecuteTransaction"), 0);
-        // The second one did not hold it, so it was sent there: same digest, at most once.
-        assert_eq!(second_node.count("ExecuteTransaction"), 1);
+        // Known before any send: the second one is not even asked.
+        assert!(second_node.calls().is_empty(), "{:?}", second_node.calls());
     }
 
     #[tokio::test]
@@ -1415,9 +1570,9 @@ mod tests {
         assert_eq!(node.count("ExecuteTransaction"), 0);
     }
 
-    /// An endpoint that holds the transaction without a verdict makes the
-    /// outcome unknown for good: what any endpoint says later cannot turn it
-    /// into a refusal or into "nothing was sent".
+    /// An endpoint that holds the transaction without a verdict before any
+    /// send: what any endpoint would say later cannot turn it into a refusal
+    /// or into "nothing was sent", and no later endpoint is asked.
     #[tokio::test]
     async fn after_a_transaction_found_without_a_verdict_no_later_answer_is_a_refusal() {
         for later in [
@@ -1431,10 +1586,11 @@ mod tests {
                 Reply::Answer(Ok(response))
             });
             let (first, first_node) = stub::serve(first).await;
-            let (second, _) = stub::serve(execution_fails(later)).await;
+            let (second, second_node) = stub::serve(execution_fails(later)).await;
             let outcome = run(&rpc(vec![first, second])).await;
-            assert!(matches!(outcome, Execution::Unconfirmed(_)), "{outcome:?}");
+            assert_eq!(outcome, Execution::AlreadyExecuted);
             assert_eq!(first_node.count("ExecuteTransaction"), 0);
+            assert!(second_node.calls().is_empty(), "{:?}", second_node.calls());
         }
     }
 

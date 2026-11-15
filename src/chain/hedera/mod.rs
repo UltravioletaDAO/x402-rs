@@ -29,6 +29,22 @@ use mirror::Mirror;
 use std::{collections::BTreeSet, sync::Arc, time::Duration};
 use store::{Record, State, Store};
 
+/// The `errorReason` of a settle whose answer is not a payment for its request:
+/// another settle holds the transaction, or its outcome is another settle's.
+const ALREADY_SUBMITTED: &str = "transaction_already_submitted";
+
+/// Whose bytes a settle delivers, which decides whose outcome it answers.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Delivery {
+    /// This settle co-signed them: on a reservation it created, or on one it
+    /// took over before any bytes existed. Their outcome is its own.
+    Fresh,
+    /// Another settle persisted them, and may have sent them. Only an outcome
+    /// that follows this settle's own send, after a read that found none, is
+    /// its own.
+    Resumed,
+}
+
 // Metrics resolve configured HTS decimals from the same validated provider
 // configuration that /supported advertises, never a guessed fiat default.
 static ASSET_DECIMALS: once_cell::sync::Lazy<
@@ -285,6 +301,35 @@ impl HederaProvider {
             extensions: None,
         }
     }
+    /// The answer to a settle that sent nothing of its own for this
+    /// transaction: another settle holds it, or the outcome it found is another
+    /// settle's. Not a payment for this request: `transaction_already_submitted`,
+    /// without the transaction (one in an answer says: look it up and deliver).
+    fn already_submitted(&self, intent: &Intent) -> SettleResponse {
+        tracing::info!(
+            network = %self.config.network,
+            transaction = %intent.transaction_id,
+            "Hedera settle of a transaction another settle holds or settled: {ALREADY_SUBMITTED}"
+        );
+        SettleResponse {
+            success: false,
+            error_reason: Some(FacilitatorErrorReason::FreeForm(ALREADY_SUBMITTED.into())),
+            payer: MixedAddress::Hedera(intent.payer.clone()),
+            transaction: None,
+            network: self.config.network,
+            proof_of_payment: None,
+            extensions: None,
+        }
+    }
+    /// The answer to a settle that finds a terminal record it did not write.
+    /// A confirmed transaction is `transaction_already_submitted`; one that
+    /// failed on chain answers its verdict, as before.
+    fn already_terminal(&self, record: &Record) -> SettleResponse {
+        if record.state != State::Confirmed {
+            return self.response(record);
+        }
+        self.already_submitted(&record.intent)
+    }
     async fn receipt(&self, intent: &Intent, timeout: Duration) -> Option<Status> {
         let id = intent.transaction_id.parse().ok()?;
         let mut query = TransactionReceiptQuery::new();
@@ -307,8 +352,12 @@ impl HederaProvider {
         // authorize delivery from that response alone: bind the result to our
         // persisted signed bytes through the authenticated HTTPS Mirror.
         let deadline = tokio::time::Instant::now() + timeout;
+        // The receipt query retries while the nodes answer RECEIPT_NOT_FOUND
+        // (a transaction they never saw, or one whose receipt they no longer
+        // keep), up to its own timeout. At most half the budget goes to it, so
+        // the Mirror, which decides, is always asked.
         let _ = self
-            .receipt(&record.intent, timeout.min(Duration::from_secs(3)))
+            .receipt(&record.intent, (timeout / 2).min(Duration::from_secs(3)))
             .await;
         loop {
             let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
@@ -329,12 +378,14 @@ impl HederaProvider {
             tokio::time::sleep(Duration::from_millis(300)).await;
         }
     }
+    /// Records the verdict and returns the record as saved; the caller decides
+    /// whose answer it is.
     async fn confirmed(
         &self,
         key: &str,
         mut record: Record,
         status: (bool, String),
-    ) -> std::result::Result<SettleResponse, FacilitatorLocalError> {
+    ) -> std::result::Result<Record, FacilitatorLocalError> {
         record.state = if status.0 {
             State::Confirmed
         } else {
@@ -348,7 +399,7 @@ impl HederaProvider {
             .save(key, &record)
             .await
             .map_err(|_| self.unconfirmed(&record.intent))?;
-        Ok(self.response(&record))
+        Ok(record)
     }
     // Recovery runs even when admissions are disabled. Leases and conditional
     // writes coordinate replicas; only the original persisted bytes may be sent.
@@ -392,7 +443,7 @@ impl HederaProvider {
                     if let Some(status) = provider.resolve(&record, Duration::from_secs(3)).await {
                         let _ = provider.confirmed(&key, record, status).await;
                     } else {
-                        let _ = provider.deliver_record(&key, record).await;
+                        let _ = provider.deliver_record(&key, record, Delivery::Resumed).await;
                     }
                 }
             }
@@ -402,7 +453,12 @@ impl HederaProvider {
         &self,
         key: &str,
         mut record: Record,
+        delivery: Delivery,
     ) -> std::result::Result<SettleResponse, FacilitatorLocalError> {
+        // Whether the outcome below is this settle's to answer: a success, or
+        // an unconfirmed send under the transaction's id. Otherwise it is
+        // recorded and answered as another settle's.
+        let mut own = delivery == Delivery::Fresh;
         if record.intent.expires_at > store::now().saturating_add(2) {
             let bytes = STANDARD
                 .decode(
@@ -420,21 +476,35 @@ impl HederaProvider {
             // The signed bytes are durable and recovery sends them once the
             // lease runs out, so a write that fails here is not a failure of
             // the payment: it may still go out, under this id.
-            self.store
-                .save(key, &record)
-                .await
-                .map_err(|_| self.unconfirmed(&record.intent))?;
+            if self.store.save(key, &record).await.is_err() {
+                return if own {
+                    Err(self.unconfirmed(&record.intent))
+                } else {
+                    Ok(self.already_submitted(&record.intent))
+                };
+            }
             // Errors, including DUPLICATE_TRANSACTION, do not establish the
             // outcome. Resolve the original ID through a consensus receipt.
             let _ = tokio::time::timeout(Duration::from_secs(10), tx.execute(&self.client)).await;
+            own = true;
         }
         if let Some(status) = self.resolve(&record, self.config.settle_timeout).await {
-            return self.confirmed(key, record, status).await;
+            let intent = record.intent.clone();
+            return match self.confirmed(key, record, status).await {
+                Ok(record) if own => Ok(self.response(&record)),
+                Ok(record) => Ok(self.already_terminal(&record)),
+                Err(unconfirmed) if own => Err(unconfirmed),
+                Err(_) => Ok(self.already_submitted(&intent)),
+            };
         }
         record.state = State::Uncertain;
         record.lease_until = store::now().saturating_add(60);
         let _ = self.store.save(key, &record).await;
-        Err(self.unconfirmed(&record.intent))
+        if own {
+            Err(self.unconfirmed(&record.intent))
+        } else {
+            Ok(self.already_submitted(&record.intent))
+        }
     }
     /// Settles the sponsor's HBAR still pays for, once the settlement table,
     /// the Mirror Node and the consensus nodes have all answered. A balance
@@ -656,7 +726,7 @@ impl Facilitator for HederaProvider {
                 return Err(error("transaction ID binds another intent"));
             }
             if existing.terminal() {
-                return Ok(self.response(&existing));
+                return Ok(self.already_terminal(&existing));
             }
         } else {
             if !self.config.admissions {
@@ -680,16 +750,26 @@ impl Facilitator for HederaProvider {
             )
             .await
             .map_err(error)?;
+        // Confirmed (or failed) between the read above and this reservation.
         if record.terminal() {
-            return Ok(self.response(&record));
+            return Ok(self.already_terminal(&record));
         }
+        // Another settle holds the transaction: this one sends nothing, and
+        // its answer names no transaction to deliver on.
         if record.owner != owner {
-            return Err(self.unconfirmed(&intent));
+            return Ok(self.already_submitted(&intent));
         }
         if record.signed.is_some() {
+            // Bytes another settle persisted. An outcome found before this
+            // settle sends anything is that settle's: recorded here, answered
+            // as already submitted (or as the chain's refusal).
             if let Some(status) = self.resolve(&record, Duration::from_secs(3)).await {
-                return self.confirmed(&key, record, status).await;
+                return Ok(match self.confirmed(&key, record, status).await {
+                    Ok(record) => self.already_terminal(&record),
+                    Err(_) => self.already_submitted(&intent),
+                });
             }
+            return self.deliver_record(&key, record, Delivery::Resumed).await;
         } else {
             self.inspect_admission(request)?;
             self.mirror
@@ -708,7 +788,7 @@ impl Facilitator for HederaProvider {
                 .await
                 .map_err(|_| self.unconfirmed(&intent))?;
         }
-        self.deliver_record(&key, record).await
+        self.deliver_record(&key, record, Delivery::Fresh).await
     }
     async fn supported(&self) -> std::result::Result<SupportedPaymentKindsResponse, Self::Error> {
         if !self.config.admissions {

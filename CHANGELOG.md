@@ -1,5 +1,52 @@
 # Changelog
 
+## [2.57.6] - 2026-11-15
+
+Native Hedera: one `success: true` per transaction id.
+
+### Fixed
+
+- `/settle` answers `success: true`, or `502 settlement_unconfirmed` with the
+  transaction, only to the settle whose own bytes they are: the one that
+  reserved the payment and co-signed it, or one that took over bytes another
+  settle left, found no outcome for them and sent them itself. Any other
+  settle of the same transaction answers `200` with `success: false` and
+  `errorReason: "transaction_already_submitted"`, without a `transaction`,
+  and sends nothing: one that finds it recorded as confirmed, one that finds
+  another settle holding it, and one that takes over bytes another settle
+  left and finds their outcome (which it still records), can no longer send
+  them, or cannot record them as submitted before sending. A settle repeated
+  after `502 settlement_unconfirmed` gets this answer unless its own send is
+  the one that settles the transaction; the id that `502` carried is the one
+  to look up, and the transaction is gone only once its validity window has
+  passed and the chain does not have it. A retry that carries the
+  `Idempotency-Key` of the settle that succeeded gets that answer back
+  instead.
+- A settle's read before it sends bytes another settle left, the recovery's
+  check before it sends, and the portable receipt's read of a pending payment
+  always ask the Mirror Node: the consensus receipt query, which retries
+  while the nodes answer `RECEIPT_NOT_FOUND`, takes at most half of their
+  3 s.
+- Unchanged: a transaction that failed on chain answers its consensus status
+  with its id, and a transaction id bound to another intent is refused.
+- `docs/settle-errors.md`, `/skill.md` and `/docs` describe
+  `transaction_already_submitted`, the one answer with neither
+  `retryable: false` nor a `transaction` that does not mean "nothing was sent".
+
+### Tests
+
+- `src/chain/hedera/tests.rs`: a new payment (the official client's vector,
+  dated now and signed again) settles once; a settle repeated after it; two
+  and four settles of it at once; a settle that read the record before
+  another settle confirmed or failed it; the retry of a settle that stopped
+  before sending; settles that take over bytes another settle left, valid or
+  expired, with their outcome on chain, showing late, missing, or not
+  recordable; a write before a send that fails; a record another settle
+  holds; a repeat of a payment that failed on chain; and a transaction id
+  bound to another intent. Against an in-memory table with the settlement
+  table's conditional writes, a Mirror Node on a local port and consensus
+  nodes on closed local ports.
+
 ## [2.57.5] - 2026-11-15
 
 Sui: settles are idempotent per signed transaction, and the payer's signature

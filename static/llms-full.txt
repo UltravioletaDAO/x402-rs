@@ -724,12 +724,18 @@ schemes' `502`, a settle forwarded to the signing task whose answer was lost
 latched. Look the transaction up and deliver if it settled; only one not found
 after the chain's finality window is gone. A failure with neither
 `retryable: false` nor a `transaction` was produced before anything was sent,
-with one exception: `transaction_already_submitted` (Sui, `200` with
-`success: false`) means another settle already took that signed transaction,
-or the chain already executed it. It is not a payment for this request, so do
-not deliver on it; nor does it say nothing was paid, so before asking for a new
-signature check your own records and the chain for that transaction. An
-`Idempotency-Key` gets the first answer back instead.
+with one exception: `transaction_already_submitted` (Sui and native Hedera,
+`200` with `success: false`) means another settle already took that signed
+transaction or has already settled it (on Sui, the chain may also have
+executed it already), and this one sent nothing of its own. It is not a
+payment for this request, so do not deliver on it; nor does it say nothing was
+paid, so before asking for a new signature look the transaction up in your own
+records and on the chain (the earlier `502` named it; on native Hedera it is
+also the signed transaction's own id, `<feePayer>@<validStart>`). On native
+Hedera it is gone only once its validity window (`validStart` plus its valid
+duration, at most `maxTimeoutSeconds`) has passed and the chain does not have
+it: until then the facilitator may still send it. A retry that carries the
+`Idempotency-Key` of the settle that succeeded gets that answer back instead.
 
 **Send an `Idempotency-Key` and the retry is safe.** Choose one opaque string per
 intended purchase, keep it across retries and restarts, and send it as a header:

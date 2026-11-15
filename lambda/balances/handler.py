@@ -100,6 +100,39 @@ SOLANA_TESTNET_ADDRESS = "6xNPewUdKRbEZDReQdpyfNUdgNg8QRc8Mt263T5GZSRv"
 SUI_MAINNET_ADDRESS = "0xe7bbf2b13f7d72714760aa16e024fa1b35a978793f9893d0568a4fbf356a764a"
 SUI_TESTNET_ADDRESS = "0xabbd16a2fab2a502c9cfe835195a6fc7d70bfc27cffb40b8b286b52a97006e67"
 
+# Sui gRPC endpoints when RPC_URL_SUI / RPC_URL_SUI_TESTNET are unset: the
+# facilitator's defaults (DEFAULT_ENDPOINTS_* in src/chain/sui/rpc.rs, whose
+# test every_configured_sui_endpoint_list_is_the_default_one holds the two equal).
+SUI_GRPC_DEFAULTS = {
+    "sui-mainnet": "https://fullnode.mainnet.sui.io:443,https://sui-grpc.publicnode.com:443",
+    "sui-testnet": "https://fullnode.testnet.sui.io:443,https://sui-testnet-grpc.publicnode.com:443",
+}
+# GraphQL, tried after every gRPC endpoint: Mysten's, the only public Sui
+# GraphQL that answered on 2026-11-15.
+SUI_GRAPHQL_URLS = {
+    "sui-mainnet": ["https://graphql.mainnet.sui.io/graphql"],
+    "sui-testnet": ["https://graphql.testnet.sui.io/graphql"],
+}
+SUI_COIN_TYPE = "0x2::sui::SUI"
+
+
+def sui_grpc_endpoints(env_var: str, network: str) -> list[str]:
+    """The gRPC endpoints `env_var` names (comma-separated; trimmed, repeats
+    dropped, anything but an http(s) URL with a host skipped), or the defaults
+    when it names none. The same reading as `endpoint_list` in rpc.rs."""
+    urls: list[str] = []
+    for entry in (os.environ.get(env_var) or "").split(","):
+        entry = entry.strip()
+        try:
+            parts = urlsplit(entry)
+        except ValueError:
+            continue
+        if parts.scheme.lower() not in ("http", "https") or not parts.hostname:
+            continue
+        if entry.rstrip("/").lower() not in [u.rstrip("/").lower() for u in urls]:
+            urls.append(entry)
+    return urls or SUI_GRPC_DEFAULTS[network].split(",")
+
 # NEAR addresses
 NEAR_MAINNET_ADDRESS = "uvd-facilitator.near"
 NEAR_TESTNET_ADDRESS = "uvd-facilitator.testnet"
@@ -326,27 +359,20 @@ def get_network_configs() -> dict[str, dict]:
             "address": SOLANA_TESTNET_ADDRESS,
             "type": "solana"
         },
-        # Sui
-        # fullnode.{mainnet,testnet}.sui.io are NOT usable as fallbacks: they
-        # stopped serving JSON-RPC entirely and answer -32601 to every method,
-        # including the SDK handshake. Sui mainnet was dead in production until
-        # 2026-08-20 and nothing alarmed on it, because there is no per-chain
-        # health check -- only this balance readout, which nobody watches.
-        # Verified working on 2026-08-20 against the facilitator's real wallets.
+        # Sui. JSON-RPC is gone from every public Sui node (2026-11-14:
+        # fullnode.*.sui.io answer -32601, publicnode -32000), so there is no
+        # JSON-RPC URL here at all. The balance is read over gRPC-web from the
+        # facilitator's own endpoint list (RPC_URL_SUI / RPC_URL_SUI_TESTNET,
+        # comma-separated), then over GraphQL. See fetch_sui_balance.
         "sui-mainnet": {
-            "rpcs": [
-                os.environ.get("RPC_URL_SUI"),
-                "https://sui-rpc.publicnode.com",
-                "https://rpc-mainnet.suiscan.xyz",
-            ],
+            "grpc": sui_grpc_endpoints("RPC_URL_SUI", "sui-mainnet"),
+            "graphql": SUI_GRAPHQL_URLS["sui-mainnet"],
             "address": SUI_MAINNET_ADDRESS,
             "type": "sui"
         },
         "sui-testnet": {
-            "rpcs": [
-                "https://sui-testnet-rpc.publicnode.com",
-                "https://rpc-testnet.suiscan.xyz",
-            ],
+            "grpc": sui_grpc_endpoints("RPC_URL_SUI_TESTNET", "sui-testnet"),
+            "graphql": SUI_GRAPHQL_URLS["sui-testnet"],
             "address": SUI_TESTNET_ADDRESS,
             "type": "sui"
         },
@@ -543,31 +569,152 @@ def fetch_solana_balance(network: str, config: dict) -> tuple[str, str | None]:
     return network, None
 
 
+class SuiReadError(Exception):
+    """A Sui endpoint answered without a balance (a gRPC status, a GraphQL error)."""
+
+
+def _pb_varint(value: int) -> bytes:
+    out = bytearray()
+    while True:
+        byte = value & 0x7F
+        value >>= 7
+        if value:
+            out.append(byte | 0x80)
+        else:
+            out.append(byte)
+            return bytes(out)
+
+
+def _pb_string(field: int, value: str) -> bytes:
+    raw = value.encode()
+    return _pb_varint((field << 3) | 2) + _pb_varint(len(raw)) + raw
+
+
+def _pb_fields(buf: bytes) -> dict[int, list]:
+    """Decode a flat protobuf message: {field: [value, ...]} (int for varints,
+    bytes for length-delimited fields; fixed-width fields are skipped)."""
+    fields: dict[int, list] = {}
+    i = 0
+
+    def varint() -> int:
+        nonlocal i
+        result, shift = 0, 0
+        while True:
+            if i >= len(buf):
+                raise SuiReadError("truncated protobuf")
+            byte = buf[i]
+            i += 1
+            result |= (byte & 0x7F) << shift
+            shift += 7
+            if not byte & 0x80:
+                return result
+
+    while i < len(buf):
+        key = varint()
+        field, wire = key >> 3, key & 7
+        if wire == 0:
+            value = varint()
+        elif wire == 2:
+            length = varint()
+            if i + length > len(buf):
+                raise SuiReadError("truncated protobuf")
+            value = buf[i:i + length]
+            i += length
+        elif wire in (1, 5):
+            i += 8 if wire == 1 else 4
+            continue
+        else:
+            raise SuiReadError(f"protobuf wire type {wire}")
+        fields.setdefault(field, []).append(value)
+    return fields
+
+
+def _grpc_web_frames(body: bytes) -> tuple[bytes | None, dict[str, str]]:
+    """Split a gRPC-web body into its (last) message and its trailers."""
+    message, trailers = None, {}
+    i = 0
+    while i + 5 <= len(body):
+        flag = body[i]
+        length = int.from_bytes(body[i + 1:i + 5], "big")
+        payload = body[i + 5:i + 5 + length]
+        i += 5 + length
+        if flag & 0x80:
+            for line in payload.decode(errors="replace").splitlines():
+                key, _, value = line.partition(":")
+                trailers[key.strip().lower()] = value.strip()
+        else:
+            message = payload
+    return message, trailers
+
+
+def sui_grpc_web_balance(base_url: str, owner: str, coin_type: str = SUI_COIN_TYPE,
+                         timeout: float = 8) -> int:
+    """`StateService.GetBalance` over gRPC-web (HTTP/1.1, which urllib speaks;
+    plain gRPC needs HTTP/2). The total balance, in the coin's smallest unit."""
+    message = _pb_string(1, owner) + _pb_string(2, coin_type)
+    body = b"\x00" + len(message).to_bytes(4, "big") + message
+    req = urllib.request.Request(
+        base_url.rstrip("/") + "/sui.rpc.v2.StateService/GetBalance",
+        data=body,
+        headers={
+            "Content-Type": "application/grpc-web+proto",
+            "Accept": "application/grpc-web+proto",
+            "X-Grpc-Web": "1",
+            "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/126.0 Safari/537.36",
+        },
+    )
+    with urllib.request.urlopen(req, timeout=timeout) as response:
+        header_status = response.headers.get("grpc-status")
+        payload = response.read()
+    data, trailers = _grpc_web_frames(payload)
+    status = trailers.get("grpc-status", header_status)
+    if status != "0":
+        raise SuiReadError(f"grpc-status {status}")
+    balance = _pb_fields(data or b"").get(1)
+    if not balance:
+        raise SuiReadError("answer without a balance")
+    total = _pb_fields(balance[0]).get(3)
+    if not total:
+        raise SuiReadError("balance without a total")
+    return int(total[0])
+
+
+SUI_GRAPHQL_BALANCE = (
+    "query($a: SuiAddress!) { address(address: $a) "
+    "{ balance(coinType: \"0x2::sui::SUI\") { totalBalance } } }"
+)
+
+
+def sui_graphql_balance(url: str, owner: str, timeout: float = 8) -> int:
+    """`Address.balance` over GraphQL: the total SUI balance, in MIST."""
+    payload = json.dumps({"query": SUI_GRAPHQL_BALANCE, "variables": {"a": owner}}).encode()
+    data = fetch_json(url, payload, timeout=timeout)
+    if data.get("errors"):
+        raise SuiReadError("graphql errors")
+    address = (data.get("data") or {}).get("address")
+    if address is None:
+        raise SuiReadError("answer without an address")
+    balance = address.get("balance")
+    # An address that never held SUI has no balance row.
+    return int(balance["totalBalance"]) if balance else 0
+
+
 def fetch_sui_balance(network: str, config: dict) -> tuple[str, str | None]:
-    """Fetch balance for Sui network with RPC fallback."""
-    rpcs = [r for r in config.get("rpcs", []) if r]  # Filter out None values
+    """SUI (gas) balance: gRPC-web over each of the facilitator's endpoints,
+    then GraphQL, first answer wins. No JSON-RPC: no public Sui node serves it.
 
-    for rpc_url in rpcs:
+    Only Mysten's fullnodes speak gRPC-web; publicnode answers 415 to it
+    (measured 2026-11-15) and is tried anyway, so a list that names it first
+    still reads. GraphQL is Mysten's too: no other public Sui GraphQL answered.
+    """
+    attempts = [(url, sui_grpc_web_balance) for url in config.get("grpc", [])]
+    attempts += [(url, sui_graphql_balance) for url in config.get("graphql", [])]
+    for url, read in attempts:
         try:
-            payload = json.dumps({
-                "jsonrpc": "2.0",
-                "id": 1,
-                "method": "suix_getAllBalances",
-                "params": [config["address"]]
-            }).encode()
-
-            data = fetch_json(rpc_url, payload, timeout=8)
-            if "result" in data and isinstance(data["result"], list):
-                sui_balance = next(
-                    (b for b in data["result"] if b.get("coinType") == "0x2::sui::SUI"),
-                    None
-                )
-                if sui_balance:
-                    balance_mist = int(sui_balance["totalBalance"])
-                    balance_sui = balance_mist / 1e9
-                    return network, f"{balance_sui:.4f}"
+            balance_mist = read(url, config["address"])
+            return network, f"{balance_mist / 1e9:.4f}"
         except Exception as e:
-            print(f"Error fetching {network} from {rpc_host(rpc_url)}: {rpc_error(e)}")
+            print(f"Error fetching {network} from {rpc_host(url)}: {rpc_error(e)}")
             continue
 
     return network, None

@@ -23,15 +23,18 @@
 use std::str::FromStr;
 
 use shared_crypto::intent::{Intent, IntentMessage};
-use sui_sdk::rpc_types::{SuiObjectDataOptions, SuiTransactionBlockResponseOptions};
-use sui_sdk::{SuiClient, SuiClientBuilder};
 use sui_types::base_types::{ObjectID, ObjectRef, SuiAddress};
 use sui_types::crypto::{EncodeDecodeBase64, Signature, SuiKeyPair, SuiSignature, ToFromBytes};
-use sui_types::error::SuiObjectResponseError;
 use sui_types::transaction::{
-    Argument, CallArg, Command, Transaction, TransactionData, TransactionDataAPI, TransactionKind,
+    Argument, CallArg, Command, TransactionData, TransactionDataAPI, TransactionKind,
 };
 use tracing::{debug, error, info, warn};
+
+mod rpc;
+#[cfg(test)]
+mod stub;
+
+use rpc::{Execution, ObjectRead, SuiRpc};
 
 use crate::chain::{FacilitatorLocalError, FromEnvByNetworkBuild, NetworkProviderOps};
 use crate::facilitator::Facilitator;
@@ -54,14 +57,32 @@ pub const USDC_COIN_TYPE_MAINNET: &str =
 pub const USDC_COIN_TYPE_TESTNET: &str =
     "0xa1ec7fc00a6f40db9693ad1415d0c193ad3906494428cf252621037bd7117e29::usdc::USDC";
 
+/// The highest gas price (MIST per computation unit) the facilitator sponsors.
+///
+/// The client writes `gas_data` and the facilitator signs it as the gas owner,
+/// so without a ceiling one settle can spend the sponsor wallet: a price far
+/// above the reference makes even the smallest transaction cost its whole
+/// budget. Measured 2026-11-15: the reference price is 100 on mainnet (epoch
+/// 1312) and 1000 on testnet (epoch 1284), and the chain itself accepts up to
+/// 50_000_000_000. 100x and 10x of them. In the code, not config: it moves money.
+pub const MAX_SPONSORED_GAS_PRICE: u64 = 10_000;
+
+/// The highest gas budget (MIST) the facilitator sponsors: 0.05 SUI.
+///
+/// What one settle can cost the sponsor at most, whatever the price. The
+/// facilitator's own settlements on mainnet charged 514_000 of computation and
+/// 3_632_800 of storage before the rebate (2026-11-15, its last transactions),
+/// so a budget needs about 4_150_000: this is ~12 times that.
+pub const MAX_SPONSORED_GAS_BUDGET: u64 = 50_000_000;
+
 /// Sui network provider for payment verification and settlement.
 ///
 /// Handles sponsored transactions for gasless USDC payments on Sui.
 pub struct SuiProvider {
     /// The network this provider is configured for (Sui mainnet or testnet).
     network: Network,
-    /// RPC endpoint URL for Sui network.
-    rpc_url: String,
+    /// The network's gRPC endpoints, tried in order (`rpc.rs`).
+    rpc: SuiRpc,
     /// Facilitator's Sui address (pays gas fees).
     signer_address: SuiAddress,
     /// Facilitator's keypair for signing sponsored transactions.
@@ -74,7 +95,7 @@ impl SuiProvider {
     /// Create a new Sui provider with the given configuration.
     pub fn new(
         network: Network,
-        rpc_url: String,
+        rpc: SuiRpc,
         signer_address: SuiAddress,
         keypair: SuiKeyPair,
     ) -> Self {
@@ -86,7 +107,7 @@ impl SuiProvider {
 
         Self {
             network,
-            rpc_url,
+            rpc,
             signer_address,
             keypair,
             usdc_coin_type,
@@ -224,9 +245,9 @@ impl SuiProvider {
     ///
     /// NOTE: We do NOT validate the coin object's Move type *here* because `CallArg::Object` only
     /// carries the ObjectID/SequenceNumber/Digest tuple, not the Move type. Coin-type enforcement
-    /// is therefore done in `check_balance` (audit 04): `get_coins` is filtered to
-    /// `usdc_coin_type`, and the spent `coin_object_id` MUST be a member of that set — which
-    /// proves the spent coin is canonical USDC owned by the sender. (Sui's type-checker does NOT
+    /// is therefore done in `check_balance` (audit 04): the spent `coin_object_id` is read from
+    /// the chain and MUST be a `0x2::coin::Coin<usdc_coin_type>` owned by the sender's address —
+    /// which proves the spent coin is canonical USDC owned by the sender. (Sui's type-checker does NOT
     /// save us here: `SplitCoins`/`TransferObjects` are generic over `Coin<T>`, so a `Coin<JUNK>`
     /// executes fine — that is exactly the coin-type-confusion this binding closes.) `validate_ptb`
     /// still verifies that the coin object ID in the PTB matches the declared `coin_object_id`,
@@ -437,6 +458,24 @@ impl SuiProvider {
             )));
         }
 
+        // --- Bound what the facilitator pays for gas (MAX_SPONSORED_GAS_*) ---
+        // The facilitator signs the client's gas_data as its owner: an uncapped
+        // price or budget lets one settle spend the sponsor wallet.
+        let gas_price = tx_data.gas_data().price;
+        if gas_price > MAX_SPONSORED_GAS_PRICE {
+            return Err(FacilitatorLocalError::Other(format!(
+                "PTB validation failed: gas_data.price {} is above the {} MIST the facilitator sponsors",
+                gas_price, MAX_SPONSORED_GAS_PRICE
+            )));
+        }
+        let gas_budget = tx_data.gas_data().budget;
+        if gas_budget > MAX_SPONSORED_GAS_BUDGET {
+            return Err(FacilitatorLocalError::Other(format!(
+                "PTB validation failed: gas_data.budget {} is above the {} MIST the facilitator sponsors",
+                gas_budget, MAX_SPONSORED_GAS_BUDGET
+            )));
+        }
+
         debug!(
             recipient = %ptb_recipient,
             amount = ptb_amount,
@@ -570,35 +609,37 @@ impl SuiProvider {
     /// Check USDC balance for the sender AND bind the spent coin object to USDC.
     ///
     /// `spent_coin_id` is the coin object the PTB splits from (the client's declared
-    /// `coin_object_id`). Because `get_coins` is filtered to `self.usdc_coin_type`,
-    /// requiring `spent_coin_id` to be a member of the returned set proves the spent
+    /// `coin_object_id`). It is read from the chain and must be a
+    /// `0x2::coin::Coin<usdc_coin_type>` owned by `address`, which proves the spent
     /// coin is (a) USDC of the canonical type and (b) owned by `address`. This closes
     /// the coin-type-confusion hole (audit 04) where a payer splits a worthless `Coin<JUNK>`.
+    ///
+    /// The JSON-RPC version proved the same by membership in `suix_getCoins`
+    /// filtered to USDC, which read one page (50 coins): a coin past it was
+    /// refused. Reading the coin itself has no such window. The balance is what
+    /// `address` holds in USDC coin objects (`GetBalance` minus the address
+    /// balance, which the PTB's `SplitCoins` cannot spend), as the sum of
+    /// `suix_getCoins` was.
     async fn check_balance(
         &self,
-        client: &SuiClient,
         address: &SuiAddress,
         required_amount: u64,
         spent_coin_id: &ObjectID,
     ) -> Result<(), FacilitatorLocalError> {
-        // Get all USDC coins owned by the address (filtered to the canonical USDC type).
-        let coins = client
-            .coin_read_api()
-            .get_coins(*address, Some(self.usdc_coin_type.clone()), None, None)
+        let spent_coin = self
+            .rpc
+            .object_owner_and_type(*spent_coin_id)
             .await
             .map_err(|e| {
                 FacilitatorLocalError::ContractCall(format!("Failed to fetch USDC balance: {}", e))
             })?;
 
         // SECURITY (audit 04): the coin the PTB spends MUST be one of the sender's
-        // canonical-USDC coins. `get_coins` is filtered to `self.usdc_coin_type`, so
-        // membership proves the spent coin object is USDC AND owned by the sender.
-        // Without this, a payer can split a worthless Coin<JUNK> and the facilitator
-        // would still report a successful USDC payment.
-        let spends_usdc = coins
-            .data
-            .iter()
-            .any(|c| c.coin_object_id == *spent_coin_id);
+        // canonical-USDC coins. Without this, a payer can split a worthless
+        // Coin<JUNK> and the facilitator would still report a successful USDC payment.
+        let spends_usdc = spent_coin
+            .as_ref()
+            .is_some_and(|coin| rpc::is_coin_owned_by(coin, &self.usdc_coin_type, address));
         if !spends_usdc {
             return Err(FacilitatorLocalError::Other(format!(
                 "PTB validation failed: spent coin object {} is not a USDC ({}) coin owned by {}",
@@ -606,7 +647,13 @@ impl SuiProvider {
             )));
         }
 
-        let total_balance: u64 = coins.data.iter().map(|c| c.balance).sum();
+        let total_balance: u64 = self
+            .rpc
+            .coin_balance(address, &self.usdc_coin_type)
+            .await
+            .map_err(|e| {
+                FacilitatorLocalError::ContractCall(format!("Failed to fetch USDC balance: {}", e))
+            })?;
 
         if total_balance < required_amount {
             return Err(FacilitatorLocalError::InsufficientFunds(MixedAddress::Sui(
@@ -624,30 +671,22 @@ impl SuiProvider {
         Ok(())
     }
 
-    /// Connect to the Sui RPC with every request bounded by `timeout`.
-    async fn connect_within(
-        &self,
-        timeout: std::time::Duration,
-    ) -> Result<SuiClient, FacilitatorLocalError> {
-        SuiClientBuilder::default()
-            .request_timeout(timeout)
-            .build(&self.rpc_url)
-            .await
-            .map_err(|e| {
-                FacilitatorLocalError::ContractCall(format!("Failed to connect to Sui RPC: {}", e))
-            })
-    }
-
     /// Refuse a transaction whose owned inputs are no longer at the version it
     /// references.
     ///
     /// Executing a transaction gives every owned object it takes -- the coin it
     /// splits and the gas coins it pays with -- a new version, or deletes it, so
     /// a transaction that already executed references versions the chain has
-    /// left behind. One `sui_multiGetObjects` call, read-only.
+    /// left behind. One `BatchGetObjects` call for the current versions, and a
+    /// second one only for the inputs the node does not hold any more: gRPC
+    /// answers `NotFound` both for an object deleted since and for one the node
+    /// never saw (JSON-RPC told them apart), so the referenced version is asked
+    /// for, together with the current one in the same call. Held at that
+    /// version and not now means it existed and is gone: deleted. A node that
+    /// pruned the old version reads it as unknown and leaves the verdict to
+    /// settle, which execution then refuses. Read-only.
     async fn check_inputs_current(
         &self,
-        client: &SuiClient,
         tx_data: &TransactionData,
     ) -> Result<(), FacilitatorLocalError> {
         let mut inputs: Vec<ObjectRef> = tx_data.gas_data().payment.clone();
@@ -660,76 +699,104 @@ impl SuiProvider {
             }));
         }
 
-        let responses = client
-            .read_api()
-            .multi_get_object_with_options(
-                inputs.iter().map(|(id, _, _)| *id).collect(),
-                SuiObjectDataOptions::new(),
+        let unreadable = |e: String| {
+            FacilitatorLocalError::ContractCall(format!(
+                "Failed to read Sui transaction inputs: {}",
+                e
+            ))
+        };
+        let current = self
+            .rpc
+            .objects(
+                &inputs
+                    .iter()
+                    .map(|(id, _, _)| (*id, None))
+                    .collect::<Vec<_>>(),
             )
             .await
-            .map_err(|e| {
-                FacilitatorLocalError::ContractCall(format!(
-                    "Failed to read Sui transaction inputs: {}",
-                    e
-                ))
-            })?;
-        if responses.len() != inputs.len() {
-            return Err(FacilitatorLocalError::ContractCall(format!(
-                "Sui RPC returned {} objects for {} transaction inputs",
-                responses.len(),
-                inputs.len()
-            )));
+            .map_err(unreadable)?;
+
+        let mut absent: Vec<ObjectRef> = Vec::new();
+        for (input, read) in inputs.iter().zip(current) {
+            match read {
+                ObjectRead::Found { version, digest } => self.judge_held(input, version, digest)?,
+                ObjectRead::NotFound => absent.push(*input),
+            }
+        }
+        if absent.is_empty() {
+            return Ok(());
         }
 
-        for ((id, version, digest), response) in inputs.iter().zip(responses) {
-            match (response.data, response.error) {
-                (Some(current), _) if current.version == *version && current.digest == *digest => {}
-                // Execution only moves an object forward, so a newer version, or
-                // the referenced version under another digest, means the
-                // referenced one is gone.
-                (Some(current), _) if current.version >= *version => {
-                    return Err(FacilitatorLocalError::Other(format!(
-                        "Sui input object {} already used: transaction references version {} ({}), chain holds version {} ({})",
-                        id,
-                        version.value(),
-                        digest,
-                        current.version.value(),
-                        current.digest
-                    )));
+        // The current version again and the referenced one, in ONE call, so
+        // both answers come from the same node: a lagging endpoint answering
+        // the first question and a current one the second would make a live
+        // object look deleted.
+        let reads = self
+            .rpc
+            .objects(
+                &absent
+                    .iter()
+                    .flat_map(|(id, version, _)| [(*id, None), (*id, Some(*version))])
+                    .collect::<Vec<_>>(),
+            )
+            .await
+            .map_err(unreadable)?;
+        for (input, pair) in absent.iter().zip(reads.chunks(2)) {
+            match pair {
+                [ObjectRead::Found { version, digest }, _] => {
+                    self.judge_held(input, *version, *digest)?
                 }
-                // An older version is our RPC behind the one the client built
-                // the transaction against, not a replay. Leave the verdict to
-                // settle, as before this check.
-                (Some(current), _) => {
-                    warn!(
-                        network = %self.network,
-                        referenced_version = version.value(),
-                        rpc_version = current.version.value(),
-                        "Sui input read behind the referenced version; leaving the verdict to settle"
-                    );
-                }
-                (None, Some(SuiObjectResponseError::Deleted { .. })) => {
+                [ObjectRead::NotFound, ObjectRead::Found { .. }] => {
                     return Err(FacilitatorLocalError::Other(format!(
                         "Sui input object {} already used: it was deleted",
-                        id
+                        input.0
                     )));
                 }
-                // Same reading: an object the RPC has not seen yet.
-                (None, Some(SuiObjectResponseError::NotExists { .. })) => {
+                // Same reading as a lagging one: an object the RPC has not seen yet.
+                _ => {
                     warn!(
                         network = %self.network,
                         "Sui input object unknown to the RPC; leaving the verdict to settle"
                     );
                 }
-                (None, error) => {
-                    return Err(FacilitatorLocalError::ContractCall(format!(
-                        "Failed to read Sui input object {}: {:?}",
-                        id, error
-                    )));
-                }
             }
         }
 
+        Ok(())
+    }
+
+    /// The verdict on an input the node holds at `held` / `held_digest`.
+    fn judge_held(
+        &self,
+        (id, version, digest): &ObjectRef,
+        held: sui_types::base_types::SequenceNumber,
+        held_digest: sui_types::base_types::ObjectDigest,
+    ) -> Result<(), FacilitatorLocalError> {
+        if held == *version && held_digest == *digest {
+            return Ok(());
+        }
+        // Execution only moves an object forward, so a newer version, or the
+        // referenced version under another digest, means the referenced one is
+        // gone.
+        if held >= *version {
+            return Err(FacilitatorLocalError::Other(format!(
+                "Sui input object {} already used: transaction references version {} ({}), chain holds version {} ({})",
+                id,
+                version.value(),
+                digest,
+                held.value(),
+                held_digest
+            )));
+        }
+        // An older version is our RPC behind the one the client built the
+        // transaction against, not a replay. Leave the verdict to settle, as
+        // before this check.
+        warn!(
+            network = %self.network,
+            referenced_version = version.value(),
+            rpc_version = held.value(),
+            "Sui input read behind the referenced version; leaving the verdict to settle"
+        );
         Ok(())
     }
 
@@ -743,14 +810,7 @@ impl SuiProvider {
         tx_data: TransactionData,
         sender_signature: Signature,
         sender: SuiAddress,
-    ) -> Result<String, FacilitatorLocalError> {
-        let client = SuiClientBuilder::default()
-            .build(&self.rpc_url)
-            .await
-            .map_err(|e| {
-                FacilitatorLocalError::ContractCall(format!("Failed to connect to Sui RPC: {}", e))
-            })?;
-
+    ) -> Result<Settled, FacilitatorLocalError> {
         // For sponsored transactions, we need BOTH signatures:
         // 1. sender_signature - already provided by the user
         // 2. sponsor_signature - facilitator signs as gas owner
@@ -765,53 +825,84 @@ impl SuiProvider {
             "Creating sponsored transaction with dual signatures"
         );
 
-        // Create the transaction with BOTH signatures
-        // Order matters: sender signature first, then sponsor signature
-        // Convert Signature to GenericSignature for the Transaction constructor
-        let sender_sig = sui_types::signature::GenericSignature::Signature(sender_signature);
-        let sponsor_sig = sui_types::signature::GenericSignature::Signature(sponsor_signature);
-
-        let transaction =
-            Transaction::from_generic_sig_data(tx_data, vec![sender_sig, sponsor_sig]);
+        // The signed transaction travels as its BCS bytes -- the exact bytes both
+        // signatures cover -- with the signatures as their raw `flag || sig || pk`
+        // bytes. Order matters: sender signature first, then sponsor signature.
+        let transaction_bcs = bcs::to_bytes(&tx_data).map_err(|e| {
+            FacilitatorLocalError::Other(format!("Failed to serialize Sui transaction: {}", e))
+        })?;
         // Known before execution: an execution whose outcome is unknown is
-        // reported under it rather than as a failure the caller would retry.
-        let digest = *transaction.digest();
+        // reported under it rather than as a failure the caller would retry,
+        // and it is what every endpoint is asked about before a (re)send.
+        let digest = tx_data.digest().to_string();
 
-        // Execute the transaction
-        let response = client
-            .quorum_driver_api()
-            .execute_transaction_block(
-                transaction,
-                SuiTransactionBlockResponseOptions::full_content(),
-                None,
+        match self
+            .rpc
+            .execute(
+                transaction_bcs,
+                vec![
+                    sender_signature.as_ref().to_vec(),
+                    sponsor_signature.as_ref().to_vec(),
+                ],
+                &digest,
             )
             .await
-            .map_err(|e| {
-                if execution_may_have_landed(&e) {
-                    warn!(
-                        %digest,
-                        error = %crate::redact::scrub_urls(&e.to_string()),
-                        "Sui execution outcome unknown; the transaction may be final"
-                    );
-                    return FacilitatorLocalError::SettlementUnconfirmed(
-                        crate::types::TransactionHash::Sui(digest.to_string()),
-                        self.network,
-                    );
-                }
-                FacilitatorLocalError::Other(format!("Failed to execute Sui transaction: {}", e))
-            })?;
-
-        let digest = response.digest.to_string();
-
-        info!(
-            digest = %digest,
-            sender = %sender,
-            sponsor = %self.signer_address,
-            "Sui sponsored transaction executed successfully with dual signatures"
-        );
-
-        Ok(digest)
+        {
+            Execution::Executed { failure: None } => {
+                info!(
+                    digest = %digest,
+                    sender = %sender,
+                    sponsor = %self.signer_address,
+                    "Sui sponsored transaction executed successfully with dual signatures"
+                );
+                Ok(Settled {
+                    digest,
+                    failure: None,
+                })
+            }
+            Execution::Executed {
+                failure: Some(failure),
+            } => {
+                warn!(
+                    digest = %digest,
+                    sender = %sender,
+                    error = %failure,
+                    "Sui sponsored transaction executed and failed on chain"
+                );
+                Ok(Settled {
+                    digest,
+                    failure: Some(failure),
+                })
+            }
+            Execution::Refused(reason) => Err(FacilitatorLocalError::Other(format!(
+                "Failed to execute Sui transaction: {}",
+                reason
+            ))),
+            Execution::Unconfirmed(why) => {
+                warn!(
+                    %digest,
+                    error = %why,
+                    "Sui execution outcome unknown; the transaction may be final"
+                );
+                Err(FacilitatorLocalError::SettlementUnconfirmed(
+                    crate::types::TransactionHash::Sui(digest),
+                    self.network,
+                ))
+            }
+            Execution::Unreachable(why) => Err(FacilitatorLocalError::ContractCall(format!(
+                "No Sui RPC endpoint took the transaction: {}",
+                why
+            ))),
+        }
     }
+}
+
+/// A sponsored transaction the chain executed: its digest, and the on-chain
+/// error when its commands did not take effect.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Settled {
+    digest: String,
+    failure: Option<String>,
 }
 
 impl NetworkProviderOps for SuiProvider {
@@ -835,20 +926,10 @@ impl FromEnvByNetworkBuild for SuiProvider {
             }
         };
 
-        let rpc_url = match std::env::var(rpc_env) {
-            Ok(url) => url,
-            Err(_) => {
-                // Use public RPC endpoints as fallback.
-                // NOT fullnode.{mainnet,testnet}.sui.io: those stopped serving
-                // JSON-RPC entirely and answer -32601 to every method, including
-                // the SDK handshake, so this fallback silently disabled Sui.
-                match network {
-                    Network::Sui => "https://sui-rpc.publicnode.com".to_string(),
-                    Network::SuiTestnet => "https://sui-testnet-rpc.publicnode.com".to_string(),
-                    _ => unreachable!(),
-                }
-            }
-        };
+        // gRPC endpoints, comma-separated in the variable; unset or without a
+        // usable URL, the public defaults (`rpc::DEFAULT_ENDPOINTS_*`). JSON-RPC
+        // is gone from every public Sui node, so no JSON-RPC URL works here.
+        let rpc = SuiRpc::from_env(network, rpc_env);
 
         // Determine private key based on network (mainnet vs testnet)
         let is_testnet = network.is_testnet();
@@ -878,14 +959,26 @@ impl FromEnvByNetworkBuild for SuiProvider {
         let keypair = parse_sui_private_key(&private_key_str)?;
         let signer_address = SuiAddress::from(&keypair.public());
 
+        // Build the gRPC clients now, inside the runtime: a URL tonic will not
+        // take is logged and skipped here, not on the first payment.
+        // Only the defaults failing would leave none; then Sui stays off and
+        // every other network still starts.
+        if rpc.connect() == 0 {
+            error!(
+                network = %network,
+                "No usable Sui RPC endpoint, not even the defaults; Sui provider not initialized"
+            );
+            return Ok(None);
+        }
+
         info!(
             network = %network,
-            rpc_url = %crate::redact::rpc_url(&rpc_url),
+            rpc_endpoints = ?rpc.labels(),
             signer = %signer_address,
             "Sui provider initialized"
         );
 
-        Ok(Some(Self::new(network, rpc_url, signer_address, keypair)))
+        Ok(Some(Self::new(network, rpc, signer_address, keypair)))
     }
 }
 
@@ -895,13 +988,22 @@ impl FromEnvByNetworkBuild for SuiProvider {
 /// `success: false` with no transaction, it tells the caller the payment did
 /// not happen. It travels as an error so `IntoResponse` answers
 /// `502 settlement_unconfirmed` with the digest.
+///
+/// Executed and failed on chain (the split or the transfer aborted; the gas is
+/// spent and the digest exists) is `success: false` WITH the digest, as EVM
+/// reports a reverted transfer: the payment did not happen, and the caller can
+/// see why on chain. Under JSON-RPC that answer was `success: true`, because
+/// the effects' status was never read.
 fn settle_outcome(
-    submitted: Result<String, FacilitatorLocalError>,
+    submitted: Result<Settled, FacilitatorLocalError>,
     payer: MixedAddress,
     network: Network,
 ) -> Result<SettleResponse, FacilitatorLocalError> {
     match submitted {
-        Ok(digest) => {
+        Ok(Settled {
+            digest,
+            failure: None,
+        }) => {
             info!(network = %network, payer = %payer, digest = %digest, "Sui payment settled successfully");
             Ok(SettleResponse {
                 success: true,
@@ -910,6 +1012,24 @@ fn settle_outcome(
                 transaction: Some(crate::types::TransactionHash::Sui(digest)),
                 network,
                 proof_of_payment: None, // ERC-8004 not supported on Sui yet
+                extensions: None,
+            })
+        }
+        Ok(Settled {
+            digest,
+            failure: Some(failure),
+        }) => {
+            error!(network = %network, payer = %payer, digest = %digest, error = %failure, "Sui settlement executed and failed on chain");
+            Ok(SettleResponse {
+                success: false,
+                error_reason: Some(crate::types::FacilitatorErrorReason::FreeForm(format!(
+                    "Settlement failed: Sui transaction {} executed and failed on chain: {}",
+                    digest, failure
+                ))),
+                payer,
+                transaction: Some(crate::types::TransactionHash::Sui(digest)),
+                network,
+                proof_of_payment: None,
                 extensions: None,
             })
         }
@@ -932,45 +1052,6 @@ fn settle_outcome(
                 extensions: None,
             })
         }
-    }
-}
-
-/// Whether a failed `sui_executeTransactionBlock` may still have executed.
-///
-/// The server refused it when it answered with a JSON-RPC verdict on the
-/// request or the transaction: `-32002` (a bad signature, inputs, objects
-/// locked by another transaction), invalid params or request, an unknown
-/// method. `-32002` saying the transaction is already finalized is the
-/// exception: it executed. Every other answer -- `-32050` (timed out before
-/// finality, overload), an internal error -- and every answer that did not
-/// arrive or did not parse leaves it possibly final, and so does the SDK's own
-/// wait for effects timing out after they were certified.
-///
-/// Read from the error's text: jsonrpsee is not a dependency of this crate, so
-/// its variants cannot be matched here. `CallError::Custom` renders its
-/// `ErrorObject` with `Debug`, which names the code.
-fn execution_may_have_landed(error: &sui_sdk::error::Error) -> bool {
-    use sui_sdk::error::Error;
-    const REFUSALS: [&str; 5] = [
-        "code: ServerError(-32002)",
-        "code: InvalidParams",
-        "code: InvalidRequest",
-        "code: MethodNotFound",
-        "code: ParseError",
-    ];
-    match error {
-        Error::FailToConfirmTransactionStatus(..) => true,
-        Error::RpcError(rpc) => {
-            let text = rpc.to_string();
-            if text.contains("already finalized") {
-                return true;
-            }
-            if text.contains("ErrorObject {") {
-                return !REFUSALS.iter().any(|refusal| text.contains(refusal));
-            }
-            !text.contains("max number of request slots exceeded")
-        }
-        _ => false,
     }
 }
 
@@ -1018,12 +1099,11 @@ impl Facilitator for SuiProvider {
                 payload.coin_object_id, e
             ))
         })?;
-        let client = self
-            .connect_within(crate::chain::rpc_http_timeout())
-            .await?;
-        // Settle is unchanged: execution refuses an input that has moved on.
-        self.check_inputs_current(&client, &tx_data).await?;
-        self.check_balance(&client, &payer_addr, required_amount, &spent_coin_id)
+        // Settle does not repeat this: execution refuses an input that has
+        // moved on, except for this very transaction, whose second settle an
+        // endpoint answers with the effects of the first (as JSON-RPC did).
+        self.check_inputs_current(&tx_data).await?;
+        self.check_balance(&payer_addr, required_amount, &spent_coin_id)
             .await?;
 
         info!(
@@ -1056,13 +1136,7 @@ impl Facilitator for SuiProvider {
                 payload.coin_object_id, e
             ))
         })?;
-        let client = SuiClientBuilder::default()
-            .build(&self.rpc_url)
-            .await
-            .map_err(|e| {
-                FacilitatorLocalError::ContractCall(format!("Failed to connect to Sui RPC: {}", e))
-            })?;
-        self.check_balance(&client, &sender, required_amount, &spent_coin_id)
+        self.check_balance(&sender, required_amount, &spent_coin_id)
             .await?;
 
         // Submit the sponsored transaction
@@ -1154,7 +1228,12 @@ mod tests {
         // validation works predictably in tests.
         SuiProvider {
             network: Network::SuiTestnet,
-            rpc_url: "http://localhost:9000".to_string(),
+            rpc: SuiRpc::new(
+                Network::SuiTestnet,
+                vec!["http://127.0.0.1:9".to_string()],
+                std::time::Duration::from_secs(1),
+                std::time::Duration::from_secs(1),
+            ),
             signer_address: signer,
             keypair: kp,
             usdc_coin_type: USDC_COIN_TYPE_TESTNET.to_string(),
@@ -1328,6 +1407,60 @@ mod tests {
         );
     }
 
+    /// The valid PTB with its gas price and budget replaced.
+    fn with_gas(price: u64, budget: u64) -> TransactionData {
+        let mut tx = build_valid_ptb(
+            sender_addr(),
+            facilitator_addr(),
+            merchant_addr(),
+            1_000_000,
+            dummy_coin_id(),
+        );
+        let TransactionData::V1(v1) = &mut tx;
+        v1.gas_data.price = price;
+        v1.gas_data.budget = budget;
+        tx
+    }
+
+    #[test]
+    fn test_validate_ptb_gas_price_ceiling() {
+        let provider = make_provider(facilitator_addr());
+        let at_ceiling = with_gas(MAX_SPONSORED_GAS_PRICE, 10_000_000);
+        assert!(provider
+            .validate_ptb(&at_ceiling, &merchant_addr(), 1_000_000, &dummy_coin_id())
+            .is_ok());
+        let above = with_gas(MAX_SPONSORED_GAS_PRICE + 1, 10_000_000);
+        let result = provider.validate_ptb(&above, &merchant_addr(), 1_000_000, &dummy_coin_id());
+        assert!(
+            matches!(&result, Err(FacilitatorLocalError::Other(msg)) if msg.contains("gas_data.price")),
+            "a price above the ceiling must be rejected, got: {:?}",
+            result
+        );
+        // The chain's own maximum, which an uncapped sponsor would sign.
+        let drain = with_gas(50_000_000_000, 10_000_000);
+        assert!(provider
+            .validate_ptb(&drain, &merchant_addr(), 1_000_000, &dummy_coin_id())
+            .is_err());
+    }
+
+    #[test]
+    fn test_validate_ptb_gas_budget_ceiling() {
+        let provider = make_provider(facilitator_addr());
+        let at_ceiling = with_gas(1_000, MAX_SPONSORED_GAS_BUDGET);
+        assert!(provider
+            .validate_ptb(&at_ceiling, &merchant_addr(), 1_000_000, &dummy_coin_id())
+            .is_ok());
+        let above = with_gas(1_000, MAX_SPONSORED_GAS_BUDGET + 1);
+        let result = provider.validate_ptb(&above, &merchant_addr(), 1_000_000, &dummy_coin_id());
+        assert!(
+            matches!(&result, Err(FacilitatorLocalError::Other(msg)) if msg.contains("gas_data.budget")),
+            "a budget above the ceiling must be rejected, got: {:?}",
+            result
+        );
+        // The ceiling covers the facilitator's real settlements (~4_150_000 up front).
+        assert!(MAX_SPONSORED_GAS_BUDGET >= 10 * 4_150_000);
+    }
+
     #[test]
     fn test_validate_ptb_extra_commands() {
         // A PTB with 3 commands (extra MoveCall appended) must be rejected.
@@ -1424,30 +1557,32 @@ mod tests {
     }
 }
 
-/// `verify` against the current versions of the transaction's owned inputs.
+/// `verify` against the current versions of the transaction's owned inputs,
+/// and the spent coin and balance reads that bind the payment to USDC.
 ///
-/// Uses nothing newer than `verify` and `SuiProvider::new`, so the module also
-/// runs against the code before the check. The RPC node is a local JSON-RPC
-/// stub answering the SDK handshake, `suix_getCoins` and `sui_multiGetObjects`.
+/// Uses nothing newer than `verify` and `SuiProvider::new`. The node is the
+/// scripted gRPC node in `stub.rs`, reached through the real `sui-rpc` client:
+/// `BatchGetObjects` for the inputs, `GetObject` for the spent coin and
+/// `GetBalance` for the payer's USDC.
 #[cfg(test)]
 mod replay_verify_tests {
+    use super::stub::{self, Node, Reply};
     use super::*;
     use crate::types::{PaymentPayload, PaymentRequirements, TokenAmount};
-    use axum::{routing::post, Json, Router};
-    use serde_json::{json, Value};
-    use sui_sdk::rpc_types::{Coin, CoinPage, SuiObjectData, SuiObjectResponse};
+    use sui_rpc::proto::sui::rpc::v2::{
+        get_object_result, owner::OwnerKind, Balance, BatchGetObjectsResponse, GetBalanceResponse,
+        GetObjectResponse, GetObjectResult, Object, Owner,
+    };
     use sui_types::base_types::{ObjectDigest, ObjectRef, SequenceNumber};
-    use sui_types::digests::TransactionDigest;
-    use sui_types::error::SuiObjectResponseError;
     use sui_types::transaction::{
         GasData, ObjectArg, ProgrammableTransaction, TransactionDataV1, TransactionExpiration,
     };
 
-    const AMOUNT: u64 = 1_000_000;
+    pub(super) const AMOUNT: u64 = 1_000_000;
 
     // Ids built from bytes, not 0x-prefixed literals: .githooks/pre-commit
     // blocks any added 0x + 64 hex, keys and fixtures alike.
-    fn coin_ref() -> ObjectRef {
+    pub(super) fn coin_ref() -> ObjectRef {
         (
             ObjectID::new([0x11; 32]),
             SequenceNumber::from_u64(5),
@@ -1467,11 +1602,15 @@ mod replay_verify_tests {
         SuiAddress::from(ObjectID::new([0xbb; 32]))
     }
 
-    fn sender_keypair() -> SuiKeyPair {
+    pub(super) fn sender_keypair() -> SuiKeyPair {
         // flag 0x00 = Ed25519, then a 32-byte seed.
         let mut bytes = [9u8; 33];
         bytes[0] = 0;
         SuiKeyPair::from_bytes(&bytes).unwrap()
+    }
+
+    pub(super) fn sender() -> SuiAddress {
+        SuiAddress::from(&sender_keypair().public())
     }
 
     #[derive(Clone, Copy)]
@@ -1480,13 +1619,14 @@ mod replay_verify_tests {
         Current,
         /// The coin has a newer version, as after the transaction executed.
         CoinAdvanced,
-        /// The coin is gone, as after a transaction that spent all of it.
+        /// The coin is gone, as after a transaction that spent all of it: the
+        /// node holds it at the referenced version and not any more.
         CoinDeleted,
         /// The referenced version number under another digest.
         CoinOtherDigest,
         /// The RPC is behind: the coin is at an older version than the one referenced.
         CoinBehind,
-        /// The RPC does not know the coin.
+        /// The RPC does not know the coin, at any version.
         CoinUnknown,
         /// The gas coin reads behind its referenced version, the coin moved on.
         GasBehindCoinAdvanced,
@@ -1496,144 +1636,227 @@ mod replay_verify_tests {
         GasUnknownCoinAdvanced,
         /// The RPC does not know the coin, the gas coin moved on.
         CoinUnknownGasAdvanced,
-        /// sui_multiGetObjects answers with a JSON-RPC error.
+        /// BatchGetObjects answers with an error.
         Unreadable,
-        /// sui_multiGetObjects never answers.
+        /// BatchGetObjects never answers.
         Hangs,
     }
 
-    fn object(obj_ref: ObjectRef) -> SuiObjectResponse {
-        SuiObjectResponse::new_with_data(SuiObjectData {
-            object_id: obj_ref.0,
-            version: obj_ref.1,
-            digest: obj_ref.2,
-            type_: None,
-            owner: None,
-            previous_transaction: None,
-            storage_rebate: None,
-            display: None,
-            content: None,
-            bcs: None,
-        })
+    fn found(obj_ref: ObjectRef) -> GetObjectResult {
+        let mut object = Object::default();
+        object.object_id = Some(obj_ref.0.to_string());
+        object.version = Some(obj_ref.1.value());
+        object.digest = Some(obj_ref.2.to_string());
+        let mut result = GetObjectResult::default();
+        result.result = Some(get_object_result::Result::Object(object));
+        result
     }
 
-    fn objects(inputs: Inputs, ids: &Value) -> Value {
-        let responses: Vec<SuiObjectResponse> = ids
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|id| {
-                let id = ObjectID::from_str(id.as_str().unwrap()).unwrap();
-                let moved_on = (
-                    id,
-                    SequenceNumber::from_u64(6),
-                    ObjectDigest::new([5u8; 32]),
-                );
-                match inputs {
-                    Inputs::CoinAdvanced if id == coin_ref().0 => object(moved_on),
-                    Inputs::CoinDeleted if id == coin_ref().0 => {
-                        SuiObjectResponse::new_with_error(SuiObjectResponseError::Deleted {
-                            object_id: id,
-                            version: moved_on.1,
-                            digest: moved_on.2,
-                        })
-                    }
-                    Inputs::CoinOtherDigest if id == coin_ref().0 => {
-                        object((id, coin_ref().1, ObjectDigest::new([7u8; 32])))
-                    }
-                    Inputs::CoinBehind if id == coin_ref().0 => object((
-                        id,
-                        SequenceNumber::from_u64(4),
-                        ObjectDigest::new([6u8; 32]),
-                    )),
-                    Inputs::CoinUnknown if id == coin_ref().0 => {
-                        SuiObjectResponse::new_with_error(SuiObjectResponseError::NotExists {
-                            object_id: id,
-                        })
-                    }
-                    Inputs::GasBehindCoinAdvanced if id == coin_ref().0 => object(moved_on),
-                    Inputs::GasBehindCoinAdvanced => object((
-                        id,
-                        SequenceNumber::from_u64(8),
-                        ObjectDigest::new([8u8; 32]),
-                    )),
-                    Inputs::CoinBehindGasAdvanced if id == coin_ref().0 => object((
-                        id,
-                        SequenceNumber::from_u64(4),
-                        ObjectDigest::new([6u8; 32]),
-                    )),
-                    Inputs::CoinBehindGasAdvanced => object((
-                        id,
-                        SequenceNumber::from_u64(10),
-                        ObjectDigest::new([9u8; 32]),
-                    )),
-                    Inputs::GasUnknownCoinAdvanced if id == coin_ref().0 => object(moved_on),
-                    Inputs::CoinUnknownGasAdvanced if id != coin_ref().0 => object((
-                        id,
-                        SequenceNumber::from_u64(10),
-                        ObjectDigest::new([9u8; 32]),
-                    )),
-                    Inputs::GasUnknownCoinAdvanced | Inputs::CoinUnknownGasAdvanced => {
-                        SuiObjectResponse::new_with_error(SuiObjectResponseError::NotExists {
-                            object_id: id,
-                        })
-                    }
-                    _ if id == coin_ref().0 => object(coin_ref()),
-                    _ => object(gas_ref()),
-                }
-            })
-            .collect();
-        serde_json::to_value(responses).unwrap()
+    fn not_found(id: ObjectID) -> GetObjectResult {
+        let mut status = sui_rpc::proto::google::rpc::Status::default();
+        status.code = tonic::Code::NotFound as i32;
+        status.message = format!("Object {id} not found");
+        let mut result = GetObjectResult::default();
+        result.result = Some(get_object_result::Result::Error(status));
+        result
     }
 
-    pub(super) async fn sui_stub(inputs: Inputs) -> String {
-        let app = Router::new().route(
-            "/",
-            post(move |Json(req): Json<Value>| async move {
-                let error = |message: String| {
-                    Json(json!({"jsonrpc": "2.0", "id": req["id"], "error": {
-                        "code": -32603, "message": message,
-                    }}))
-                };
-                let result = match req["method"].as_str().unwrap_or_default() {
-                    "rpc.discover" => json!({"info": {"version": "1.37.3"}, "methods": []}),
-                    "suix_getCoins" => serde_json::to_value(CoinPage {
-                        data: vec![Coin {
-                            coin_type: USDC_COIN_TYPE_TESTNET.to_string(),
-                            coin_object_id: coin_ref().0,
-                            version: coin_ref().1,
-                            digest: coin_ref().2,
-                            balance: 5 * AMOUNT,
-                            previous_transaction: TransactionDigest::new([0u8; 32]),
-                        }],
-                        next_cursor: None,
-                        has_next_page: false,
-                    })
-                    .unwrap(),
-                    "sui_multiGetObjects" => match inputs {
-                        Inputs::Unreadable => return error("scripted".to_string()),
-                        Inputs::Hangs => {
-                            tokio::time::sleep(std::time::Duration::from_secs(3_600)).await;
-                            Value::Null
-                        }
-                        _ => objects(inputs, &req["params"][0]),
-                    },
-                    other => return error(format!("unexpected method {other}")),
-                };
-                Json(json!({"jsonrpc": "2.0", "id": req["id"], "result": result}))
-            }),
+    /// The node's answer for one input; `version` is set when the referenced
+    /// version is asked for, after the current one was not found.
+    fn object(inputs: Inputs, id: ObjectID, version: Option<u64>) -> GetObjectResult {
+        let is_coin = id == coin_ref().0;
+        let referenced = if is_coin { coin_ref() } else { gas_ref() };
+        if let Some(version) = version {
+            assert_eq!(
+                version,
+                referenced.1.value(),
+                "only the referenced version is asked for"
+            );
+            return match inputs {
+                Inputs::CoinUnknown | Inputs::CoinUnknownGasAdvanced if is_coin => not_found(id),
+                Inputs::GasUnknownCoinAdvanced if !is_coin => not_found(id),
+                _ => found(referenced),
+            };
+        }
+        let moved_on = (
+            id,
+            SequenceNumber::from_u64(6),
+            ObjectDigest::new([5u8; 32]),
         );
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = listener.local_addr().unwrap();
-        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
-        format!("http://{addr}")
+        match inputs {
+            Inputs::CoinAdvanced if is_coin => found(moved_on),
+            Inputs::CoinDeleted if is_coin => not_found(id),
+            Inputs::CoinOtherDigest if is_coin => {
+                found((id, coin_ref().1, ObjectDigest::new([7u8; 32])))
+            }
+            Inputs::CoinBehind if is_coin => found((
+                id,
+                SequenceNumber::from_u64(4),
+                ObjectDigest::new([6u8; 32]),
+            )),
+            Inputs::CoinUnknown if is_coin => not_found(id),
+            Inputs::GasBehindCoinAdvanced if is_coin => found(moved_on),
+            Inputs::GasBehindCoinAdvanced => found((
+                id,
+                SequenceNumber::from_u64(8),
+                ObjectDigest::new([8u8; 32]),
+            )),
+            Inputs::CoinBehindGasAdvanced if is_coin => found((
+                id,
+                SequenceNumber::from_u64(4),
+                ObjectDigest::new([6u8; 32]),
+            )),
+            Inputs::CoinBehindGasAdvanced => found((
+                id,
+                SequenceNumber::from_u64(10),
+                ObjectDigest::new([9u8; 32]),
+            )),
+            Inputs::GasUnknownCoinAdvanced if is_coin => found(moved_on),
+            Inputs::GasUnknownCoinAdvanced => not_found(id),
+            Inputs::CoinUnknownGasAdvanced if is_coin => not_found(id),
+            Inputs::CoinUnknownGasAdvanced => found((
+                id,
+                SequenceNumber::from_u64(10),
+                ObjectDigest::new([9u8; 32]),
+            )),
+            _ => found(referenced),
+        }
     }
 
-    pub(super) async fn provider(inputs: Inputs) -> SuiProvider {
+    /// The payer's coin as the node holds it, and what `GetBalance` reports.
+    #[derive(Clone)]
+    pub(super) struct Holdings {
+        pub coin_owner: SuiAddress,
+        pub coin_type: String,
+        /// `false`: the node holds no such coin.
+        pub coin_exists: bool,
+        pub balance: u64,
+        pub address_balance: u64,
+    }
+
+    impl Holdings {
+        pub(super) fn usdc() -> Self {
+            Self {
+                coin_owner: sender(),
+                coin_type: USDC_COIN_TYPE_TESTNET.to_string(),
+                coin_exists: true,
+                balance: 5 * AMOUNT,
+                address_balance: 0,
+            }
+        }
+    }
+
+    /// Whether a read mask names `field`, as a node renders only the fields asked
+    /// for (no mask: only the id, as if the default left the rest out).
+    fn asks(mask: &Option<sui_rpc::field::FieldMask>, field: &str) -> bool {
+        mask.as_ref()
+            .is_some_and(|mask| mask.paths.iter().any(|path| path == field))
+    }
+
+    pub(super) fn node(inputs: Inputs, holdings: Holdings) -> Node {
+        let mut node = Node::default();
+        node.batch_get_objects = Box::new(move |request| match inputs {
+            Inputs::Unreadable => Reply::Answer(Err(tonic::Status::internal("scripted"))),
+            Inputs::Hangs => Reply::Hang,
+            _ => {
+                let mut response = BatchGetObjectsResponse::default();
+                response.objects = request
+                    .requests
+                    .iter()
+                    .map(|r| {
+                        let id = ObjectID::from_str(r.object_id.as_deref().unwrap()).unwrap();
+                        let mut result = object(inputs, id, r.version);
+                        if let Some(get_object_result::Result::Object(object)) =
+                            result.result.as_mut()
+                        {
+                            if !asks(&request.read_mask, "version") {
+                                object.version = None;
+                            }
+                            if !asks(&request.read_mask, "digest") {
+                                object.digest = None;
+                            }
+                        }
+                        result
+                    })
+                    .collect();
+                Reply::Answer(Ok(response))
+            }
+        });
+        let coin = holdings.clone();
+        node.get_object = Box::new(move |request| {
+            let id = ObjectID::from_str(request.object_id.as_deref().unwrap()).unwrap();
+            if id != coin_ref().0 || !coin.coin_exists {
+                return Reply::Answer(Err(tonic::Status::not_found(format!(
+                    "Object {id} not found"
+                ))));
+            }
+            let mut object = Object::default();
+            object.object_id = Some(id.to_string());
+            if asks(&request.read_mask, "owner") {
+                let mut owner = Owner::default();
+                owner.kind = Some(OwnerKind::Address as i32);
+                owner.address = Some(coin.coin_owner.to_string());
+                object.owner = Some(owner);
+            }
+            if asks(&request.read_mask, "object_type") {
+                object.object_type = Some(format!("0x2::coin::Coin<{}>", coin.coin_type));
+            }
+            let mut response = GetObjectResponse::default();
+            response.object = Some(object);
+            Reply::Answer(Ok(response))
+        });
+        node.get_balance = Box::new(move |request| {
+            // The payer's USDC; any other owner or coin type holds nothing here.
+            let asked_for_the_payer = request.owner.as_deref()
+                == Some(sender().to_string().as_str())
+                && request.coin_type.as_deref() == Some(USDC_COIN_TYPE_TESTNET);
+            let (total, address) = if asked_for_the_payer {
+                (holdings.balance, holdings.address_balance)
+            } else {
+                (0, 0)
+            };
+            let mut balance = Balance::default();
+            balance.coin_type = request.coin_type.clone();
+            balance.balance = Some(total);
+            if address > 0 {
+                balance.address_balance = Some(address);
+            }
+            let coins = total.saturating_sub(address);
+            if coins > 0 {
+                balance.coin_balance = Some(coins);
+            }
+            let mut response = GetBalanceResponse::default();
+            response.balance = Some(balance);
+            Reply::Answer(Ok(response))
+        });
+        node
+    }
+
+    /// The facilitator: the all-zero Ed25519 seed, sponsoring from `urls`.
+    pub(super) fn provider_at(urls: Vec<String>, read_timeout: std::time::Duration) -> SuiProvider {
         // flag 0x00 = Ed25519, then a 32-byte seed.
         let keypair = SuiKeyPair::from_bytes(&[0u8; 33]).unwrap();
         let signer = SuiAddress::from(&keypair.public());
-        SuiProvider::new(Network::SuiTestnet, sui_stub(inputs).await, signer, keypair)
+        SuiProvider::new(
+            Network::SuiTestnet,
+            SuiRpc::new(
+                Network::SuiTestnet,
+                urls,
+                read_timeout,
+                std::time::Duration::from_secs(5),
+            ),
+            signer,
+            keypair,
+        )
+    }
+
+    pub(super) async fn provider_with(inputs: Inputs, holdings: Holdings) -> SuiProvider {
+        let (url, _) = stub::serve(node(inputs, holdings)).await;
+        provider_at(vec![url], std::time::Duration::from_secs(5))
+    }
+
+    pub(super) async fn provider(inputs: Inputs) -> SuiProvider {
+        provider_with(inputs, Holdings::usdc()).await
     }
 
     /// The two-command USDC transfer PTB, sponsored by `sponsor`.
@@ -1662,12 +1885,24 @@ mod replay_verify_tests {
         })
     }
 
-    fn request(provider: &SuiProvider) -> (VerifyRequest, SuiAddress) {
+    pub(super) fn request(provider: &SuiProvider) -> (VerifyRequest, SuiAddress) {
+        request_with_gas(provider, 1_000, 10_000_000)
+    }
+
+    /// [`request`] with the transaction's gas price and budget set.
+    pub(super) fn request_with_gas(
+        provider: &SuiProvider,
+        price: u64,
+        budget: u64,
+    ) -> (VerifyRequest, SuiAddress) {
         use base64::{engine::general_purpose::STANDARD, Engine};
 
         let sender_keypair = sender_keypair();
         let sender = SuiAddress::from(&sender_keypair.public());
-        let tx = transaction(provider.signer_address, sender);
+        let mut tx = transaction(provider.signer_address, sender);
+        let TransactionData::V1(v1) = &mut tx;
+        v1.gas_data.price = price;
+        v1.gas_data.budget = budget;
         let signature = Signature::new_secure(
             &IntentMessage::new(Intent::sui_transaction(), tx.clone()),
             &sender_keypair,
@@ -1705,95 +1940,70 @@ mod replay_verify_tests {
         (request, sender)
     }
 
+    async fn verify(inputs: Inputs) -> Result<VerifyResponse, FacilitatorLocalError> {
+        let provider = provider(inputs).await;
+        let (request, _) = request(&provider);
+        provider.verify(&request).await
+    }
+
+    fn valid(response: &VerifyResponse) -> bool {
+        matches!(response, VerifyResponse::Valid { payer } if *payer == MixedAddress::Sui(sender().to_string()))
+    }
+
+    fn already_used(err: &FacilitatorLocalError) -> bool {
+        matches!(err, FacilitatorLocalError::Other(msg) if msg.contains("already used"))
+    }
+
     #[tokio::test]
     async fn verify_rejects_a_transaction_whose_coin_moved_past_the_signed_version() {
-        let provider = provider(Inputs::CoinAdvanced).await;
-        let (request, _) = request(&provider);
-
-        let err = provider
-            .verify(&request)
+        let err = verify(Inputs::CoinAdvanced)
             .await
             .expect_err("a transaction whose coin moved on must not verify");
-        assert!(
-            matches!(&err, FacilitatorLocalError::Other(msg) if msg.contains("already used")),
-            "got {err:?}"
-        );
+        assert!(already_used(&err), "got {err:?}");
     }
 
     #[tokio::test]
     async fn verify_rejects_a_transaction_whose_coin_no_longer_exists() {
-        let provider = provider(Inputs::CoinDeleted).await;
-        let (request, _) = request(&provider);
-
-        let err = provider
-            .verify(&request)
+        let err = verify(Inputs::CoinDeleted)
             .await
             .expect_err("a transaction whose coin is gone must not verify");
         assert!(
-            matches!(&err, FacilitatorLocalError::Other(msg) if msg.contains("already used")),
+            matches!(&err, FacilitatorLocalError::Other(msg) if msg.contains("it was deleted")),
             "got {err:?}"
         );
     }
 
     #[tokio::test]
     async fn verify_accepts_a_transaction_whose_inputs_are_current() {
-        let provider = provider(Inputs::Current).await;
-        let (request, sender) = request(&provider);
-
-        let response = provider
-            .verify(&request)
+        let response = verify(Inputs::Current)
             .await
             .expect("a transaction with current inputs verifies");
-        assert!(
-            matches!(&response, VerifyResponse::Valid { payer } if *payer == MixedAddress::Sui(sender.to_string())),
-            "got {response:?}"
-        );
+        assert!(valid(&response), "got {response:?}");
     }
 
     #[tokio::test]
     async fn verify_rejects_a_transaction_whose_coin_has_another_digest_at_the_referenced_version()
     {
-        let provider = provider(Inputs::CoinOtherDigest).await;
-        let (request, _) = request(&provider);
-
-        let err = provider
-            .verify(&request)
+        let err = verify(Inputs::CoinOtherDigest)
             .await
             .expect_err("the referenced version under another digest must not verify");
-        assert!(
-            matches!(&err, FacilitatorLocalError::Other(msg) if msg.contains("already used")),
-            "got {err:?}"
-        );
+        assert!(already_used(&err), "got {err:?}");
     }
 
     #[tokio::test]
     async fn verify_accepts_a_transaction_when_the_rpc_is_behind_the_referenced_version() {
-        let provider = provider(Inputs::CoinBehind).await;
-        let (request, sender) = request(&provider);
-
-        let response = provider
-            .verify(&request)
+        let response = verify(Inputs::CoinBehind)
             .await
             .expect("an RPC behind the client is not a replay");
-        assert!(
-            matches!(&response, VerifyResponse::Valid { payer } if *payer == MixedAddress::Sui(sender.to_string())),
-            "got {response:?}"
-        );
+        assert!(valid(&response), "got {response:?}");
     }
 
     #[tokio::test]
     async fn verify_accepts_a_transaction_whose_coin_the_rpc_does_not_know() {
-        let provider = provider(Inputs::CoinUnknown).await;
-        let (request, sender) = request(&provider);
-
-        let response = provider
-            .verify(&request)
+        let response = verify(Inputs::CoinUnknown)
             .await
             .expect("an object the RPC has not seen is not a replay");
-        assert!(
-            matches!(&response, VerifyResponse::Valid { payer } if *payer == MixedAddress::Sui(sender.to_string())),
-            "got {response:?}"
-        );
+        assert!(valid(&response), "got {response:?}");
     }
 
     /// A lagging read only lets verify go on to the next input; it must not
@@ -1801,75 +2011,41 @@ mod replay_verify_tests {
     /// the lagging read comes before the one that moved on.
     #[tokio::test]
     async fn verify_rejects_when_the_gas_reads_behind_and_the_coin_moved_on() {
-        let provider = provider(Inputs::GasBehindCoinAdvanced).await;
-        let (request, _) = request(&provider);
-
-        let err = provider
-            .verify(&request)
+        let err = verify(Inputs::GasBehindCoinAdvanced)
             .await
             .expect_err("a coin that moved on must not verify behind a lagging gas read");
-        assert!(
-            matches!(&err, FacilitatorLocalError::Other(msg) if msg.contains("already used")),
-            "got {err:?}"
-        );
+        assert!(already_used(&err), "got {err:?}");
     }
 
     #[tokio::test]
     async fn verify_rejects_when_the_coin_reads_behind_and_the_gas_moved_on() {
-        let provider = provider(Inputs::CoinBehindGasAdvanced).await;
-        let (request, _) = request(&provider);
-
-        let err = provider
-            .verify(&request)
+        let err = verify(Inputs::CoinBehindGasAdvanced)
             .await
             .expect_err("a gas coin that moved on must not verify beside a lagging coin read");
-        assert!(
-            matches!(&err, FacilitatorLocalError::Other(msg) if msg.contains("already used")),
-            "got {err:?}"
-        );
+        assert!(already_used(&err), "got {err:?}");
     }
 
     /// Same rule for an object the RPC does not know: it lets verify go on to
-    /// the next input and never decides for the whole transaction. The gas
-    /// payment is read first, so here the unknown object comes before the one
-    /// that moved on.
+    /// the next input and never decides for the whole transaction.
     #[tokio::test]
     async fn verify_rejects_when_the_gas_is_unknown_and_the_coin_moved_on() {
-        let provider = provider(Inputs::GasUnknownCoinAdvanced).await;
-        let (request, _) = request(&provider);
-
-        let err = provider
-            .verify(&request)
+        let err = verify(Inputs::GasUnknownCoinAdvanced)
             .await
             .expect_err("a coin that moved on must not verify behind an unknown gas coin");
-        assert!(
-            matches!(&err, FacilitatorLocalError::Other(msg) if msg.contains("already used")),
-            "got {err:?}"
-        );
+        assert!(already_used(&err), "got {err:?}");
     }
 
     #[tokio::test]
     async fn verify_rejects_when_the_coin_is_unknown_and_the_gas_moved_on() {
-        let provider = provider(Inputs::CoinUnknownGasAdvanced).await;
-        let (request, _) = request(&provider);
-
-        let err = provider
-            .verify(&request)
+        let err = verify(Inputs::CoinUnknownGasAdvanced)
             .await
             .expect_err("a gas coin that moved on must not verify beside an unknown coin");
-        assert!(
-            matches!(&err, FacilitatorLocalError::Other(msg) if msg.contains("already used")),
-            "got {err:?}"
-        );
+        assert!(already_used(&err), "got {err:?}");
     }
 
     #[tokio::test]
     async fn verify_fails_closed_when_the_inputs_cannot_be_read() {
-        let provider = provider(Inputs::Unreadable).await;
-        let (request, _) = request(&provider);
-
-        let err = provider
-            .verify(&request)
+        let err = verify(Inputs::Unreadable)
             .await
             .expect_err("an unanswered input read must not vouch for a transaction");
         assert!(
@@ -1877,24 +2053,129 @@ mod replay_verify_tests {
             "got {err:?}"
         );
     }
+
+    // --- The spent coin and the balance (audit 04 binding and the amount). ---
+
+    async fn verify_holding(holdings: Holdings) -> Result<VerifyResponse, FacilitatorLocalError> {
+        let provider = provider_with(Inputs::Current, holdings).await;
+        let (request, _) = request(&provider);
+        provider.verify(&request).await
+    }
+
+    fn not_usdc(err: &FacilitatorLocalError) -> bool {
+        matches!(err, FacilitatorLocalError::Other(msg) if msg.contains("is not a USDC"))
+    }
+
+    #[tokio::test]
+    async fn verify_rejects_a_spent_coin_of_another_type() {
+        let holdings = Holdings {
+            coin_type: "0x2::sui::SUI".to_string(),
+            ..Holdings::usdc()
+        };
+        let err = verify_holding(holdings)
+            .await
+            .expect_err("Coin<SUI> is not USDC");
+        assert!(not_usdc(&err), "got {err:?}");
+    }
+
+    #[tokio::test]
+    async fn verify_rejects_a_spent_coin_owned_by_someone_else() {
+        let holdings = Holdings {
+            coin_owner: merchant(),
+            ..Holdings::usdc()
+        };
+        let err = verify_holding(holdings)
+            .await
+            .expect_err("not the payer's coin");
+        assert!(not_usdc(&err), "got {err:?}");
+    }
+
+    #[tokio::test]
+    async fn verify_rejects_a_spent_coin_the_node_does_not_hold() {
+        let holdings = Holdings {
+            coin_exists: false,
+            ..Holdings::usdc()
+        };
+        let err = verify_holding(holdings).await.expect_err("no such coin");
+        assert!(not_usdc(&err), "got {err:?}");
+    }
+
+    #[tokio::test]
+    async fn verify_accepts_a_balance_of_exactly_the_amount() {
+        let holdings = Holdings {
+            balance: AMOUNT,
+            ..Holdings::usdc()
+        };
+        let response = verify_holding(holdings).await.expect("exactly enough");
+        assert!(valid(&response), "got {response:?}");
+    }
+
+    #[tokio::test]
+    async fn verify_rejects_a_balance_one_unit_short() {
+        let holdings = Holdings {
+            balance: AMOUNT - 1,
+            ..Holdings::usdc()
+        };
+        let err = verify_holding(holdings).await.expect_err("one unit short");
+        assert!(
+            matches!(&err, FacilitatorLocalError::InsufficientFunds(_)),
+            "got {err:?}"
+        );
+    }
+
+    /// USDC in the address balance is not in a coin the PTB can split.
+    #[tokio::test]
+    async fn verify_does_not_count_the_address_balance() {
+        let holdings = Holdings {
+            balance: 5 * AMOUNT,
+            address_balance: 5 * AMOUNT - AMOUNT / 2,
+            ..Holdings::usdc()
+        };
+        let err = verify_holding(holdings)
+            .await
+            .expect_err("half the amount in coins");
+        assert!(
+            matches!(&err, FacilitatorLocalError::InsufficientFunds(_)),
+            "got {err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn verify_reads_the_next_endpoint_when_the_first_is_down() {
+        let (url, node) = stub::serve(node(Inputs::Current, Holdings::usdc())).await;
+        let provider = provider_at(
+            vec![stub::closed_endpoint().await, url],
+            std::time::Duration::from_secs(5),
+        );
+        let (request, _) = request(&provider);
+        let response = provider
+            .verify(&request)
+            .await
+            .expect("the second endpoint answers");
+        assert!(valid(&response), "got {response:?}");
+        assert_eq!(
+            node.calls(),
+            vec!["BatchGetObjects", "GetObject", "GetBalance"]
+        );
+    }
 }
 
 #[cfg(test)]
 mod replay_verify_bound_tests {
-    use super::replay_verify_tests::{provider, transaction, Inputs};
+    use super::replay_verify_tests::{node, provider_at, transaction, Holdings, Inputs};
+    use super::stub;
     use super::*;
 
     #[tokio::test]
     async fn input_read_gives_up_at_its_timeout() {
-        let provider = provider(Inputs::Hangs).await;
+        let (url, _) = stub::serve(node(Inputs::Hangs, Holdings::usdc())).await;
+        let provider = provider_at(vec![url], std::time::Duration::from_millis(200));
         let tx = transaction(provider.signer_address, provider.signer_address);
 
-        let result = tokio::time::timeout(std::time::Duration::from_secs(5), async {
-            let client = provider
-                .connect_within(std::time::Duration::from_millis(200))
-                .await?;
-            provider.check_inputs_current(&client, &tx).await
-        })
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            provider.check_inputs_current(&tx),
+        )
         .await
         .expect("the check must return on its own timeout, not hang");
         assert!(
@@ -1904,101 +2185,184 @@ mod replay_verify_bound_tests {
     }
 }
 
-/// An execution whose outcome is unknown keeps its digest.
-///
-/// Driven through the real SDK against a stub RPC, so the errors classified
-/// are the ones jsonrpsee actually builds, not strings written to match.
+/// A settle through the scripted gRPC node: what is sent, and how each
+/// outcome of the execution reaches the settle answer.
 #[cfg(test)]
 mod execution_outcome_tests {
-    use super::replay_verify_tests::transaction;
+    use super::replay_verify_tests::{
+        node, provider_at, request, request_with_gas, sender, transaction, Holdings, Inputs,
+    };
+    use super::stub::{self, Node, Reply};
     use super::*;
-    use axum::{response::IntoResponse, routing::post, Json, Router};
-    use serde_json::{json, Value};
+    use sui_rpc::proto::sui::rpc::v2::{
+        ExecuteTransactionResponse, ExecutedTransaction, ExecutionError, ExecutionStatus,
+        TransactionEffects,
+    };
+    use sui_types::crypto::SignatureScheme;
 
-    #[derive(Clone, Copy)]
-    enum Node {
-        Refuses,
-        AlreadyFinalized,
-        TimesOutBeforeFinality,
-        GatewayError,
+    fn executed(digest: &str, success: bool) -> ExecuteTransactionResponse {
+        let mut status = ExecutionStatus::default();
+        status.success = Some(success);
+        if !success {
+            let mut error = ExecutionError::default();
+            error.description = Some("InsufficientCoinBalance in command 0".to_string());
+            status.error = Some(error);
+        }
+        let mut effects = TransactionEffects::default();
+        effects.status = Some(status);
+        let mut transaction = ExecutedTransaction::default();
+        transaction.digest = Some(digest.to_string());
+        transaction.effects = Some(effects);
+        let mut response = ExecuteTransactionResponse::default();
+        response.transaction = Some(transaction);
+        response
     }
 
-    async fn stub(node: Node) -> String {
-        let app = Router::new().route(
-            "/",
-            post(move |Json(req): Json<Value>| async move {
-                let error = |code: i64, message: &str| {
-                    Json(json!({"jsonrpc":"2.0","id":req["id"],"error":{"code":code,"message":message}}))
-                        .into_response()
-                };
-                match req["method"].as_str().unwrap_or_default() {
-                    "rpc.discover" => Json(json!({"jsonrpc":"2.0","id":req["id"],
-                        "result":{"info":{"version":"1.37.3"},"methods":[]}}))
-                    .into_response(),
-                    "sui_executeTransactionBlock" => match node {
-                        Node::Refuses => error(-32002, "Invalid user signature: bad signature"),
-                        Node::AlreadyFinalized => error(
-                            -32002,
-                            "The transaction is already finalized but with different user signatures",
-                        ),
-                        Node::TimesOutBeforeFinality => {
-                            error(-32050, "Transaction timed out before reaching finality")
-                        }
-                        Node::GatewayError => {
-                            (axum::http::StatusCode::BAD_GATEWAY, "upstream reset").into_response()
-                        }
-                    },
-                    other => error(-32601, &format!("unexpected method {other}")),
-                }
-            }),
-        );
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = listener.local_addr().unwrap();
-        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
-        format!("http://{addr}")
+    /// A node for the settle path: the payer's USDC is there, the transaction
+    /// is unknown to it, and `execute` decides the rest.
+    fn settle_node(
+        execute: impl Fn(&str) -> Reply<ExecuteTransactionResponse> + Send + Sync + 'static,
+        digest: String,
+    ) -> Node {
+        let mut node = node(Inputs::Current, Holdings::usdc());
+        node.get_transaction =
+            Box::new(|_| Reply::Answer(Err(tonic::Status::not_found("Transaction not found"))));
+        node.execute = Box::new(move |_| execute(&digest));
+        node
     }
 
-    async fn execute(node: Node) -> (Result<String, FacilitatorLocalError>, String) {
-        let sponsor = SuiKeyPair::from_bytes(&[0u8; 33]).unwrap();
-        let sponsor_address = SuiAddress::from(&sponsor.public());
-        let mut seed = [5u8; 33];
-        seed[0] = 0;
-        let sender = SuiKeyPair::from_bytes(&seed).unwrap();
-        let sender_address = SuiAddress::from(&sender.public());
-        let tx_data = transaction(sponsor_address, sender_address);
-        let digest = tx_data.digest().to_string();
-        let signature = Signature::new_secure(
-            &IntentMessage::new(Intent::sui_transaction(), tx_data.clone()),
-            &sender,
+    fn digest_of(provider: &SuiProvider) -> String {
+        transaction(provider.signer_address, sender())
+            .digest()
+            .to_string()
+    }
+
+    async fn settle(
+        execute: impl Fn(&str) -> Reply<ExecuteTransactionResponse> + Send + Sync + 'static,
+    ) -> (
+        Result<SettleResponse, FacilitatorLocalError>,
+        String,
+        std::sync::Arc<Node>,
+        SuiProvider,
+    ) {
+        // The digest depends on the sponsor, so ask a provider first.
+        let digest = digest_of(&provider_at(vec![], std::time::Duration::from_secs(1)));
+        let (url, node) = stub::serve(settle_node(execute, digest.clone())).await;
+        let provider = provider_at(vec![url], std::time::Duration::from_secs(5));
+        let (request, _) = request(&provider);
+        let result = provider.settle(&request).await;
+        (result, digest, node, provider)
+    }
+
+    #[tokio::test]
+    async fn a_settled_payment_reports_its_digest_and_sends_both_signatures_over_the_signed_bytes()
+    {
+        let (result, digest, node, provider) =
+            settle(|digest| Reply::Answer(Ok(executed(digest, true)))).await;
+        let response = result.expect("settled");
+        assert!(response.success, "{response:?}");
+        assert_eq!(
+            response.transaction,
+            Some(crate::types::TransactionHash::Sui(digest.clone()))
         );
-        let provider = SuiProvider::new(
-            Network::SuiTestnet,
-            stub(node).await,
-            sponsor_address,
-            sponsor,
+
+        let sent = node.executions();
+        assert_eq!(sent.len(), 1);
+
+        // What a node does with the request (`sui-rpc-api` execute_transaction):
+        // the proto transaction and signatures through sui-sdk-types. The
+        // facilitator's sui-types 1.37.3 bytes must be the SAME transaction to
+        // it, digest included, or every lookup asks about another one.
+        let node_tx = sui_sdk_types::Transaction::try_from(sent[0].transaction.as_ref().unwrap())
+            .expect("a node reads the BCS as a transaction");
+        assert_eq!(node_tx.digest().to_string(), digest);
+        for signature in &sent[0].signatures {
+            sui_sdk_types::UserSignature::try_from(signature).expect("a node reads each signature");
+        }
+
+        let tx = transaction(provider.signer_address, sender());
+        assert_eq!(
+            sent[0]
+                .transaction
+                .as_ref()
+                .and_then(|t| t.bcs.as_ref())
+                .and_then(|b| b.value.as_deref()),
+            Some(bcs::to_bytes(&tx).unwrap().as_slice())
         );
-        let result = provider
-            .submit_sponsored_transaction(tx_data, signature, sender_address)
-            .await;
-        (result, digest)
+        let signatures: Vec<Signature> = sent[0]
+            .signatures
+            .iter()
+            .map(|s| {
+                Signature::from_bytes(s.bcs.as_ref().unwrap().value.as_deref().unwrap()).unwrap()
+            })
+            .collect();
+        assert_eq!(signatures.len(), 2, "sender, then sponsor");
+        let intent = IntentMessage::new(Intent::sui_transaction(), tx);
+        signatures[0]
+            .verify_secure(&intent, sender(), SignatureScheme::ED25519)
+            .expect("the sender's signature, untouched");
+        signatures[1]
+            .verify_secure(&intent, provider.signer_address, SignatureScheme::ED25519)
+            .expect("the facilitator's sponsor signature");
+    }
+
+    #[tokio::test]
+    async fn an_execution_that_failed_on_chain_is_a_failed_settlement_with_its_digest() {
+        let (result, digest, _, _) =
+            settle(|digest| Reply::Answer(Ok(executed(digest, false)))).await;
+        let response = result.expect("a verdict");
+        assert!(!response.success, "{response:?}");
+        assert_eq!(
+            response.transaction,
+            Some(crate::types::TransactionHash::Sui(digest))
+        );
+        let reason = format!("{:?}", response.error_reason);
+        assert!(reason.contains("failed on chain"), "{reason}");
+        assert!(reason.contains("InsufficientCoinBalance"), "{reason}");
     }
 
     #[tokio::test]
     async fn an_execution_that_may_be_final_reports_its_digest() {
-        for node in [
-            Node::AlreadyFinalized,
-            Node::TimesOutBeforeFinality,
-            Node::GatewayError,
+        for status in [
+            tonic::Status::unavailable("timed-out before finality could be reached"),
+            tonic::Status::aborted(
+                "The transaction is already finalized but with different user signatures",
+            ),
+            tonic::Status::internal("connection reset"),
+            tonic::Status::resource_exhausted("validator overloaded"),
         ] {
-            let (result, digest) = execute(node).await;
+            let code = status.code();
+            let message = status.message().to_string();
+            let (result, digest, _, _) =
+                settle(move |_| Reply::Answer(Err(tonic::Status::new(code, message.clone()))))
+                    .await;
             match result {
                 Err(FacilitatorLocalError::SettlementUnconfirmed(tx, network)) => {
                     assert_eq!(tx, crate::types::TransactionHash::Sui(digest));
                     assert_eq!(network, Network::SuiTestnet);
                 }
-                other => panic!("expected SettlementUnconfirmed, got {other:?}"),
+                other => panic!("{code:?}: expected SettlementUnconfirmed, got {other:?}"),
             }
         }
+    }
+
+    #[tokio::test]
+    async fn an_execution_the_node_refused_keeps_its_old_error() {
+        let (result, _, _, _) = settle(|_| {
+            Reply::Answer(Err(tonic::Status::invalid_argument(
+                "Invalid user signature: bad signature",
+            )))
+        })
+        .await;
+        let response = result.expect("a refusal is a settle verdict");
+        assert!(!response.success);
+        assert!(response.transaction.is_none());
+        let reason = format!("{:?}", response.error_reason);
+        assert!(
+            reason.contains("Failed to execute Sui transaction"),
+            "{reason}"
+        );
+        assert!(reason.contains("Invalid user signature"), "{reason}");
     }
 
     /// The settle answer: an execution with no verdict is an error carrying
@@ -2028,7 +2392,29 @@ mod execution_outcome_tests {
         .expect("a refusal is a settle verdict");
         assert!(!refused.success);
         assert!(refused.transaction.is_none());
-        let settled = settle_outcome(Ok(digest.clone()), payer, Network::SuiTestnet).unwrap();
+        let failed = settle_outcome(
+            Ok(Settled {
+                digest: digest.clone(),
+                failure: Some("MoveAbort".to_string()),
+            }),
+            payer.clone(),
+            Network::SuiTestnet,
+        )
+        .expect("an on-chain failure is a settle verdict");
+        assert!(!failed.success);
+        assert_eq!(
+            failed.transaction,
+            Some(crate::types::TransactionHash::Sui(digest.clone()))
+        );
+        let settled = settle_outcome(
+            Ok(Settled {
+                digest: digest.clone(),
+                failure: None,
+            }),
+            payer,
+            Network::SuiTestnet,
+        )
+        .unwrap();
         assert!(settled.success);
         assert_eq!(
             settled.transaction,
@@ -2036,14 +2422,48 @@ mod execution_outcome_tests {
         );
     }
 
+    /// The gas ceilings hold on settle: a sponsor-draining transaction is
+    /// refused before any read, signature or send.
     #[tokio::test]
-    async fn an_execution_the_node_refused_keeps_its_old_error() {
-        let (result, _) = execute(Node::Refuses).await;
-        match result {
-            Err(FacilitatorLocalError::Other(message)) => {
-                assert!(message.contains("Invalid user signature"), "{message}");
-            }
-            other => panic!("expected the refusal, got {other:?}"),
+    async fn a_settle_above_the_gas_ceilings_reaches_no_endpoint() {
+        let digest = digest_of(&provider_at(vec![], std::time::Duration::from_secs(1)));
+        let (url, node) = stub::serve(settle_node(
+            |d| Reply::Answer(Ok(executed(d, true))),
+            digest,
+        ))
+        .await;
+        let provider = provider_at(vec![url], std::time::Duration::from_secs(5));
+        for (price, budget) in [
+            (MAX_SPONSORED_GAS_PRICE + 1, 10_000_000),
+            (1_000, MAX_SPONSORED_GAS_BUDGET + 1),
+            (50_000_000_000, 20_000_000_000),
+        ] {
+            let (request, _) = request_with_gas(&provider, price, budget);
+            let err = provider
+                .settle(&request)
+                .await
+                .expect_err("a draining gas_data must not settle");
+            assert!(
+                matches!(&err, FacilitatorLocalError::Other(msg) if msg.contains("the facilitator sponsors")),
+                "price {price} budget {budget}: got {err:?}"
+            );
         }
+        assert!(node.calls().is_empty(), "{:?}", node.calls());
+    }
+
+    #[tokio::test]
+    async fn no_reachable_endpoint_is_a_failed_settlement_with_nothing_sent() {
+        // Settle reads the balance first, from a live node; then that node
+        // stops answering the digest lookup, so nothing can be sent.
+        let digest = digest_of(&provider_at(vec![], std::time::Duration::from_secs(1)));
+        let mut node = settle_node(|d| Reply::Answer(Ok(executed(d, true))), digest);
+        node.get_transaction = Box::new(|_| Reply::Answer(Err(tonic::Status::unavailable("down"))));
+        let (url, node) = stub::serve(node).await;
+        let provider = provider_at(vec![url], std::time::Duration::from_secs(5));
+        let (request, _) = request(&provider);
+        let response = provider.settle(&request).await.expect("a verdict");
+        assert!(!response.success, "{response:?}");
+        assert!(response.transaction.is_none());
+        assert_eq!(node.count("ExecuteTransaction"), 0);
     }
 }

@@ -1,5 +1,62 @@
 # Changelog
 
+## [2.57.4] - 2026-11-15
+
+Sui: `/verify` and `/settle` work again. Every public Sui node stopped serving
+JSON-RPC (`fullnode.*.sui.io` answer `-32601`, `sui-rpc.publicnode.com`
+answers `-32000`), and the facilitator spoke nothing else, so no Sui payment
+could be verified or settled. The client now speaks the fullnode gRPC API
+(`sui.rpc.v2`, Mysten's `sui-rpc` crate) over a list of endpoints with
+fallback. Transactions are still decoded, validated and signed as before.
+
+### Fixed
+
+- `RPC_URL_SUI` / `RPC_URL_SUI_TESTNET` take one gRPC URL or several,
+  comma-separated, tried in order. Unset or without a usable URL, the defaults
+  are two public endpoints per network: `fullnode.{mainnet,testnet}.sui.io:443`
+  and `sui-grpc.publicnode.com:443` / `sui-testnet-grpc.publicnode.com:443`.
+- A read that fails on one endpoint is asked of the next. An execution is sent
+  to an endpoint only after that endpoint answered a lookup of the
+  transaction's digest; a refusal from the chain is final and never sent
+  elsewhere; an execution whose outcome is unknown is looked up on the other
+  endpoints before the same signed bytes are sent again, and ends as
+  `502 settlement_unconfirmed` with its digest if no endpoint reports its
+  effects.
+- No new send starts once one execution timeout (60 s) has passed since the
+  first: the endpoints are asked about the digest instead. A door refusal
+  after a send (`Unimplemented`, `PermissionDenied`, `Unauthenticated`) is also
+  looked up on every endpoint before the answer is "nothing was sent".
+- The facilitator sponsors a gas price of at most 10,000 MIST and a gas budget
+  of at most 50,000,000 MIST (0.05 SUI) (`MAX_SPONSORED_GAS_PRICE`,
+  `MAX_SPONSORED_GAS_BUDGET`). The client writes `gas_data` and the
+  facilitator signs it as the gas owner: uncapped, one settle could spend the
+  whole sponsor wallet. The reference price is 100 on mainnet and 1,000 on
+  testnet, and the facilitator's own settlements needed about 4,150,000 MIST up
+  front (measured 2026-11-15).
+- A sponsored transaction that executed but failed on chain (its split or
+  transfer aborted) settles as `success: false` with its digest, as a reverted
+  EVM transfer does. Before, the effects' status was not read and the answer
+  was `success: true`.
+- Errors that reach the caller name an endpoint by its position in the list,
+  never by host. A list in which tonic can use no URL falls back to the public
+  defaults instead of leaving Sui off.
+- The spent coin is read from the chain and must be a `Coin<USDC>` owned by
+  the payer's address; the balance check counts the payer's USDC coin objects
+  (not the address balance). The JSON-RPC check looked for the coin in one
+  page of 50 coins and refused a coin past it.
+- The balances Lambda reads Sui over gRPC-web from the same endpoint list,
+  then over GraphQL (`graphql.{mainnet,testnet}.sui.io`).
+
+### Tests
+
+- `src/chain/sui/rpc.rs`: the endpoint list, the classification of execution
+  errors, the fallback of reads and executions against a scripted gRPC node
+  (`src/chain/sui/stub.rs`), and one test holding the task definition, the
+  Lambda, `.env.example` and the Lambda's defaults to the code's endpoint list.
+- `sui_endpoints_live_smoke` (ignored): a read-only measurement of every
+  configured endpoint before a deploy.
+- `tests/scripts/test_sui_balances.py`: the Lambda's Sui reads, offline.
+
 ## [2.57.3] - 2026-11-14
 
 Algorand: `/verify` and `/settle` hold the atomic group to a stricter shape

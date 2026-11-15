@@ -759,12 +759,12 @@ deliver if it settled; only a transaction not found after that chain's finality
 window is gone, and only then is a new authorization safe. An answer that
 carries neither `retryable: false` nor a `transaction` was produced before
 anything was sent, with one exception: `200` with `success: false` and
-`errorReason: "transaction_already_submitted"` (native Hedera) means another
-settle holds that transaction or has already settled it, and this one sent
-nothing of its own. It is not a payment for this request, so do not deliver on
-it, and before asking for a new signature look the transaction up: it is gone
-only once its validity window (`validStart` plus its valid duration) has
-passed and the chain does not have it.
+`errorReason: "transaction_already_submitted"` (Sui and native Hedera) means
+another settle already took that transaction or has already settled it, and
+this one sent nothing of its own. It is not a payment for this request, so do
+not deliver on it, and before asking for a new signature look the transaction
+up: on native Hedera it is gone only once its validity window (`validStart`
+plus its valid duration) has passed and the chain does not have it.
 
 **Why a chain write failed, as a token.** Since 2026-09-10 the `error` field on a
 failed write names the stage and reason rather than only saying "node or caller".

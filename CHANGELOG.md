@@ -22,6 +22,11 @@ Native Hedera: one `success: true` per transaction id.
   passed and the chain does not have it. A retry that carries the
   `Idempotency-Key` of the settle that succeeded gets that answer back
   instead.
+- A settle's read before it sends bytes another settle left, the recovery's
+  check before it sends, and the portable receipt's read of a pending payment
+  always ask the Mirror Node: the consensus receipt query, which retries
+  while the nodes answer `RECEIPT_NOT_FOUND`, takes at most half of their
+  3 s.
 - Unchanged: a transaction that failed on chain answers its consensus status
   with its id, and a transaction id bound to another intent is refused.
 - `docs/settle-errors.md`, `/skill.md` and `/docs` describe

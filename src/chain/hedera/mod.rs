@@ -352,8 +352,12 @@ impl HederaProvider {
         // authorize delivery from that response alone: bind the result to our
         // persisted signed bytes through the authenticated HTTPS Mirror.
         let deadline = tokio::time::Instant::now() + timeout;
+        // The receipt query retries while the nodes answer RECEIPT_NOT_FOUND
+        // (a transaction they never saw, or one whose receipt they no longer
+        // keep), up to its own timeout. At most half the budget goes to it, so
+        // the Mirror, which decides, is always asked.
         let _ = self
-            .receipt(&record.intent, timeout.min(Duration::from_secs(3)))
+            .receipt(&record.intent, (timeout / 2).min(Duration::from_secs(3)))
             .await;
         loop {
             let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());

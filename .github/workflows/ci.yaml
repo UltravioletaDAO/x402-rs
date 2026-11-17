@@ -64,6 +64,7 @@ on:
       - 'lambda/**'              # the balances-Lambda step applies it when it changes
       # Read by the test job:
       - 'scripts/verify_landing_canonical.py'
+      - 'scripts/network_copy.py'
       - 'scripts/erc8004_custodied_identities.py'
       # Read by the drift gate (and tested by the test job):
       - 'scripts/drift_gate_iam.py'
@@ -101,6 +102,7 @@ on:
       - 'lambda/**'              # the balances-Lambda step applies it when it changes
       # Read by the test job:
       - 'scripts/verify_landing_canonical.py'
+      - 'scripts/network_copy.py'
       - 'scripts/erc8004_custodied_identities.py'
       # Read by the drift gate (and tested by the test job):
       - 'scripts/drift_gate_iam.py'
@@ -153,7 +155,15 @@ jobs:
       - uses: actions/checkout@v4
       - name: Install build dependencies
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends pkg-config libssl-dev protobuf-compiler libprotobuf-dev
-      - uses: dtolnay/rust-toolchain@stable
+      # The compiler is rust-toolchain.toml's exact channel, and that file decides:
+      # rustup obeys it over the `rustup default` this action sets (the run log says
+      # "overridden by rust-toolchain.toml"). This ref names the SAME version, so the
+      # action installs the compiler the build uses instead of a floating `stable`
+      # that nothing runs -- @stable brought 1.100.0 on 2026-11-13, which cannot
+      # compile algonaut_client 0.4.2 (run 43338805993). The action also sets
+      # CARGO_INCREMENTAL=0. tests/scripts/test_ci_toolchain_pin.py fails when this
+      # ref, the file and the Dockerfile's base image disagree.
+      - uses: dtolnay/rust-toolchain@1.99.1
       - uses: Swatinem/rust-cache@v2
       # The landing page states network counts in three places -- the English
       # markup, the `en` dictionary and the `es` dictionary -- and until
@@ -164,6 +174,22 @@ jobs:
       # calls production turns a production outage into a red build, which is
       # the worst possible moment to block a deploy. Everything else -- escrow,
       # ERC-8004 and the whole EN/ES cross-check -- runs from the repository.
+      # Every count and list of networks a page, an agent document, /docs or the
+      # README states comes from config/network_capabilities.json, which
+      # src/network_manifest.rs generates from the code (its test, in the cargo
+      # step below, fails when the file and the code disagree). The check also
+      # holds the manifest's production profile to terraform/environments/production.
+      # Stdlib only and offline: it runs before the build, so a stale number
+      # fails in a second. `python3 scripts/network_copy.py --write` fixes most
+      # findings; --generate after a change of networks in the code. "drift" in
+      # the name is what the local pre-CI runs before a push. A change to the
+      # README, CLAUDE.md or the operator guide alone does not start this
+      # workflow (owner's rule: docs-only changes trigger nothing), so a number
+      # typed there is checked by the next run that does.
+      - name: Network counts drift (published counts and lists come from config/network_capabilities.json)
+        run: |
+          python3 scripts/network_copy.py --check
+          python3 -m unittest discover -s tests/scripts -p 'test_network_copy.py'
       - name: Landing page matches its canonical sources (offline)
         run: python3 scripts/verify_landing_canonical.py --offline
       - name: Frontend capability and icon regressions
@@ -181,7 +207,8 @@ jobs:
       # Offline as well: the deploy job's own shape (the rollout verdict survives a
       # failed step, no apply skips on one push's diff) and the script that picks the
       # balances Lambda's compare base, driven by a stand-in for gh. They read this
-      # file with PyYAML, like scripts/ci_paths_selftest.py.
+      # file with PyYAML, like scripts/ci_paths_selftest.py. The toolchain pin's
+      # guard (test_ci_toolchain_pin.py) runs here too.
       - name: Deploy-job guard tests
         run: |
           python3 -m pip install pyyaml

@@ -2,7 +2,7 @@
 
 ## Overview
 
-Comprehensive testing infrastructure for the x402 facilitator to ensure reliable payment processing across all 4 supported networks.
+Comprehensive testing infrastructure for the x402 facilitator to ensure reliable payment processing across the networks it serves.
 
 ## Test Suite
 
@@ -11,7 +11,7 @@ Comprehensive testing infrastructure for the x402 facilitator to ensure reliable
 ### Tests Included
 
 1. **Health Check** - Verifies facilitator is operational
-2. **Supported Networks** - Confirms all 4 networks are available
+2. **Supported Networks** - Confirms the networks it expects are available
 3. **Wallet Balance Check** - Ensures facilitator wallet has sufficient gas funds
 4. **Payment Verification Flow** - Tests payment signature and authorization
 5. **X402 Client Integration** - Validates Python client library
@@ -112,7 +112,7 @@ All networks are operational. Low balances on Base networks are sufficient for c
 
 ## Network Support
 
-The facilitator supports 4 networks:
+The networks the facilitator serves, per capability, are in `config/network_capabilities.json` (generated from the code; `GET /supported` is what production serves). The wallet table above covers these:
 
 - `avalanche-fuji` (Chain ID: 43113) - Testnet
 - `avalanche` (Chain ID: 43114) - Mainnet

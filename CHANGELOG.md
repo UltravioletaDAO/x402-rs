@@ -1,5 +1,175 @@
 # Changelog
 
+## [2.57.6] - 2026-11-15
+
+Native Hedera: one `success: true` per transaction id.
+
+### Fixed
+
+- `/settle` answers `success: true`, or `502 settlement_unconfirmed` with the
+  transaction, only to the settle whose own bytes they are: the one that
+  reserved the payment and co-signed it, or one that took over bytes another
+  settle left, found no outcome for them and sent them itself. Any other
+  settle of the same transaction answers `200` with `success: false` and
+  `errorReason: "transaction_already_submitted"`, without a `transaction`,
+  and sends nothing: one that finds it recorded as confirmed, one that finds
+  another settle holding it, and one that takes over bytes another settle
+  left and finds their outcome (which it still records), can no longer send
+  them, or cannot record them as submitted before sending. A settle repeated
+  after `502 settlement_unconfirmed` gets this answer unless its own send is
+  the one that settles the transaction; the id that `502` carried is the one
+  to look up, and the transaction is gone only once its validity window has
+  passed and the chain does not have it. A retry that carries the
+  `Idempotency-Key` of the settle that succeeded gets that answer back
+  instead.
+- A settle's read before it sends bytes another settle left, the recovery's
+  check before it sends, and the portable receipt's read of a pending payment
+  always ask the Mirror Node: the consensus receipt query, which retries
+  while the nodes answer `RECEIPT_NOT_FOUND`, takes at most half of their
+  3 s.
+- Unchanged: a transaction that failed on chain answers its consensus status
+  with its id, and a transaction id bound to another intent is refused.
+- `docs/settle-errors.md`, `/skill.md` and `/docs` describe
+  `transaction_already_submitted`, the one answer with neither
+  `retryable: false` nor a `transaction` that does not mean "nothing was sent".
+
+### Tests
+
+- `src/chain/hedera/tests.rs`: a new payment (the official client's vector,
+  dated now and signed again) settles once; a settle repeated after it; two
+  and four settles of it at once; a settle that read the record before
+  another settle confirmed or failed it; the retry of a settle that stopped
+  before sending; settles that take over bytes another settle left, valid or
+  expired, with their outcome on chain, showing late, missing, or not
+  recordable; a write before a send that fails; a record another settle
+  holds; a repeat of a payment that failed on chain; and a transaction id
+  bound to another intent. Against an in-memory table with the settlement
+  table's conditional writes, a Mirror Node on a local port and consensus
+  nodes on closed local ports.
+
+## [2.57.5] - 2026-11-15
+
+Sui: settles are idempotent per signed transaction, and the payer's signature
+is verified.
+
+### Fixed
+
+- `/verify` and `/settle` verify the payer's signature over the transaction
+  with `verify_secure`, against the intent a Sui wallet signs. A signature
+  that does not verify is `invalid_signature`, before any read or send.
+- `/settle` claims the transaction's digest in the facilitator's shared claim
+  store (`NONCE_STORE_TABLE_NAME`, the store Stellar's and Algorand's settles
+  and Solana's settlement-account sweep claim in) before anything is sent, and
+  keeps the claim 7 days (`SETTLE_CLAIM_TTL_SECONDS`). A settle of a
+  transaction that another settle already took, or that the chain already
+  holds executed, answers `success: false` with
+  `errorReason: "transaction_already_submitted"` and sends nothing. The claim
+  is given back when nothing executed (the chain refused the transaction, or
+  no endpoint took it) and kept when the outcome is final or unknown, so a
+  settle repeated after `502 settlement_unconfirmed` answers
+  `transaction_already_submitted` too (on EVM the token refuses a repeated
+  authorization): the digest that `502` carried is the one to look up. A
+  claim store that cannot take the claim fails closed: nothing is sent.
+- `/settle` reads the transaction's owned inputs, as `/verify` does: past the
+  claim, a transaction whose inputs moved on is refused as `/verify` refuses
+  it, before anything is sent.
+- `docs/settle-errors.md` and `/skill.md` describe `transaction_already_submitted`.
+
+### Tests
+
+- `src/chain/sui.rs`: two settles of one transaction at once on two tasks
+  sharing the claim store, a settle repeated after a payment (also once the
+  inputs moved on, and for another resource), a transaction the chain already
+  executed, which outcomes give the claim back, claim stores that cannot read
+  or take a claim, and forged, misdirected and foreign-key signatures (every
+  scheme a `Signature` carries), all against the scripted gRPC node.
+- `src/chain/sui/rpc.rs`: a digest known before anything was sent, with or
+  without a verdict, on the first endpoint or a later one, is
+  `AlreadyExecuted`; an answer about another transaction is skipped.
+
+## [2.57.4] - 2026-11-15
+
+Sui: `/verify` and `/settle` work again. Every public Sui node stopped serving
+JSON-RPC (`fullnode.*.sui.io` answer `-32601`, `sui-rpc.publicnode.com`
+answers `-32000`), and the facilitator spoke nothing else, so no Sui payment
+could be verified or settled. The client now speaks the fullnode gRPC API
+(`sui.rpc.v2`, Mysten's `sui-rpc` crate) over a list of endpoints with
+fallback. Transactions are still decoded, validated and signed as before.
+
+### Fixed
+
+- `RPC_URL_SUI` / `RPC_URL_SUI_TESTNET` take one gRPC URL or several,
+  comma-separated, tried in order. Unset or without a usable URL, the defaults
+  are two public endpoints per network: `fullnode.{mainnet,testnet}.sui.io:443`
+  and `sui-grpc.publicnode.com:443` / `sui-testnet-grpc.publicnode.com:443`.
+- A read that fails on one endpoint is asked of the next. An execution is sent
+  to an endpoint only after that endpoint answered a lookup of the
+  transaction's digest; a refusal from the chain is final and never sent
+  elsewhere; an execution whose outcome is unknown is looked up on the other
+  endpoints before the same signed bytes are sent again, and ends as
+  `502 settlement_unconfirmed` with its digest if no endpoint reports its
+  effects.
+- No new send starts once one execution timeout (60 s) has passed since the
+  first: the endpoints are asked about the digest instead. A door refusal
+  after a send (`Unimplemented`, `PermissionDenied`, `Unauthenticated`) is also
+  looked up on every endpoint before the answer is "nothing was sent".
+- The facilitator sponsors a gas price of at most 10,000 MIST and a gas budget
+  of at most 50,000,000 MIST (0.05 SUI) (`MAX_SPONSORED_GAS_PRICE`,
+  `MAX_SPONSORED_GAS_BUDGET`). The client writes `gas_data` and the
+  facilitator signs it as the gas owner: uncapped, one settle could spend the
+  whole sponsor wallet. The reference price is 100 on mainnet and 1,000 on
+  testnet, and the facilitator's own settlements needed about 4,150,000 MIST up
+  front (measured 2026-11-15).
+- A sponsored transaction that executed but failed on chain (its split or
+  transfer aborted) settles as `success: false` with its digest, as a reverted
+  EVM transfer does. Before, the effects' status was not read and the answer
+  was `success: true`.
+- Errors that reach the caller name an endpoint by its position in the list,
+  never by host. A list in which tonic can use no URL falls back to the public
+  defaults instead of leaving Sui off.
+- The spent coin is read from the chain and must be a `Coin<USDC>` owned by
+  the payer's address; the balance check counts the payer's USDC coin objects
+  (not the address balance). The JSON-RPC check looked for the coin in one
+  page of 50 coins and refused a coin past it.
+- The balances Lambda reads Sui over gRPC-web from the same endpoint list,
+  then over GraphQL (`graphql.{mainnet,testnet}.sui.io`).
+
+### Tests
+
+- `src/chain/sui/rpc.rs`: the endpoint list, the classification of execution
+  errors, the fallback of reads and executions against a scripted gRPC node
+  (`src/chain/sui/stub.rs`), and one test holding the task definition, the
+  Lambda, `.env.example` and the Lambda's defaults to the code's endpoint list.
+- `sui_endpoints_live_smoke` (ignored): a read-only measurement of every
+  configured endpoint before a deploy.
+- `tests/scripts/test_sui_balances.py`: the Lambda's Sui reads, offline.
+
+## [2.57.3] - 2026-11-14
+
+Algorand: `/verify` and `/settle` hold the atomic group to a stricter shape
+before the facilitator signs its fee transaction. A group whose fee
+transaction is a zero-amount payment without a lease, with the payment at
+index 1 or above, verifies and settles as before.
+
+### Fixed
+
+- The fee transaction (index 0), which the client builds and the facilitator
+  signs, may only be a payment of zero microAlgos with no lease: another
+  transaction type is refused with `Fee transaction must be a payment
+  transaction`, an amount or a lease as a forbidden field (`amount`,
+  `lease`). Its receiver stays free. The checks it already passed (sender,
+  fee cap, `rekey_to`, `close_remainder_to`) are unchanged.
+- `paymentIndex` 0 is refused: index 0 is the fee transaction, and the
+  payment must be at index 1 or above.
+- `/settle` applies both before it claims the group in the replay store,
+  signs or broadcasts anything.
+
+### Tests
+
+- `replay_verify_tests` (`src/chain/algorand.rs`) holds each refusal on
+  `verify` and on `settle`, and a control that a group `settle` accepts is
+  claimed and reaches algod's broadcast.
+
 ## [2.57.2] - 2026-11-11
 
 The NEAR `escrow` scheme relays to Arras v2 on NEAR mainnet as well,

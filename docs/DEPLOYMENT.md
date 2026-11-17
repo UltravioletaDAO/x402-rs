@@ -589,4 +589,4 @@ nano .env  # Change RPC_URL_AVALANCHE_FUJI
 
 **Deployment Status**: ✅ Deployed to production at facilitator.ultravioletadao.xyz
 
-**Current Configuration**: Using native USDC tokens on 13 networks (Base, Avalanche, Polygon, Optimism, Celo, HyperEVM, Solana + testnets)
+**Current Configuration**: the networks and tokens `GET /supported` lists; `config/network_capabilities.json` counts the networks per capability, and `python scripts/stablecoin_matrix.py` lists the stablecoins per network

@@ -558,6 +558,8 @@ impl AlgorandProvider {
     /// - Taking over the facilitator's account (rekey_to)
     /// - Signing as a sender that is NOT the facilitator (sender check -- B2)
     /// - Paying an unbounded fee from the facilitator wallet (fee cap -- B2)
+    /// - Moving funds or acting for the facilitator's account: only a payment
+    ///   of zero microAlgos, with no lease, is ever signed
     fn validate_fee_transaction(&self, tx: &AlgoTransaction) -> Result<(), AlgorandError> {
         // B2 invariant 1: The fee transaction MUST be sent FROM the facilitator address.
         // An attacker could otherwise embed Payment(facilitator -> attacker, amount) in the
@@ -598,7 +600,18 @@ impl AlgorandProvider {
             });
         }
 
-        // Check the transaction type for forbidden fields
+        // A lease would take a (sender, lease) lock on the facilitator's account
+        // chosen by the client; the fee transaction never needs one.
+        if tx.lease.is_some() {
+            return Err(AlgorandError::ForbiddenFeeField {
+                field: "lease".to_string(),
+            });
+        }
+
+        // The fee transaction may only be a payment that moves nothing. Any amount,
+        // or any other type, would spend the facilitator's funds or act for its
+        // account under its signature. The receiver is left free: with a zero
+        // amount nothing reaches it.
         match &tx.txn_type {
             TransactionType::Payment(payment) => {
                 // close_remainder_to would send remaining funds to attacker
@@ -607,18 +620,16 @@ impl AlgorandProvider {
                         field: "close_remainder_to".to_string(),
                     });
                 }
-            }
-            TransactionType::AssetTransferTransaction(xfer) => {
-                // asset_close_to would send ASA balance to attacker
-                if xfer.close_to.is_some() {
+                if payment.amount.0 != 0 {
                     return Err(AlgorandError::ForbiddenFeeField {
-                        field: "close_to".to_string(),
+                        field: "amount".to_string(),
                     });
                 }
             }
             _ => {
-                // For other transaction types, we don't have specific forbidden fields
-                // but we should be cautious
+                return Err(AlgorandError::InvalidAtomicGroup(
+                    "Fee transaction must be a payment transaction".to_string(),
+                ));
             }
         }
 
@@ -643,6 +654,17 @@ impl AlgorandProvider {
                 index: payload.payment_index,
                 len: payload.payment_group.len(),
             });
+        }
+
+        // Index 0 is the fee transaction: submit_group() puts the facilitator's
+        // signed copy in its place, so a payment checked there is never broadcast.
+        // From index 1 on, what is checked and what is broadcast are the same bytes
+        // read by the same decoder.
+        if payload.payment_index == 0 {
+            return Err(AlgorandError::InvalidAtomicGroup(
+                "payment index 0 is the fee transaction; the payment must be at index 1 or above"
+                    .to_string(),
+            ));
         }
 
         // Decode the fee transaction (index 0, unsigned)
@@ -1251,10 +1273,11 @@ mod tests {
 
 /// `verify` against the replay state `settle` writes.
 ///
-/// Uses nothing newer than `verify`, the global nonce store and the provider
-/// constructor, so the module also runs against the code before the check.
-/// algod is a local stub answering `GET /v2/status`; transactions are built
-/// with algonaut's builder, which needs no node.
+/// Uses nothing newer than `verify`, `settle`, the global nonce store and the
+/// provider constructor, so the module also runs against the code before the
+/// check. algod is a local stub answering `GET /v2/status` and recording,
+/// then refusing, any other request; transactions are built with algonaut's
+/// builder, which needs no node.
 #[cfg(test)]
 mod replay_verify_tests {
     use super::*;
@@ -1263,7 +1286,7 @@ mod replay_verify_tests {
     use algonaut::crypto::HashDigest;
     use algonaut::transaction::builder::TxnFee;
     use algonaut::transaction::tx_group::TxGroup;
-    use algonaut::transaction::{Pay, TransferAsset, TxnBuilder};
+    use algonaut::transaction::{AcceptAsset, Pay, RegisterKey, TransferAsset, TxnBuilder};
     use std::collections::HashSet;
     use std::sync::Mutex;
 
@@ -1321,8 +1344,15 @@ mod replay_verify_tests {
         scripted
     }
 
-    /// An algod node at CURRENT_ROUND.
-    async fn algod_stub() -> String {
+    /// The requests an algod stub received besides `GET /v2/status`, as
+    /// "METHOD /path": a broadcast is `POST /v2/transactions`.
+    type AlgodCalls = Arc<Mutex<Vec<String>>>;
+
+    /// An algod node at CURRENT_ROUND. Any other request is recorded and
+    /// refused with a 400, which a broadcast reads as algod refusing the group.
+    async fn algod_stub() -> (String, AlgodCalls) {
+        let calls = AlgodCalls::default();
+        let recorded = calls.clone();
         let status = serde_json::json!({
             "catchup-time": 0,
             "last-round": CURRENT_ROUND,
@@ -1333,14 +1363,27 @@ mod replay_verify_tests {
             "stopped-at-unsupported-round": false,
             "time-since-last-round": 0,
         });
-        let app = axum::Router::new().route(
-            "/v2/status",
-            axum::routing::get(move || async move { axum::Json(status) }),
-        );
+        let app = axum::Router::new()
+            .route(
+                "/v2/status",
+                axum::routing::get(move || async move { axum::Json(status) }),
+            )
+            .fallback(
+                move |method: axum::http::Method, uri: axum::http::Uri| async move {
+                    recorded
+                        .lock()
+                        .unwrap()
+                        .push(format!("{method} {}", uri.path()));
+                    (
+                        axum::http::StatusCode::BAD_REQUEST,
+                        axum::Json(serde_json::json!({"message": "algod stub: not served"})),
+                    )
+                },
+            );
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
-        format!("http://{addr}/")
+        (format!("http://{addr}/"), calls)
     }
 
     struct Fixture {
@@ -1348,15 +1391,32 @@ mod replay_verify_tests {
         request: VerifyRequest,
         group_id: [u8; 32],
         payer: String,
+        algod_calls: AlgodCalls,
     }
 
     /// A group as a client sends it: the facilitator's unsigned fee
     /// transaction, then the payer's signed USDC transfer. `note` gives each
     /// test its own group_id.
     async fn fixture(note: &[u8]) -> Fixture {
+        fixture_with(
+            note,
+            |facilitator| Pay::new(facilitator, facilitator, MicroAlgos(0)).build(),
+            None,
+        )
+        .await
+    }
+
+    /// `fixture` with the fee transaction's body, built from the
+    /// facilitator's address, and its lease chosen by the test.
+    async fn fixture_with(
+        note: &[u8],
+        fee_txn: impl FnOnce(AlgoAddress) -> TransactionType,
+        fee_lease: Option<HashDigest>,
+    ) -> Fixture {
+        let (algod_url, algod_calls) = algod_stub().await;
         let provider = AlgorandProvider::try_new(
             Account::generate().mnemonic(),
-            Some(algod_stub().await),
+            Some(algod_url),
             Network::AlgorandTestnet,
         )
         .unwrap();
@@ -1373,13 +1433,15 @@ mod replay_verify_tests {
             first_valid: Round(CURRENT_ROUND - 10),
             last_valid: Round(CURRENT_ROUND + 500),
         };
-        let mut fee_tx = TxnBuilder::with_fee(
+        let mut fee_builder = TxnBuilder::with_fee(
             &params,
             TxnFee::Fixed(MicroAlgos(2_000)),
-            Pay::new(facilitator, facilitator, MicroAlgos(0)).build(),
-        )
-        .build()
-        .unwrap();
+            fee_txn(facilitator),
+        );
+        if let Some(lease) = fee_lease {
+            fee_builder = fee_builder.lease(lease);
+        }
+        let mut fee_tx = fee_builder.build().unwrap();
         let mut payment_tx = TxnBuilder::with_fee(
             &params,
             TxnFee::zero(),
@@ -1427,6 +1489,32 @@ mod replay_verify_tests {
             request,
             group_id,
             payer: payer.address().to_string(),
+            algod_calls,
+        }
+    }
+
+    /// Settles `f`'s group, which settle must refuse with `reason`; the error
+    /// names what happened instead: a request to algod besides its status, a
+    /// claim on the group in the nonce store, or another answer. submit_group()
+    /// claims the group before it signs the fee transaction, so an unclaimed
+    /// group was never signed.
+    async fn settle_refused(
+        f: &Fixture,
+        store: &ScriptedStore,
+        reason: &str,
+    ) -> Result<(), String> {
+        let outcome = f.provider.settle(&f.request).await;
+        let sent = f.algod_calls.lock().unwrap().clone();
+        let key = algorand_nonce_key(f.provider.chain_name(), &f.group_id);
+        let claimed = store.used.lock().unwrap().contains(&key);
+        let refused =
+            matches!(&outcome, Err(FacilitatorLocalError::Other(msg)) if msg.contains(reason));
+        if sent.is_empty() && !claimed && refused {
+            Ok(())
+        } else {
+            Err(format!(
+                "algod got {sent:?}, group claimed: {claimed}, settle answered {outcome:?}"
+            ))
         }
     }
 
@@ -1479,6 +1567,230 @@ mod replay_verify_tests {
         assert!(
             matches!(&err, FacilitatorLocalError::Other(msg) if msg.contains("unavailable")),
             "got {err:?}"
+        );
+    }
+
+    /// A fee transaction's body, built from the facilitator's address.
+    type FeeTxn = Box<dyn FnOnce(AlgoAddress) -> TransactionType>;
+
+    /// Fee transactions that are not a zero-amount payment, each with the
+    /// reason verify and settle give for refusing it.
+    fn fee_transactions_that_are_not_a_zero_amount_payment(
+    ) -> Vec<(&'static str, FeeTxn, &'static str)> {
+        let other = Account::generate().address();
+        vec![
+            (
+                "pay with an amount",
+                Box::new(move |f| Pay::new(f, other, MicroAlgos(1_000_000)).build()),
+                "forbidden fields: amount",
+            ),
+            (
+                "asset transfer",
+                Box::new(move |f| TransferAsset::new(f, USDC_ASA_ID_TESTNET, 1, other).build()),
+                "must be a payment",
+            ),
+            (
+                "asset opt-in",
+                Box::new(|f| AcceptAsset::new(f, USDC_ASA_ID_TESTNET).build()),
+                "must be a payment",
+            ),
+            (
+                "key registration",
+                Box::new(|f| RegisterKey::offline(f).build()),
+                "must be a payment",
+            ),
+        ]
+    }
+
+    /// The facilitator signs the fee transaction the client built, so it may
+    /// only be a payment that moves nothing: any amount, or any other type,
+    /// would spend the facilitator's funds or act for its account.
+    #[tokio::test]
+    async fn verify_rejects_a_fee_transaction_that_is_not_a_zero_amount_payment() {
+        scripted_store();
+        let mut verified = Vec::new();
+        for (case, fee_txn, reason) in fee_transactions_that_are_not_a_zero_amount_payment() {
+            let f = fixture_with(case.as_bytes(), fee_txn, None).await;
+            match f.provider.verify(&f.request).await {
+                Ok(response) => verified.push(format!("{case}: {response:?}")),
+                Err(err) => assert!(
+                    matches!(&err, FacilitatorLocalError::Other(msg) if msg.contains(reason)),
+                    "{case}: got {err:?}"
+                ),
+            }
+        }
+        assert!(
+            verified.is_empty(),
+            "fee transactions that verified: {verified:#?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn verify_rejects_a_fee_transaction_with_a_lease() {
+        scripted_store();
+        let f = fixture_with(
+            b"fee lease",
+            |f| Pay::new(f, f, MicroAlgos(0)).build(),
+            Some(HashDigest([9u8; 32])),
+        )
+        .await;
+
+        let err = f
+            .provider
+            .verify(&f.request)
+            .await
+            .expect_err("a fee transaction with a lease must not verify");
+        assert!(
+            matches!(&err, FacilitatorLocalError::Other(msg) if msg.contains("forbidden fields: lease")),
+            "got {err:?}"
+        );
+    }
+
+    /// The receiver of the fee payment is not pinned to the facilitator: a
+    /// zero amount moves nothing to it, and the original client design
+    /// (docs/ALGORAND_IMPLEMENTATION_PLAN.md) addressed it to the payer.
+    #[tokio::test]
+    async fn verify_accepts_a_zero_amount_fee_payment_to_another_receiver() {
+        scripted_store();
+        let other = Account::generate().address();
+        let f = fixture_with(
+            b"fee to another receiver",
+            move |f| Pay::new(f, other, MicroAlgos(0)).build(),
+            None,
+        )
+        .await;
+
+        let response = f
+            .provider
+            .verify(&f.request)
+            .await
+            .expect("a zero-amount fee payment verifies whatever its receiver");
+        assert!(
+            matches!(&response, VerifyResponse::Valid { payer } if *payer == MixedAddress::Algorand(f.payer.clone())),
+            "got {response:?}"
+        );
+    }
+
+    /// One msgpack map holding the entries of two maps whose keys differ.
+    fn merged_msgpack_maps(a: &[u8], b: &[u8]) -> Vec<u8> {
+        fn entries(map: &[u8]) -> (usize, &[u8]) {
+            match map[0] {
+                header @ 0x80..=0x8f => (usize::from(header & 0x0f), &map[1..]),
+                0xde => (usize::from(u16::from_be_bytes([map[1], map[2]])), &map[3..]),
+                other => panic!("not a msgpack map header: {other:#04x}"),
+            }
+        }
+        let (a_len, a_entries) = entries(a);
+        let (b_len, b_entries) = entries(b);
+        let mut merged = vec![0xde];
+        merged.extend_from_slice(&u16::try_from(a_len + b_len).unwrap().to_be_bytes());
+        merged.extend_from_slice(a_entries);
+        merged.extend_from_slice(b_entries);
+        merged
+    }
+
+    /// Puts at index 0 one blob that reads both as `f`'s fee transaction and
+    /// as its signed transfer, and points the payment index at it.
+    fn put_the_payment_at_the_fee_transaction_index(f: &mut Fixture) {
+        let ExactPaymentPayload::Algorand(payload) = &mut f.request.payment_payload.payload else {
+            unreachable!("the fixture builds an Algorand payload")
+        };
+        let fee_blob = BASE64.decode(&payload.payment_group[0]).unwrap();
+        let payment_blob = BASE64.decode(&payload.payment_group[1]).unwrap();
+        payload.payment_group[0] = BASE64.encode(merged_msgpack_maps(&fee_blob, &payment_blob));
+        payload.payment_index = 0;
+    }
+
+    /// Index 0 is the fee transaction, which settle replaces with the one the
+    /// facilitator signs: a payment checked there is never broadcast. One
+    /// blob that reads both as the fee transaction and as the signed
+    /// transfer must not verify.
+    #[tokio::test]
+    async fn verify_rejects_the_payment_at_the_fee_transaction_index() {
+        scripted_store();
+        let mut f = fixture(b"payment at index 0").await;
+        put_the_payment_at_the_fee_transaction_index(&mut f);
+
+        let err = f
+            .provider
+            .verify(&f.request)
+            .await
+            .expect_err("a payment at the fee transaction's index must not verify");
+        assert!(
+            matches!(&err, FacilitatorLocalError::Other(msg) if msg.contains("payment index 0")),
+            "got {err:?}"
+        );
+    }
+
+    /// settle checks the fee transaction as verify does, before it claims,
+    /// signs or broadcasts the group.
+    #[tokio::test]
+    async fn settle_rejects_a_fee_transaction_that_is_not_a_zero_amount_payment() {
+        let store = scripted_store();
+        let mut settled = Vec::new();
+        for (case, fee_txn, reason) in fee_transactions_that_are_not_a_zero_amount_payment() {
+            let f = fixture_with(format!("settle: {case}").as_bytes(), fee_txn, None).await;
+            if let Err(problem) = settle_refused(&f, &store, reason).await {
+                settled.push(format!("{case}: {problem}"));
+            }
+        }
+        assert!(
+            settled.is_empty(),
+            "fee transactions settle did not refuse: {settled:#?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn settle_rejects_a_fee_transaction_with_a_lease() {
+        let store = scripted_store();
+        let f = fixture_with(
+            b"settle: fee lease",
+            |f| Pay::new(f, f, MicroAlgos(0)).build(),
+            Some(HashDigest([9u8; 32])),
+        )
+        .await;
+
+        settle_refused(&f, &store, "forbidden fields: lease")
+            .await
+            .unwrap_or_else(|problem| panic!("a fee transaction with a lease: {problem}"));
+    }
+
+    #[tokio::test]
+    async fn settle_rejects_the_payment_at_the_fee_transaction_index() {
+        let store = scripted_store();
+        let mut f = fixture(b"settle: payment at index 0").await;
+        put_the_payment_at_the_fee_transaction_index(&mut f);
+
+        settle_refused(&f, &store, "payment index 0")
+            .await
+            .unwrap_or_else(|problem| {
+                panic!("a payment at the fee transaction's index: {problem}")
+            });
+    }
+
+    /// What the refusals above rely on: a group settle accepts is claimed
+    /// and reaches algod's broadcast, which the stub records.
+    #[tokio::test]
+    async fn settle_claims_and_broadcasts_a_zero_amount_fee_payment_to_another_receiver() {
+        let store = scripted_store();
+        let other = Account::generate().address();
+        let f = fixture_with(
+            b"settle: fee to another receiver",
+            move |f| Pay::new(f, other, MicroAlgos(0)).build(),
+            None,
+        )
+        .await;
+
+        let outcome = f.provider.settle(&f.request).await;
+        let key = algorand_nonce_key(f.provider.chain_name(), &f.group_id);
+        assert!(
+            store.used.lock().unwrap().contains(&key),
+            "the group was not claimed; settle answered {outcome:?}"
+        );
+        assert_eq!(
+            *f.algod_calls.lock().unwrap(),
+            ["POST /v2/transactions"],
+            "settle answered {outcome:?}"
         );
     }
 }

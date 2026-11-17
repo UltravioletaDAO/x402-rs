@@ -90,9 +90,12 @@ rmp-serde = { version = "1.3", optional = true }  # MessagePack for Algorand txn
 xrpl = { package = "xrpl-rust", version = "1.1.0", default-features = false, features = ["std", "tokio-rt", "core", "models", "wallet", "utils", "helpers", "json-rpc"], optional = true }
 
 # Sui (sponsored transactions for gasless payments)
-# Note: Sui SDK is not yet stable on crates.io, using git dependencies
-# Pin to specific tag for reproducible builds
-sui-sdk = { git = "https://github.com/MystenLabs/sui", package = "sui-sdk", tag = "mainnet-v1.37.3", optional = true }
+# Transaction types, signatures and keys: the monorepo crates, pinned to a tag.
+# Transport: Mysten's gRPC client (`sui-rpc`, crates.io). The JSON-RPC client
+# (`sui-sdk`) is gone: every public Sui fullnode dropped JSON-RPC in 2026
+# (src/chain/sui/rpc.rs). `tonic` is the version sui-rpc uses, for its status type.
+sui-rpc = { version = "0.4.0", optional = true }
+tonic = { version = "0.14", default-features = false, optional = true }
 sui-types = { git = "https://github.com/MystenLabs/sui", package = "sui-types", tag = "mainnet-v1.37.3", optional = true }
 sui-keys = { git = "https://github.com/MystenLabs/sui", package = "sui-keys", tag = "mainnet-v1.37.3", optional = true }
 shared-crypto = { git = "https://github.com/MystenLabs/sui", package = "shared-crypto", tag = "mainnet-v1.37.3", optional = true }
@@ -164,6 +167,12 @@ tower = { version = "0.5", features = ["util"] }
 # 0.50+ would raise regex-automata, num-bigint and zmij, which the release
 # binary shares, and a test-only crate must not move those.
 jsonschema = { version = "0.46", default-features = false }
+# A scripted Sui gRPC node for the provider's tests (src/chain/sui/stub.rs).
+# tonic 0.14 is already built with these features for tower_governor.
+tonic = { version = "0.14", features = ["transport", "router", "server", "codegen"] }
+# The types a Sui node decodes an ExecuteTransaction with: the tests read what the
+# provider sends through them (already in the lock, pulled by sui-rpc).
+sui-sdk-types = { version = "0.4.0", features = ["serde", "hash"] }
 
 [features]
 telemetry = []
@@ -171,7 +180,7 @@ solana = ["x402-compliance/solana"]
 near = []
 stellar = []
 algorand = ["algonaut", "rmp-serde"]
-sui = ["sui-sdk", "sui-types", "sui-keys", "shared-crypto", "bcs"]
+sui = ["sui-rpc", "tonic", "sui-types", "sui-keys", "shared-crypto", "bcs"]
 xrpl = ["dep:xrpl"]
 hedera = ["dep:hiero-sdk", "dep:hiero-sdk-proto", "dep:prost"]
 

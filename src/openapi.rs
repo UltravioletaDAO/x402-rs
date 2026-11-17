@@ -35,7 +35,9 @@ The x402 facilitator enables gasless micropayments across multiple blockchain ne
 Ethereum, Base, Polygon, Optimism, Avalanche, Arbitrum, Celo, HyperEVM, Unichain, Monad, Scroll, Robinhood Chain (settles Paxos USDG - no native USDC), BSC, SKALE Base, Arc (`arc` / `eip155:5042`, USDC/EURC exact EOA payments; served only where `RPC_URL_ARC` is configured; check `/supported`), HashKey Chain (`hashkey` / `eip155:177`, Bridged USDC, EIP-712 domain `Bridged USDC` / `2`; EOA signatures only, no EIP-6492)
 
 ### EVM Chains (Testnet)
-Ethereum Sepolia, Base Sepolia, Polygon Amoy, Optimism Sepolia, Avalanche Fuji, Arbitrum Sepolia, Celo Sepolia, HyperEVM Testnet, Unichain Sepolia, SKALE Base Sepolia, Monad Testnet, Robinhood Chain Testnet, Arc Testnet (`arc-testnet` / `eip155:5042002`, Circle — USDC is the native gas token; served only where `RPC_URL_ARC_TESTNET` is configured, so check `/supported` rather than this list), HashKey Chain Testnet (`hashkey-testnet` / `eip155:133`, USDC with EIP-712 domain `USD Coin` / `2`, not mainnet's name)
+Base Sepolia, Polygon Amoy, Optimism Sepolia, Avalanche Fuji, Arbitrum Sepolia, Celo Sepolia, HyperEVM Testnet, Unichain Sepolia, SKALE Base Sepolia, Robinhood Chain Testnet, Arc Testnet (`arc-testnet` / `eip155:5042002`, Circle — USDC is the native gas token; served only where `RPC_URL_ARC_TESTNET` is configured, so check `/supported` rather than this list), HashKey Chain Testnet (`hashkey-testnet` / `eip155:133`, USDC with EIP-712 domain `USD Coin` / `2`, not mainnet's name)
+
+Ethereum Sepolia is announced in `/supported` for the x402r `escrow` and `commerce` schemes, but production configures no RPC for it: nothing settles there, and it takes no `exact` payments.
 
 ### SVM Chains (Solana Virtual Machine)
 - **Solana**: Mainnet (`solana`) and Devnet (`solana-devnet`)
@@ -756,7 +758,13 @@ again.** Look the transaction up (on the receipt rail, poll the receipt) and
 deliver if it settled; only a transaction not found after that chain's finality
 window is gone, and only then is a new authorization safe. An answer that
 carries neither `retryable: false` nor a `transaction` was produced before
-anything was sent.
+anything was sent, with one exception: `200` with `success: false` and
+`errorReason: "transaction_already_submitted"` (Sui and native Hedera) means
+another settle already took that transaction or has already settled it, and
+this one sent nothing of its own. It is not a payment for this request, so do
+not deliver on it, and before asking for a new signature look the transaction
+up: on native Hedera it is gone only once its validity window (`validStart`
+plus its valid duration) has passed and the chain does not have it.
 
 **Why a chain write failed, as a token.** Since 2026-09-10 the `error` field on a
 failed write names the stage and reason rather than only saying "node or caller".

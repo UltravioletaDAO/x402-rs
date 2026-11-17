@@ -21,7 +21,9 @@ with its `paymentId` whenever the facilitator knows them.
   the buyer to sign a new one.
 - **Neither: nothing was sent.** The failure was reached before the transaction
   left. Resend the same request when the answer invites it (`Retry-After`,
-  `safeToRetry`), or fix the request when it is a refusal.
+  `safeToRetry`), or fix the request when it is a refusal. One exception:
+  `transaction_already_submitted` (below) carries neither and the payment
+  exists.
 
 A new authorization for a payment that did land is a second, perfectly valid
 payment: the token's own nonce check does not stop it. That is why the body, not
@@ -32,7 +34,7 @@ two mean "nothing was sent".
 
 | Answer | Where it comes from |
 |---|---|
-| `502` `settlement_unconfirmed` + `transaction` + `paymentId` | The transaction was sent and no verdict came back: the receipt or confirmation did not arrive, the node's answer to the send was lost (a timeout, a dropped connection, a gateway error, an answer that does not parse), or the node says it already holds or already processed the transaction. Every network family, with the hash in its own chain's encoding. |
+| `502` `settlement_unconfirmed` + `transaction` + `paymentId` | The transaction was sent and no verdict came back: the receipt or confirmation did not arrive, the node's answer to the send was lost (a timeout, a dropped connection, a gateway error, an answer that does not parse), or the node says it already holds or already processed the transaction. Every network family, with the hash in its own chain's encoding. On native Hedera only the settle that co-signed or sent the transaction answers this; another settle of the same transaction gets `transaction_already_submitted`. There, the window to wait out is the signed transaction's validity window (`validStart` plus its valid duration). |
 | `502` `settlement_unconfirmed` + the sweep's signature | Solana settlement account (`settleSecretKey`): the sweep of the deposit to `payTo` was sent and no verdict came back. The deposit is already recorded as used, so resending the same payload does not sweep again: look the sweep up. |
 | `502` `broadcast_uncertain (ref: …)` | EVM: the send was refused on nonce grounds after the signer's transaction count moved, or the count could not be read. No hash can be attributed to this payment. |
 | `502` `receipt_pending (ref: …)` | Broadcast succeeded and the receipt has not arrived, where no hash survives to be named. |
@@ -52,12 +54,19 @@ two mean "nothing was sent".
 | `503` `writer_lease_unavailable` or `reason: forward_failed` + `Retry-After: 5` | This task may not sign, and the task that may was not reached. |
 | `503` with `safeToRetry: true` | The receipt rail sent nothing: storage or signing failed before admission, or the admission was released before any transaction existed. |
 
+## Already taken: do not deliver, do not ask for a new signature yet
+
+| Answer | Meaning |
+|---|---|
+| `200` `success: false` + `errorReason: transaction_already_submitted` | Native Hedera: another settle holds this transaction or has already settled it (one still in flight, an earlier one, or the facilitator's recovery), and this settle sent nothing of its own. A settle repeated after `502 settlement_unconfirmed` gets this answer too, unless its own send is the one that settles the transaction. It is not a payment for this request: do not deliver on it. It does not say nothing was paid either: before asking for a new signature, look the transaction up in your own records and on the chain (its id is the one the earlier `502` or the receipt named, and the signed transaction's own id, `<feePayer>@<validStart>`), and deliver only if it settled and you never delivered for it. It is gone only once the signed transaction's validity window (its `validStart` plus its valid duration, at most `maxTimeoutSeconds`) has passed and the chain does not have it: until then the facilitator may still send it. A retry that carries the `Idempotency-Key` of the settle that succeeded gets that answer back instead. |
+| `200` `success: false` + `errorReason: transaction_already_submitted` | Sui: another settle already took this signed transaction, or the chain already executed it (a settle repeated after `502 settlement_unconfirmed` gets this answer too). It is not a payment for this request: do not deliver on it. It does not say nothing was paid either: before asking for a new signature, check your own records and the chain for that transaction, and deliver only if it settled and you never delivered for it. Send an `Idempotency-Key` to get the first answer back instead. |
+
 ## Refused: fix the request
 
 | Answer | Meaning |
 |---|---|
 | `400` `contract_call_failed (ref: …)` | The chain executed the call and rejected it, or the failure could not be classified. |
-| `200` `success: false` + `errorReason` | Settlement was attempted and refused, or the transaction was mined and failed (then `transaction` names it and nothing moved). |
+| `200` `success: false` + `errorReason` | Settlement was attempted and refused, or the transaction was mined and failed (then `transaction` names it and nothing moved). Not `transaction_already_submitted`: see above. |
 | `409` | A conflicting `Idempotency-Key`, purchase or authorization; see `/docs`. |
 
 ## Until 2.39.6

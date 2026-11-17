@@ -1,0 +1,14 @@
+{
+  "client": "@x402/avm@2.31.0 (npm, ExactAvmScheme.createPaymentPayload, toClientAvmSigner) with @algorandfoundation/algokit-utils@10.0.0-alpha.46",
+  "network": "algorand-testnet",
+  "facilitator": "3GGQQYWN2WQRC7XBL2H34M7LZCTKUPFXC3Z5P5B3PGNITAKNFJAUPTGA4Q",
+  "payer": "3MBIJ6SVYOGIN5YWVOEZMCMUDMU57TG6DZL6ZILHGLVMMNCGATLYJPAHNU",
+  "payTo": "4IOUVNARL4RUB76YZ2Y6KL5FLQC4IDV4RVUYNMO65Z5YCMOGMEMAOYFTYI",
+  "amount": "10000",
+  "asset": "10458941",
+  "paymentIndex": 1,
+  "paymentGroup": [
+    "iqNmZWXNB9CiZnbNA+OjZ2VurHRlc3RuZXQtdjEuMKJnaMQgSGO1GKSzyE7IEPItTxCByw9x8FmnrCDexi9/cOUJOiKjZ3JwxCAry/AIcYGSZLq4u6TURoLnhBv3yjNeYfNGI73FIz47YaJsds0D7aRub3RlxBx4NDAyLWZlZS1wYXllci0xNzk0OTM0ODA2MDAwo3JjdsQg2Y0IYs3VoRF+4V6PvjPryKaqPLcW89f0O3maiYFNKkGjc25kxCDZjQhizdWhEX7hXo++M+vIpqo8txbz1/Q7eZqJgU0qQaR0eXBlo3BheQ==",
+    "gqNzaWfEQNlD4FcVmTwGKesXr0+AjY5MvgJM5Gi7v+w6tRPA13zrdPVRTaWpxvdHDGues6ckGozEGp1gS9wDpvRflrgrnACjdHhui6RhYW10zScQpGFyY3bEIOIdSrQRXyNA/9jOseUvpVwFxA68jWmGsd7ue4ExxmEYomZ2zQPjo2dlbqx0ZXN0bmV0LXYxLjCiZ2jEIEhjtRiks8hOyBDyLU8QgcsPcfBZp6wg3sYvf3DlCToio2dycMQgK8vwCHGBkmS6uLuk1EaC54Qb98ozXmHzRiO9xSM+O2GibHbNA+2kbm90ZcQdeDQwMi1wYXltZW50LXYyLTE3OTQ5MzQ4MDYwMDCjc25kxCDbAoT6VcOMhvcWq4mWCZQbKd/M3h5X7KFnMurGNEYE16R0eXBlpWF4ZmVypHhhaWTOAJ+XPQ=="
+  ]
+}

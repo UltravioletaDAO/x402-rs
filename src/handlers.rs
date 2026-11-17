@@ -4648,9 +4648,7 @@ where
             error!("Failed to convert {} request to v1: {}", format_name, e);
             return (
                 StatusCode::BAD_REQUEST,
-                Json(json!({
-                    "error": format!("Failed to process {} request: {}", format_name, e)
-                })),
+                Json(e.refusal_body(format!("Failed to process {} request: {}", format_name, e))),
             )
                 .into_response();
         }
@@ -5863,9 +5861,10 @@ where
             debug!("=== END SETTLE REQUEST DEBUG ===");
             return (
                 StatusCode::BAD_REQUEST,
-                Json(json!({
-                    "error": format!("Failed to process {} settle request: {}", format_name, e)
-                })),
+                Json(e.refusal_body(format!(
+                    "Failed to process {} settle request: {}",
+                    format_name, e
+                ))),
             )
                 .into_response();
         }
@@ -17655,6 +17654,87 @@ mod settle_idempotency_tests {
             "{json}"
         );
         assert!(retired_network_refusal(&v2_body("eip155:333")).is_none());
+    }
+
+    /// The upstream v2 body, `paymentRequirements` next to
+    /// `paymentPayload.accepted`, whose authorization pays `accepted`.
+    fn upstream_v2_body(seller_pay_to: &str, accepted_pay_to: &str) -> String {
+        let terms = |pay_to: &str| {
+            serde_json::json!({
+                "scheme": "exact",
+                "network": "eip155:8453",
+                "asset": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+                "amount": "1000000",
+                "payTo": pay_to,
+                "maxTimeoutSeconds": 60,
+                "extra": {"name": "USD Coin", "version": "2"}
+            })
+        };
+        serde_json::json!({
+            "x402Version": 2,
+            "paymentPayload": {
+                "x402Version": 2,
+                "accepted": terms(accepted_pay_to),
+                "payload": {
+                    "signature": format!("0x{}", "11".repeat(65)),
+                    "authorization": {
+                        "from": "0x1111111111111111111111111111111111111111",
+                        "to": accepted_pay_to,
+                        "value": "1000000",
+                        "validAfter": "0",
+                        "validBefore": "9999999999",
+                        "nonce": format!("0x{}", "43".repeat(32))
+                    }
+                }
+            },
+            "paymentRequirements": terms(seller_pay_to)
+        })
+        .to_string()
+    }
+
+    /// A buyer's `accepted` naming another payee than the seller's
+    /// `paymentRequirements` is refused on both routes with a code and the
+    /// field, before the facilitator and before anything is left to replay.
+    /// The same body with the seller's payee in another letter case is not.
+    #[tokio::test]
+    async fn an_accepted_naming_another_payee_than_the_seller_is_refused() {
+        let _g = arm();
+        let seller = "0xabcdef0123456789abcdef0123456789abcdef01";
+        let buyer = "0x3333333333333333333333333333333333333333";
+        let body = upstream_v2_body(seller, buyer);
+        let (status, json) = verify(&body).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "/verify: {json}");
+        assert_eq!(
+            json["code"], "accepted_payment_requirements_mismatch",
+            "{json}"
+        );
+        assert_eq!(json["field"], "payTo", "{json}");
+
+        let (status, _, json) = settle(Some("nested-other-payee"), &body).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "/settle: {json}");
+        assert_eq!(
+            json["code"], "accepted_payment_requirements_mismatch",
+            "{json}"
+        );
+        assert_eq!(json["field"], "payTo", "{json}");
+        assert!(
+            store()
+                .records
+                .lock()
+                .unwrap()
+                .get("nested-other-payee")
+                .is_none(),
+            "a refused request must leave nothing to replay"
+        );
+
+        // Same payee, another spelling: it goes on to the facilitator.
+        let shouted = format!("0x{}", seller[2..].to_uppercase());
+        let (_, json) = verify(&upstream_v2_body(seller, &shouted)).await;
+        assert_ne!(
+            json["code"], "accepted_payment_requirements_mismatch",
+            "{json}"
+        );
+        assert_eq!(json["field"], serde_json::Value::Null, "{json}");
     }
 
     /// A retry with the same key and body replays; nothing new settles.

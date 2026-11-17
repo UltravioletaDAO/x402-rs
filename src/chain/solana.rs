@@ -12,6 +12,7 @@ use solana_sdk::signer::Signer;
 use solana_sdk::transaction::VersionedTransaction;
 use solana_transaction_status_client_types::{
     option_serializer::OptionSerializer, UiInnerInstructions, UiInstruction,
+    UiTransactionStatusMeta,
 };
 use spl_token_2022::extension::transfer_fee::TransferFeeConfig;
 use spl_token_2022::extension::{BaseStateWithExtensions, ExtensionType, StateWithExtensions};
@@ -158,6 +159,84 @@ fn settlement_keypair(secret_key_str: &str) -> Result<Keypair, FacilitatorLocalE
 
 // TTL for settlement replay records: 7 days in seconds.
 const SOLANA_SETTLE_TTL_SECONDS: u64 = 7 * 24 * 3600;
+
+/// The `errorReason` of a settle whose transaction confirmed without paying
+/// payTo the price: the payment did not happen.
+pub const LANDED_WITHOUT_PAYMENT: &str = "settlement_landed_without_payment";
+
+/// How many times settle asks for a confirmed transaction, and how far apart,
+/// before it gives up on reading what the transaction did. A node behind the
+/// one that confirmed it may not hand it back at once.
+const LANDED_READ_ATTEMPTS: u32 = 8;
+const LANDED_READ_INTERVAL: Duration = Duration::from_millis(750);
+
+/// What a confirmed transaction did for payTo, as the chain recorded it.
+#[derive(Debug, PartialEq, Eq)]
+enum LandedPayment {
+    /// payTo's holdings of the asset grew by the price or more.
+    Paid,
+    /// The transaction failed on chain, or left payTo short of the price.
+    NotPaid(String),
+    /// No verdict: the transaction, or what it did for payTo, could not be read.
+    Unknown(String),
+}
+
+/// What a landed transaction's status and token balances say it paid payTo.
+///
+/// The balances are the transaction's own, recorded before and after it ran,
+/// so nothing else paid to payTo counts. payTo's share is the net change over
+/// every account of `mint` that payTo owns: a credit that another of its
+/// accounts gives back is no payment. A balance of `mint` that names no owner
+/// leaves that share unknown.
+fn landed_payment(
+    meta: &UiTransactionStatusMeta,
+    pay_to: &Pubkey,
+    mint: &Pubkey,
+    required: u64,
+) -> LandedPayment {
+    if let Some(err) = &meta.err {
+        return LandedPayment::NotPaid(format!("failed on chain: {err}"));
+    }
+    let (OptionSerializer::Some(before), OptionSerializer::Some(after)) =
+        (&meta.pre_token_balances, &meta.post_token_balances)
+    else {
+        return LandedPayment::Unknown("no token balances recorded".to_string());
+    };
+    let mint = mint.to_string();
+    let mut received: i128 = 0;
+    for (sign, balances) in [(-1i128, before), (1, after)] {
+        for balance in balances.iter().filter(|balance| balance.mint == mint) {
+            let OptionSerializer::Some(owner) = &balance.owner else {
+                return LandedPayment::Unknown(format!(
+                    "the balance of account {} names no owner",
+                    balance.account_index
+                ));
+            };
+            match Pubkey::from_str(owner) {
+                Ok(owner) if owner == *pay_to => {}
+                Ok(_) => continue,
+                Err(_) => {
+                    return LandedPayment::Unknown(format!(
+                        "the balance of account {} names an unreadable owner",
+                        balance.account_index
+                    ))
+                }
+            }
+            let Ok(amount) = balance.ui_token_amount.amount.parse::<u64>() else {
+                return LandedPayment::Unknown(format!(
+                    "the balance of account {} is unreadable",
+                    balance.account_index
+                ));
+            };
+            received += sign * i128::from(amount);
+        }
+    }
+    if received >= i128::from(required) {
+        LandedPayment::Paid
+    } else {
+        LandedPayment::NotPaid(format!("payTo received {received} of {required}"))
+    }
+}
 
 #[derive(Clone, Debug)]
 pub struct SolanaChain {
@@ -1419,6 +1498,7 @@ impl SolanaProvider {
         };
 
         // 5. Determine transfer instruction via Path 1 or Path 2
+        let transfer_in_cpi = top_level_result.is_err();
         let transfer_instruction = match top_level_result {
             Ok((_idx, ti)) => {
                 tracing::debug!("Path 1: Found top-level TransferChecked (standard wallet)");
@@ -1475,7 +1555,73 @@ impl SolanaProvider {
         }
 
         let payer: SolanaAddress = transfer_instruction.authority.into();
-        Ok(VerifyTransferResult { payer, transaction })
+        Ok(VerifyTransferResult {
+            payer,
+            transaction,
+            transfer_in_cpi,
+        })
+    }
+
+    /// Reads a confirmed transaction back from the chain and judges what it
+    /// paid payTo (`landed_payment`). A read that gets no transaction is asked
+    /// again, `LANDED_READ_INTERVAL` apart; after `LANDED_READ_ATTEMPTS` the
+    /// answer is no verdict.
+    async fn read_landed_payment(
+        &self,
+        signature: &Signature,
+        requirements: &PaymentRequirements,
+    ) -> LandedPayment {
+        use solana_client::rpc_config::RpcTransactionConfig;
+        use solana_transaction_status_client_types::UiTransactionEncoding;
+
+        let (pay_to, mint) = match (
+            SolanaAddress::try_from(requirements.pay_to.clone()),
+            SolanaAddress::try_from(requirements.asset.clone()),
+        ) {
+            (Ok(pay_to), Ok(mint)) => (pay_to.pubkey, mint.pubkey),
+            _ => {
+                return LandedPayment::Unknown(
+                    "payTo or the asset is not a Solana address".to_string(),
+                )
+            }
+        };
+        let Ok(required) = requirements
+            .max_amount_required
+            .0
+            .to_string()
+            .parse::<u64>()
+        else {
+            return LandedPayment::Unknown("maxAmountRequired is not a u64".to_string());
+        };
+        let config = RpcTransactionConfig {
+            encoding: Some(UiTransactionEncoding::Base64),
+            commitment: Some(CommitmentConfig::confirmed()),
+            max_supported_transaction_version: Some(0),
+        };
+        let mut last_error = String::new();
+        for attempt in 0..LANDED_READ_ATTEMPTS {
+            if attempt > 0 {
+                tokio::time::sleep(LANDED_READ_INTERVAL).await;
+            }
+            match self
+                .rpc_client
+                .get_transaction_with_config(signature, config)
+                .await
+            {
+                Ok(landed) => {
+                    return match landed.transaction.meta {
+                        Some(meta) => landed_payment(&meta, &pay_to, &mint, required),
+                        None => {
+                            LandedPayment::Unknown("the transaction carries no status".to_string())
+                        }
+                    }
+                }
+                Err(e) => last_error = crate::redact::scrub_urls(&e.to_string()),
+            }
+        }
+        LandedPayment::Unknown(format!(
+            "not handed back in {LANDED_READ_ATTEMPTS} reads: {last_error}"
+        ))
     }
 
     pub fn fee_payer(&self) -> MixedAddress {
@@ -2187,6 +2333,9 @@ impl FromEnvByNetworkBuild for SolanaProvider {
 pub struct VerifyTransferResult {
     pub payer: SolanaAddress,
     pub transaction: VersionedTransaction,
+    /// The transfer was found in the simulation's inner instructions (a smart
+    /// wallet's CPI), not as a top-level instruction of the transaction.
+    pub transfer_in_cpi: bool,
 }
 
 pub struct SettlementAccountVerifyResult {
@@ -2279,6 +2428,7 @@ impl Facilitator for SolanaProvider {
 
         // Standard flow: verify + co-sign + submit
         let verification = self.verify_transfer(request).await?;
+        let transfer_in_cpi = verification.transfer_in_cpi;
 
         tracing::info!(
             network = %self.network(),
@@ -2319,6 +2469,52 @@ impl Facilitator for SolanaProvider {
                 self.network(),
             )
             .await?;
+
+        // A transfer found as a top-level instruction ran if the transaction
+        // confirmed. A transfer found in the simulation's inner instructions is
+        // up to the program that makes it, which can do something else once the
+        // transaction lands: what it did is read back from the chain, and only
+        // a credit of the price to payTo is a settlement.
+        if transfer_in_cpi {
+            match self
+                .read_landed_payment(&tx_sig, &request.payment_requirements)
+                .await
+            {
+                LandedPayment::Paid => {}
+                LandedPayment::NotPaid(why) => {
+                    tracing::warn!(
+                        network = %self.network(),
+                        tx_signature = %tx_sig,
+                        payer = %verification.payer.pubkey,
+                        reason = %why,
+                        "Solana transaction confirmed without paying payTo; not a settlement"
+                    );
+                    return Ok(SettleResponse {
+                        success: false,
+                        error_reason: Some(FacilitatorErrorReason::FreeForm(
+                            LANDED_WITHOUT_PAYMENT.to_string(),
+                        )),
+                        payer: verification.payer.into(),
+                        transaction: None,
+                        network: self.network(),
+                        proof_of_payment: None,
+                        extensions: None,
+                    });
+                }
+                LandedPayment::Unknown(why) => {
+                    tracing::warn!(
+                        network = %self.network(),
+                        tx_signature = %tx_sig,
+                        reason = %why,
+                        "Solana transaction confirmed; what it paid payTo is unknown"
+                    );
+                    return Err(FacilitatorLocalError::SettlementUnconfirmed(
+                        TransactionHash::Solana(*tx_sig.as_array()),
+                        self.network(),
+                    ));
+                }
+            }
+        }
 
         tracing::info!(
             network = %self.network(),
@@ -4248,6 +4444,594 @@ mod sweep_outcome_tests {
                 Ok(keypair) => panic!("{case}: decoded a keypair for {}", keypair.pubkey()),
                 Err(other) => panic!("{case}: expected a decoding error, got {other:?}"),
             }
+        }
+    }
+}
+
+/// A payment made through a program the payer's wallet runs (a smart wallet)
+/// is verified on a simulation of its transaction; the settle answer rests on
+/// the transaction that landed, read back from the chain once it confirmed. A
+/// standard payment's transfer is a top-level instruction of its transaction,
+/// so its confirmation is the answer, as before.
+#[cfg(test)]
+mod landed_payment_tests {
+    use super::*;
+    use axum::{extract::State, response::IntoResponse, routing::post, Json, Router};
+    use base64::Engine as _;
+    use serde_json::{json, Value};
+    use solana_sdk::hash::Hash;
+    use solana_sdk::instruction::{AccountMeta, Instruction};
+    use solana_sdk::message::Message;
+    use solana_sdk::transaction::Transaction;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::{Arc as StdArc, Mutex as StdMutex};
+
+    /// The price of every payment here, in USDC base units.
+    const PRICE: u64 = 1_000;
+
+    /// USDC on Solana, on the network's asset allow-list.
+    fn usdc() -> Pubkey {
+        Pubkey::from_str("EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v").unwrap()
+    }
+
+    fn b64(data: &[u8]) -> String {
+        base64::engine::general_purpose::STANDARD.encode(data)
+    }
+
+    fn ata(owner: &Pubkey, mint: &Pubkey) -> Pubkey {
+        Pubkey::find_program_address(
+            &[owner.as_ref(), spl_token::ID.as_ref(), mint.as_ref()],
+            &ATA_PROGRAM_PUBKEY,
+        )
+        .0
+    }
+
+    /// An SPL token account of `mint`, owned by `owner`, holding `amount`.
+    fn token_account(mint: &Pubkey, owner: &Pubkey, amount: u64) -> Value {
+        let mut data = [0u8; 165];
+        data[..32].copy_from_slice(mint.as_ref());
+        data[32..64].copy_from_slice(owner.as_ref());
+        data[64..72].copy_from_slice(&amount.to_le_bytes());
+        data[108] = 1; // initialized
+        json!({"lamports": 2_039_280u64, "data": [b64(&data), "base64"],
+            "owner": spl_token::ID.to_string(), "executable": false, "rentEpoch": 0,
+            "space": 165})
+    }
+
+    /// The signature of the transaction the node was handed: its id.
+    fn signature_of(raw: &str) -> Signature {
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(raw)
+            .unwrap();
+        let tx: VersionedTransaction = bincode::deserialize(&bytes).unwrap();
+        tx.signatures[0]
+    }
+
+    /// The node the provider talks to.
+    #[derive(Clone)]
+    struct Chain {
+        mint: Pubkey,
+        pay_to: Pubkey,
+        /// payTo's token account before the payment; None: it does not exist.
+        before: Option<u64>,
+        /// payTo's token account as the simulation leaves it; None: the
+        /// simulation does not return it.
+        simulated: Option<u64>,
+        /// The inner instructions the simulation reports.
+        inner: Value,
+        /// What `getTransaction` answers for the confirmed transaction; null:
+        /// the node never finds it.
+        landed: Value,
+        sent: StdArc<StdMutex<Vec<String>>>,
+        reads: StdArc<AtomicUsize>,
+    }
+
+    impl Chain {
+        fn new(mint: Pubkey, pay_to: Pubkey) -> Self {
+            Self {
+                mint,
+                pay_to,
+                before: Some(0),
+                simulated: Some(PRICE),
+                inner: json!([]),
+                landed: Value::Null,
+                sent: Default::default(),
+                reads: Default::default(),
+            }
+        }
+    }
+
+    async fn rpc(State(chain): State<Chain>, Json(req): Json<Value>) -> axum::response::Response {
+        let id = req["id"].clone();
+        let answer =
+            |result: Value| Json(json!({"jsonrpc":"2.0","id":id,"result":result})).into_response();
+        let pay_to_ata = ata(&chain.pay_to, &chain.mint).to_string();
+        match req["method"].as_str().unwrap_or_default() {
+            "getTokenAccountBalance" => match chain.before {
+                Some(amount) if req["params"][0] == json!(pay_to_ata) => answer(
+                    json!({"context":{"slot":1},"value":{"amount":amount.to_string(),
+                        "decimals":6,"uiAmount":null,"uiAmountString":"0"}}),
+                ),
+                _ => Json(json!({"jsonrpc":"2.0","id":req["id"],
+                    "error":{"code":-32602,"message":"Invalid param: could not find account"}}))
+                .into_response(),
+            },
+            "getMultipleAccounts" => {
+                let accounts: Vec<Value> = req["params"][0]
+                    .as_array()
+                    .map(|keys| {
+                        keys.iter()
+                            .map(|_| token_account(&chain.mint, &chain.pay_to, 0))
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                answer(json!({"context":{"slot":1},"value":accounts}))
+            }
+            "simulateTransaction" => {
+                let pay_to_account = chain
+                    .simulated
+                    .map(|amount| token_account(&chain.mint, &chain.pay_to, amount))
+                    .unwrap_or(Value::Null);
+                answer(json!({"context":{"slot":1},"value":{"err":null,"logs":[],
+                    "accounts":[pay_to_account, null],"unitsConsumed":1000,
+                    "innerInstructions":chain.inner}}))
+            }
+            "sendTransaction" => {
+                let raw = req["params"][0].as_str().unwrap_or_default().to_string();
+                chain.sent.lock().unwrap().push(raw.clone());
+                answer(json!(signature_of(&raw).to_string()))
+            }
+            "getSignatureStatuses" => answer(json!({"context":{"slot":1},"value":[{
+                "slot":1,"confirmations":null,"status":{"Ok":null},"err":null,
+                "confirmationStatus":"confirmed"}]})),
+            "getTransaction" => {
+                chain.reads.fetch_add(1, Ordering::SeqCst);
+                answer(chain.landed.clone())
+            }
+            _ => answer(Value::Null),
+        }
+    }
+
+    fn compute_budget() -> Vec<Instruction> {
+        let mut limit = vec![2u8];
+        limit.extend_from_slice(&200_000u32.to_le_bytes());
+        let mut price = vec![3u8];
+        price.extend_from_slice(&1u64.to_le_bytes());
+        vec![
+            Instruction {
+                program_id: solana_sdk::compute_budget::ID,
+                accounts: vec![],
+                data: limit,
+            },
+            Instruction {
+                program_id: solana_sdk::compute_budget::ID,
+                accounts: vec![],
+                data: price,
+            },
+        ]
+    }
+
+    fn encode(tx: Transaction) -> String {
+        b64(&bincode::serialize(&VersionedTransaction::from(tx)).unwrap())
+    }
+
+    /// A smart-wallet payment -- one call into the wallet's program, which
+    /// moves the price out of its vault's token account into payTo's with a
+    /// CPI TransferChecked -- and that CPI the way the node reports it.
+    fn wallet_payment(
+        fee_payer: &Pubkey,
+        member: &Keypair,
+        mint: &Pubkey,
+        pay_to: &Pubkey,
+    ) -> (String, Value) {
+        let vault = Pubkey::new_unique();
+        let (source, destination) = (ata(&vault, mint), ata(pay_to, mint));
+        let call = Instruction {
+            program_id: Pubkey::new_unique(),
+            accounts: vec![
+                AccountMeta::new_readonly(member.pubkey(), true),
+                AccountMeta::new_readonly(vault, false),
+                AccountMeta::new(source, false),
+                AccountMeta::new_readonly(*mint, false),
+                AccountMeta::new(destination, false),
+                AccountMeta::new_readonly(spl_token::ID, false),
+            ],
+            data: vec![1],
+        };
+        let mut instructions = compute_budget();
+        instructions.push(call);
+        let message = Message::new(&instructions, Some(fee_payer));
+        let index = |key: &Pubkey| message.account_keys.iter().position(|k| k == key).unwrap();
+        let mut data = vec![12u8];
+        data.extend_from_slice(&PRICE.to_le_bytes());
+        data.push(6);
+        let inner = json!([{"index": 2, "instructions": [{
+            "programIdIndex": index(&spl_token::ID),
+            "accounts": [index(&source), index(mint), index(&destination), index(&vault)],
+            "data": bs58::encode(&data).into_string(),
+            "stackHeight": 2,
+        }]}]);
+        let mut tx = Transaction::new_unsigned(message);
+        tx.partial_sign(&[member], Hash::default());
+        (encode(tx), inner)
+    }
+
+    /// A standard payment: a top-level TransferChecked of the price from the
+    /// payer's token account into payTo's.
+    fn standard_payment(
+        fee_payer: &Pubkey,
+        payer: &Keypair,
+        mint: &Pubkey,
+        pay_to: &Pubkey,
+    ) -> String {
+        let mut instructions = compute_budget();
+        instructions.push(
+            spl_token::instruction::transfer_checked(
+                &spl_token::ID,
+                &ata(&payer.pubkey(), mint),
+                mint,
+                &ata(pay_to, mint),
+                &payer.pubkey(),
+                &[],
+                PRICE,
+                6,
+            )
+            .unwrap(),
+        );
+        let mut tx = Transaction::new_unsigned(Message::new(&instructions, Some(fee_payer)));
+        tx.partial_sign(&[payer], Hash::default());
+        encode(tx)
+    }
+
+    fn request(pay_to: &Pubkey, transaction: String) -> SettleRequest {
+        serde_json::from_value(json!({
+            "x402Version": 1,
+            "paymentPayload": {
+                "x402Version": 1, "scheme": "exact", "network": "solana",
+                "payload": { "transaction": transaction },
+            },
+            "paymentRequirements": {
+                "scheme": "exact", "network": "solana",
+                "maxAmountRequired": PRICE.to_string(),
+                "resource": "https://merchant.example/data", "description": "",
+                "mimeType": "application/json", "payTo": pay_to.to_string(),
+                "maxTimeoutSeconds": 60, "asset": usdc().to_string(),
+            },
+        }))
+        .unwrap()
+    }
+
+    /// A token balance of `mint` at account `index`, owned by `owner`.
+    fn balance(index: u8, mint: &Pubkey, owner: &Pubkey, amount: u64) -> Value {
+        json!({
+            "accountIndex": index,
+            "mint": mint.to_string(),
+            "uiTokenAmount": {"uiAmount": null, "decimals": 6,
+                "amount": amount.to_string(), "uiAmountString": "0"},
+            "owner": owner.to_string(),
+            "programId": spl_token::ID.to_string(),
+        })
+    }
+
+    /// `getTransaction` for a confirmed transaction: its error (null: none)
+    /// and its token balances before and after.
+    fn landed(err: Value, before: Vec<Value>, after: Vec<Value>) -> Value {
+        let status = if err.is_null() {
+            json!({"Ok": null})
+        } else {
+            json!({"Err": err.clone()})
+        };
+        json!({
+            "slot": 2,
+            "blockTime": null,
+            "transaction": ["", "base64"],
+            "meta": {
+                "err": err, "status": status, "fee": 5000,
+                "preBalances": [], "postBalances": [],
+                "preTokenBalances": before, "postTokenBalances": after,
+            },
+        })
+    }
+
+    struct Settled {
+        result: Result<SettleResponse, FacilitatorLocalError>,
+        sent: Vec<String>,
+        /// How many times settle asked for the landed transaction.
+        reads: usize,
+    }
+
+    async fn settle_on(
+        chain: Chain,
+        fee_payer: Keypair,
+        pay_to: &Pubkey,
+        transaction: String,
+    ) -> Settled {
+        let (sent, reads) = (chain.sent.clone(), chain.reads.clone());
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let app = Router::new().route("/", post(rpc)).with_state(chain);
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let provider = SolanaProvider {
+            keypair: Arc::new(fee_payer),
+            chain: SolanaChain::try_from(Network::Solana).unwrap(),
+            rpc_client: Arc::new(RpcClient::new(format!("http://{addr}/"))),
+            max_compute_unit_limit: 400_000,
+            max_compute_unit_price: 1_000_000,
+        };
+        let result = provider.settle(&request(pay_to, transaction)).await;
+        let sent = sent.lock().unwrap().clone();
+        Settled {
+            result,
+            sent,
+            reads: reads.load(Ordering::SeqCst),
+        }
+    }
+
+    /// A smart-wallet payment to `pay_to` whose simulation leaves payTo's
+    /// account holding `simulated`, settled on a chain where its transaction
+    /// landed as `landed` says.
+    async fn wallet_settle(pay_to: Pubkey, simulated: Option<u64>, landed: Value) -> Settled {
+        let (member, fee_payer) = (Keypair::new(), Keypair::new());
+        let (transaction, inner) = wallet_payment(&fee_payer.pubkey(), &member, &usdc(), &pay_to);
+        let mut chain = Chain::new(usdc(), pay_to);
+        chain.simulated = simulated;
+        chain.inner = inner;
+        chain.landed = landed;
+        settle_on(chain, fee_payer, &pay_to, transaction).await
+    }
+
+    /// The price credited to payTo by the transaction that landed: a
+    /// settlement, under that transaction's signature, read from the chain.
+    #[tokio::test]
+    async fn a_wallet_payment_that_landed_paying_pay_to_settles() {
+        let (pay_to, vault) = (Pubkey::new_unique(), Pubkey::new_unique());
+        let paid = landed(
+            Value::Null,
+            vec![
+                balance(2, &usdc(), &vault, 5_000),
+                balance(3, &usdc(), &pay_to, 0),
+            ],
+            vec![
+                balance(2, &usdc(), &vault, 5_000 - PRICE),
+                balance(3, &usdc(), &pay_to, PRICE),
+            ],
+        );
+
+        let settled = wallet_settle(pay_to, Some(PRICE), paid).await;
+
+        assert_eq!(settled.sent.len(), 1, "exactly one transaction sent");
+        let response = settled.result.expect("a payment that landed settles");
+        assert!(response.success, "{response:?}");
+        assert_eq!(
+            response.transaction,
+            Some(TransactionHash::Solana(
+                *signature_of(&settled.sent[0]).as_array()
+            ))
+        );
+        assert!(
+            settled.reads >= 1,
+            "settled without reading the transaction that landed"
+        );
+    }
+
+    /// What the landed transaction did to payTo's holdings of the asset is
+    /// the answer. The price, or more, credited to payTo settles. A
+    /// transaction that moved nothing, a credit one unit short, the price to
+    /// someone else or in another token, a credit payTo's other account gave
+    /// back, and a transaction that failed on chain are a payment that did
+    /// not happen: `success: false`, naming no transaction.
+    #[tokio::test]
+    async fn only_a_landed_credit_of_the_price_to_pay_to_settles() {
+        let (pay_to, vault, stranger) = (
+            Pubkey::new_unique(),
+            Pubkey::new_unique(),
+            Pubkey::new_unique(),
+        );
+        let (usdc, other_mint) = (usdc(), Pubkey::new_unique());
+        let failed = json!({"InstructionError": [2, {"Custom": 1}]});
+        let funded = || {
+            vec![
+                balance(2, &usdc, &vault, 5_000),
+                balance(3, &usdc, &pay_to, 0),
+            ]
+        };
+        let paid = |amount: u64| {
+            vec![
+                balance(2, &usdc, &vault, 5_000 - amount),
+                balance(3, &usdc, &pay_to, amount),
+            ]
+        };
+        // (case, on-chain error, token balances before, after, settles)
+        let cases: Vec<(&str, Value, Vec<Value>, Vec<Value>, bool)> = vec![
+            ("nothing moved", Value::Null, funded(), funded(), false),
+            ("the price", Value::Null, funded(), paid(PRICE), true),
+            (
+                "more than the price",
+                Value::Null,
+                funded(),
+                paid(PRICE + 1),
+                true,
+            ),
+            (
+                "one unit short",
+                Value::Null,
+                funded(),
+                paid(PRICE - 1),
+                false,
+            ),
+            (
+                "payTo's account created holding the price",
+                Value::Null,
+                vec![balance(2, &usdc, &vault, 5_000)],
+                paid(PRICE),
+                true,
+            ),
+            (
+                "the price to someone else",
+                Value::Null,
+                vec![
+                    balance(2, &usdc, &vault, 5_000),
+                    balance(3, &usdc, &pay_to, 0),
+                    balance(4, &usdc, &stranger, 0),
+                ],
+                vec![
+                    balance(2, &usdc, &vault, 5_000 - PRICE),
+                    balance(3, &usdc, &pay_to, 0),
+                    balance(4, &usdc, &stranger, PRICE),
+                ],
+                false,
+            ),
+            (
+                "the price in another token",
+                Value::Null,
+                vec![
+                    balance(2, &usdc, &vault, 5_000),
+                    balance(3, &other_mint, &pay_to, 0),
+                ],
+                vec![
+                    balance(2, &usdc, &vault, 5_000),
+                    balance(3, &other_mint, &pay_to, PRICE),
+                ],
+                false,
+            ),
+            (
+                "credited, and given back by payTo's other account",
+                Value::Null,
+                vec![
+                    balance(3, &usdc, &pay_to, 0),
+                    balance(4, &usdc, &pay_to, PRICE),
+                ],
+                vec![
+                    balance(3, &usdc, &pay_to, PRICE),
+                    balance(4, &usdc, &pay_to, 0),
+                ],
+                false,
+            ),
+            ("failed on chain", failed, funded(), funded(), false),
+        ];
+
+        for (case, err, before, after, settles) in cases {
+            let settled = wallet_settle(pay_to, Some(PRICE), landed(err, before, after)).await;
+            let response = match settled.result {
+                Ok(response) => response,
+                Err(error) => panic!("{case}: expected a verdict, got {error:?}"),
+            };
+            assert_eq!(response.success, settles, "{case}: {response:?}");
+            if settles {
+                assert!(response.transaction.is_some(), "{case}: {response:?}");
+            } else {
+                assert_eq!(
+                    response.transaction, None,
+                    "{case}: a payment that did not happen names a transaction"
+                );
+                assert_eq!(
+                    response.error_reason.as_ref().map(ToString::to_string),
+                    Some("settlement_landed_without_payment".to_string()),
+                    "{case}"
+                );
+            }
+        }
+    }
+
+    /// verify judges a smart-wallet payment on its simulation, and a node can
+    /// leave payTo's account out of the simulation; settle still answers from
+    /// the transaction that landed.
+    #[tokio::test]
+    async fn a_wallet_payment_simulated_without_pay_to_account_is_judged_on_what_landed() {
+        let pay_to = Pubkey::new_unique();
+        let unchanged = landed(
+            Value::Null,
+            vec![balance(3, &usdc(), &pay_to, 0)],
+            vec![balance(3, &usdc(), &pay_to, 0)],
+        );
+
+        let settled = wallet_settle(pay_to, None, unchanged).await;
+
+        let response = settled.result.expect("a verdict on what landed");
+        assert!(!response.success, "{response:?}");
+        assert_eq!(response.transaction, None, "{response:?}");
+    }
+
+    /// A landed transaction the node never hands back, or whose credits it
+    /// cannot attribute to an owner, or without token balances, is no
+    /// verdict: unconfirmed under the transaction's signature, never a
+    /// success and never a refusal a caller would answer with a new payment.
+    #[tokio::test]
+    async fn a_wallet_payment_whose_landed_effect_is_unknown_is_unconfirmed() {
+        let (pay_to, vault) = (Pubkey::new_unique(), Pubkey::new_unique());
+        let paid = landed(
+            Value::Null,
+            vec![
+                balance(2, &usdc(), &vault, 5_000),
+                balance(3, &usdc(), &pay_to, 0),
+            ],
+            vec![
+                balance(2, &usdc(), &vault, 5_000 - PRICE),
+                balance(3, &usdc(), &pay_to, PRICE),
+            ],
+        );
+        let mut no_owners = paid.clone();
+        for list in ["preTokenBalances", "postTokenBalances"] {
+            for entry in no_owners["meta"][list].as_array_mut().unwrap() {
+                entry.as_object_mut().unwrap().remove("owner");
+            }
+        }
+        let mut no_balances = paid;
+        for list in ["preTokenBalances", "postTokenBalances"] {
+            no_balances["meta"].as_object_mut().unwrap().remove(list);
+        }
+
+        for (case, landed) in [
+            ("never found", Value::Null),
+            ("balances without owners", no_owners),
+            ("no token balances", no_balances),
+        ] {
+            let settled = wallet_settle(pay_to, Some(PRICE), landed).await;
+            match settled.result {
+                Err(FacilitatorLocalError::SettlementUnconfirmed(tx, network)) => {
+                    assert_eq!(
+                        tx,
+                        TransactionHash::Solana(*signature_of(&settled.sent[0]).as_array()),
+                        "{case}"
+                    );
+                    assert_eq!(network, Network::Solana, "{case}");
+                }
+                other => panic!("{case}: expected SettlementUnconfirmed, got {other:?}"),
+            }
+        }
+    }
+
+    /// A standard payment's transfer is a top-level instruction, which a
+    /// confirmed transaction executed: its confirmation settles it, as
+    /// before, without reading the landed transaction back. That includes a
+    /// payment from payTo to itself, whose balance does not move.
+    #[tokio::test]
+    async fn a_standard_payment_still_settles_on_its_confirmation() {
+        for to_itself in [false, true] {
+            let (fee_payer, payer) = (Keypair::new(), Keypair::new());
+            let pay_to = if to_itself {
+                payer.pubkey()
+            } else {
+                Pubkey::new_unique()
+            };
+            let transaction = standard_payment(&fee_payer.pubkey(), &payer, &usdc(), &pay_to);
+
+            let settled =
+                settle_on(Chain::new(usdc(), pay_to), fee_payer, &pay_to, transaction).await;
+
+            let response = match settled.result {
+                Ok(response) => response,
+                Err(error) => panic!("to itself: {to_itself}: {error:?}"),
+            };
+            assert!(response.success, "to itself: {to_itself}: {response:?}");
+            assert_eq!(
+                response.transaction,
+                Some(TransactionHash::Solana(
+                    *signature_of(&settled.sent[0]).as_array()
+                )),
+                "to itself: {to_itself}"
+            );
+            assert_eq!(settled.reads, 0, "to itself: {to_itself}");
         }
     }
 }

@@ -1624,6 +1624,46 @@ impl SolanaProvider {
         ))
     }
 
+    /// Every signature the transaction requires, except the fee payer's (settle
+    /// adds it), is present and verifies against its message.
+    ///
+    /// verify simulates without checking signatures, so without this a
+    /// transaction its payer never signed verifies and only fails at settle.
+    fn verify_signed_by_its_signers(
+        &self,
+        transaction: &VersionedTransaction,
+    ) -> Result<(), FacilitatorLocalError> {
+        let message = transaction.message.serialize();
+        let required = transaction.message.header().num_required_signatures as usize;
+        let fee_payer = self.keypair.pubkey();
+        for (position, signer) in transaction
+            .message
+            .static_account_keys()
+            .iter()
+            .take(required)
+            .enumerate()
+        {
+            if *signer == fee_payer {
+                continue;
+            }
+            let signed = transaction
+                .signatures
+                .get(position)
+                .is_some_and(|signature| signature.verify(signer.as_ref(), &message));
+            if !signed {
+                tracing::warn!(
+                    signer = %signer,
+                    position,
+                    "Solana payment not signed by a signer it requires"
+                );
+                return Err(FacilitatorLocalError::DecodingError(
+                    "invalid_exact_svm_payload_transaction_signature_invalid".to_string(),
+                ));
+            }
+        }
+        Ok(())
+    }
+
     pub fn fee_payer(&self) -> MixedAddress {
         let pubkey = self.keypair.pubkey();
         MixedAddress::Solana(pubkey)
@@ -2397,6 +2437,7 @@ impl Facilitator for SolanaProvider {
         }
 
         let verification = self.verify_transfer(request).await?;
+        self.verify_signed_by_its_signers(&verification.transaction)?;
         Ok(VerifyResponse::valid(verification.payer.into()))
     }
 
@@ -3054,14 +3095,16 @@ mod tests {
     }
 
     /// A payment the way a standard wallet builds it: compute budget, then a
-    /// top-level Token-2022 TransferChecked into pay_to's ATA.
+    /// top-level Token-2022 TransferChecked into pay_to's ATA, signed by the
+    /// payer and left for the fee payer to sign.
     fn token_2022_payment(
         fee_payer: &Pubkey,
-        payer: &Pubkey,
+        payer_keypair: &Keypair,
         mint: &Pubkey,
         pay_to: &Pubkey,
         amount: u64,
     ) -> String {
+        let payer = &payer_keypair.pubkey();
         let ata = |owner: &Pubkey| {
             Pubkey::find_program_address(
                 &[owner.as_ref(), spl_token_2022::ID.as_ref(), mint.as_ref()],
@@ -3096,7 +3139,8 @@ mod tests {
             )
             .unwrap(),
         ];
-        let tx = Transaction::new_unsigned(Message::new(&instructions, Some(fee_payer)));
+        let mut tx = Transaction::new_unsigned(Message::new(&instructions, Some(fee_payer)));
+        tx.partial_sign(&[payer_keypair], solana_sdk::hash::Hash::default());
         b64(&bincode::serialize(&VersionedTransaction::from(tx)).unwrap())
     }
 
@@ -3155,7 +3199,7 @@ mod tests {
     #[tokio::test]
     async fn test_verify_pyusd_token2022_transfer_listed_mint_passes_unlisted_mint_fails() {
         let pyusd = Pubkey::from_str(PYUSD_MAINNET_MINT).unwrap();
-        let payer = Keypair::new().pubkey();
+        let payer = Keypair::new();
         let pay_to = Keypair::new().pubkey();
         let amount = 10_000; // 0.01 PYUSD
 
@@ -3203,7 +3247,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_verify_rejects_token2022_mint_with_nonzero_transfer_fee() {
-        let payer = Keypair::new().pubkey();
+        let payer = Keypair::new();
         let pay_to = Keypair::new().pubkey();
         let amount = 10_000;
         let as_deployed = |mint_b64: &str| unb64(mint_b64);
@@ -3268,6 +3312,80 @@ mod tests {
                     err.to_string().contains("transfer_fee_not_zero"),
                     "{case}: {err}"
                 );
+            }
+        }
+    }
+
+    /// `transaction` with the signature at `signer`'s position replaced.
+    fn with_signature_of(transaction: &str, signer: &Pubkey, signature: Signature) -> String {
+        let mut tx: VersionedTransaction = bincode::deserialize(&unb64(transaction)).unwrap();
+        let position = tx
+            .message
+            .static_account_keys()
+            .iter()
+            .position(|key| key == signer)
+            .unwrap();
+        tx.signatures[position] = signature;
+        b64(&bincode::serialize(&tx).unwrap())
+    }
+
+    /// A payment verifies only when every signer it names, other than the fee
+    /// payer settle signs for, has signed it: without the payer's signature, or
+    /// with one another key made, it is refused; signed by the payer, it verifies.
+    #[tokio::test]
+    async fn test_verify_requires_every_signer_but_the_fee_payer_to_have_signed() {
+        let pyusd = Pubkey::from_str(PYUSD_MAINNET_MINT).unwrap();
+        let payer = Keypair::new();
+        let pay_to = Keypair::new().pubkey();
+        let amount = 10_000;
+
+        /// What sits at the payer's signature position.
+        #[derive(Clone, Copy, Debug, PartialEq)]
+        enum PayerSignature {
+            Own,
+            Missing,
+            AnotherKeys,
+        }
+        for case in [
+            PayerSignature::Own,
+            PayerSignature::Missing,
+            PayerSignature::AnotherKeys,
+        ] {
+            let provider = mock_provider(
+                Network::Solana,
+                mocks_through_fee_guard(&unb64(PYUSD_MAINNET_MINT_B64), FIXTURE_EPOCH),
+            );
+            let signed =
+                token_2022_payment(&provider.keypair.pubkey(), &payer, &pyusd, &pay_to, amount);
+            let message = bincode::deserialize::<VersionedTransaction>(&unb64(&signed))
+                .unwrap()
+                .message
+                .serialize();
+            let tx = match case {
+                PayerSignature::Own => signed,
+                PayerSignature::Missing => {
+                    with_signature_of(&signed, &payer.pubkey(), Signature::default())
+                }
+                PayerSignature::AnotherKeys => with_signature_of(
+                    &signed,
+                    &payer.pubkey(),
+                    Keypair::new().sign_message(&message),
+                ),
+            };
+            let result = provider
+                .verify(&verify_request(
+                    Network::Solana,
+                    &pyusd,
+                    &pay_to,
+                    amount,
+                    tx,
+                ))
+                .await;
+            if case == PayerSignature::Own {
+                assert!(result.is_ok(), "{case:?}: {result:?}");
+            } else {
+                let err = result.expect_err(&format!("{case:?}"));
+                assert!(err.to_string().contains("signature"), "{case:?}: {err}");
             }
         }
     }

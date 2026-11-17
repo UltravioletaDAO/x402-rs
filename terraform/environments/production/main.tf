@@ -1188,16 +1188,17 @@ resource "aws_ecs_task_definition" "facilitator" {
         },
         {
           name = "RPC_URL_SUI"
-          # NOT fullnode.mainnet.sui.io: that endpoint stopped serving JSON-RPC
-          # entirely (-32601 "JSON-RPC on public fullnodes has been deprecated,
-          # migrate to gRPC or GraphQL") on every method, so Sui mainnet was dead
-          # in production until 2026-08-20 and nothing alarmed on it.
-          value = "https://sui-rpc.publicnode.com"
+          # gRPC endpoints, comma-separated, tried in order. JSON-RPC is gone from
+          # every public Sui node (2026-11-14: fullnode.*.sui.io -32601, publicnode
+          # -32000), so the facilitator speaks gRPC (src/chain/sui/rpc.rs). These are
+          # its defaults; a Rust test holds this value, the Lambda's and .env.example
+          # to them (every_configured_sui_endpoint_list_is_the_default_one).
+          value = "https://fullnode.mainnet.sui.io:443,https://sui-grpc.publicnode.com:443"
         },
         {
           name = "RPC_URL_SUI_TESTNET"
-          # Same deprecation applies to fullnode.testnet.sui.io.
-          value = "https://sui-testnet-rpc.publicnode.com"
+          # Same, for testnet.
+          value = "https://fullnode.testnet.sui.io:443,https://sui-testnet-grpc.publicnode.com:443"
         },
         {
           name  = "RPC_URL_UNICHAIN_SEPOLIA"

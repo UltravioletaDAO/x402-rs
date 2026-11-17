@@ -422,7 +422,7 @@ these two are opt-in lists and joining them is a separate decision:
 
 | Scheme | List | Extra work |
 |---|---|---|
-| `escrow` / `commerce` | `ESCROW_NETWORKS`, `src/payment_operator/addresses.rs:185` | Needs a deployed PaymentOperator + escrow + token collector for that chain. The test at `addresses.rs:452` asserts `ESCROW_NETWORKS.len() == 11` -- bump it or the suite goes red. Also bumps the `x402r.networksTitle` count on the landing (EN **and** ES). |
+| `escrow` / `commerce` | `ESCROW_NETWORKS`, `src/payment_operator/addresses.rs:185` | Needs a deployed PaymentOperator + escrow + token collector for that chain. A test in `addresses.rs` asserts `ESCROW_NETWORKS.len()` -- bump it or the suite goes red. The `x402r.networksTitle` count on the landing (EN **and** ES) follows from `python scripts/network_copy.py --generate`. |
 | `upto` | `UPTO_DEPLOYED_NETWORKS`, `src/upto/types.rs:60` | Only after the Permit2 proxy CREATE2 deployment has actually been replayed there. Verify with `eth_getCode` against **two** independent RPCs first: a wrong entry reports settlement success while moving zero tokens, which is exactly what shipped once. |
 
 If the network joins neither, change neither file.
@@ -590,20 +590,22 @@ disagrees with these.
   `N mainnets` fallback string on that page -- the guard reports
   `typed 'N mainnets' : not typed on this page` (measured 2026-09-16). Do not go
   looking for `data-i18n="sdk.networks"`; it is gone. Leave it gone.
-- The balance wall on `/` is still hand-written: 39 `class="network-badge ..."`
-  cards in `static/index.html`, one per served network, confirmed live
-  (`curl -s https://facilitator.ultravioletadao.xyz/ | grep -c 'class="network-badge'`
-  -> 39). Adding a network means adding two cards there (mainnet + testnet).
+- The balance wall on `/` is still hand-written: one `class="network-badge ..."`
+  card per served network in `static/index.html` (`python scripts/network_copy.py
+  --check` names a missing or extra card). Adding a network means adding two cards
+  there (mainnet + testnet).
 - `/networks` is NOT hand-written: `static/networks.html` builds its whole table
   from `GET /supported`. Do not add a row there. Its icons, and every explorer
   link on `/`, `/networks` and `/events/live`, come from `GET /networks.json`,
   i.e. from the network's entry in `config/supported_tokens.json` (displayName,
   icon, explorer + explorerPaths). There is no icon map in `static/x402.js` any
   more; `static_types_no_explorer_and_no_icon` fails if one comes back.
-- If the network gains escrow or ERC-8004, update those grids AND their
-  "Escrow Deployed on N Networks" / "Deployed on N Networks" headings + the
-  ERC-8004 stat card (`id="ovr-erc8004-networks"`), EN + ES. These ARE typed and
-  the guard treats a mismatch as an error, not a note.
+- If the network gains escrow or ERC-8004, add its card to that grid on the
+  landing (`--check` names a missing or extra card). Their headings ("Escrow
+  Deployed on N Networks" / "Deployed on N Networks"), the ERC-8004 stat card
+  (`id="ovr-erc8004-networks"`) and the EN + ES strings that count them are bound
+  to the manifest: "Regenerate the counts" below rewrites them. Never type the
+  number.
 - After building, run the canonical check and resolve any drift it reports:
   ```bash
   python scripts/verify_landing_canonical.py            # reads live /supported
@@ -611,10 +613,14 @@ disagrees with these.
   ```
   CI runs the `--offline` form in the `Build & test` job, so a drift here goes red
   before the deploy job starts.
-- **Bump `--expect-mainnets`.** Its default lives in the script itself
-  (`scripts/verify_landing_canonical.py:306`, currently `21`). A new mainnet makes
-  `/supported` disagree with it. The docstring header (`:11`) carries the same
-  number and is prose -- update both.
+- **Regenerate the counts.** `python scripts/network_copy.py --generate` (from
+  WSL or Linux: it runs `cargo test`) rewrites `config/network_capabilities.json`
+  from the code, then every published count and list bound to a capability, and
+  rebuilds `static/llms-full.txt`. `--check` (CI's first test step, and
+  `.githooks/pre-commit` when a commit touches a file it owns) fails on any count
+  or list that is not the manifest's. `scripts/verify_landing_canonical.py` reads
+  its mainnet count from that file: there is no default to bump. Details:
+  `guides/ADDING_NEW_CHAINS.md`, "How many networks".
 
 ### 3.11b `src/caip2.rs` -- usually NOT edited
 
@@ -894,7 +900,7 @@ Two files have joined the list since: `VERSION` (did not exist at `7dbe194e`;
 | 10 | `config/supported_tokens.json` | displayName, icon, explorer + explorerPaths, tokens (exactly what `/supported` publishes), chainId, facilitatorWallet | yes -- `networks_json` tests |
 | 11 | `lambda/balances/handler.py` | `get_network_configs()`: RPC + wallet | no |
 | 12 | `terraform/environments/production/main.tf` | `RPC_URL_*` in the task definition `environment` | no -- **and this is what keeps it out of `/supported`** |
-| 13 | `scripts/verify_landing_canonical.py` | `--expect-mainnets` default (`:306`) + the docstring count (`:11`) | the guard itself, in CI |
+| 13 | `config/network_capabilities.json` | regenerated, with every published count and list: `python scripts/network_copy.py --generate` (`scripts/verify_landing_canonical.py` reads its counts from it) | yes -- `network_manifest` test in `cargo test`, `network_copy.py --check` in CI |
 | 14 | `.env.example` | both RPC URLs | no |
 | 15 | `README.md` | network counts + tables | no |
 | 16 | `VERSION` | the release bump | CI fails if empty |
@@ -909,8 +915,8 @@ Two files have joined the list since: `VERSION` (did not exist at `7dbe194e`;
 | `scripts/stablecoin_matrix.py` | same -- add the symbol to the allow-list |
 | `static/{token}.png` + `ICONO_DE_TOKEN` in `static/x402.js` | same |
 | `src/upto/types.rs` | the Permit2 proxy is genuinely deployed there (verify with `eth_getCode` on two RPCs) |
-| `src/payment_operator/addresses.rs` | the chain joins escrow -- also bump the `len() == 11` test at `:452` |
-| `src/erc8004/mod.rs` | the chain joins ERC-8004 -- also the landing stat card, EN + ES |
+| `src/payment_operator/addresses.rs` | the chain joins escrow -- also bump its `ESCROW_NETWORKS.len()` assertion and add its card to the landing's escrow grid; `--generate` rewrites the heading and the counts |
+| `src/erc8004/mod.rs` | the chain joins ERC-8004 -- also its card in the landing's ERC-8004 grid; `--generate` rewrites the stat card and the counts |
 
 **Not** in the inventory, against a common assumption: `src/caip2.rs` (generic
 over `eip155:<id>`, see §3.11b) and `static/networks.html` (generated from

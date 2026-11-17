@@ -723,7 +723,19 @@ schemes' `502`, a settle forwarded to the signing task whose answer was lost
 (`reason: forward_unconfirmed`), and the receipt rail's failures after its send
 latched. Look the transaction up and deliver if it settled; only one not found
 after the chain's finality window is gone. A failure with neither
-`retryable: false` nor a `transaction` was produced before anything was sent.
+`retryable: false` nor a `transaction` was produced before anything was sent,
+with one exception: `transaction_already_submitted` (Sui and native Hedera,
+`200` with `success: false`) means another settle already took that signed
+transaction or has already settled it (on Sui, the chain may also have
+executed it already), and this one sent nothing of its own. It is not a
+payment for this request, so do not deliver on it; nor does it say nothing was
+paid, so before asking for a new signature look the transaction up in your own
+records and on the chain (the earlier `502` named it; on native Hedera it is
+also the signed transaction's own id, `<feePayer>@<validStart>`). On native
+Hedera it is gone only once its validity window (`validStart` plus its valid
+duration, at most `maxTimeoutSeconds`) has passed and the chain does not have
+it: until then the facilitator may still send it. A retry that carries the
+`Idempotency-Key` of the settle that succeeded gets that answer back instead.
 
 **Send an `Idempotency-Key` and the retry is safe.** Choose one opaque string per
 intended purchase, keep it across retries and restarts, and send it as a header:
@@ -1370,7 +1382,7 @@ sell anything — it checks a signature that someone else's buyer produced and l
 resulting transfer on-chain. The thing being authorized is the *payment*, and the
 payment carries its own authorization: the payer's signature over an EIP-3009
 `transferWithAuthorization` (or the equivalent primitive on Solana, NEAR, Stellar,
-Sui, Algorand and XRPL). The facilitator verifies that signature against the token's
+Sui, Algorand, XRPL and Hedera). The facilitator verifies that signature against the token's
 EIP-712 domain, the nonce, the amount and the validity window. Nothing about *your*
 identity as the caller changes the answer.
 

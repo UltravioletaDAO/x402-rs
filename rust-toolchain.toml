@@ -1,2 +1,23 @@
+# The compiler of every build of this repository: CI (.github/workflows/ci.yaml),
+# the production image (Dockerfile) and a local `cargo` under rustup.
+#
+# An EXACT version, never `stable`. The floating channel moved to 1.100.0 on
+# 2026-11-12, and the commit that run 43151660231 had built green on 1.99.1 failed
+# to compile in release run 43338805993 the next day: algonaut_client 0.4.2, E0277
+# under the never-type fallback change (rust-lang/rust#148922). Nothing in the
+# repository had changed; the compiler had.
+#
+# rustup obeys this file over the runner's `rustup default` and over the image's
+# own toolchain (measured 2026-11-13: rust:1.99.1-bookworm with `channel = "stable"`
+# downloaded and used 1.100.0). The CI action and the Dockerfile's base image name
+# the same version only so that neither downloads a second compiler next to it.
+# tests/scripts/test_ci_toolchain_pin.py fails when the three disagree. Moving the
+# pin is a PR of its own: all three together, and the whole CI gate on it.
+#
+# profile = "minimal" (rustc, cargo, rust-std) is what CI and the image install.
+# A `components` list here would be downloaded by every build, the Docker builder
+# included (measured). For local formatting and linting:
+#   rustup component add rustfmt clippy --toolchain 1.99.1
 [toolchain]
-channel = "stable"
+channel = "1.99.1"
+profile = "minimal"

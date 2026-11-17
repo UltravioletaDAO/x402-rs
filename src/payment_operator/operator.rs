@@ -216,6 +216,15 @@ where
 
     let payer = escrow_payload.authorization.from;
 
+    // The same payee rule `authorize` applies, answered as a verdict.
+    if let Err(e) = assert_receiver_is_payee(&escrow_payload.payment_info, &req_value) {
+        return Ok(serde_json::json!({
+            "isValid": false,
+            "invalidReason": format!("{}", e),
+            "payer": format!("{}", payer)
+        }));
+    }
+
     // Extract network from paymentRequirements
     let network_str = req_value
         .get("network")
@@ -375,10 +384,12 @@ fn extract_escrow_verify_fields(
                 .get("payload")
                 .ok_or_else(|| OperatorError::MissingField("paymentPayload.payload".to_string()))?
                 .clone();
-            // paymentRequirements can be in "accepted" (v2) or "paymentRequirements" (v1)
-            let requirements = pp
-                .get("accepted")
-                .or_else(|| json.get("paymentRequirements"))
+            // The seller's paymentRequirements first, then the buyer's
+            // `accepted` copy: the order settle reads them in, so verify
+            // judges a body by the same terms settle will.
+            let requirements = json
+                .get("paymentRequirements")
+                .or_else(|| pp.get("accepted"))
                 .ok_or_else(|| {
                     OperatorError::MissingField("paymentRequirements/accepted".to_string())
                 })?
@@ -681,7 +692,7 @@ fn parse_escrow_request(body: &str) -> Result<ParsedEscrowRequest, OperatorError
     let json_value: serde_json::Value = serde_json::from_str(body)?;
 
     // Extract fields from whichever format is present
-    let (payload_value, network_str, extra_value, action) =
+    let (payload_value, network_str, extra_value, action, requirements) =
         extract_escrow_settle_fields(&json_value)?;
 
     let network = Network::from_caip2(network_str)
@@ -694,6 +705,7 @@ fn parse_escrow_request(body: &str) -> Result<ParsedEscrowRequest, OperatorError
         "authorize" => {
             let escrow_payload: EscrowPayload = serde_json::from_value(payload_value.clone())
                 .map_err(|e| OperatorError::InvalidExtensionFormat(e.to_string()))?;
+            assert_receiver_is_payee(&escrow_payload.payment_info, requirements)?;
             Ok(ParsedEscrowRequest::Authorize {
                 network,
                 payload: escrow_payload,
@@ -731,10 +743,20 @@ fn parse_escrow_request(body: &str) -> Result<ParsedEscrowRequest, OperatorError
 
 /// Extract settle fields from either top-level or wrapped (v2) format.
 ///
-/// Returns (payload, network_str, extra_value, action).
+/// Returns (payload, network_str, extra_value, action, requirements).
+#[allow(clippy::type_complexity)]
 fn extract_escrow_settle_fields(
     json: &serde_json::Value,
-) -> Result<(serde_json::Value, &str, serde_json::Value, &str), OperatorError> {
+) -> Result<
+    (
+        serde_json::Value,
+        &str,
+        serde_json::Value,
+        &str,
+        &serde_json::Value,
+    ),
+    OperatorError,
+> {
     // Format 1: Top-level { scheme, action, payload, paymentRequirements }
     if is_escrow_scheme(json.get("scheme").and_then(|s| s.as_str())) {
         let action = json
@@ -763,7 +785,7 @@ fn extract_escrow_settle_fields(
             .ok_or_else(|| OperatorError::MissingField("paymentRequirements.extra".to_string()))?
             .clone();
 
-        return Ok((payload, network_str, extra, action));
+        return Ok((payload, network_str, extra, action, requirements));
     }
 
     // Format 2: { paymentPayload: { payload, accepted/scheme }, paymentRequirements }
@@ -810,13 +832,48 @@ fn extract_escrow_settle_fields(
                 })?
                 .clone();
 
-            return Ok((payload, network_str, extra, action));
+            return Ok((payload, network_str, extra, action, requirements));
         }
     }
 
     Err(OperatorError::InvalidScheme(
         "not an escrow scheme request".to_string(),
     ))
+}
+
+/// The error code of an escrow authorization whose `paymentInfo.receiver` is
+/// not the payee the seller's `paymentRequirements` names.
+pub const ESCROW_RECEIVER_MISMATCH: &str = "escrow_receiver_mismatch";
+
+/// When the seller's requirements name a payee (`payTo`), the escrow must hold
+/// the funds for that payee: `paymentInfo.receiver` is who a release pays.
+/// Requirements without `payTo` (or with an empty one) name no payee and are
+/// held to nothing here.
+fn assert_receiver_is_payee(
+    payment_info: &EscrowPaymentInfo,
+    requirements: &serde_json::Value,
+) -> Result<(), OperatorError> {
+    let pay_to = match requirements.get("payTo") {
+        None | Some(serde_json::Value::Null) => return Ok(()),
+        Some(serde_json::Value::String(s)) if s.is_empty() => return Ok(()),
+        Some(value) => value,
+    };
+    let pay_to: Address = pay_to
+        .as_str()
+        .and_then(|s| s.parse().ok())
+        .ok_or_else(|| {
+            OperatorError::InvalidExtensionFormat(format!(
+                "paymentRequirements.payTo is not an EVM address: {pay_to}"
+            ))
+        })?;
+    if pay_to != payment_info.receiver {
+        return Err(OperatorError::PaymentInfoInvalid(format!(
+            "{ESCROW_RECEIVER_MISMATCH}: payload.paymentInfo.receiver ({:#x}) does not match \
+             paymentRequirements.payTo ({:#x})",
+            payment_info.receiver, pay_to
+        )));
+    }
+    Ok(())
 }
 
 // ============================================================================
@@ -2215,5 +2272,180 @@ mod tests {
             alloy::primitives::address!("cafebabecafebabecafebabecafebabecafebabe"),
         );
         assert!(validate_addresses(Network::BaseSepolia, &extra, &addrs, false).is_err());
+    }
+}
+
+/// The payee the seller's `paymentRequirements` names, against the receiver
+/// of the escrow the buyer's `paymentInfo` sets up.
+#[cfg(test)]
+mod payee_tests {
+    use super::*;
+    use crate::payment_operator::addresses::base_sepolia;
+    use serde_json::{json, Value};
+
+    const RECEIVER: &str = "0xabcdef0123456789abcdef0123456789abcdef01";
+    const SELLER: &str = "0x5555555555555555555555555555555555555555";
+
+    /// An authorize on Base Sepolia, through the network's own escrow and
+    /// collector, whose escrow pays `receiver`, with the seller's
+    /// requirements `requirements`.
+    fn body(receiver: &str, requirements: Value) -> Value {
+        json!({
+            "x402Version": 2,
+            "scheme": "escrow",
+            "payload": {
+                "authorization": {
+                    "from": "0x1111111111111111111111111111111111111111",
+                    "to": base_sepolia::TOKEN_COLLECTOR,
+                    "value": "1000000",
+                    "validAfter": "0",
+                    "validBefore": "1900000000",
+                    "nonce": format!("0x{:064x}", 0x3039),
+                },
+                "signature": "0xabcdef1234567890",
+                "paymentInfo": {
+                    "operator": "0xFa8C4Cb156053b867Ae7489220A29b5939E3Df70",
+                    "receiver": receiver,
+                    "token": "0x036CbD53842c5426634e7929541eC2318f3dCF7e",
+                    "maxAmount": "1000000",
+                    "preApprovalExpiry": 281474976710655u64,
+                    "authorizationExpiry": 281474976710655u64,
+                    "refundExpiry": 281474976710655u64,
+                    "minFeeBps": 0,
+                    "maxFeeBps": 100,
+                    "feeReceiver": "0xFa8C4Cb156053b867Ae7489220A29b5939E3Df70",
+                    "salt": format!("0x{:064x}", 0x3039),
+                },
+            },
+            "paymentRequirements": requirements,
+        })
+    }
+
+    fn requirements(pay_to: Option<&str>) -> Value {
+        let mut r = json!({
+            "scheme": "escrow",
+            "network": "eip155:84532",
+            "maxAmountRequired": "1000000",
+            "asset": "0x036CbD53842c5426634e7929541eC2318f3dCF7e",
+            "extra": {
+                "escrowAddress": base_sepolia::ESCROW,
+                "operatorAddress": "0xFa8C4Cb156053b867Ae7489220A29b5939E3Df70",
+                "tokenCollector": base_sepolia::TOKEN_COLLECTOR,
+            },
+        });
+        if let Some(pay_to) = pay_to {
+            r["payTo"] = json!(pay_to);
+        }
+        r
+    }
+
+    /// A facilitator with no chain: whatever reaches it fails, so a verdict
+    /// can only have been decided on the request.
+    struct NoChain;
+
+    impl ProviderMap for NoChain {
+        type Value = NetworkProvider;
+        fn by_network<N: std::borrow::Borrow<Network>>(&self, _: N) -> Option<&Self::Value> {
+            None
+        }
+        fn values(&self) -> impl Iterator<Item = &Self::Value> + Send {
+            std::iter::empty()
+        }
+    }
+
+    impl HasProviderMap for NoChain {
+        type Map = NoChain;
+        fn provider_map(&self) -> &Self::Map {
+            self
+        }
+    }
+
+    #[test]
+    fn an_authorize_for_another_receiver_than_the_seller_payee_is_refused() {
+        let body = body(RECEIVER, requirements(Some(SELLER))).to_string();
+        match parse_escrow_request(&body) {
+            Err(OperatorError::PaymentInfoInvalid(reason)) => {
+                assert!(reason.contains("escrow_receiver_mismatch"), "{reason}");
+                assert!(reason.contains("paymentRequirements.payTo"), "{reason}");
+            }
+            Err(other) => panic!("refused for another reason: {other}"),
+            Ok(_) => panic!("an escrow for another receiver than the seller's payee was accepted"),
+        }
+    }
+
+    /// The same address in another letter case, and requirements that name no
+    /// payee, both pass.
+    #[test]
+    fn the_payee_rule_reads_addresses_and_skips_requirements_without_one() {
+        let shouted = format!("0x{}", RECEIVER[2..].to_uppercase());
+        for requirements in [
+            requirements(Some(&shouted)),
+            requirements(None),
+            requirements(Some("")),
+        ] {
+            let body = body(RECEIVER, requirements.clone()).to_string();
+            assert!(
+                matches!(
+                    parse_escrow_request(&body),
+                    Ok(ParsedEscrowRequest::Authorize { .. })
+                ),
+                "{requirements}"
+            );
+        }
+    }
+
+    /// `/verify` answers the same body the same way, before any chain read.
+    #[tokio::test]
+    async fn verify_refuses_an_escrow_for_another_receiver_before_the_chain() {
+        let body = body(RECEIVER, requirements(Some(SELLER))).to_string();
+        let verdict = verify_escrow_enabled(&body, &NoChain)
+            .await
+            .expect("a verdict, not a chain error");
+        assert_eq!(verdict["isValid"], false, "{verdict}");
+        let reason = verdict["invalidReason"].as_str().unwrap_or_default();
+        assert!(reason.contains("escrow_receiver_mismatch"), "{verdict}");
+    }
+
+    /// Control: with the seller's payee as receiver the same body passes every
+    /// check made on the request and goes on to the chain, which `NoChain`
+    /// does not have. The refusals above are the payee rule's alone.
+    #[tokio::test]
+    async fn the_seller_payee_as_receiver_goes_on_to_the_chain() {
+        let body = body(SELLER, requirements(Some(SELLER))).to_string();
+        let outcome = verify_escrow_enabled(&body, &NoChain).await;
+        assert!(
+            matches!(outcome, Err(OperatorError::ProviderNotFound(_))),
+            "{outcome:?}"
+        );
+    }
+
+    /// The wrapped v2 body: verify reads the seller's `paymentRequirements`
+    /// first, as settle does, not the buyer's `accepted` copy.
+    #[tokio::test]
+    async fn verify_reads_the_seller_requirements_before_the_buyer_copy() {
+        let flat = body(RECEIVER, requirements(Some(SELLER)));
+        let wrapped = json!({
+            "x402Version": 2,
+            "paymentPayload": {
+                "x402Version": 2,
+                "accepted": requirements(Some(RECEIVER)),
+                "payload": flat["payload"].clone(),
+            },
+            "paymentRequirements": requirements(Some(SELLER)),
+        })
+        .to_string();
+        let verdict = verify_escrow_enabled(&wrapped, &NoChain)
+            .await
+            .expect("a verdict, not a chain error");
+        assert_eq!(verdict["isValid"], false, "{verdict}");
+        let reason = verdict["invalidReason"].as_str().unwrap_or_default();
+        assert!(reason.contains("escrow_receiver_mismatch"), "{verdict}");
+        assert!(
+            matches!(
+                parse_escrow_request(&wrapped),
+                Err(OperatorError::PaymentInfoInvalid(_))
+            ),
+            "settle refuses it too"
+        );
     }
 }

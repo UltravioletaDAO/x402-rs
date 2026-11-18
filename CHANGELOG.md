@@ -1,5 +1,53 @@
 # Changelog
 
+## [2.57.7] - 2026-11-17
+
+Algorand: the fee transaction the facilitator signs pays only the
+facilitator itself, its fee is capped by the size of its group, and
+`/verify` checks the payer's authorization. The transactions the known
+clients build (`uvd-x402-sdk` TypeScript and Python, `@x402/avm`) still
+verify and settle.
+
+### Fixed
+
+- The fee transaction (index 0), which the client builds and the
+  facilitator signs, must be a payment to the facilitator's own address, as
+  every known client sends it and the official facilitator requires: another
+  receiver is refused with `Fee transaction receiver mismatch`. Its note is
+  empty, `x402-fee-payer`, or the one `@x402/avm` writes, `x402-fee-payer-`
+  followed by the 13 digits of `Date.now()`; any other note is a forbidden
+  field (`note`).
+- Its fee is capped at 5_000 microAlgos per transaction in the group, the
+  official facilitator's cap (10_000 for the two-transaction group the
+  clients send, which set 2_000), instead of a flat 100_000. A group of more
+  than 16 transactions, which algod refuses, is refused first.
+- `/verify` and `/settle` check that the transfer is authorized by its
+  sender: a signature of the sender's key, a multisignature of the multisig
+  account it is (at most 255 keys), or a logic signature of that account,
+  its own program's or one the sender delegated with its signature (the
+  program is not run). A logic signature delegated with a multisignature,
+  which algod refuses since consensus v41, is refused. An authorization that
+  does not verify answers `invalid_signature`.
+- `/settle` applies all of the above before it claims the group in the
+  replay store, signs or broadcasts anything.
+
+### Tests
+
+- `replay_verify_tests` (`src/chain/algorand.rs`) holds each refusal on
+  `verify` and on `settle`: the fee transaction to another receiver, with a
+  note no client writes, above the cap of its group, in a group of 17, and
+  thirteen authorizations the sender did not give or algod refuses
+  (signature, multisignature and logic signature); and that `verify`
+  accepts the notes clients write, the fee at each cap, a group of 16, and
+  six authorizations of the sender.
+- `tests/fixtures/algorand/`: the groups `uvd-x402-sdk` 2.116.0 (npm),
+  `uvd-x402-sdk` 0.114.0 (PyPI) and `@x402/avm` 2.31.0 build, run against a
+  local algod (the README there says how; the published Python
+  `build_atomic_group` raises before it returns, so its file holds the
+  transactions it builds). `verify` and `settle` accept each one, and the
+  group id the client computed holds over the transactions as `/settle`
+  re-encodes them for the broadcast.
+
 ## [2.57.6] - 2026-11-15
 
 Native Hedera: one `success: true` per transaction id.

@@ -11,7 +11,10 @@ So rust-toolchain.toml names an exact version, and every other place that
 picks a compiler names the same one:
 
   - the toolchain action of every workflow job that runs cargo, before its
-    first cargo step (its @ref, and its `toolchain` input if it takes one);
+    first cargo step (its @ref, and its `toolchain` input if it takes one).
+    Since X402-SEG-CI the @ref is the commit the action's version branch pointed
+    at, and the version is the pin's comment (`@<sha> # 1.99.1`): that branch's
+    action.yml hardcodes its toolchain, so the commit installs that version;
   - every Rust base image in the Dockerfiles, whose Debian suite must stay the
     runtime stage's (the Dockerfile's own note: libssl pairs the two stages).
 
@@ -43,6 +46,7 @@ REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO / "scripts"))
 
 import ci_paths_selftest  # noqa: E402
+from test_ci_actions_pinned import SHA, uses_lines  # noqa: E402
 
 TOOLCHAIN_FILE = REPO / "rust-toolchain.toml"
 DOCKERFILES = [REPO / "Dockerfile", *sorted((REPO / "docker").glob("Dockerfile*"))]
@@ -136,6 +140,8 @@ class TheFilePinsAnExactVersion(unittest.TestCase):
 class EveryWorkflowInstallsTheFilesVersion(unittest.TestCase):
     def test_every_toolchain_action_names_the_files_version(self):
         pinned = channel()
+        # The version of each pin is its comment, which YAML drops: read the text.
+        comment_of = {(wf, ref): comment for wf, _, ref, comment in uses_lines()}
         found = 0
         for wf, job, index, step in steps():
             uses = str(step.get("uses", ""))
@@ -143,8 +149,10 @@ class EveryWorkflowInstallsTheFilesVersion(unittest.TestCase):
                 continue
             found += 1
             where = f"{wf}:{job}[{index}]"
-            self.assertEqual(uses.split("@", 1)[1], pinned,
-                             f"{where} installs {uses}, rust-toolchain.toml pins {pinned}")
+            self.assertIsNotNone(SHA.fullmatch(uses.split("@", 1)[1]),
+                                 f"{where} installs {uses}: pin the commit of the action's {pinned} branch")
+            self.assertEqual(comment_of.get((wf, uses)), pinned,
+                             f"{where} installs {uses} # {comment_of.get((wf, uses))}, rust-toolchain.toml pins {pinned}")
             toolchain = (step.get("with") or {}).get("toolchain")
             if toolchain is not None:
                 self.assertEqual(str(toolchain), pinned, f"{where} passes toolchain: {toolchain}")

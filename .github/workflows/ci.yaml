@@ -11,9 +11,14 @@ name: CI/CD — build, test, and deploy to AWS
 #     then verify. A merge never deploys by itself (owner's rule, 2026-09-27: one release a
 #     day, started by hand); see the deploy job's `if:`.
 #
-# AWS auth: IAM access keys stored as repo secrets AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY.
-# See docs/CICD_SETUP.md for the IAM policy and secret setup. Until those secrets exist,
-# the deploy job is skipped (the run still goes green on the test job).
+# AWS auth: GitHub OIDC, no stored key. The drift gate assumes facilitator-github-plan
+# (read-only) and the release facilitator-github-deploy, which trusts the `production`
+# environment alone (terraform/environments/production/cicd-oidc.tf). The only repo secret
+# is AWS_ACCOUNT_ID, so GitHub masks the account in these public logs. Until it exists,
+# plan and deploy are skipped (the run still goes green on the test job).
+#
+# Every action is pinned to a full commit SHA, its version in the comment: a tag can be
+# moved under us, a commit cannot. tests/scripts/test_ci_actions_pinned.py holds it.
 
 # What does NOT trigger this pipeline, and why that is safe
 # ---------------------------------------------------------
@@ -152,7 +157,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 35
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - name: Install build dependencies
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends pkg-config libssl-dev protobuf-compiler libprotobuf-dev
       # The compiler is rust-toolchain.toml's exact channel, and that file decides:
@@ -162,9 +167,11 @@ jobs:
       # that nothing runs -- @stable brought 1.100.0 on 2026-11-13, which cannot
       # compile algonaut_client 0.4.2 (run 43338805993). The action also sets
       # CARGO_INCREMENTAL=0. tests/scripts/test_ci_toolchain_pin.py fails when this
-      # ref, the file and the Dockerfile's base image disagree.
-      - uses: dtolnay/rust-toolchain@1.99.1
-      - uses: Swatinem/rust-cache@v2
+      # ref, the file and the Dockerfile's base image disagree. The ref is the commit the
+      # action's 1.99.1 branch pointed at (its action.yml hardcodes toolchain 1.99.1), and
+      # the comment names that version: the guard reads the comment.
+      - uses: dtolnay/rust-toolchain@263313d2989f864a2b8613f97277288638e7d8f8 # 1.99.1
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       # The landing page states network counts in three places -- the English
       # markup, the `en` dictionary and the `es` dictionary -- and until
       # 2026-09-02 only the first was ever checked, by a script whose own
@@ -217,7 +224,7 @@ jobs:
       # fire in the hand apply or in a deploy, too late to learn that one stopped guarding.
       # terraform test plans them against a mocked AWS (tests/nat_guard.tftest.hcl): no
       # credentials, no backend, nothing applied. 1.9.8, the version of the plan and deploy jobs.
-      - uses: hashicorp/setup-terraform@v3
+      - uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd # v3.1.2
         with:
           terraform_version: "1.9.8"
           terraform_wrapper: false
@@ -241,16 +248,19 @@ jobs:
     outputs:
       deploy: ${{ steps.check.outputs.deploy }}
     steps:
+      # The roles are assumed by OIDC; what a job needs from the repo is the account to name
+      # them in. Until AWS_ACCOUNT_ID exists, nothing below reaches AWS (cicd-oidc.tf has the
+      # order: roles first, then the environment, then this secret).
       - id: check
         env:
-          HAS_KEY: ${{ secrets.AWS_ACCESS_KEY_ID != '' && secrets.AWS_SECRET_ACCESS_KEY != '' }}
+          HAS_ACCOUNT: ${{ secrets.AWS_ACCOUNT_ID != '' }}
         run: |
-          if [ "$HAS_KEY" = "true" ]; then
+          if [ "$HAS_ACCOUNT" = "true" ]; then
             echo "deploy=true" >> "$GITHUB_OUTPUT"
-            echo "AWS credentials present — a manual Run workflow on main deploys."
+            echo "AWS account set — the drift gate plans, and a manual Run workflow on main deploys."
           else
             echo "deploy=false" >> "$GITHUB_OUTPUT"
-            echo "::notice title=Deploy skipped::AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY are not set. Add them (see docs/CICD_SETUP.md) to enable the manual deploy."
+            echo "::notice title=Deploy skipped::AWS_ACCOUNT_ID is not set. Add it (see docs/CICD_SETUP.md) once the OIDC roles exist to enable the drift gate and the manual deploy."
           fi
 
   # ---------------------------------------------------------------------------
@@ -288,6 +298,9 @@ jobs:
     timeout-minutes: 25
     permissions:
       contents: read
+      # The OIDC token that assumes facilitator-github-plan. No environment on purpose: the
+      # gate runs on pull requests, and the role trusts pull_request and main's ref alone.
+      id-token: write
     # Separate from the deploy's concurrency group: a superseded plan is worthless,
     # but it must never sit in the queue a release is waiting in. Keyed by event
     # like the workflow, so a merge's plan and a release's plan do not cancel each
@@ -296,19 +309,20 @@ jobs:
       group: tfplan-${{ github.ref }}-${{ github.event_name }}
       cancel-in-progress: true
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
-      - uses: hashicorp/setup-terraform@v3
+      - uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd # v3.1.2
         with:
           # Must match the deploy job. The state was written by 1.9.8 and a newer
           # binary upgrades it on contact, which locks 1.9.8 out afterwards.
           terraform_version: "1.9.8"
 
       - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v4
+        uses: aws-actions/configure-aws-credentials@7474bc4690e29a8392af63c5b98e7449536d5c3a # v4.3.1
         with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          role-to-assume: arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/facilitator-github-plan
+          role-session-name: x402-rs-plan-${{ github.run_id }}
+          mask-aws-account-id: true
           aws-region: ${{ env.AWS_REGION }}
 
       - name: Plan
@@ -661,8 +675,13 @@ jobs:
       github.ref == 'refs/heads/main' &&
       github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
+    # facilitator-github-deploy trusts this environment and nothing else (cicd-oidc.tf). What
+    # keeps a branch out of it is the environment's deployment-branch rule (main only), set
+    # on GitHub: without it, any branch that names the environment gets the token.
+    environment: production
     # ~16-min image build + terraform + ECS rollout wait; 50 leaves headroom so the
-    # "wait for stable" + verify steps complete (30 was cut off mid-rollout).
+    # "wait for stable" + verify steps complete (30 was cut off mid-rollout). Under the
+    # role's one-hour session.
     timeout-minutes: 50
     concurrency:
       group: deploy-production
@@ -671,6 +690,8 @@ jobs:
       contents: read
       # scripts/ci_last_green_deploy.py reads this workflow's runs and jobs.
       actions: read
+      # The OIDC token that assumes facilitator-github-deploy.
+      id-token: write
     steps:
       # A re-run runs on the commit its run was started at, so re-running an old
       # release deployed that old commit: a rollback nobody asked for, with a
@@ -691,7 +712,7 @@ jobs:
           fi
           echo "Deploying main's head ${RELEASE_SHA}."
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       - name: Compute image tag (version + short SHA)
         id: tag
@@ -708,20 +729,21 @@ jobs:
           echo "Deploying image tag: ${VER}-${SHA}"
 
       - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v4
+        uses: aws-actions/configure-aws-credentials@7474bc4690e29a8392af63c5b98e7449536d5c3a # v4.3.1
         with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          role-to-assume: arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/facilitator-github-deploy
+          role-session-name: x402-rs-deploy-${{ github.run_id }}
+          mask-aws-account-id: true
           aws-region: ${{ env.AWS_REGION }}
 
       - name: Log in to Amazon ECR
         id: ecr
-        uses: aws-actions/amazon-ecr-login@v2
+        uses: aws-actions/amazon-ecr-login@7290e214a610b32bc0eef81748948b6d466a8783 # v2.2.0
 
-      - uses: docker/setup-buildx-action@v3
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
 
       - name: Build and push image to ECR
-        uses: docker/build-push-action@v5
+        uses: docker/build-push-action@ca052bb54ab0790a636c9b5f226502c73d547a25 # v5.4.0
         with:
           context: .
           platforms: linux/amd64
@@ -735,7 +757,7 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      - uses: hashicorp/setup-terraform@v3
+      - uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd # v3.1.2
         with:
           terraform_version: "1.9.8"
 
@@ -943,7 +965,7 @@ jobs:
             -target=aws_s3_bucket_lifecycle_configuration.discovery > apply.log 2>&1; then
             tail -60 apply.log
             if grep -qi 'AccessDenied\|not authorized' apply.log; then
-              echo "::error title=Discovery bucket: the deploy user lacks the S3 grant::The apply was refused. github-actions-facilitator-deploy needs s3:PutBucketVersioning and s3:PutLifecycleConfiguration on the facilitator-discovery-prod bucket. That is an IAM change and is applied BY HAND, before this merges -- see docs/handoffs/2026-09-10-bucket-versioning.md. Nothing was changed; re-run this workflow once the grant is in place."
+              echo "::error title=Discovery bucket: the deploy role lacks the S3 grant::The apply was refused. facilitator-github-deploy needs s3:PutBucketVersioning and s3:PutLifecycleConfiguration on the facilitator-discovery-prod bucket. That is an IAM change and is applied BY HAND, before this merges -- see docs/handoffs/2026-09-10-bucket-versioning.md. Nothing was changed; re-run this workflow once the grant is in place."
             fi
             exit 1
           fi

@@ -14,12 +14,31 @@ holding the union of what its four jobs read. `docs/handoffs/2026-09-11-ci-paths
 job-by-job table and `python3 scripts/ci_paths_selftest.py` asserts the list is neither too
 wide nor too narrow. `workflow_dispatch` has no `paths` and deploys whatever `main` holds.
 
-It authenticates to AWS with **IAM access-key secrets**. Until those secrets exist the deploy job
-is **skipped** (the run still goes green on the `test` job), so merging the workflow itself is safe.
+It authenticates to AWS with **GitHub OIDC** (since X402-SEG-CI, 2026-11-18): no key is stored. The
+drift gate (`plan`) assumes **`facilitator-github-plan`**, read-only, trusted for pull requests and
+`main`; the release (`deploy`) assumes **`facilitator-github-deploy`**, trusted for the **`production`
+environment** alone. Both are declared in `terraform/environments/production/cicd-oidc.tf` and applied
+by hand. The only repo secret is `AWS_ACCOUNT_ID` (to name the roles; a secret so GitHub masks it in
+the public logs). Until it exists `plan` and `deploy` are **skipped** (the run still goes green on the
+`test` job). Every action is pinned to a commit SHA (`tests/scripts/test_ci_actions_pinned.py`).
 
-> Security note: long-lived access keys in GitHub are the quick path you chose. They grant an
-> automated actor standing access to production. Rotate them periodically, and consider migrating
-> to **GitHub OIDC** (no stored keys) later — see "Hardening" at the bottom.
+### Switching on the OIDC roles (once, in this order)
+
+1. Apply the roles by hand, with a human's credentials, on Terraform 1.9.8 — the command is in the
+   header of `cicd-oidc.tf`. Read the plan: it must create 2 roles, 2 policies and 4 attachments, and
+   touch nothing else.
+2. On GitHub, create the environment **`production`** with *Deployment branches and tags* = `main`
+   only. Without that rule any branch that names the environment gets the deploy role's token.
+3. Set the repository secret `AWS_ACCOUNT_ID`.
+4. After one green push run (drift gate on the plan role) and one green release (deploy role), delete
+   the secrets `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY`, deactivate and delete the access key of
+   `github-actions-facilitator-deploy`, then the user.
+5. Optional, later: opt the repository in to the immutable OIDC subject
+   (`use_immutable_subject: true` on `PUT /repos/UltravioletaDAO/x402-rs/actions/oidc/customization/sub`)
+   and apply with `-var github_oidc_immutable_subject=true` right after, so the trust names the
+   repository by its ids and survives a rename.
+
+The sections below describe the **legacy** access-key user, kept until step 4 removes it.
 
 ---
 
@@ -337,11 +356,11 @@ terraform apply -var="image_tag=<version>"
 
 ## Hardening (recommended follow-ups)
 
-1. **Migrate to GitHub OIDC** — drop the long-lived keys entirely: add an
-   `aws_iam_openid_connect_provider` for `token.actions.githubusercontent.com` and an IAM role whose
-   trust policy is scoped to `repo:UltravioletaDAO/x402-rs:ref:refs/heads/main`, then swap the
-   `configure-aws-credentials` step to `role-to-assume`. No secrets in GitHub.
-2. **Require a manual gate for prod** — wrap the `deploy` job in a GitHub **Environment**
-   (`production`) with required reviewers if you later want a human approval before each apply.
-3. **Scope `iam:PassRole`** to the two ECS role ARNs (above).
-4. **Rotate** the access keys on a schedule until OIDC lands.
+1. ~~Migrate to GitHub OIDC~~ — done in X402-SEG-CI (`cicd-oidc.tf`; the account's provider for
+   `token.actions.githubusercontent.com` already existed and is referenced, not declared). Pending
+   only the switch-on steps at the top of this file.
+2. **Require a manual gate for prod** — the `deploy` job now runs in the **`production`**
+   environment; add required reviewers to it if you want a human approval before each apply.
+3. ~~Scope `iam:PassRole`~~ — done: the deploy role passes only the execution, task and balances
+   Lambda roles, each with `iam:PassedToService` (`cicd-oidc.tf`, `PassRoleTo*`).
+4. **Rotate** the legacy access key until step 4 of the switch-on deletes it.

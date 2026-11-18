@@ -15,7 +15,9 @@ name: CI/CD — build, test, and deploy to AWS
 # (read-only) and the release facilitator-github-deploy, which trusts the `production`
 # environment alone (terraform/environments/production/cicd-oidc.tf). The only repo secret
 # is AWS_ACCOUNT_ID, so GitHub masks the account in these public logs. Until it exists,
-# plan and deploy are skipped (the run still goes green on the test job).
+# preflight fails every run but a fork's pull request (plan and deploy would otherwise be
+# skipped and the run would go green with nothing checked or shipped); docs/CICD_SETUP.md
+# lists what is red at each step of the switch-on.
 #
 # Every action is pinned to a full commit SHA, its version in the comment: a tag can be
 # moved under us, a commit cannot. tests/scripts/test_ci_actions_pinned.py holds it.

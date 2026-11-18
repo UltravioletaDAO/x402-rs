@@ -103,8 +103,8 @@
 #      deactivate and delete the user's key and the secrets
 #      AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY. Until then the key is still
 #      readable by any workflow of any branch: do not wait for a release.
-# A manual "Run workflow" with no AWS_ACCOUNT_ID fails in preflight instead of
-# going green with nothing deployed.
+# Every run without AWS_ACCOUNT_ID but a fork's pull request fails in preflight
+# instead of going green with the drift gate and the deploy skipped.
 #
 # The OIDC provider for token.actions.githubusercontent.com already exists in
 # the account and is owned by another stack, so it is referenced by its ARN,

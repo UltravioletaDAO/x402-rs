@@ -151,6 +151,13 @@ concurrency:
   # tests/scripts/test_ci_deploy_job.py holds the key and the step.
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
+# The token every job gets unless it asks for more: read the repository, nothing else,
+# whatever the repository's default is. A job that needs more lists it in its own
+# `permissions:`, which replaces this block rather than adding to it (plan and deploy
+# below). tests/scripts/test_ci_oidc.py holds both.
+permissions:
+  contents: read
+
 jobs:
   test:
     name: Build & test

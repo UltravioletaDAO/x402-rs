@@ -8,7 +8,9 @@ drift gate ran with that write-capable key on every pull request. Now:
   - deploy assumes facilitator-github-deploy, trusted for the `production` environment alone.
 
 What the roles trust and grant is held by terraform/environments/production/tests/github_oidc.tftest.hcl.
-This file holds the workflow's half, and that the two halves name the same roles and environment.
+This file holds the workflow's half, and that the two halves name the same roles and environment;
+and that every workflow's GitHub token defaults to reading the repository, the jobs that need more
+naming it in their own block.
 
 Offline: the workflows through the same PyYAML loader as scripts/ci_paths_selftest.py, the
 Terraform as text.
@@ -204,6 +206,52 @@ class TheEnvironmentGuard(unittest.TestCase):
         done = self.run_guard(env_error="gh: Resource not accessible by integration (HTTP 403)")
         self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
         self.assertIn("::warning title=Environment check inconclusive", done.stdout)
+
+
+# The scopes a job may raise above `read`, and the jobs that may: plan and deploy exchange the job's
+# OIDC token for their role; plan reads the production environment's rules (step "The production
+# environment admits main alone") and deploy this workflow's run history
+# (scripts/ci_last_green_deploy.py).
+RAISED = {
+    ("ci.yaml", "plan"): {"id-token": "write", "actions": "read"},
+    ("ci.yaml", "deploy"): {"id-token": "write", "actions": "read"},
+}
+
+
+def scopes(block) -> dict:
+    """A `permissions:` block as {scope: level}. The shorthand strings are refused: they grant every
+    scope at once."""
+    if not isinstance(block, dict):
+        raise AssertionError(f"permissions: {block!r} -- list the scopes; read-all/write-all grant every one")
+    return {str(k): str(v) for k, v in block.items()}
+
+
+class EveryTokenStartsReadOnly(unittest.TestCase):
+    """Every workflow sets `permissions: contents: read` at the top, so a job that does not ask for more
+    (test, preflight, the account-id scan, the plugin's build) gets a token that can only read the
+    repository, whatever the repository's default is. A job's own block replaces that one."""
+
+    def test_every_workflow_defaults_to_reading_the_repository(self):
+        for wf_name, wf in WORKFLOWS.items():
+            with self.subTest(workflow=wf_name):
+                self.assertIn("permissions", wf,
+                              f"{wf_name} has no top-level permissions: its jobs get the repository's "
+                              "default token, which may write")
+                self.assertEqual(scopes(wf["permissions"]), {"contents": "read"}, wf_name)
+
+    def test_no_job_raises_its_token_beyond_what_it_needs(self):
+        for wf_name, wf in WORKFLOWS.items():
+            for job_name, job in (wf.get("jobs") or {}).items():
+                if "permissions" not in job:
+                    continue
+                with self.subTest(workflow=wf_name, job=job_name):
+                    allowed = RAISED.get((wf_name, job_name), {})
+                    for scope, level in scopes(job["permissions"]).items():
+                        if (scope, level) == ("contents", "read") or level == "none":
+                            continue
+                        self.assertEqual(allowed.get(scope), level,
+                                         f"{wf_name}:{job_name} asks for {scope}: {level}; only "
+                                         f"{RAISED} may be raised, by those jobs")
 
 
 class EachJobAssumesItsOwnRole(unittest.TestCase):

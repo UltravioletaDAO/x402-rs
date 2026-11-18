@@ -1,5 +1,27 @@
 # Changelog
 
+## [2.59.1] - 2026-11-19
+
+Dependencies with a high advisory and a fix inside their own major version
+move up in `Cargo.lock`.
+
+### Security
+
+- `quinn-proto` 0.11.14 -> 0.11.19 (GHSA-4w2j-m93h-cj5j / RUSTSEC-2026-0185,
+  RUSTSEC-2026-0338, -0339, -0340, -0342, -0523, -0524).
+- `rmcp` 3.2.0 -> 3.11.0 (RUSTSEC-2026-0461, -0457, -0462), the transport of
+  `POST /mcp`.
+- `aws-smithy-json` 0.61.9 and 0.62.5 -> 0.62.7 (GHSA-8ffr-xgwf-xj56), through
+  `aws-sdk-s3` 1.119.0 -> 1.124.0 and `aws-smithy-runtime-api` 1.11.6 -> 1.12.3;
+  `aws-smithy-types` 1.4.6 -> 1.9.0 and `aws-smithy-checksums` 0.63.12 -> 0.64.8
+  ride along. No `Cargo.toml` requirement changes.
+- Not moved, because the fix is a major version away: `zip` 3.0.0 (a build
+  dependency of `utoipa-swagger-ui` 9, fixed with `utoipa-swagger-ui` 10 and
+  `utoipa` 6), `rustls-webpki` 0.101.7 / 0.102.8 and `rustls` 0.20.9 / 0.21.12
+  (the AWS SDK's legacy HTTPS client, Solana 2.x, Sui's git dependencies).
+  `mysten-metrics` comes from Sui's git repository, not from the crates.io
+  package the advisory names.
+
 ## [2.59.0] - 2026-11-18
 
 One release for 2.57.7 (Algorand, below), 2.57.8, 2.58.0 and 2.59.0.

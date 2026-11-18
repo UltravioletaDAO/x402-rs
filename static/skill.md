@@ -385,8 +385,8 @@ encoding. NEAR, Stellar, Algorand, Sui and XRPL used to report that case as
 `/settle` failure produced after the transaction may have left carries
 `"retryable": false` and no `Retry-After`, plus `transaction` and `paymentId`
 when the facilitator knows them: `settlement_unconfirmed`,
-`broadcast_uncertain`, `receipt_pending`, the `upto` / `escrow` / `refund`
-schemes' `502`, a settle forwarded to the signing task whose answer was lost
+`broadcast_uncertain`, `receipt_pending`, the `upto` / `escrow` schemes'
+`502`, a settle forwarded to the signing task whose answer was lost
 (`reason: forward_unconfirmed`), and the receipt rail's failures after its send
 latched. Look the transaction up and deliver if it settled; only one not found
 after the chain's finality window is gone. A failure with neither
@@ -1021,6 +1021,5 @@ Arc testnet is still pending. Other networks
 retain their existing responses. Full contract:
 https://github.com/UltravioletaDAO/x402-rs/blob/main/docs/facilitator-receipts.md
 
-Receipts cover plain `exact` payments only. On every network, `upto`,
-`escrow`/`commerce` and the x402r `refund` extension keep their own settlement
-paths and carry no `receipt`.
+Receipts cover plain `exact` payments only. On every network, `upto` and
+`escrow`/`commerce` keep their own settlement paths and carry no `receipt`.

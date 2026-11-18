@@ -196,7 +196,9 @@ and a payment confirmed by a lookup or by a resend without its key is not
 filed. Use a fresh key per purchase.
 Requests that `/settle` routes to their own settlement paths never enter
 admission, even when their inner requirements say `exact`: the `upto`,
-`escrow`/`commerce` and `fhe-transfer` schemes and the x402r `refund` extension.
+`escrow`/`commerce` and `fhe-transfer` schemes. Nor does a payment that carries
+the x402r `refund` extension, retired in 2.59.0: `/settle` answers it
+`400 refund_extension_retired` and settles nothing.
 **Expiry (since 2.51.0).** Every receipt row, the record and each of its
 aliases, carries the table's TTL attribute `expires_at`: 90 days after the
 later of the authorization's `validBefore` and the write. The rows therefore

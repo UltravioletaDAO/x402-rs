@@ -38,7 +38,6 @@ pub mod discovery_terms;
 pub mod discovery_usage;
 pub mod dx402;
 pub mod erc8004;
-pub mod escrow;
 pub mod events;
 pub mod facilitator;
 pub mod facilitator_local;

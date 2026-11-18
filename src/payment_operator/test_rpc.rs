@@ -53,6 +53,7 @@ pub(crate) struct SentTx {
     pub from: Address,
     pub input: Vec<u8>,
     pub max_fee_per_gas: u128,
+    pub gas_limit: u64,
 }
 
 #[derive(Default)]
@@ -80,6 +81,9 @@ struct NodeState {
     /// Selectors whose `eth_estimateGas` answers this gas instead of the
     /// default.
     estimates: Vec<([u8; 4], u64)>,
+    /// While set, an `eth_estimateGas` against `latest` fails as a node that
+    /// cannot answer (not a revert); one against any other block is answered.
+    estimates_unavailable_at_latest: bool,
     /// While set, `eth_sendRawTransaction` keeps the transaction and answers
     /// an error: a node that took it and whose answer was lost.
     send_answers_lost: bool,
@@ -188,6 +192,13 @@ impl MockNode {
     /// answer `gas`: a call that costs that much.
     pub(crate) fn estimate_gas_for(&self, selector: [u8; 4], gas: u64) {
         self.state.lock().unwrap().estimates.push((selector, gas));
+    }
+
+    /// Make every `eth_estimateGas` against `latest` fail as a node that
+    /// cannot answer, while one against any other block (a filler's own
+    /// estimate) is still answered.
+    pub(crate) fn estimates_unavailable_at_latest(&self, unavailable: bool) {
+        self.state.lock().unwrap().estimates_unavailable_at_latest = unavailable;
     }
 
     /// [`Self::revert_estimates`] for the next estimate of `selector` only: a
@@ -419,6 +430,9 @@ fn answer(state: &Mutex<NodeState>, req: &Value) -> Value {
                 .and_then(Value::as_str)
                 .and_then(|i| hex::decode(i.trim_start_matches("0x")).ok())
                 .unwrap_or_default();
+            if state.estimates_unavailable_at_latest && params[1] == json!("latest") {
+                return rpc_error(id, -32603, "upstream request timed out");
+            }
             if state
                 .estimate_reverts
                 .iter()
@@ -474,6 +488,7 @@ fn answer(state: &Mutex<NodeState>, req: &Value) -> Value {
                 from: sender(&tx),
                 input: tx.input().to_vec(),
                 max_fee_per_gas: tx.max_fee_per_gas(),
+                gas_limit: tx.gas_limit(),
             });
             let input = tx.input().to_vec();
             if state.send_answers_lost

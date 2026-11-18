@@ -1249,18 +1249,13 @@ resource "aws_ecs_task_definition" "facilitator" {
           name  = "FACILITATOR_URL"
           value = "https://facilitator.ultravioletadao.xyz"
         },
-        # ============================================================
-        # CRITICAL: Escrow Settlement - DO NOT DISABLE
-        # ============================================================
-        # This enables the escrow/settle endpoint for x402 payments.
-        # Without this, ALL payment settlements will fail with error:
-        # "Escrow settlement is disabled. Set ENABLE_ESCROW=true"
-        #
-        # WARNING: Never set this to "false" or remove this variable!
-        # ============================================================
+        # Solana/Fogo settlement-account payments (Crossmint custodial wallets,
+        # src/chain/solana.rs): OFF. One real payment on this path in the 14
+        # days to 2026-11-18. Standard exact payments on Solana and Fogo are
+        # unaffected; set "true" (or remove the entry) to serve it again.
         {
-          name  = "ENABLE_ESCROW"
-          value = "true"
+          name  = "ENABLE_SETTLEMENT_ACCOUNT"
+          value = "false"
         },
         # ============================================================
         # PaymentOperator Escrow Scheme (x402r v2)
@@ -1378,6 +1373,14 @@ resource "aws_ecs_task_definition" "facilitator" {
           name  = "ERC8004_RELAY_DEADLINE_SECS"
           value = "900"
         },
+        # Ethereum mainnet gas is the dearest the facilitator pays: an exact
+        # settle there is held to 250000 gas instead of the built-in 500000
+        # (src/chain/gas_ceiling.rs). The most an Ethereum exact settle was
+        # measured to use is 104927 (2026-11-12).
+        {
+          name  = "EVM_MAX_GAS_EXACT_ETHEREUM"
+          value = "250000"
+        },
         # PAUSED (owner's decision, 2026-09-28): 0 ERC-8004 writes per UTC
         # day on Ethereum mainnet; `0` refuses every write on the network
         # (src/erc8004/daily_cap.rs). The facilitator pays the Ethereum
@@ -1389,6 +1392,133 @@ resource "aws_ecs_task_definition" "facilitator" {
         {
           name  = "ERC8004_DAILY_WRITE_CAP_ETHEREUM"
           value = "0"
+        },
+        # Daily write limit on the networks where /feedback/evm/submit relays an
+        # EIP-7702 rating (delegate_address() in src/erc8004/relay.rs): 100
+        # writes per UTC day each, down from the default 1000. Measured
+        # 2026-11-04..18 in this service's logs: at most ~50 ERC-8004 writes a
+        # day across every network together. Ethereum stays at 0 (above) and
+        # Arc already has a built-in 100.
+        {
+          name  = "ERC8004_DAILY_WRITE_CAP_BASE"
+          value = "100"
+        },
+        {
+          name  = "ERC8004_DAILY_WRITE_CAP_POLYGON"
+          value = "100"
+        },
+        {
+          name  = "ERC8004_DAILY_WRITE_CAP_ARBITRUM"
+          value = "100"
+        },
+        {
+          name  = "ERC8004_DAILY_WRITE_CAP_OPTIMISM"
+          value = "100"
+        },
+        {
+          name  = "ERC8004_DAILY_WRITE_CAP_CELO"
+          value = "100"
+        },
+        {
+          name  = "ERC8004_DAILY_WRITE_CAP_BSC"
+          value = "100"
+        },
+        {
+          name  = "ERC8004_DAILY_WRITE_CAP_MONAD"
+          value = "100"
+        },
+        {
+          name  = "ERC8004_DAILY_WRITE_CAP_BASE_SEPOLIA"
+          value = "100"
+        },
+        # Gas ceiling per ERC-8004 transaction on every EVM network that has no
+        # built-in one (only Robinhood Chain and its testnet do, at the same
+        # 1000000, src/erc8004/max_gas.rs). A rating measured 216961 gas; a
+        # register mint fits. Above the ceiling a write is refused before
+        # anything is sent (400 erc8004_gas_over_limit).
+        {
+          name  = "ERC8004_MAX_GAS_ETHEREUM"
+          value = "1000000"
+        },
+        {
+          name  = "ERC8004_MAX_GAS_BASE"
+          value = "1000000"
+        },
+        {
+          name  = "ERC8004_MAX_GAS_POLYGON"
+          value = "1000000"
+        },
+        {
+          name  = "ERC8004_MAX_GAS_ARBITRUM"
+          value = "1000000"
+        },
+        {
+          name  = "ERC8004_MAX_GAS_OPTIMISM"
+          value = "1000000"
+        },
+        {
+          name  = "ERC8004_MAX_GAS_CELO"
+          value = "1000000"
+        },
+        {
+          name  = "ERC8004_MAX_GAS_BSC"
+          value = "1000000"
+        },
+        {
+          name  = "ERC8004_MAX_GAS_MONAD"
+          value = "1000000"
+        },
+        {
+          name  = "ERC8004_MAX_GAS_AVALANCHE"
+          value = "1000000"
+        },
+        {
+          name  = "ERC8004_MAX_GAS_SCROLL"
+          value = "1000000"
+        },
+        {
+          name  = "ERC8004_MAX_GAS_SKALE_BASE"
+          value = "1000000"
+        },
+        {
+          name  = "ERC8004_MAX_GAS_ARC"
+          value = "1000000"
+        },
+        {
+          name  = "ERC8004_MAX_GAS_ETHEREUM_SEPOLIA"
+          value = "1000000"
+        },
+        {
+          name  = "ERC8004_MAX_GAS_BASE_SEPOLIA"
+          value = "1000000"
+        },
+        {
+          name  = "ERC8004_MAX_GAS_POLYGON_AMOY"
+          value = "1000000"
+        },
+        {
+          name  = "ERC8004_MAX_GAS_ARBITRUM_SEPOLIA"
+          value = "1000000"
+        },
+        {
+          name  = "ERC8004_MAX_GAS_OPTIMISM_SEPOLIA"
+          value = "1000000"
+        },
+        {
+          name  = "ERC8004_MAX_GAS_CELO_SEPOLIA"
+          value = "1000000"
+        },
+        {
+          name  = "ERC8004_MAX_GAS_AVALANCHE_FUJI"
+          value = "1000000"
+        },
+        {
+          name  = "ERC8004_MAX_GAS_SKALE_BASE_SEPOLIA"
+          value = "1000000"
+        },
+        {
+          name  = "ERC8004_MAX_GAS_ARC_TESTNET"
+          value = "1000000"
         },
         # ============================================================
         # Live traffic stream (GET /events, SSE) — EXPOSURE DIAL

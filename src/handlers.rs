@@ -1231,8 +1231,8 @@ fn failure_salt() -> u64 {
     COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
 }
 
-/// The answer of an alternative `/settle` scheme -- `upto`, escrow, the
-/// `refund` extension -- whose transaction may already be on chain.
+/// The answer of an alternative `/settle` scheme -- `upto`, escrow --
+/// whose transaction may already be on chain.
 ///
 /// The same contract the exact path's `settlement_unconfirmed` keeps: `502`,
 /// `retryable: false`, no `Retry-After`, and the transaction with its
@@ -1303,6 +1303,52 @@ fn payload_scheme(body: &serde_json::Value) -> Option<&str> {
             .and_then(|a| a.get("scheme"))
             .and_then(|s| s.as_str())
     })
+}
+
+/// The token `/verify` and `/settle` answer a payment carrying the x402r
+/// `refund` extension with, in `invalidReason` / `errorReason`.
+pub(crate) const REFUND_EXTENSION_RETIRED: &str = "refund_extension_retired";
+
+/// Whether a request carries the x402r `refund` extension,
+/// `paymentPayload.extensions.refund`, in either wire version.
+fn carries_refund_extension(body: &serde_json::Value) -> bool {
+    body.get("paymentPayload")
+        .and_then(|payload| payload.get("extensions"))
+        .and_then(|extensions| extensions.as_object())
+        .is_some_and(|extensions| extensions.contains_key("refund"))
+}
+
+/// The answer to a payment carrying the x402r `refund` extension, retired in
+/// 2.59.0.
+///
+/// The extension paid a merchant's DepositRelay proxy, which deposited into an
+/// escrow; its authorization names that proxy as `to`. Its authors withdrew
+/// those contracts and moved refundable payments to PaymentOperator -- the
+/// `escrow` scheme this facilitator serves. The answer
+/// is a 400 in the shape the call answers with, like
+/// [`fhe_disabled_refusal`], given before anything is read from or sent to a
+/// chain, and before the `exact` path: verifying or settling the
+/// authorization as `exact` would pay the proxy as if it were the merchant.
+fn refund_extension_refusal(operation: Operation) -> Response {
+    let message = "the x402r refund extension (DepositRelay) was retired in 2.59.0: \
+                   this facilitator no longer verifies or settles it";
+    let hint = "for a refundable payment use the escrow scheme (PaymentOperator): \
+                GET /supported lists its networks and contract addresses";
+    let body = match operation {
+        Operation::Verify => json!({
+            "isValid": false,
+            "invalidReason": REFUND_EXTENSION_RETIRED,
+            "message": message,
+            "hint": hint,
+        }),
+        Operation::Settle => json!({
+            "success": false,
+            "errorReason": REFUND_EXTENSION_RETIRED,
+            "message": message,
+            "hint": hint,
+        }),
+    };
+    (StatusCode::BAD_REQUEST, Json(body)).into_response()
 }
 
 /// The answer to an `fhe-transfer` payment while `ENABLE_ZAMA` is off
@@ -4556,6 +4602,16 @@ where
             }
         }
 
+        // The x402r `refund` extension, retired in 2.59.0. After the schemes
+        // above, which keep their own paths, and before the `exact` one.
+        if carries_refund_extension(&json_value) {
+            info!("x402r refund extension verify refused: retired in 2.59.0");
+            return Some(AltSchemeOutcome {
+                response: refund_extension_refusal(Operation::Verify),
+                detail: detail(false, Some("refund"), Some(REFUND_EXTENSION_RETIRED)),
+            });
+        }
+
         None
     }
     .await;
@@ -4648,9 +4704,7 @@ where
             error!("Failed to convert {} request to v1: {}", format_name, e);
             return (
                 StatusCode::BAD_REQUEST,
-                Json(json!({
-                    "error": format!("Failed to process {} request: {}", format_name, e)
-                })),
+                Json(e.refusal_body(format!("Failed to process {} request: {}", format_name, e))),
             )
                 .into_response();
         }
@@ -5090,7 +5144,8 @@ fn log_settle_deserialization_error(body_str: &str, e: &serde_json::Error) {
 /// Supports both x402 v1 and v2 protocol formats. The version is auto-detected from the
 /// request body structure.
 ///
-/// Also supports x402r escrow settlement when the `refund` extension is present.
+/// A payment carrying the x402r `refund` extension, retired in 2.59.0, is
+/// answered `400 refund_extension_retired` (see [`refund_extension_refusal`]).
 ///
 /// **x402 v2 Header Support**: If the `PAYMENT-SIGNATURE` header is present, the payload
 /// is extracted from the base64-decoded header value instead of the request body.
@@ -5687,81 +5742,14 @@ where
             }
         }
 
-        // Check for x402r escrow/refund extension
-        if let Some(extensions) = json_value
-            .get("paymentPayload")
-            .and_then(|pp| pp.get("extensions"))
-            .and_then(|ext| ext.as_object())
-        {
-            if extensions.contains_key("refund") {
-                // Check if escrow feature is enabled
-                if !crate::escrow::is_escrow_enabled() {
-                    warn!("Escrow settlement requested but ENABLE_ESCROW is not set to true");
-                    return Some(AltSchemeOutcome {
-                        response: (
-                            StatusCode::BAD_REQUEST,
-                            Json(json!({
-                                "success": false,
-                                "errorReason": "Escrow settlement is disabled. Set ENABLE_ESCROW=true to enable."
-                            })),
-                        )
-                            .into_response(),
-                        detail: detail(false, Some("refund"), Some("scheme_disabled")),
-                    });
-                }
-
-                info!("Detected x402r refund extension, routing to escrow settlement");
-
-                match crate::escrow::settle_with_escrow(body_str, &facilitator).await {
-                    Ok(escrow_response) => {
-                        info!("Escrow settlement complete");
-                        let mut d = detail(escrow_response.success, Some("refund"), None);
-                        d.network = escrow_response.network.to_string();
-                        d.tx = escrow_response.transaction.as_ref().map(|t| t.to_string());
-                        d.payer = Some(escrow_response.payer.to_string());
-                        cache_typed_settle_success(
-                            idempotency_key.as_ref(),
-                            request_hash.as_ref(),
-                            &escrow_response,
-                        );
-                        return Some(AltSchemeOutcome {
-                            response: (StatusCode::OK, Json(escrow_response)).into_response(),
-                            detail: d,
-                        });
-                    }
-                    Err(e) => {
-                        error!(error = %e, "Escrow settlement failed");
-                        let typed = match &e {
-                            crate::escrow::EscrowError::SettlementUnconfirmed(tx, network) => {
-                                Some((tx, *network))
-                            }
-                            _ => None,
-                        };
-                        if let Some((response, category)) =
-                            alt_scheme_unconfirmed(typed, &format!("{e:?}"))
-                        {
-                            return Some(AltSchemeOutcome {
-                                response,
-                                detail: detail(false, Some("refund"), Some(category)),
-                            });
-                        }
-                        return Some(AltSchemeOutcome {
-                            response: (
-                                StatusCode::BAD_REQUEST,
-                                Json(json!({
-                                    "success": false,
-                                    "errorReason": format!("Escrow error: {}", e)
-                                })),
-                            )
-                                .into_response(),
-                            detail: detail(false, Some("refund"), Some("escrow_error")),
-                        });
-                    }
-                }
-            }
-
-            // Note: PaymentOperator now uses scheme="escrow" at top level, not extensions
-            // The old operator extension pattern is deprecated
+        // The x402r `refund` extension, retired in 2.59.0. After the schemes
+        // above, which keep their own paths, and before the `exact` one.
+        if carries_refund_extension(&json_value) {
+            info!("x402r refund extension settle refused: retired in 2.59.0");
+            return Some(AltSchemeOutcome {
+                response: refund_extension_refusal(Operation::Settle),
+                detail: detail(false, Some("refund"), Some(REFUND_EXTENSION_RETIRED)),
+            });
         }
 
         None
@@ -5863,9 +5851,10 @@ where
             debug!("=== END SETTLE REQUEST DEBUG ===");
             return (
                 StatusCode::BAD_REQUEST,
-                Json(json!({
-                    "error": format!("Failed to process {} settle request: {}", format_name, e)
-                })),
+                Json(e.refusal_body(format!(
+                    "Failed to process {} settle request: {}",
+                    format_name, e
+                ))),
             )
                 .into_response();
         }
@@ -6206,9 +6195,9 @@ fn cache_settle_success(idempotency_key: &str, request_hash: &str, response_json
 }
 
 /// F4 for the schemes that settle outside the `exact` path and answer with a
-/// [`SettleResponse`] of their own: x402r escrow/commerce and the `refund`
-/// extension. Same rule as `exact` -- only a success is cached, so a failure
-/// never locks the caller out of a legitimate retry.
+/// [`SettleResponse`] of their own: x402r escrow/commerce. Same rule as
+/// `exact` -- only a success is cached, so a failure never locks the caller
+/// out of a legitimate retry.
 fn cache_typed_settle_success(
     idempotency_key: Option<&String>,
     request_hash: Option<&String>,
@@ -6494,6 +6483,29 @@ impl IntoResponse for FacilitatorLocalError {
                 resp.headers_mut()
                     .insert(header::RETRY_AFTER, HeaderValue::from_static("5"));
                 resp
+            }
+            // A verdict on the request, reached before anything was sent: this
+            // transaction would cost more gas than the facilitator pays for its
+            // kind of call on this network (`chain::gas_ceiling`, published in
+            // `GET /config`). Not retryable as is.
+            FacilitatorLocalError::GasOverLimit {
+                network,
+                estimated,
+                ceiling,
+            } => {
+                tracing::warn!(
+                    %network,
+                    estimated,
+                    ceiling,
+                    "refused: gas estimate above the ceiling for this call; nothing sent"
+                );
+                (
+                    StatusCode::BAD_REQUEST,
+                    Json(ErrorResponse {
+                        error: crate::chain::gas_ceiling::GAS_OVER_LIMIT_CODE.to_string(),
+                    }),
+                )
+                    .into_response()
             }
             FacilitatorLocalError::Other(ref e) => {
                 let correlation_id = uuid::Uuid::new_v4();
@@ -7230,8 +7242,12 @@ where
                     .map_err(|e| format!("{e:?}"));
                 match gp {
                     Ok(gas_price) => {
-                        crate::chain::evm::send_call_estimated(call.gas_price(gas_price), network)
-                            .await
+                        crate::chain::evm::send_call_estimated(
+                            call.gas_price(gas_price),
+                            network,
+                            crate::chain::gas_ceiling::GasKind::Erc8004Write,
+                        )
+                        .await
                     }
                     Err(e) => {
                         error!(error = %e, "Failed to get gas price");
@@ -7252,7 +7268,12 @@ where
                     }
                 }
             } else {
-                crate::chain::evm::send_call_estimated(call, network).await
+                crate::chain::evm::send_call_estimated(
+                    call,
+                    network,
+                    crate::chain::gas_ceiling::GasKind::Erc8004Write,
+                )
+                .await
             };
 
             match send_result {
@@ -7889,6 +7910,7 @@ where
         calldata,
         confirmations: 1,
         authorization_list,
+        gas_kind: crate::chain::gas_ceiling::GasKind::Erc8004Relay,
     };
 
     match provider
@@ -7916,6 +7938,18 @@ where
                 }),
             )
                 .into_response()
+        }
+        Err(e @ FacilitatorLocalError::GasOverLimit { .. }) => {
+            // Refused before a nonce: nothing was written.
+            release_feedback_proof(&claim).await;
+            gas_over_limit_refusal(&FeedbackResponse {
+                proof: Some(proof_report),
+                success: false,
+                transaction: None,
+                feedback_index: None,
+                error: Some(e.to_string()),
+                network,
+            })
         }
         Err(e) => {
             error!(network = %network, error = %e, "relayed feedback transaction failed");
@@ -8476,8 +8510,12 @@ where
             let send_result = if !provider.is_eip1559() {
                 match provider.inner().get_gas_price().await {
                     Ok(gas_price) => {
-                        crate::chain::evm::send_call_estimated(call.gas_price(gas_price), network)
-                            .await
+                        crate::chain::evm::send_call_estimated(
+                            call.gas_price(gas_price),
+                            network,
+                            crate::chain::gas_ceiling::GasKind::Erc8004Write,
+                        )
+                        .await
                     }
                     Err(e) => {
                         error!(error = %e, "Failed to get gas price");
@@ -8491,7 +8529,12 @@ where
                     }
                 }
             } else {
-                crate::chain::evm::send_call_estimated(call, network).await
+                crate::chain::evm::send_call_estimated(
+                    call,
+                    network,
+                    crate::chain::gas_ceiling::GasKind::Erc8004Write,
+                )
+                .await
             };
 
             match send_result {
@@ -8858,6 +8901,7 @@ where
         calldata,
         confirmations: 1,
         authorization_list,
+        gas_kind: crate::chain::gas_ceiling::GasKind::Erc8004Relay,
     };
     match provider
         .send_transaction_from(provider.pinned_signer(), meta)
@@ -8881,6 +8925,11 @@ where
             )
                 .into_response()
         }
+        Err(e @ FacilitatorLocalError::GasOverLimit { .. }) => gas_over_limit_refusal(&json!({
+            "success": false,
+            "error": e.to_string(),
+            "network": network,
+        })),
         Err(e) => {
             error!(network = %network, error = %e, "failed to relay a response");
             (
@@ -9121,8 +9170,12 @@ where
             let send_result = if !provider.is_eip1559() {
                 match provider.inner().get_gas_price().await {
                     Ok(gas_price) => {
-                        crate::chain::evm::send_call_estimated(call.gas_price(gas_price), network)
-                            .await
+                        crate::chain::evm::send_call_estimated(
+                            call.gas_price(gas_price),
+                            network,
+                            crate::chain::gas_ceiling::GasKind::Erc8004Write,
+                        )
+                        .await
                     }
                     Err(e) => {
                         error!(error = %e, "Failed to get gas price");
@@ -9136,7 +9189,12 @@ where
                     }
                 }
             } else {
-                crate::chain::evm::send_call_estimated(call, network).await
+                crate::chain::evm::send_call_estimated(
+                    call,
+                    network,
+                    crate::chain::gas_ceiling::GasKind::Erc8004Write,
+                )
+                .await
             };
 
             match send_result {
@@ -13370,27 +13428,57 @@ where
         // register_0 = register(string, MetadataEntry[]) - first overload in ABI
         let call = identity_registry.register_0(agent_uri, metadata_entries);
         if let Some(gp) = legacy_gas_price {
-            crate::chain::evm::send_call_estimated(call.gas_price(gp), network).await
+            crate::chain::evm::send_call_estimated(
+                call.gas_price(gp),
+                network,
+                crate::chain::gas_ceiling::GasKind::Erc8004Register,
+            )
+            .await
         } else {
-            crate::chain::evm::send_call_estimated(call, network).await
+            crate::chain::evm::send_call_estimated(
+                call,
+                network,
+                crate::chain::gas_ceiling::GasKind::Erc8004Register,
+            )
+            .await
         }
     } else if !agent_uri.is_empty() {
         info!("Registering agent with URI only");
         // register_1 = register(string) - second overload in ABI
         let call = identity_registry.register_1(agent_uri);
         if let Some(gp) = legacy_gas_price {
-            crate::chain::evm::send_call_estimated(call.gas_price(gp), network).await
+            crate::chain::evm::send_call_estimated(
+                call.gas_price(gp),
+                network,
+                crate::chain::gas_ceiling::GasKind::Erc8004Register,
+            )
+            .await
         } else {
-            crate::chain::evm::send_call_estimated(call, network).await
+            crate::chain::evm::send_call_estimated(
+                call,
+                network,
+                crate::chain::gas_ceiling::GasKind::Erc8004Register,
+            )
+            .await
         }
     } else {
         info!("Registering agent without URI or metadata");
         // register_2 = register() - third overload in ABI
         let call = identity_registry.register_2();
         if let Some(gp) = legacy_gas_price {
-            crate::chain::evm::send_call_estimated(call.gas_price(gp), network).await
+            crate::chain::evm::send_call_estimated(
+                call.gas_price(gp),
+                network,
+                crate::chain::gas_ceiling::GasKind::Erc8004Register,
+            )
+            .await
         } else {
-            crate::chain::evm::send_call_estimated(call, network).await
+            crate::chain::evm::send_call_estimated(
+                call,
+                network,
+                crate::chain::gas_ceiling::GasKind::Erc8004Register,
+            )
+            .await
         }
     };
 
@@ -14194,9 +14282,19 @@ async fn transfer_agent_nft(
             .get_gas_price()
             .await
             .map_err(|e| not_sent(format!("Failed to get gas price for transfer: {e}")))?;
-        crate::chain::evm::send_call_estimated(transfer_call.gas_price(gas_price), network).await
+        crate::chain::evm::send_call_estimated(
+            transfer_call.gas_price(gas_price),
+            network,
+            crate::chain::gas_ceiling::GasKind::Erc8004Transfer,
+        )
+        .await
     } else {
-        crate::chain::evm::send_call_estimated(transfer_call, network).await
+        crate::chain::evm::send_call_estimated(
+            transfer_call,
+            network,
+            crate::chain::gas_ceiling::GasKind::Erc8004Transfer,
+        )
+        .await
     };
 
     let pending = send_result.map_err(|e| {
@@ -17548,6 +17646,87 @@ mod settle_idempotency_tests {
         assert!(retired_network_refusal(&v2_body("eip155:333")).is_none());
     }
 
+    /// The upstream v2 body, `paymentRequirements` next to
+    /// `paymentPayload.accepted`, whose authorization pays `accepted`.
+    fn upstream_v2_body(seller_pay_to: &str, accepted_pay_to: &str) -> String {
+        let terms = |pay_to: &str| {
+            serde_json::json!({
+                "scheme": "exact",
+                "network": "eip155:8453",
+                "asset": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+                "amount": "1000000",
+                "payTo": pay_to,
+                "maxTimeoutSeconds": 60,
+                "extra": {"name": "USD Coin", "version": "2"}
+            })
+        };
+        serde_json::json!({
+            "x402Version": 2,
+            "paymentPayload": {
+                "x402Version": 2,
+                "accepted": terms(accepted_pay_to),
+                "payload": {
+                    "signature": format!("0x{}", "11".repeat(65)),
+                    "authorization": {
+                        "from": "0x1111111111111111111111111111111111111111",
+                        "to": accepted_pay_to,
+                        "value": "1000000",
+                        "validAfter": "0",
+                        "validBefore": "9999999999",
+                        "nonce": format!("0x{}", "43".repeat(32))
+                    }
+                }
+            },
+            "paymentRequirements": terms(seller_pay_to)
+        })
+        .to_string()
+    }
+
+    /// A buyer's `accepted` naming another payee than the seller's
+    /// `paymentRequirements` is refused on both routes with a code and the
+    /// field, before the facilitator and before anything is left to replay.
+    /// The same body with the seller's payee in another letter case is not.
+    #[tokio::test]
+    async fn an_accepted_naming_another_payee_than_the_seller_is_refused() {
+        let _g = arm();
+        let seller = "0xabcdef0123456789abcdef0123456789abcdef01";
+        let buyer = "0x3333333333333333333333333333333333333333";
+        let body = upstream_v2_body(seller, buyer);
+        let (status, json) = verify(&body).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "/verify: {json}");
+        assert_eq!(
+            json["code"], "accepted_payment_requirements_mismatch",
+            "{json}"
+        );
+        assert_eq!(json["field"], "payTo", "{json}");
+
+        let (status, _, json) = settle(Some("nested-other-payee"), &body).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "/settle: {json}");
+        assert_eq!(
+            json["code"], "accepted_payment_requirements_mismatch",
+            "{json}"
+        );
+        assert_eq!(json["field"], "payTo", "{json}");
+        assert!(
+            store()
+                .records
+                .lock()
+                .unwrap()
+                .get("nested-other-payee")
+                .is_none(),
+            "a refused request must leave nothing to replay"
+        );
+
+        // Same payee, another spelling: it goes on to the facilitator.
+        let shouted = format!("0x{}", seller[2..].to_uppercase());
+        let (_, json) = verify(&upstream_v2_body(seller, &shouted)).await;
+        assert_ne!(
+            json["code"], "accepted_payment_requirements_mismatch",
+            "{json}"
+        );
+        assert_eq!(json["field"], serde_json::Value::Null, "{json}");
+    }
+
     /// A retry with the same key and body replays; nothing new settles.
     ///
     /// `NeverSettles` is what makes this discriminant: if the cache were
@@ -17644,13 +17823,13 @@ mod settle_idempotency_tests {
         );
     }
 
-    // x402r escrow and the `refund` extension settle outside the `exact` path,
-    // through the provider map, so these run against a node the test controls:
+    // x402r escrow settles outside the `exact` path, through the provider
+    // map, so these run against a node the test controls:
     // what it was handed (`MockNode::sent`) counts how often a settlement
     // actually ran.
 
-    use crate::payment_operator::test_rpc::{self, CallAnswer, MockNode, Providers};
-    use alloy::sol_types::{SolCall, SolValue};
+    use crate::payment_operator::test_rpc::{self, MockNode, Providers};
+    use alloy::sol_types::SolCall;
 
     /// A facilitator whose only chain is a `MockNode`. The escrow schemes never
     /// reach `Facilitator::settle`, so it refuses like `NeverSettles`.
@@ -17689,10 +17868,10 @@ mod settle_idempotency_tests {
         (node, OnNode(Arc::new(providers)))
     }
 
-    /// What `arm` holds, plus the writer flag's own lock and both escrow
-    /// switches: these tests settle for real, so another test flipping either
-    /// halfway through would turn a replay into a refusal. The switches are
-    /// put back as they were when it drops.
+    /// What `arm` holds, plus the writer flag's own lock and the escrow
+    /// switch: these tests settle for real, so another test flipping it
+    /// halfway through would turn a replay into a refusal. The switch is put
+    /// back as it was when it drops.
     struct Armed {
         previous: Vec<(&'static str, Option<String>)>,
         _lock: std::sync::MutexGuard<'static, ()>,
@@ -17709,7 +17888,7 @@ mod settle_idempotency_tests {
         let flags = test_rpc::ESCROW_FLAGS
             .lock()
             .unwrap_or_else(|e| e.into_inner());
-        let previous = ["ENABLE_PAYMENT_OPERATOR", "ENABLE_ESCROW"]
+        let previous = ["ENABLE_PAYMENT_OPERATOR"]
             .into_iter()
             .map(|var| {
                 let was = std::env::var(var).ok();
@@ -17832,50 +18011,6 @@ mod settle_idempotency_tests {
         .to_string()
     }
 
-    const PROXY: &str = "0x4444444444444444444444444444444444444444";
-    const MERCHANT: &str = "0x5555555555555555555555555555555555555555";
-
-    /// An x402r `refund` extension payment on Base: a deposit through a relay
-    /// proxy that the factory on `node` vouches for.
-    fn refund_body(node: &MockNode, nonce: u64) -> String {
-        let merchant: alloy::primitives::Address = MERCHANT.parse().unwrap();
-        node.on_call(
-            crate::escrow::base_mainnet::FACTORY,
-            crate::escrow::DepositRelayFactory::getMerchantFromRelayCall::SELECTOR,
-            CallAnswer::Return(merchant.abi_encode()),
-        );
-        json!({
-            "x402Version": 2,
-            "paymentPayload": {
-                "x402Version": 2,
-                "payload": {
-                    "authorization": {
-                        "from": "0x1111111111111111111111111111111111111111",
-                        "to": PROXY,
-                        "value": "1000000",
-                        "validAfter": "0",
-                        "validBefore": "1900000000",
-                        "nonce": format!("0x{nonce:064x}"),
-                    },
-                    "signature": format!("0x{}", "11".repeat(65)),
-                },
-                "extensions": {"refund": {"info": {
-                    "factoryAddress": crate::escrow::base_mainnet::FACTORY,
-                    "merchantPayouts": {PROXY: MERCHANT},
-                }}},
-                "accepted": {
-                    "scheme": "exact",
-                    "network": "eip155:8453",
-                    "asset": "0x3333333333333333333333333333333333333333",
-                    "amount": "1000000",
-                    "payTo": PROXY,
-                    "maxTimeoutSeconds": 300,
-                },
-            },
-        })
-        .to_string()
-    }
-
     /// Settle once under `key`, then retry with the same key and body: the
     /// retry is the first answer, byte for byte, marked as a replay, and the
     /// node is handed nothing new.
@@ -17930,12 +18065,23 @@ mod settle_idempotency_tests {
         .await;
     }
 
+    /// An escrow `authorize` whose call costs 50,000,000 gas -- what the
+    /// contract a request names makes it cost -- is held to its call's ceiling
+    /// (`chain::gas_ceiling`): nothing is sent, and the answer is not a success.
     #[tokio::test]
-    async fn a_refund_extension_settle_is_replayed_under_its_key_without_settling_again() {
+    async fn an_escrow_settle_estimated_above_its_gas_ceiling_sends_nothing() {
         let _g = arm_settling();
+        let _store = store();
         let (node, facilitator) = on_base().await;
-        let body = refund_body(&node, 1);
-        assert_replayed_without_settling_again(&node, &facilitator, "refund-replay", &body).await;
+        node.estimate_gas_for(
+            crate::payment_operator::abi::OperatorContract::authorizeCall::SELECTOR,
+            50_000_000,
+        );
+        let (status, _, answer) =
+            settle_on(&facilitator, "escrow-above-gas-ceiling", &escrow_body(32)).await;
+        let answer = String::from_utf8_lossy(&answer);
+        assert!(node.sent().is_empty(), "a transaction went out: {answer}");
+        assert_ne!(status, StatusCode::OK, "{answer}");
     }
 
     /// A settlement that failed leaves nothing to replay: the retry runs again.
@@ -18106,6 +18252,248 @@ mod settle_idempotency_tests {
                 .load(std::sync::atomic::Ordering::SeqCst),
             1,
             "a replay must not settle again"
+        );
+    }
+}
+
+#[cfg(test)]
+mod refund_extension_retired_tests {
+    //! A payment carrying the x402r `refund` extension is answered
+    //! `400 refund_extension_retired` by `/verify` and `/settle`, in the shape
+    //! each call answers with, whatever `ENABLE_ESCROW` says: no request
+    //! reaches the chain, and the `exact` path never sees the payment.
+
+    use super::*;
+    use crate::network::Network;
+    use crate::payment_operator::test_rpc::{self, MockNode, Providers};
+    use axum::body::Body;
+    use axum::http::Request;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use tower::ServiceExt;
+
+    /// The merchant's relay proxy the authorization pays, and the merchant.
+    const PROXY: &str = "0x4444444444444444444444444444444444444444";
+    const MERCHANT: &str = "0x5555555555555555555555555555555555555555";
+
+    /// A facilitator whose only chain is a `MockNode` for Base. It counts
+    /// every `exact` verify and settle it is handed and performs none.
+    #[derive(Clone)]
+    struct CountsExact {
+        providers: Arc<Providers>,
+        exact: Arc<AtomicUsize>,
+    }
+
+    impl HasProviderMap for CountsExact {
+        type Map = Providers;
+        fn provider_map(&self) -> &Self::Map {
+            &self.providers
+        }
+    }
+
+    impl Facilitator for CountsExact {
+        type Error = FacilitatorLocalError;
+        async fn verify(
+            &self,
+            _r: &crate::types::VerifyRequest,
+        ) -> Result<VerifyResponse, Self::Error> {
+            self.exact.fetch_add(1, Ordering::SeqCst);
+            Err(FacilitatorLocalError::ContractCall("no chain here".into()))
+        }
+        async fn settle(&self, _r: &SettleRequest) -> Result<SettleResponse, Self::Error> {
+            self.exact.fetch_add(1, Ordering::SeqCst);
+            Err(FacilitatorLocalError::ContractCall("no chain here".into()))
+        }
+        async fn supported(
+            &self,
+        ) -> Result<crate::types::SupportedPaymentKindsResponse, Self::Error> {
+            Ok(crate::types::SupportedPaymentKindsResponse { kinds: vec![] })
+        }
+    }
+
+    /// The terms of the payment: USDC on Base, paid to the relay proxy.
+    fn terms() -> serde_json::Value {
+        json!({
+            "scheme": "exact",
+            "network": "eip155:8453",
+            "asset": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+            "amount": "1000000",
+            "payTo": PROXY,
+            "maxTimeoutSeconds": 300,
+            "extra": {"name": "USD Coin", "version": "2"},
+        })
+    }
+
+    fn authorization() -> serde_json::Value {
+        json!({
+            "authorization": {
+                "from": "0x1111111111111111111111111111111111111111",
+                "to": PROXY,
+                "value": "1000000",
+                "validAfter": "0",
+                "validBefore": "1900000000",
+                "nonce": format!("0x{}", "42".repeat(32)),
+            },
+            "signature": format!("0x{}", "11".repeat(65)),
+        })
+    }
+
+    fn refund_extension() -> serde_json::Value {
+        json!({"refund": {"info": {
+            "factoryAddress": "0x41Cc4D337FEC5E91ddcf4C363700FC6dB5f3A814",
+            "merchantPayouts": {PROXY: MERCHANT},
+        }}})
+    }
+
+    /// The x402 v2 body the x402r SDK sent: `resource` and `accepted` inside
+    /// `paymentPayload`, the extension beside them.
+    fn v2_body() -> serde_json::Value {
+        json!({
+            "x402Version": 2,
+            "paymentPayload": {
+                "x402Version": 2,
+                "resource": {
+                    "url": "https://example.com/paid",
+                    "description": "",
+                    "mimeType": "application/json",
+                },
+                "accepted": terms(),
+                "payload": authorization(),
+                "extensions": refund_extension(),
+            },
+            "paymentRequirements": terms(),
+        })
+    }
+
+    /// The same payment in an x402 v1 envelope.
+    fn v1_body() -> serde_json::Value {
+        json!({
+            "x402Version": 1,
+            "paymentPayload": {
+                "x402Version": 1,
+                "scheme": "exact",
+                "network": "base",
+                "payload": authorization(),
+                "extensions": refund_extension(),
+            },
+            "paymentRequirements": {
+                "scheme": "exact",
+                "network": "base",
+                "maxAmountRequired": "1000000",
+                "resource": "https://example.com/paid",
+                "description": "",
+                "mimeType": "application/json",
+                "payTo": PROXY,
+                "maxTimeoutSeconds": 300,
+                "asset": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+                "extra": {"name": "USD Coin", "version": "2"},
+            },
+        })
+    }
+
+    /// One call to `route`, the body in the request body or, base64-encoded,
+    /// in the `PAYMENT-SIGNATURE` header.
+    async fn call(
+        facilitator: &CountsExact,
+        route: &str,
+        body: &serde_json::Value,
+        in_header: bool,
+    ) -> (StatusCode, serde_json::Value) {
+        let router = verify_settle_routes::<CountsExact>()
+            .layer(Extension(Arc::new(DiscoveryRegistry::new())))
+            .layer(Extension(Arc::new(crate::events::EventBus::from_env())))
+            .layer(Extension(
+                crate::transaction_store::create_transaction_store().await,
+            ))
+            .with_state(facilitator.clone());
+        let request = Request::builder()
+            .method("POST")
+            .uri(route)
+            .header("content-type", "application/json")
+            .header("x-forwarded-for", "203.0.113.7");
+        let request = if in_header {
+            let encoded = base64::engine::general_purpose::STANDARD.encode(body.to_string());
+            request
+                .header("payment-signature", encoded)
+                .body(Body::empty())
+        } else {
+            request.body(Body::from(body.to_string()))
+        };
+        let response = router.oneshot(request.unwrap()).await.unwrap();
+        let status = response.status();
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        (
+            status,
+            serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null),
+        )
+    }
+
+    /// Both routes, both wire versions, both transports, with `ENABLE_ESCROW`
+    /// unset and set to `true`: the same 400, each in its call's shape, with
+    /// no request to the node and nothing handed to the `exact` path.
+    #[tokio::test]
+    async fn a_refund_extension_payment_is_refused_without_touching_the_chain() {
+        let _writer = super::writer_lease_gate_tests::WRITER_FLAG
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        crate::writer_lease::set_writer_for_test(true);
+        let _flags = test_rpc::ESCROW_FLAGS
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let previous = std::env::var("ENABLE_ESCROW").ok();
+
+        let node = MockNode::start(Network::Base).await;
+        let provider = test_rpc::provider(Network::Base, &node, true).await;
+        let facilitator = CountsExact {
+            providers: Arc::new(Providers::one(Network::Base, provider)),
+            exact: Arc::default(),
+        };
+
+        let mut failures = Vec::new();
+        for flag in [None, Some("true")] {
+            match flag {
+                Some(value) => std::env::set_var("ENABLE_ESCROW", value),
+                None => std::env::remove_var("ENABLE_ESCROW"),
+            }
+            for (version, body) in [("v2", v2_body()), ("v1", v1_body())] {
+                for in_header in [false, true] {
+                    for route in ["/verify", "/settle"] {
+                        let case =
+                            format!("{route} {version} header={in_header} ENABLE_ESCROW={flag:?}");
+                        node.clear_log();
+                        let (status, answer) = call(&facilitator, route, &body, in_header).await;
+                        let (verdict, reason) = if route == "/verify" {
+                            ("isValid", "invalidReason")
+                        } else {
+                            ("success", "errorReason")
+                        };
+                        let hint = answer["hint"].as_str().unwrap_or_default();
+                        if status != StatusCode::BAD_REQUEST
+                            || answer[verdict] != json!(false)
+                            || answer[reason] != json!("refund_extension_retired")
+                            || !hint.contains("escrow scheme")
+                        {
+                            failures.push(format!("{case}: {status} {answer}"));
+                        }
+                        let requests = node.requests();
+                        if !requests.is_empty() {
+                            failures.push(format!("{case}: the node was asked {requests:?}"));
+                        }
+                    }
+                }
+            }
+        }
+
+        match previous {
+            Some(value) => std::env::set_var("ENABLE_ESCROW", value),
+            None => std::env::remove_var("ENABLE_ESCROW"),
+        }
+        assert_eq!(failures, Vec::<String>::new());
+        assert_eq!(
+            facilitator.exact.load(Ordering::SeqCst),
+            0,
+            "a refund extension payment reached the exact path"
         );
     }
 }
@@ -20176,10 +20564,9 @@ mod post_send_response_tests {
         }
     }
 
-    /// `upto`, the escrow scheme and the `refund` extension: a typed
-    /// unconfirmed send answers with its hash; the nonce guard's text, which
-    /// has none, still answers not retryable; any other failure keeps its own
-    /// answer.
+    /// `upto` and the escrow scheme: a typed unconfirmed send answers with its
+    /// hash; the nonce guard's text, which has none, still answers not
+    /// retryable; any other failure keeps its own answer.
     #[tokio::test]
     async fn an_alternative_scheme_past_the_broadcast_answers_like_the_exact_path() {
         let tx = TransactionHash::Evm([0x66; 32]);
@@ -20200,7 +20587,7 @@ mod post_send_response_tests {
             crate::dx402::payment_id(Network::Base, &tx.to_string())
         );
 
-        let guard = crate::escrow::EscrowError::ContractCall(
+        let guard = crate::payment_operator::errors::OperatorError::ContractCall(
             "ContractCall(\"Nonce error and TX count could not be verified, original TX may have been mined\")"
                 .into(),
         );
@@ -25026,6 +25413,49 @@ mod erc8004_register_gate_tests {
         assert_eq!(
             register_jobs::get_stranded(&key).map(|s| s.agent_id),
             Some(4_105)
+        );
+        register_jobs::clear_stranded(&key);
+    }
+
+    /// A recipient whose hook makes the delivery cost 12,000,000 gets no
+    /// delivery sent: on a network with no ERC-8004 ceiling of its own, the
+    /// `safeTransferFrom` is still held to its call's ceiling
+    /// (`chain::gas_ceiling`) and refused before a nonce is reserved. The
+    /// identity is retired and recorded, as for any delivery that did not go.
+    #[tokio::test]
+    async fn a_delivery_estimated_above_its_gas_ceiling_is_not_sent() {
+        use crate::erc8004::retire::RETIRED_URI;
+        use crate::payment_operator::test_rpc::CallAnswer;
+        use alloy::sol_types::{SolCall, SolValue};
+        let uri = "https://execution.market/agents/gate-test-delivery-above-ceiling";
+        let (gate, node) = gate_where_the_mint_lands(4_107).await;
+        node.estimate_gas_for(
+            IIdentityRegistry::safeTransferFromCall::SELECTOR,
+            12_000_000,
+        );
+        node.on_call(
+            registry(),
+            IIdentityRegistry::ownerOfCall::SELECTOR,
+            CallAnswer::Return(pinned_signer().abi_encode()),
+        );
+        let (status, doc) = register(&gate, body("base", uri, Some(OWNER))).await;
+
+        assert_eq!(
+            transferred_ids(&node),
+            Vec::<u64>::new(),
+            "the delivery went out: {doc}"
+        );
+        assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "{doc}");
+        let sent = node.sent();
+        assert_eq!(
+            set_agent_uri_of(sent.last().unwrap()),
+            Some((4_107, RETIRED_URI.to_string())),
+            "{sent:?}"
+        );
+        let key = reclaim_key(uri);
+        assert_eq!(
+            register_jobs::get_stranded(&key).map(|s| s.agent_id),
+            Some(4_107)
         );
         register_jobs::clear_stranded(&key);
     }

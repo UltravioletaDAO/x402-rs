@@ -1,0 +1,14 @@
+{
+  "client": "uvd-x402-sdk==0.114.0 (PyPI, networks.algorand.build_atomic_group) with py-algorand-sdk==2.12.0; the published function raises TypeError (it base64-encodes the str that msgpack_encode already returns in base64), so it ran with that one call passing the str through",
+  "network": "algorand-testnet",
+  "facilitator": "PJUATISQ36SNY7SANOKISHXPE7XODQVQYI3OWJ374QD5IALFNA7ZXCBTE4",
+  "payer": "X3M6WXLVNWJQ7YILZX6MU5DKG7GSRELRO5B4XEGT7M65K4MQV7NQB6LR2Q",
+  "payTo": "NVDUKXRNII6HDWZYIL5JVFPAYAOFMWQS6ODVCURYCADQRC75LH6TUXMATE",
+  "amount": "10000",
+  "asset": "10458941",
+  "paymentIndex": 1,
+  "paymentGroup": [
+    "iaNmZWXNB9CiZnbNA+OjZ2VurHRlc3RuZXQtdjEuMKJnaMQgSGO1GKSzyE7IEPItTxCByw9x8FmnrCDexi9/cOUJOiKjZ3JwxCC+9f+m3Ka2fusQ/ptQ2zklgGnmdJe7FC0IVdjI+IV4uqJsds0Hy6NyY3bEIHpoCaJQ36TcfkBrlIke7yfu4cKwwjbrJ3/kB9QBZWg/o3NuZMQgemgJolDfpNx+QGuUiR7vJ+7hwrDCNusnf+QH1AFlaD+kdHlwZaNwYXk=",
+    "gqNzaWfEQDLe30flkA2C/LPzin7E+bTphPkSqA8RYhdKEyFO2MAkPKZlEOjufxX776KwBCOuiq11Gq63ILyctd1imlzfOwujdHhuiqRhYW10zScQpGFyY3bEIG1HRV4tQjxx2zhC+pqV4MAcVloS84dRUjgQBwiL/Vn9omZ2zQPjo2dlbqx0ZXN0bmV0LXYxLjCiZ2jEIEhjtRiks8hOyBDyLU8QgcsPcfBZp6wg3sYvf3DlCToio2dycMQgvvX/ptymtn7rEP6bUNs5JYBp5nSXuxQtCFXYyPiFeLqibHbNB8ujc25kxCC+2etddW2TD+ELzfzKdGo3zSiRcXdDy5DT+z3VcZCv26R0eXBlpWF4ZmVypHhhaWTOAJ+XPQ=="
+  ]
+}

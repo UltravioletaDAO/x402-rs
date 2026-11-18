@@ -4033,3 +4033,48 @@ async fn a_preparation_the_store_refused_is_answered_safe_to_resend() {
             .await;
     }
 }
+
+/// The upstream v2 body (`paymentRequirements` next to the buyer's
+/// `paymentPayload.accepted`) is admitted on the seller's terms, and not at
+/// all when the buyer's copy names another payee or amount: a receipt never
+/// attests terms the seller did not set.
+#[test]
+fn the_upstream_v2_body_is_admitted_on_the_seller_terms_only() {
+    const SELLER: &str = "0x2222222222222222222222222222222222222222";
+    const BUYER: &str = "0x1111111111111111111111111111111111111111";
+    let terms = |pay_to: &str, amount: &str| {
+        json!({"scheme":"exact","network":"eip155:8453","asset":BASE_USDC,"amount":amount,
+            "payTo":pay_to,"maxTimeoutSeconds":60,"extra":{"name":"USD Coin","version":"2"}})
+    };
+    let body = |seller: Value, accepted: Value| {
+        Bytes::from(serde_json::to_vec(&json!({
+            "x402Version":2,
+            "paymentPayload":{"x402Version":2,"accepted":accepted.clone(),"payload":{
+                "signature":format!("0x{}", "11".repeat(65)),"authorization":{
+                    "from":BUYER,"to":accepted["payTo"],"value":accepted["amount"],
+                    "validAfter":"0","validBefore":"2000000000","nonce":format!("0x{}", "5a".repeat(32))}}},
+            "paymentRequirements":seller
+        })).unwrap())
+    };
+    let agreed = parse_request(
+        &HeaderMap::new(),
+        &body(terms(SELLER, "1000"), terms(SELLER, "1000")),
+    )
+    .expect("copies that agree are admitted");
+    assert_eq!(agreed.payment_requirements.pay_to.to_string(), SELLER);
+    assert_eq!(
+        agreed.payment_requirements.max_amount_required,
+        crate::types::TokenAmount::from(1000u64)
+    );
+    for accepted in [terms(BUYER, "1000"), terms(SELLER, "1"), terms(BUYER, "1")] {
+        let request = parse_request(
+            &HeaderMap::new(),
+            &body(terms(SELLER, "1000"), accepted.clone()),
+        );
+        assert!(
+            request.is_none(),
+            "admitted on the buyer's terms {accepted}: {:?}",
+            request.map(|r| r.payment_requirements)
+        );
+    }
+}

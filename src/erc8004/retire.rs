@@ -200,8 +200,9 @@ pub async fn set_agent_uri(
     let call = identity_registry
         .setAgentURI(agent_id, uri.to_string())
         .from(owner);
+    let kind = crate::chain::gas_ceiling::GasKind::Erc8004Write;
     let sent = if provider.is_eip1559() {
-        crate::chain::evm::send_call_estimated(call, network).await
+        crate::chain::evm::send_call_estimated(call, network, kind).await
     } else {
         // Legacy chains (SKALE) need an explicit gasPrice, as in the mint.
         let gas_price = provider
@@ -209,7 +210,7 @@ pub async fn set_agent_uri(
             .get_gas_price()
             .await
             .map_err(|e| RetireError::Unreadable(format!("gas price: {e}")))?;
-        crate::chain::evm::send_call_estimated(call.gas_price(gas_price), network).await
+        crate::chain::evm::send_call_estimated(call.gas_price(gas_price), network, kind).await
     };
     let pending = sent.map_err(|e| RetireError::NotSent(e.to_string()))?;
     let transaction = *pending.tx_hash();

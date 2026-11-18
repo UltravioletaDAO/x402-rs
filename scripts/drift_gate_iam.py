@@ -16,7 +16,9 @@ IAM API calls that change needs, and evaluates them against the CI policy AS IT 
 `aws_iam_policy.cicd_infra` in the plan's prior state; its declared value only if it is not in state yet). An
 explicit Deny, or no Allow at all, is red -- the inline `facilitator-cicd` policy grants no IAM write beyond
 `iam:PassRole` (docs/CICD_SETUP.md), so "no Allow here" is "no Allow anywhere". Red comes with the exact command
-to apply it by hand, before the merge, on Terraform 1.9.8.
+to apply it by hand, before the merge, on Terraform 1.9.8. Since X402-SEG-CI the CI assumes the role
+facilitator-github-deploy instead of the user; it holds the same cicd_infra plus `facilitator-github-deploy-writes`,
+which grants no IAM write but `iam:PassRole` either (cicd-oidc.tf), so the evaluation is unchanged.
 
 The ECS cluster gets the same treatment. `aws_ecs_cluster.main` is in no -target list, but it rides into every
 image deploy as a dependency of the service, and on 2026-10-07 the deploy of #115 died on `ecs:UpdateCluster`.

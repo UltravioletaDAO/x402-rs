@@ -19,8 +19,12 @@ Run:  python3 -m unittest discover -s tests/scripts -p 'test_ci_*.py'
 from __future__ import annotations
 
 import json
+import os
 import re
+import shutil
+import subprocess
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -71,10 +75,48 @@ class NoStaticKeyLeft(unittest.TestCase):
                                   f"{wf_name} still reads a static AWS key; the CI assumes roles by OIDC")
 
     def test_preflight_asks_for_the_account_only(self):
-        env = (CI["jobs"]["preflight"]["steps"][0].get("env") or {})
-        self.assertEqual(len(env), 1, f"preflight's check reads {sorted(env)}")
-        (value,) = env.values()
-        self.assertRegex(" ".join(str(value).split()), r"^\$\{\{\s*secrets\.AWS_ACCOUNT_ID\s*!=\s*''\s*\}\}$")
+        env = {k: " ".join(str(v).split()) for k, v in (CI["jobs"]["preflight"]["steps"][0].get("env") or {}).items()}
+        self.assertEqual(sorted(env), ["EVENT", "HAS_ACCOUNT"], f"preflight's check reads {sorted(env)}")
+        self.assertRegex(env["HAS_ACCOUNT"], r"^\$\{\{\s*secrets\.AWS_ACCOUNT_ID\s*!=\s*''\s*\}\}$")
+        self.assertRegex(env["EVENT"], r"^\$\{\{\s*github\.event_name\s*\}\}$")
+
+
+class APreflightWithoutTheAccount(unittest.TestCase):
+    """Before the switch-on, plan and deploy are skipped. A push or a pull request stays green with a
+    notice; a manual run -- a release -- fails, because green would read as shipped."""
+
+    def run_check(self, has_account: str, event: str):
+        if os.name != "posix" or shutil.which("bash") is None:
+            self.skipTest("needs a POSIX bash, as the runner has")
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp) / "out"
+            out.write_text("", encoding="utf-8")
+            env = {"PATH": os.environ.get("PATH", ""), "HAS_ACCOUNT": has_account, "EVENT": event,
+                   "GITHUB_OUTPUT": str(out)}
+            done = subprocess.run(["bash", "--noprofile", "--norc", "-eo", "pipefail", "-c",
+                                   str(CI["jobs"]["preflight"]["steps"][0]["run"])],
+                                  env=env, capture_output=True, text=True, check=False)
+            return done, out.read_text(encoding="utf-8")
+
+    def test_with_the_account_every_event_plans_and_may_deploy(self):
+        for event in ("push", "pull_request", "workflow_dispatch"):
+            with self.subTest(event=event):
+                done, out = self.run_check("true", event)
+                self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
+                self.assertIn("deploy=true", out)
+
+    def test_without_it_a_push_or_pull_request_skips_quietly(self):
+        for event in ("push", "pull_request"):
+            with self.subTest(event=event):
+                done, out = self.run_check("false", event)
+                self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
+                self.assertIn("deploy=false", out)
+
+    def test_without_it_a_manual_run_fails(self):
+        done, out = self.run_check("false", "workflow_dispatch")
+        self.assertNotEqual(done.returncode, 0, "a release with no AWS account went green and shipped nothing")
+        self.assertIn("::error", done.stdout)
+        self.assertNotIn("deploy=true", out)
 
 
 class EachJobAssumesItsOwnRole(unittest.TestCase):
@@ -96,17 +138,24 @@ class EachJobAssumesItsOwnRole(unittest.TestCase):
                     self.assertNotIn(forbidden, inputs, f"the {job} job passes {forbidden}")
 
     def test_only_those_two_jobs_get_an_oidc_token(self):
+        def grants_id_token(perms) -> bool:
+            # `write-all` grants id-token too; a mapping grants it only by naming it.
+            if isinstance(perms, str):
+                return perms.strip().lower() == "write-all"
+            return isinstance(perms, dict) and str(perms.get("id-token", "")).lower() == "write"
+
         for wf_name, wf in WORKFLOWS.items():
             with self.subTest(workflow=wf_name, where="workflow"):
-                self.assertNotIn("id-token", json.dumps(wf.get("permissions") or {}),
+                self.assertFalse(grants_id_token(wf.get("permissions")),
                                  "a workflow-level id-token permission hands the token to every job")
             for job_name, job in (wf.get("jobs") or {}).items():
-                perms = job.get("permissions") or {}
+                perms = job.get("permissions")
                 with self.subTest(workflow=wf_name, job=job_name):
                     if (wf_name, job_name) in {("ci.yaml", "plan"), ("ci.yaml", "deploy")}:
+                        self.assertIsInstance(perms, dict, "name each permission; no write-all")
                         self.assertEqual(perms.get("id-token"), "write")
                     else:
-                        self.assertNotIn("id-token", perms if isinstance(perms, dict) else {str(perms): 1})
+                        self.assertFalse(grants_id_token(perms), f"{wf_name}:{job_name} can request an OIDC token")
 
     def test_the_release_runs_in_the_production_environment_and_the_gate_in_none(self):
         # The deploy role trusts environment:production; the plan role trusts pull_request and
@@ -130,12 +179,26 @@ class TheWorkflowAndTheTerraformAgree(unittest.TestCase):
         self.assertIsNotNone(re.search(r'"\$\{local\.github_sub_repo\}:pull_request"', self.tf))
         self.assertIsNotNone(re.search(r'"\$\{local\.github_sub_repo\}:ref:refs/heads/main"', self.tf))
 
-    def test_the_plan_role_holds_nothing_but_the_read_policy(self):
-        # An inline policy or a second attachment on the plan role would put writes within reach of
-        # every pull request; the tftest checks the one attachment it has, this that it is the only one.
-        refs = re.findall(r"(?m)^\s*role\s*=\s*aws_iam_role\.github_plan\.(?:name|id)\s*$",
-                          "\n".join(read(p) for p in sorted(TF.glob("*.tf"))))
-        self.assertEqual(len(refs), 1, "the plan role must carry exactly one attachment, github_read")
+    def test_each_role_holds_exactly_its_policies(self):
+        # Another attachment or an inline policy on a CI role -- ReadOnlyAccess back on the deploy role,
+        # a write on the plan role, which every pull request can assume -- would pass the tftest, which
+        # checks the attachments it names. So count every way to reach the roles, as text: a reference
+        # to the resource, the role's name written out, and the role's own policy arguments.
+        text = "\n".join(re.sub(r"(?m)#.*$", "", read(p)) for p in sorted(TF.glob("*.tf")))
+        expected = {"github_plan": 1, "github_deploy": 3}  # github_read | github_read, writes, cicd_infra
+        for resource, count in expected.items():
+            with self.subTest(role=resource):
+                refs = re.findall(rf"\baws_iam_role\.{resource}\b", text)
+                self.assertEqual(len(refs), count,
+                                 f"aws_iam_role.{resource} is referenced {len(refs)} times; only its "
+                                 f"{count} attachment(s) in cicd-oidc.tf may name it")
+        for role in ROLE_FOR_JOB.values():
+            with self.subTest(name=role):
+                self.assertEqual(len(re.findall(rf'"{re.escape(role)}"', text)), 1,
+                                 f'"{role}" may appear once, as the role\'s own name')
+        for argument in ("inline_policy", "managed_policy_arns"):
+            with self.subTest(argument=argument):
+                self.assertNotIn(argument, read(OIDC_TF))
 
     def test_ci_never_applies_its_own_identities(self):
         # Same rule as cicd-iam-policy.tf: if a deploy step could apply them, CI could grant itself.

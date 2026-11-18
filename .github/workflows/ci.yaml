@@ -250,14 +250,21 @@ jobs:
     steps:
       # The roles are assumed by OIDC; what a job needs from the repo is the account to name
       # them in. Until AWS_ACCOUNT_ID exists, nothing below reaches AWS (cicd-oidc.tf has the
-      # order: roles first, then the environment, then this secret).
+      # order: environment, roles, this secret, all before the merge). A manual run without
+      # it is a release that would ship nothing and go green, so it fails here instead.
+      # tests/scripts/test_ci_oidc.py runs this step.
       - id: check
         env:
           HAS_ACCOUNT: ${{ secrets.AWS_ACCOUNT_ID != '' }}
+          EVENT: ${{ github.event_name }}
         run: |
           if [ "$HAS_ACCOUNT" = "true" ]; then
             echo "deploy=true" >> "$GITHUB_OUTPUT"
             echo "AWS account set — the drift gate plans, and a manual Run workflow on main deploys."
+          elif [ "$EVENT" = "workflow_dispatch" ]; then
+            echo "deploy=false" >> "$GITHUB_OUTPUT"
+            echo "::error title=Nothing would deploy::AWS_ACCOUNT_ID is not set, so this release would skip the deploy and go green. Switch the OIDC roles on first (docs/CICD_SETUP.md)."
+            exit 1
           else
             echo "deploy=false" >> "$GITHUB_OUTPUT"
             echo "::notice title=Deploy skipped::AWS_ACCOUNT_ID is not set. Add it (see docs/CICD_SETUP.md) once the OIDC roles exist to enable the drift gate and the manual deploy."

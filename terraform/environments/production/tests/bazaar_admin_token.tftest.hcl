@@ -20,6 +20,13 @@ mock_provider "aws" {
       arn = "arn:aws:acm:us-east-2::certificate/mock"
     }
   }
+  # cicd_infra is in this run's state, and the teardown validates the CI role's attachment of it
+  # (cicd-oidc.tf): its policy_arn must look like an ARN.
+  mock_resource "aws_iam_policy" {
+    defaults = {
+      arn = "arn:aws:iam:::policy/mock"
+    }
+  }
 }
 mock_provider "archive" {}
 

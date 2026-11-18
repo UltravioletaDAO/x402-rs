@@ -17,9 +17,14 @@
 #                              (tests/scripts/test_ci_deploy_job.py), so it
 #                              cannot sit behind the production environment.
 #   facilitator-github-deploy  the release (ci.yaml job `deploy`). Trusted
-#                              ONLY for the `production` environment; GitHub
-#                              lets a job into it only from the branches the
-#                              environment allows (set it to main).
+#                              ONLY for the `production` environment. What
+#                              keeps a job out of it is GitHub-side, not here:
+#                              the environment's branch rule (main only) AND
+#                              main itself being protected -- with main open,
+#                              anyone with write access pushes a workflow to
+#                              main and gets the token (measured 2026-11-18:
+#                              main unprotected, no ruleset). A required
+#                              reviewer on the environment closes that too.
 #
 # Neither role holds ReadOnlyAccess. What they read was MEASURED, not guessed:
 # CloudTrail event history of the CI user over the release of 2026-11-15
@@ -39,6 +44,21 @@
 # switching one on makes the drift gate fail loudly on AccessDenied, with the
 # call named, and the grant goes in the same change.
 #
+# One read IAM cannot narrow: ecs:DescribeTaskDefinition authorizes on "*"
+# only, and it returns the plaintext `environment` of every task definition in
+# the account. Anyone who can open a pull request from a branch of this repo can
+# assume the plan role, so a secret written in plain text into ANOTHER project's
+# task definition is readable from here (it was with ReadOnlyAccess too).
+# Secrets belong in `secrets`/valueFrom, never in `environment`.
+#
+# ARNs are composed from names, not read from the resources, on purpose: a
+# reference makes a hand `-target` apply of these roles apply every pending
+# change of what it references too -- the balances Lambda's zip hashes
+# differently from a CRLF or DrvFs checkout, so it would be redeployed from the
+# operator's copy. tests/github_oidc.tftest.hcl ties each composed ARN to the
+# resource's own name. The KMS key and the API and zone ids are not knowable as
+# text and are referenced; neither has pending changes outside a deploy.
+#
 # ---------------------------------------------------------------------------
 # WHY THIS IS NOT IN CI'S -target LIST, AND MUST NEVER BE
 # ---------------------------------------------------------------------------
@@ -56,13 +76,22 @@
 #     -target=aws_iam_role_policy_attachment.github_deploy_writes \
 #     -target=aws_iam_role_policy_attachment.github_deploy_infra
 #
-# Then, on GitHub (in this order; ci.yaml skips plan and deploy until the
-# secret exists, so nothing goes red in between):
-#   1. an environment named `production`, deployment branches: main only;
-#   2. the repository secret AWS_ACCOUNT_ID (a secret, not a variable: GitHub
+# The order, all of it BEFORE the change that switches ci.yaml to the roles is
+# merged (the old ci.yaml keeps using the key meanwhile; the pull request's own
+# run then proves the plan role):
+#   1. on GitHub, the environment `production` with deployment branches = main
+#      only, and a required reviewer; and main protected (no direct push, no
+#      force-push). Creating the environment first matters: a job that names a
+#      missing environment creates it with no rule at all;
+#   2. this apply;
+#   3. the repository secret AWS_ACCOUNT_ID (a secret, not a variable: GitHub
 #      masks it in the public logs);
-#   3. after one green push run and one green release on the roles, delete
-#      the secrets AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY and the user's key.
+#   4. merge; after one green push run and one green release on the roles,
+#      deactivate and delete the user's key and the secrets
+#      AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY. Until then the key is still
+#      readable by any workflow of any branch: do not wait for a release.
+# A manual "Run workflow" with no AWS_ACCOUNT_ID fails in preflight instead of
+# going green with nothing deployed.
 #
 # The OIDC provider for token.actions.githubusercontent.com already exists in
 # the account and is owned by another stack, so it is referenced by its ARN,
@@ -96,6 +125,20 @@ locals {
     bucket = "facilitator-terraform-state"
     key    = "production/terraform.tfstate"
     table  = "facilitator-terraform-locks"
+  }
+
+  # Composed from the names the resources declare (see the header for why not referenced);
+  # tests/github_oidc.tftest.hcl fails if a resource is renamed and these are not.
+  ci_prefix = "facilitator-${var.environment}"
+  ci_arn = {
+    execution_role       = "arn:aws:iam::${local.ci_account}:role/${local.ci_prefix}-ecs-execution"
+    task_role            = "arn:aws:iam::${local.ci_account}:role/${local.ci_prefix}-ecs-task"
+    balances_lambda_role = "arn:aws:iam::${local.ci_account}:role/${local.ci_prefix}-balances-lambda"
+    balances_lambda      = "arn:aws:lambda:us-east-2:${local.ci_account}:function:${local.ci_prefix}-balances"
+    alerts_topic         = "arn:aws:sns:us-east-2:${local.ci_account}:${local.ci_prefix}-alerts"
+    alerts_queue         = "arn:aws:sqs:us-east-2:${local.ci_account}:${local.ci_prefix}-alerts-backup"
+    alb_logs_bucket      = "arn:aws:s3:::${local.alb_access_logs_bucket_name}"
+    dx402_bucket         = "arn:aws:s3:::${local.dx402_bucket_name}"
   }
 }
 
@@ -164,8 +207,8 @@ resource "aws_iam_policy" "github_read" {
         Action = ["s3:ListBucket"]
         Resource = [
           "arn:aws:s3:::${local.ci_state.bucket}",
-          aws_s3_bucket.alb_logs.arn,
-          aws_s3_bucket.dx402_evidence.arn,
+          local.ci_arn.alb_logs_bucket,
+          local.ci_arn.dx402_bucket,
         ]
       },
       {
@@ -220,7 +263,6 @@ resource "aws_iam_policy" "github_read" {
           "ec2:DescribeVpcAttribute",
           "ec2:DescribeVpcEndpoints",
           "ec2:DescribeVpcs",
-          "ecs:DescribeTaskDefinition",
           "elasticloadbalancing:DescribeCapacityReservation",
           "elasticloadbalancing:DescribeListenerAttributes",
           "elasticloadbalancing:DescribeListeners",
@@ -233,13 +275,25 @@ resource "aws_iam_policy" "github_read" {
           "elasticloadbalancing:DescribeTargetHealth",
           "kms:ListAliases",
           "logs:DescribeLogGroups",
-          "route53:GetHostedZone",
           "route53:ListHostedZones",
-          "route53:ListResourceRecordSets",
-          "route53:ListTagsForResource",
           "ssm:DescribeParameters",
         ]
         Resource = "*"
+      },
+      {
+        # Not metadata: it returns the task definition's plaintext `environment`, and IAM authorizes
+        # it on "*" only. The residual the header describes.
+        Sid      = "TaskDefinitionRead"
+        Effect   = "Allow"
+        Action   = ["ecs:DescribeTaskDefinition"]
+        Resource = "*"
+      },
+      {
+        # The one zone this stack reads and writes records in.
+        Sid      = "HostedZoneRead"
+        Effect   = "Allow"
+        Action   = ["route53:GetHostedZone", "route53:ListResourceRecordSets", "route53:ListTagsForResource"]
+        Resource = "arn:aws:route53:::hostedzone/${data.aws_route53_zone.main.zone_id}"
       },
       {
         Sid    = "EcsRead"
@@ -300,18 +354,19 @@ resource "aws_iam_policy" "github_read" {
           "lambda:ListVersionsByFunction",
         ]
         Resource = [
-          aws_lambda_function.balances.arn,
-          "${aws_lambda_function.balances.arn}:*",
+          local.ci_arn.balances_lambda,
+          "${local.ci_arn.balances_lambda}:*",
         ]
       },
       {
-        # HTTP API reads only: GET on /apis. Never /apikeys, whose GET returns key values.
+        # The balances HTTP API alone: GET on /apis/<its id>. Never /apikeys (GET returns key
+        # values), never another project's API (its integrations and stage variables).
         Sid    = "BalancesApiRead"
         Effect = "Allow"
         Action = ["apigateway:GET"]
         Resource = [
-          "arn:aws:apigateway:us-east-2::/apis",
-          "arn:aws:apigateway:us-east-2::/apis/*",
+          "arn:aws:apigateway:us-east-2::/apis/${aws_apigatewayv2_api.balances.id}",
+          "arn:aws:apigateway:us-east-2::/apis/${aws_apigatewayv2_api.balances.id}/*",
         ]
       },
       {
@@ -329,14 +384,14 @@ resource "aws_iam_policy" "github_read" {
           "sns:ListSubscriptionsByTopic",
           "sns:ListTagsForResource",
         ]
-        Resource = [aws_sns_topic.alerts.arn, "${aws_sns_topic.alerts.arn}:*"]
+        Resource = [local.ci_arn.alerts_topic, "${local.ci_arn.alerts_topic}:*"]
       },
       {
         # Not in CloudTrail's event history, read by every refresh of the queue all the same.
         Sid      = "AlertsBackupQueueRead"
         Effect   = "Allow"
         Action   = ["sqs:GetQueueAttributes", "sqs:GetQueueUrl", "sqs:ListQueueTags"]
-        Resource = aws_sqs_queue.alerts_backup.arn
+        Resource = local.ci_arn.alerts_queue
       },
       {
         # DescribeSecret is metadata; the value is GetSecretValue, denied below.
@@ -432,7 +487,7 @@ resource "aws_iam_policy" "github_deploy_writes" {
         Sid      = "PassRoleToEcsTasks"
         Effect   = "Allow"
         Action   = ["iam:PassRole"]
-        Resource = [aws_iam_role.ecs_task_execution.arn, aws_iam_role.ecs_task.arn]
+        Resource = [local.ci_arn.execution_role, local.ci_arn.task_role]
         Condition = {
           StringEquals = { "iam:PassedToService" = "ecs-tasks.amazonaws.com" }
         }
@@ -442,7 +497,7 @@ resource "aws_iam_policy" "github_deploy_writes" {
         Sid      = "PassRoleToBalancesLambda"
         Effect   = "Allow"
         Action   = ["iam:PassRole"]
-        Resource = aws_iam_role.balances_lambda.arn
+        Resource = local.ci_arn.balances_lambda_role
         Condition = {
           StringEquals = { "iam:PassedToService" = "lambda.amazonaws.com" }
         }
@@ -496,6 +551,11 @@ resource "aws_iam_role_policy_attachment" "github_deploy_writes" {
 
 # DynamoDB, alarms, metric filters, the Lambda code, the task role's inline policies, the cluster
 # update: the writes the deploy already needed, unchanged (cicd-iam-policy.tf).
+#
+# Referenced, not composed like the ARNs inside the policies: an attachment's policy_arn is
+# validated as an ARN, and in every tftest whose mock makes up the account a composed one fails the
+# teardown -- and the whole `terraform test` step of CI with it (measured 2026-11-18). A pending
+# change to cicd_infra would show in the hand apply's plan: stop there if it does.
 resource "aws_iam_role_policy_attachment" "github_deploy_infra" {
   role       = aws_iam_role.github_deploy.name
   policy_arn = aws_iam_policy.cicd_infra.arn

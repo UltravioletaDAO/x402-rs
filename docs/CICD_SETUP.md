@@ -22,21 +22,36 @@ by hand. The only repo secret is `AWS_ACCOUNT_ID` (to name the roles; a secret s
 the public logs). Until it exists `plan` and `deploy` are **skipped** (the run still goes green on the
 `test` job). Every action is pinned to a commit SHA (`tests/scripts/test_ci_actions_pinned.py`).
 
-### Switching on the OIDC roles (once, in this order)
+### Switching on the OIDC roles (once, in this order, all before the merge)
 
-1. Apply the roles by hand, with a human's credentials, on Terraform 1.9.8 — the command is in the
+The old `ci.yaml` keeps using the access key until the change merges, and the pull request's own run
+proves the plan role. A manual "Run workflow" without `AWS_ACCOUNT_ID` fails in `preflight` instead of
+going green with nothing deployed.
+
+1. On GitHub, **first**: the environment **`production`** with *Deployment branches and tags* = `main`
+   only and a **required reviewer**, and `main` protected (no direct push, no force-push). The branch
+   rule alone does not stop anyone with write access while `main` is open (measured 2026-11-18: no
+   protection, no ruleset): they push a workflow to `main` and get the deploy role's token. And a job
+   that names an environment that does not exist yet creates it with no rule at all.
+2. Apply the roles by hand, with a human's credentials, on Terraform 1.9.8 — the command is in the
    header of `cicd-oidc.tf`. Read the plan: it must create 2 roles, 2 policies and 4 attachments, and
-   touch nothing else.
-2. On GitHub, create the environment **`production`** with *Deployment branches and tags* = `main`
-   only. Without that rule any branch that names the environment gets the deploy role's token.
+   touch nothing else (the policies compose their ARNs from names, so the balances Lambda is not
+   dragged in).
 3. Set the repository secret `AWS_ACCOUNT_ID`.
-4. After one green push run (drift gate on the plan role) and one green release (deploy role), delete
-   the secrets `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY`, deactivate and delete the access key of
-   `github-actions-facilitator-deploy`, then the user.
+4. Merge. After one green push run (drift gate on the plan role) and one green release (deploy role),
+   deactivate and delete the access key of `github-actions-facilitator-deploy`, delete the secrets
+   `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY`, then the user. Until then the key is still readable
+   by any workflow on any branch: do it on the first green run, not at the next release.
 5. Optional, later: opt the repository in to the immutable OIDC subject
    (`use_immutable_subject: true` on `PUT /repos/UltravioletaDAO/x402-rs/actions/oidc/customization/sub`)
    and apply with `-var github_oidc_immutable_subject=true` right after, so the trust names the
-   repository by its ids and survives a rename.
+   repository by its ids and survives a rename. Between the two the roles refuse every token: do it
+   with no run in flight.
+
+What the plan role can still read that is not this stack's: `ecs:DescribeTaskDefinition`, which IAM
+authorizes on `*` only, returns the plaintext `environment` of every task definition in the account.
+Secrets go in `secrets`/`valueFrom`, never in `environment`. A `workflow_dispatch` of `ci.yaml` from a
+branch other than `main` now fails at the plan's AssumeRole (the role trusts pull requests and `main`).
 
 The sections below describe the **legacy** access-key user, kept until step 4 removes it.
 

@@ -3,8 +3,10 @@
 # No credentials and no state: in terraform/environments/production,
 #   terraform init -backend=false && terraform test
 # (CI: job "Build & test", step "Terraform NAT guards", which runs every file in tests/).
-# What ci.yaml asks of these roles (which job assumes which, the environment, id-token) is held by
-# tests/scripts/test_ci_oidc.py.
+# What ci.yaml asks of these roles (which job assumes which, the environment, id-token) and that no
+# other attachment or inline policy reaches them is held by tests/scripts/test_ci_oidc.py.
+#
+# IAM action names are case-insensitive, so every action check below compares lower case.
 
 mock_provider "aws" {
   # As in bazaar_admin_token.tftest.hcl: the task definition validates its role ARNs, and a mock
@@ -51,6 +53,13 @@ mock_provider "aws" {
       arn = "arn:aws:s3:::facilitator-production-mock"
     }
   }
+  # The balances API enters this graph (github_read names it by id); the teardown validates the
+  # Lambda permission built from its execution ARN.
+  mock_resource "aws_apigatewayv2_api" {
+    defaults = {
+      execution_arn = "arn:aws:execute-api:us-east-2::mockapi"
+    }
+  }
   # A fixed, obviously fake account: the teardown validates ARNs other stacks' alarms compose from it.
   mock_data "aws_caller_identity" {
     defaults = {
@@ -79,28 +88,22 @@ run "the_ci_roles_trust_github_narrowly_and_grant_only_what_a_release_needs" {
       aws_iam_role_policy_attachment.github_deploy_read,
       aws_iam_role_policy_attachment.github_deploy_writes,
       aws_iam_role_policy_attachment.github_deploy_infra,
-      # Named on its own: an attachment that stops referencing it must fail the attachment check,
-      # not leave its ARN unknown.
+      # The policies compose their ARNs from names (cicd-oidc.tf says why), so these are no
+      # dependency of theirs: applied here only to check each composed ARN against its resource.
       aws_iam_policy.cicd_infra,
+      aws_iam_role.ecs_task_execution,
+      aws_iam_role.ecs_task,
+      aws_iam_role.balances_lambda,
+      aws_lambda_function.balances,
+      aws_sns_topic.alerts,
+      aws_sqs_queue.alerts_backup,
+      aws_s3_bucket.alb_logs,
+      aws_s3_bucket.dx402_evidence,
     ]
   }
 
-  # Distinct ARNs for the three roles a release passes, so the PassRole checks below can tell
-  # them apart (the mock gives every role the same one).
-  override_resource {
-    target = aws_iam_role.ecs_task_execution
-    values = { arn = "arn:aws:iam:::role/facilitator-production-ecs-execution" }
-  }
-  override_resource {
-    target = aws_iam_role.ecs_task
-    values = { arn = "arn:aws:iam:::role/facilitator-production-ecs-task" }
-  }
-  override_resource {
-    target = aws_iam_role.balances_lambda
-    values = { arn = "arn:aws:iam:::role/facilitator-production-balances-lambda" }
-  }
-  # And for the three policies the roles hold: with one mocked ARN for all, attaching the wrong
-  # one would pass the attachment check (a mutant did, 2026-11-18).
+  # Distinct ARNs for the three policies the roles hold: with one mocked ARN for all, attaching the
+  # wrong one passed the attachment check (measured 2026-11-18).
   override_resource {
     target = aws_iam_policy.github_read
     values = { arn = "arn:aws:iam:::policy/facilitator-github-read" }
@@ -164,33 +167,89 @@ run "the_ci_roles_trust_github_narrowly_and_grant_only_what_a_release_needs" {
     error_message = "The plan role holds github_read; the deploy role holds github_read, github_deploy_writes and cicd_infra."
   }
 
-  # --- PassRole: the three roles of a release, each only to the service that runs it.
+  # --- Exactly these actions, no more: a new grant is a change to this list, read by a human.
 
   assert {
-    condition = alltrue([
-      for st in jsondecode(aws_iam_policy.github_deploy_writes.policy).Statement :
-      # try(): in 1.9.8 || does not short-circuit, so a statement without Condition must not error here.
-      !contains(flatten([st.Action]), "iam:PassRole") || (
-        st.Effect == "Allow" &&
-        length(flatten([st.Action])) == 1 &&
-        try(toset(keys(st.Condition)), toset([])) == toset(["StringEquals"]) &&
-        try(toset(keys(st.Condition.StringEquals)), toset([])) == toset(["iam:PassedToService"])
-      )
+    condition = toset(flatten([
+      for st in jsondecode(aws_iam_policy.github_read.policy).Statement : [for a in flatten([st.Action]) : lower(a)] if st.Effect == "Allow"
+      ])) == toset([
+      "acm:describecertificate", "acm:listtagsforcertificate",
+      "apigateway:get",
+      "application-autoscaling:describescalabletargets", "application-autoscaling:describescalingpolicies", "application-autoscaling:listtagsforresource",
+      "cloudwatch:describealarms", "cloudwatch:listtagsforresource",
+      "dynamodb:describecontinuousbackups", "dynamodb:describetable", "dynamodb:describetimetolive", "dynamodb:getitem", "dynamodb:listtagsofresource",
+      "ec2:describeinternetgateways", "ec2:describenetworkacls", "ec2:describenetworkinterfaces", "ec2:describeprefixlists", "ec2:describeroutetables",
+      "ec2:describesecuritygroups", "ec2:describesubnets", "ec2:describevpcattribute", "ec2:describevpcendpoints", "ec2:describevpcs",
+      "ecs:describeclusters", "ecs:describeservices", "ecs:describetaskdefinition",
+      "elasticloadbalancing:describecapacityreservation", "elasticloadbalancing:describelistenerattributes", "elasticloadbalancing:describelisteners",
+      "elasticloadbalancing:describeloadbalancerattributes", "elasticloadbalancing:describeloadbalancers", "elasticloadbalancing:describerules",
+      "elasticloadbalancing:describetags", "elasticloadbalancing:describetargetgroupattributes", "elasticloadbalancing:describetargetgroups",
+      "elasticloadbalancing:describetargethealth",
+      "events:describerule", "events:listtagsforresource", "events:listtargetsbyrule",
+      "iam:getpolicy", "iam:getpolicyversion", "iam:getrole", "iam:getrolepolicy", "iam:listattachedrolepolicies", "iam:listrolepolicies",
+      "kms:describekey", "kms:getkeypolicy", "kms:getkeyrotationstatus", "kms:listaliases", "kms:listresourcetags",
+      "lambda:getfunction", "lambda:getfunctioncodesigningconfig", "lambda:getpolicy", "lambda:listversionsbyfunction",
+      "logs:describeloggroups", "logs:describemetricfilters", "logs:listtagsforresource",
+      "route53:gethostedzone", "route53:listhostedzones", "route53:listresourcerecordsets", "route53:listtagsforresource",
+      "s3:getaccelerateconfiguration", "s3:getbucketacl", "s3:getbucketcors", "s3:getbucketlogging", "s3:getbucketobjectlockconfiguration",
+      "s3:getbucketownershipcontrols", "s3:getbucketpolicy", "s3:getbucketpublicaccessblock", "s3:getbucketrequestpayment", "s3:getbuckettagging",
+      "s3:getbucketversioning", "s3:getbucketwebsite", "s3:getencryptionconfiguration", "s3:getlifecycleconfiguration", "s3:getobject",
+      "s3:getreplicationconfiguration", "s3:listbucket",
+      "secretsmanager:describesecret", "secretsmanager:getresourcepolicy",
+      "sns:getsubscriptionattributes", "sns:gettopicattributes", "sns:listsubscriptionsbytopic", "sns:listtagsforresource",
+      "sqs:getqueueattributes", "sqs:getqueueurl", "sqs:listqueuetags",
+      "ssm:describeparameters",
     ])
+    error_message = "github_read allows exactly the reads CloudTrail measured (plus the data-plane ones it does not log). A new one is added here on purpose, not by accident."
+  }
+
+  assert {
+    condition = toset(flatten([
+      for st in jsondecode(aws_iam_policy.github_deploy_writes.policy).Statement : [for a in flatten([st.Action]) : lower(a)] if st.Effect == "Allow"
+      ])) == toset([
+      "dynamodb:deleteitem", "dynamodb:putitem",
+      "ecr:batchchecklayeravailability", "ecr:batchgetimage", "ecr:completelayerupload", "ecr:getauthorizationtoken",
+      "ecr:getdownloadurlforlayer", "ecr:initiatelayerupload", "ecr:putimage", "ecr:uploadlayerpart",
+      "ecs:deregistertaskdefinition", "ecs:registertaskdefinition", "ecs:tagresource", "ecs:updateservice",
+      "elasticloadbalancing:modifylistener", "elasticloadbalancing:modifylistenerattributes",
+      "elasticloadbalancing:modifyloadbalancerattributes", "elasticloadbalancing:modifytargetgroupattributes",
+      "iam:passrole",
+      "s3:putobject",
+    ])
+    error_message = "github_deploy_writes allows exactly the writes of a release (the old inline facilitator-cicd, narrowed). A new one is added here on purpose."
+  }
+
+  # --- PassRole, in either policy: the three roles of a release, each only to the service that runs it.
+
+  assert {
+    condition = alltrue(flatten([
+      for doc in [aws_iam_policy.github_read.policy, aws_iam_policy.github_deploy_writes.policy] : [
+        for st in jsondecode(doc).Statement :
+        # try(): in 1.9.8 || does not short-circuit, so a statement without Condition must not error here.
+        !contains([for a in flatten([st.Action]) : lower(a)], "iam:passrole") || (
+          st.Effect == "Allow" &&
+          length(flatten([st.Action])) == 1 &&
+          try(toset(keys(st.Condition)), toset([])) == toset(["StringEquals"]) &&
+          try(toset(keys(st.Condition.StringEquals)), toset([])) == toset(["iam:PassedToService"])
+        )
+      ]
+    ]))
     error_message = "Every iam:PassRole grant stands alone in its statement, conditioned on iam:PassedToService."
   }
 
   assert {
     condition = toset(flatten([
-      for st in jsondecode(aws_iam_policy.github_deploy_writes.policy).Statement : [
-        for r in flatten([st.Resource]) : "${r} -> ${try(st.Condition.StringEquals["iam:PassedToService"], "any service")}"
-      ] if contains(flatten([st.Action]), "iam:PassRole")
+      for doc in [aws_iam_policy.github_read.policy, aws_iam_policy.github_deploy_writes.policy] : [
+        for st in jsondecode(doc).Statement : [
+          for r in flatten([st.Resource]) : "${r} -> ${try(st.Condition.StringEquals["iam:PassedToService"], "any service")}"
+        ] if contains([for a in flatten([st.Action]) : lower(a)], "iam:passrole")
+      ]
       ])) == toset([
-      "arn:aws:iam:::role/facilitator-production-ecs-execution -> ecs-tasks.amazonaws.com",
-      "arn:aws:iam:::role/facilitator-production-ecs-task -> ecs-tasks.amazonaws.com",
-      "arn:aws:iam:::role/facilitator-production-balances-lambda -> lambda.amazonaws.com",
+      "arn:aws:iam::${data.aws_caller_identity.current.account_id}:role/${aws_iam_role.ecs_task_execution.name} -> ecs-tasks.amazonaws.com",
+      "arn:aws:iam::${data.aws_caller_identity.current.account_id}:role/${aws_iam_role.ecs_task.name} -> ecs-tasks.amazonaws.com",
+      "arn:aws:iam::${data.aws_caller_identity.current.account_id}:role/${aws_iam_role.balances_lambda.name} -> lambda.amazonaws.com",
     ])
-    error_message = "PassRole reaches exactly the execution and task roles (to ECS tasks) and the balances Lambda role (to Lambda)."
+    error_message = "PassRole reaches exactly the execution and task roles (to ECS tasks) and the balances Lambda role (to Lambda), by the names main.tf and lambda-balances.tf give them."
   }
 
   # --- No wildcard action, no NotAction/NotResource in an Allow, and "*" resources only where IAM leaves no choice.
@@ -213,47 +272,62 @@ run "the_ci_roles_trust_github_narrowly_and_grant_only_what_a_release_needs" {
       for doc in [aws_iam_policy.github_read.policy, aws_iam_policy.github_deploy_writes.policy] : [
         for st in jsondecode(doc).Statement : [
           for a in flatten([st.Action]) :
-          can(regex("^[a-z0-9-]+:(Describe|List)", a)) || contains([
-            "route53:GetHostedZone", "ecr:GetAuthorizationToken", "ecs:DeregisterTaskDefinition",
-          ], a)
+          can(regex("^[a-z0-9-]+:(describe|list)", lower(a))) || contains(["ecr:getauthorizationtoken", "ecs:deregistertaskdefinition"], lower(a))
         ] if st.Effect == "Allow" && contains(flatten([st.Resource]), "*")
       ]
     ]))
     error_message = "Resource \"*\" is allowed only for Describe/List calls, ECR login and DeregisterTaskDefinition, which IAM cannot scope."
   }
 
-  # --- Reads that return data: none, except the state, its lock digest and the balances Lambda.
-
-  assert {
-    condition = alltrue(flatten([
-      for doc in [aws_iam_policy.github_read.policy, aws_iam_policy.github_deploy_writes.policy] : [
-        for st in jsondecode(doc).Statement : [
-          for a in flatten([st.Action]) : !contains([
-            "secretsmanager:GetSecretValue", "ssm:GetParameter", "ssm:GetParameters", "ssm:GetParametersByPath",
-            "ssm:GetParameterHistory", "kms:Decrypt", "s3:GetObjectVersion", "dynamodb:Query", "dynamodb:Scan",
-            "dynamodb:BatchGetItem", "logs:GetLogEvents", "logs:FilterLogEvents", "logs:StartQuery",
-          ], a)
-        ] if st.Effect == "Allow"
-      ]
-    ]))
-    error_message = "No CI policy allows reading a secret, a parameter, a decrypted value, DynamoDB items or log events."
-  }
+  # --- Reads that return data reach this stack's own resources, by the names the resources declare.
 
   assert {
     condition = alltrue(flatten([
       for doc in [aws_iam_policy.github_read.policy, aws_iam_policy.github_deploy_writes.policy] : [
         for st in jsondecode(doc).Statement : [
           for r in flatten([st.Resource]) : (
-            !contains(flatten([st.Action]), "s3:GetObject") || r == "arn:aws:s3:::facilitator-terraform-state/production/terraform.tfstate"
+            !contains([for a in flatten([st.Action]) : lower(a)], "s3:getobject") ||
+            r == "arn:aws:s3:::facilitator-terraform-state/production/terraform.tfstate"
             ) && (
-            !contains(flatten([st.Action]), "dynamodb:GetItem") || r == "arn:aws:dynamodb:us-east-2:${data.aws_caller_identity.current.account_id}:table/facilitator-terraform-locks"
+            !contains([for a in flatten([st.Action]) : lower(a)], "dynamodb:getitem") ||
+            r == "arn:aws:dynamodb:us-east-2:${data.aws_caller_identity.current.account_id}:table/facilitator-terraform-locks"
             ) && (
-            !contains(flatten([st.Action]), "lambda:GetFunction") || startswith(r, aws_lambda_function.balances.arn)
+            !contains([for a in flatten([st.Action]) : lower(a)], "lambda:getfunction") ||
+            contains([
+              "arn:aws:lambda:us-east-2:${data.aws_caller_identity.current.account_id}:function:${aws_lambda_function.balances.function_name}",
+              "arn:aws:lambda:us-east-2:${data.aws_caller_identity.current.account_id}:function:${aws_lambda_function.balances.function_name}:*",
+            ], r)
+            ) && (
+            !contains([for a in flatten([st.Action]) : lower(a)], "apigateway:get") ||
+            startswith(r, "arn:aws:apigateway:us-east-2::/apis/${aws_apigatewayv2_api.balances.id}")
+            ) && (
+            !contains([for a in flatten([st.Action]) : lower(a)], "s3:listbucket") ||
+            contains([
+              "arn:aws:s3:::facilitator-terraform-state",
+              "arn:aws:s3:::${aws_s3_bucket.alb_logs.bucket}",
+              "arn:aws:s3:::${aws_s3_bucket.dx402_evidence.bucket}",
+            ], r)
           )
         ] if st.Effect == "Allow"
       ]
     ]))
-    error_message = "s3:GetObject reaches the state object alone, dynamodb:GetItem the lock table alone, lambda:GetFunction the balances Lambda alone."
+    error_message = "s3:GetObject reaches the state object alone, dynamodb:GetItem the lock table, lambda:GetFunction the balances Lambda, apigateway:GET the balances API, s3:ListBucket the state and the two buckets declared here."
+  }
+
+  assert {
+    condition = length([
+      for st in jsondecode(aws_iam_policy.github_read.policy).Statement : st
+      if st.Effect == "Allow" && contains([for a in flatten([st.Action]) : lower(a)], "sqs:getqueueattributes") &&
+      toset(flatten([st.Resource])) == toset(["arn:aws:sqs:us-east-2:${data.aws_caller_identity.current.account_id}:${aws_sqs_queue.alerts_backup.name}"])
+      ]) == 1 && length([
+      for st in jsondecode(aws_iam_policy.github_read.policy).Statement : st
+      if st.Effect == "Allow" && contains([for a in flatten([st.Action]) : lower(a)], "sns:gettopicattributes") &&
+      toset(flatten([st.Resource])) == toset([
+        "arn:aws:sns:us-east-2:${data.aws_caller_identity.current.account_id}:${aws_sns_topic.alerts.name}",
+        "arn:aws:sns:us-east-2:${data.aws_caller_identity.current.account_id}:${aws_sns_topic.alerts.name}:*",
+      ])
+    ]) == 1
+    error_message = "The queue and topic reads name the alerts queue and topic, by the names alerts.tf gives them."
   }
 
   # --- And denied outright, whatever gets attached later.
@@ -262,7 +336,7 @@ run "the_ci_roles_trust_github_narrowly_and_grant_only_what_a_release_needs" {
     condition = length([
       for st in jsondecode(aws_iam_policy.github_read.policy).Statement : st
       if st.Effect == "Deny" && !can(st.Condition) && toset(flatten([st.Resource])) == toset(["*"]) &&
-      length(setsubtract(toset(["secretsmanager:GetSecretValue", "ssm:GetParameter", "ssm:GetParameters", "ssm:GetParametersByPath", "ssm:GetParameterHistory"]), toset(flatten([st.Action])))) == 0
+      length(setsubtract(toset(["secretsmanager:getsecretvalue", "ssm:getparameter", "ssm:getparameters", "ssm:getparametersbypath", "ssm:getparameterhistory"]), toset([for a in flatten([st.Action]) : lower(a)]))) == 0
     ]) == 1
     error_message = "github_read must deny, on every resource and without condition, secretsmanager:GetSecretValue and every ssm:GetParameter* call."
   }
@@ -270,14 +344,14 @@ run "the_ci_roles_trust_github_narrowly_and_grant_only_what_a_release_needs" {
   assert {
     condition = length([
       for st in jsondecode(aws_iam_policy.github_read.policy).Statement : st
-      if st.Effect == "Deny" && !can(st.Condition) && toset(flatten([st.Action])) == toset(["kms:Decrypt"]) && toset(flatten([st.Resource])) == toset([aws_kms_key.bazaar_admin_token.arn])
+      if st.Effect == "Deny" && !can(st.Condition) && toset([for a in flatten([st.Action]) : lower(a)]) == toset(["kms:decrypt"]) && toset(flatten([st.Resource])) == toset([aws_kms_key.bazaar_admin_token.arn])
     ]) == 1
     error_message = "github_read must deny kms:Decrypt on the Bazaar token's key, unconditionally, as cicd_infra does for the user."
   }
 
-  # --- A managed policy holds at most 6,144 characters. The mocked ARNs above leave the account out
-  # of seven of them (the key, the Lambda and the topic twice, the queue once: ~100 characters), so the
-  # bound keeps that margin. Measured 2026-11-18: github_read 5,238 here, github_deploy_writes 2,488.
+  # --- A managed policy holds at most 6,144 characters. The mocked key ARN leaves the account out
+  # (~12 characters a mention), so the bound keeps a margin. Measured 2026-11-18 before the API and
+  # zone were narrowed: github_read 5,238 here, github_deploy_writes 2,488.
   assert {
     condition     = length(aws_iam_policy.github_read.policy) <= 5900 && length(aws_iam_policy.github_deploy_writes.policy) <= 5900
     error_message = "A CI policy is near IAM's 6,144-character limit for a managed policy: split it before it fails to apply."

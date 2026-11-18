@@ -24,9 +24,12 @@ the public logs). Until it exists `plan` and `deploy` are **skipped** (the run s
 
 ### Switching on the OIDC roles (once, in this order, all before the merge)
 
-The old `ci.yaml` keeps using the access key until the change merges, and the pull request's own run
-proves the plan role. A manual "Run workflow" without `AWS_ACCOUNT_ID` fails in `preflight` instead of
-going green with nothing deployed.
+The old `ci.yaml` keeps using the access key until the change merges. **Push the pull request only
+after steps 1-3**: without `AWS_ACCOUNT_ID` every run but a fork's pull request fails in `preflight`
+(it would otherwise go green with the drift gate and the deploy skipped), and with it the pull
+request's own run proves the plan role and runs the step "The production environment admits main
+alone", which is red while the environment is missing or admits any branch but `main`, and warns
+while it has no required reviewer or `main` is unprotected.
 
 1. On GitHub, **first**: the environment **`production`** with *Deployment branches and tags* = `main`
    only and a **required reviewer**, and `main` protected (no direct push, no force-push). The branch

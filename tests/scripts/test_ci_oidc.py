@@ -76,47 +76,134 @@ class NoStaticKeyLeft(unittest.TestCase):
 
     def test_preflight_asks_for_the_account_only(self):
         env = {k: " ".join(str(v).split()) for k, v in (CI["jobs"]["preflight"]["steps"][0].get("env") or {}).items()}
-        self.assertEqual(sorted(env), ["EVENT", "HAS_ACCOUNT"], f"preflight's check reads {sorted(env)}")
+        self.assertEqual(sorted(env), ["FORK_PR", "HAS_ACCOUNT"], f"preflight's check reads {sorted(env)}")
         self.assertRegex(env["HAS_ACCOUNT"], r"^\$\{\{\s*secrets\.AWS_ACCOUNT_ID\s*!=\s*''\s*\}\}$")
-        self.assertRegex(env["EVENT"], r"^\$\{\{\s*github\.event_name\s*\}\}$")
+        self.assertRegex(env["FORK_PR"],
+                         r"^\$\{\{\s*github\.event_name\s*==\s*'pull_request'\s*&&\s*"
+                         r"github\.event\.pull_request\.head\.repo\.full_name\s*!=\s*github\.repository\s*\}\}$")
+
+    def test_no_workflow_runs_on_an_event_that_hands_a_fork_the_base_repos_identity(self):
+        # pull_request_target and workflow_run run the BASE repository's workflow with its secrets
+        # and OIDC token, on behalf of a fork: the plan role trusts pull_request and main's ref.
+        for wf_name, wf in WORKFLOWS.items():
+            on = wf.get("on", wf.get(True)) or {}
+            events = set(on) if isinstance(on, (dict, list)) else {str(on)}
+            with self.subTest(workflow=wf_name):
+                self.assertFalse(events & {"pull_request_target", "workflow_run"}, f"{wf_name} runs on {sorted(events)}")
 
 
 class APreflightWithoutTheAccount(unittest.TestCase):
-    """Before the switch-on, plan and deploy are skipped. A push or a pull request stays green with a
-    notice; a manual run -- a release -- fails, because green would read as shipped."""
+    """Before the switch-on, plan and deploy are skipped. Green would then read as checked or shipped,
+    so every run fails -- push, release, a pull request from this repository -- except a pull request
+    from a fork, which never gets the repository's secrets."""
 
-    def run_check(self, has_account: str, event: str):
+    def run_check(self, has_account: str, fork_pr: str):
         if os.name != "posix" or shutil.which("bash") is None:
             self.skipTest("needs a POSIX bash, as the runner has")
         with tempfile.TemporaryDirectory() as tmp:
             out = Path(tmp) / "out"
             out.write_text("", encoding="utf-8")
-            env = {"PATH": os.environ.get("PATH", ""), "HAS_ACCOUNT": has_account, "EVENT": event,
+            env = {"PATH": os.environ.get("PATH", ""), "HAS_ACCOUNT": has_account, "FORK_PR": fork_pr,
                    "GITHUB_OUTPUT": str(out)}
             done = subprocess.run(["bash", "--noprofile", "--norc", "-eo", "pipefail", "-c",
                                    str(CI["jobs"]["preflight"]["steps"][0]["run"])],
                                   env=env, capture_output=True, text=True, check=False)
             return done, out.read_text(encoding="utf-8")
 
-    def test_with_the_account_every_event_plans_and_may_deploy(self):
-        for event in ("push", "pull_request", "workflow_dispatch"):
-            with self.subTest(event=event):
-                done, out = self.run_check("true", event)
+    def test_with_the_account_every_run_plans_and_may_deploy(self):
+        for fork in ("false", "true"):
+            with self.subTest(fork_pr=fork):
+                done, out = self.run_check("true", fork)
                 self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
                 self.assertIn("deploy=true", out)
 
-    def test_without_it_a_push_or_pull_request_skips_quietly(self):
-        for event in ("push", "pull_request"):
-            with self.subTest(event=event):
-                done, out = self.run_check("false", event)
-                self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
-                self.assertIn("deploy=false", out)
+    def test_without_it_a_fork_pull_request_skips_quietly(self):
+        done, out = self.run_check("false", "true")
+        self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
+        self.assertIn("deploy=false", out)
+        self.assertNotIn("::error", done.stdout)
 
-    def test_without_it_a_manual_run_fails(self):
-        done, out = self.run_check("false", "workflow_dispatch")
-        self.assertNotEqual(done.returncode, 0, "a release with no AWS account went green and shipped nothing")
+    def test_without_it_every_other_run_fails(self):
+        done, out = self.run_check("false", "false")
+        self.assertNotEqual(done.returncode, 0, "a run with no AWS account went green with nothing checked or shipped")
         self.assertIn("::error", done.stdout)
         self.assertNotIn("deploy=true", out)
+
+
+class TheEnvironmentGuard(unittest.TestCase):
+    """The plan job's step that reads, read-only, whether GitHub keeps branches out of the production
+    environment the deploy role trusts. Run as the runner's bash runs it, with a stand-in `gh` that
+    answers each endpoint from a fixture."""
+
+    STEP = "The production environment admits main alone"
+    REPO = "owner/repo"
+
+    def run_guard(self, env_json=None, env_error=None, policies=None, protected=True):
+        if os.name != "posix" or shutil.which("bash") is None or shutil.which("jq") is None:
+            self.skipTest("needs a POSIX bash and jq, as the runner has")
+        step = [s for s in CI["jobs"]["plan"]["steps"] if s.get("name") == self.STEP]
+        self.assertEqual(len(step), 1, f"the plan job has no step named {self.STEP!r}")
+        with tempfile.TemporaryDirectory() as tmp:
+            d = Path(tmp)
+            (d / "env.json").write_text(json.dumps(env_json or {}), encoding="utf-8")
+            (d / "pol.json").write_text(json.dumps({"branch_policies": policies or []}), encoding="utf-8")
+            (d / "main.json").write_text(json.dumps({"protected": protected}), encoding="utf-8")
+            env_branch = (f'echo "{env_error}" >&2; exit 1' if env_error else f'cat "{d}/env.json"')
+            (d / "gh").write_text(
+                "#!/bin/sh\n"
+                f'case "$*" in\n'
+                f'  "api repos/{self.REPO}/environments/production") {env_branch} ;;\n'
+                f'  "api repos/{self.REPO}/environments/production/deployment-branch-policies") cat "{d}/pol.json" ;;\n'
+                f'  "api repos/{self.REPO}/branches/main") cat "{d}/main.json" ;;\n'
+                '  *) echo "unexpected gh call: $*" >&2; exit 2 ;;\n'
+                "esac\n", encoding="utf-8")
+            (d / "gh").chmod(0o755)
+            env = {"PATH": f"{d}{os.pathsep}{os.environ.get('PATH', '')}", "GH_TOKEN": "not-a-token",
+                   "REPO": self.REPO}
+            return subprocess.run(["bash", "--noprofile", "--norc", "-eo", "pipefail", "-c", str(step[0]["run"])],
+                                  env=env, capture_output=True, text=True, check=False)
+
+    GOOD_ENV = {"deployment_branch_policy": {"protected_branches": False, "custom_branch_policies": True},
+                "protection_rules": [{"type": "required_reviewers"}, {"type": "branch_policy"}]}
+    MAIN = [{"name": "main", "type": "branch"}]
+
+    def test_main_alone_with_a_reviewer_passes_clean(self):
+        done = self.run_guard(self.GOOD_ENV, policies=self.MAIN)
+        self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
+        self.assertNotIn("::error", done.stdout)
+        self.assertNotIn("::warning", done.stdout)
+
+    def test_a_missing_environment_fails(self):
+        done = self.run_guard(env_error="gh: Not Found (HTTP 404)")
+        self.assertNotEqual(done.returncode, 0)
+        self.assertIn("::error title=No production environment", done.stdout)
+
+    def test_an_environment_open_to_every_branch_fails(self):
+        for policy in ({"protected_branches": False, "custom_branch_policies": False}, None):
+            with self.subTest(policy=policy):
+                done = self.run_guard({"deployment_branch_policy": policy, "protection_rules": []}, policies=self.MAIN)
+                self.assertNotEqual(done.returncode, 0)
+                self.assertIn("::error title=production admits any branch", done.stdout)
+
+    def test_a_rule_beyond_main_fails(self):
+        for policies in ([{"name": "main", "type": "branch"}, {"name": "dev", "type": "branch"}],
+                         [{"name": "*", "type": "branch"}], [{"name": "main", "type": "tag"}], []):
+            with self.subTest(policies=policies):
+                done = self.run_guard(self.GOOD_ENV, policies=policies)
+                self.assertNotEqual(done.returncode, 0)
+                self.assertIn("::error title=production admits more than main", done.stdout)
+
+    def test_no_reviewer_or_an_open_main_warns(self):
+        no_reviewer = dict(self.GOOD_ENV, protection_rules=[{"type": "branch_policy"}])
+        done = self.run_guard(no_reviewer, policies=self.MAIN, protected=False)
+        self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
+        self.assertIn("::warning title=production has no required reviewer", done.stdout)
+        self.assertIn("::warning title=main is not protected", done.stdout)
+
+    def test_a_read_that_does_not_complete_warns_and_passes(self):
+        done = self.run_guard(env_error="gh: Resource not accessible by integration (HTTP 403)")
+        self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
+        self.assertIn("::warning title=Environment check inconclusive", done.stdout)
 
 
 class EachJobAssumesItsOwnRole(unittest.TestCase):

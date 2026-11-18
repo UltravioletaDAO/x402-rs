@@ -219,6 +219,149 @@ run "the_ci_roles_trust_github_narrowly_and_grant_only_what_a_release_needs" {
     error_message = "github_deploy_writes allows exactly the writes of a release (the old inline facilitator-cicd, narrowed). A new one is added here on purpose."
   }
 
+  # --- And each statement exactly: its effect, its actions and its resources. The sets above catch a
+  # new action; these catch an action moved to a "*" statement and a resource widened (repository/*,
+  # service/*/*, bucket/*), which keep the sets the same.
+
+  assert {
+    condition = {
+      for st in jsondecode(aws_iam_policy.github_read.policy).Statement : st.Sid => {
+        effect    = st.Effect
+        actions   = toset([for a in flatten([st.Action]) : lower(a)])
+        resources = toset(flatten([st.Resource]))
+      }
+      } == {
+      TerraformStateRead = { effect = "Allow", actions = toset(["s3:getobject"]), resources = toset(["arn:aws:s3:::facilitator-terraform-state/production/terraform.tfstate"]) }
+      BucketList = { effect = "Allow", actions = toset(["s3:listbucket"]), resources = toset([
+        "arn:aws:s3:::facilitator-terraform-state",
+        "arn:aws:s3:::${aws_s3_bucket.alb_logs.bucket}",
+        "arn:aws:s3:::${aws_s3_bucket.dx402_evidence.bucket}",
+      ]) }
+      TerraformLockRead = { effect = "Allow", actions = toset(["dynamodb:getitem", "dynamodb:describetable"]), resources = toset([
+        "arn:aws:dynamodb:us-east-2:${data.aws_caller_identity.current.account_id}:table/facilitator-terraform-locks",
+      ]) }
+      BucketConfigRead = { effect = "Allow", actions = toset([
+        "s3:getaccelerateconfiguration", "s3:getbucketacl", "s3:getbucketcors", "s3:getbucketlogging", "s3:getbucketobjectlockconfiguration",
+        "s3:getbucketownershipcontrols", "s3:getbucketpolicy", "s3:getbucketpublicaccessblock", "s3:getbucketrequestpayment",
+        "s3:getbuckettagging", "s3:getbucketversioning", "s3:getbucketwebsite", "s3:getencryptionconfiguration",
+        "s3:getlifecycleconfiguration", "s3:getreplicationconfiguration",
+      ]), resources = toset(["arn:aws:s3:::facilitator-*"]) }
+      MetadataRead = { effect = "Allow", actions = toset([
+        "acm:describecertificate", "acm:listtagsforcertificate",
+        "application-autoscaling:describescalabletargets", "application-autoscaling:describescalingpolicies", "application-autoscaling:listtagsforresource",
+        "cloudwatch:describealarms", "cloudwatch:listtagsforresource",
+        "ec2:describeinternetgateways", "ec2:describenetworkacls", "ec2:describenetworkinterfaces", "ec2:describeprefixlists", "ec2:describeroutetables",
+        "ec2:describesecuritygroups", "ec2:describesubnets", "ec2:describevpcattribute", "ec2:describevpcendpoints", "ec2:describevpcs",
+        "elasticloadbalancing:describecapacityreservation", "elasticloadbalancing:describelistenerattributes", "elasticloadbalancing:describelisteners",
+        "elasticloadbalancing:describeloadbalancerattributes", "elasticloadbalancing:describeloadbalancers", "elasticloadbalancing:describerules",
+        "elasticloadbalancing:describetags", "elasticloadbalancing:describetargetgroupattributes", "elasticloadbalancing:describetargetgroups",
+        "elasticloadbalancing:describetargethealth",
+        "kms:listaliases", "logs:describeloggroups", "route53:listhostedzones", "ssm:describeparameters",
+      ]), resources = toset(["*"]) }
+      TaskDefinitionRead = { effect = "Allow", actions = toset(["ecs:describetaskdefinition"]), resources = toset(["*"]) }
+      HostedZoneRead = { effect = "Allow", actions = toset(["route53:gethostedzone", "route53:listresourcerecordsets", "route53:listtagsforresource"]), resources = toset([
+        "arn:aws:route53:::hostedzone/${data.aws_route53_zone.main.zone_id}",
+      ]) }
+      EcsRead = { effect = "Allow", actions = toset(["ecs:describeclusters", "ecs:describeservices"]), resources = toset([
+        "arn:aws:ecs:us-east-2:${data.aws_caller_identity.current.account_id}:cluster/facilitator-production",
+        "arn:aws:ecs:us-east-2:${data.aws_caller_identity.current.account_id}:service/facilitator-production/*",
+      ]) }
+      DynamoTableMetadataRead = { effect = "Allow", actions = toset([
+        "dynamodb:describecontinuousbackups", "dynamodb:describetable", "dynamodb:describetimetolive", "dynamodb:listtagsofresource",
+      ]), resources = toset(["arn:aws:dynamodb:us-east-2:${data.aws_caller_identity.current.account_id}:table/*"]) }
+      LogGroupMetadataRead = { effect = "Allow", actions = toset(["logs:describemetricfilters", "logs:listtagsforresource"]), resources = toset([
+        "arn:aws:logs:us-east-2:${data.aws_caller_identity.current.account_id}:log-group:*",
+      ]) }
+      IamRead = { effect = "Allow", actions = toset([
+        "iam:getpolicy", "iam:getpolicyversion", "iam:getrole", "iam:getrolepolicy", "iam:listattachedrolepolicies", "iam:listrolepolicies",
+        ]), resources = toset([
+        "arn:aws:iam::${data.aws_caller_identity.current.account_id}:role/facilitator-*",
+        "arn:aws:iam::${data.aws_caller_identity.current.account_id}:policy/facilitator-*",
+      ]) }
+      KmsKeyRead = { effect = "Allow", actions = toset(["kms:describekey", "kms:getkeypolicy", "kms:getkeyrotationstatus", "kms:listresourcetags"]), resources = toset([aws_kms_key.bazaar_admin_token.arn]) }
+      BalancesLambdaRead = { effect = "Allow", actions = toset([
+        "lambda:getfunction", "lambda:getfunctioncodesigningconfig", "lambda:getpolicy", "lambda:listversionsbyfunction",
+        ]), resources = toset([
+        "arn:aws:lambda:us-east-2:${data.aws_caller_identity.current.account_id}:function:${aws_lambda_function.balances.function_name}",
+        "arn:aws:lambda:us-east-2:${data.aws_caller_identity.current.account_id}:function:${aws_lambda_function.balances.function_name}:*",
+      ]) }
+      BalancesApiRead = { effect = "Allow", actions = toset(["apigateway:get"]), resources = toset([
+        "arn:aws:apigateway:us-east-2::/apis/${aws_apigatewayv2_api.balances.id}",
+        "arn:aws:apigateway:us-east-2::/apis/${aws_apigatewayv2_api.balances.id}/*",
+      ]) }
+      ScheduleRead = { effect = "Allow", actions = toset(["events:describerule", "events:listtagsforresource", "events:listtargetsbyrule"]), resources = toset([
+        "arn:aws:events:us-east-2:${data.aws_caller_identity.current.account_id}:rule/facilitator-production-*",
+      ]) }
+      AlertTopicRead = { effect = "Allow", actions = toset([
+        "sns:getsubscriptionattributes", "sns:gettopicattributes", "sns:listsubscriptionsbytopic", "sns:listtagsforresource",
+        ]), resources = toset([
+        "arn:aws:sns:us-east-2:${data.aws_caller_identity.current.account_id}:${aws_sns_topic.alerts.name}",
+        "arn:aws:sns:us-east-2:${data.aws_caller_identity.current.account_id}:${aws_sns_topic.alerts.name}:*",
+      ]) }
+      AlertsBackupQueueRead = { effect = "Allow", actions = toset(["sqs:getqueueattributes", "sqs:getqueueurl", "sqs:listqueuetags"]), resources = toset([
+        "arn:aws:sqs:us-east-2:${data.aws_caller_identity.current.account_id}:${aws_sqs_queue.alerts_backup.name}",
+      ]) }
+      SecretMetadataRead = { effect = "Allow", actions = toset(["secretsmanager:describesecret", "secretsmanager:getresourcepolicy"]), resources = toset([
+        "arn:aws:secretsmanager:us-east-2:${data.aws_caller_identity.current.account_id}:secret:facilitator-*",
+      ]) }
+      DenySecretValueReads = { effect = "Deny", actions = toset([
+        "secretsmanager:getsecretvalue", "ssm:getparameter", "ssm:getparameterhistory", "ssm:getparameters", "ssm:getparametersbypath",
+      ]), resources = toset(["*"]) }
+      DenyBazaarTokenDecrypt = { effect = "Deny", actions = toset(["kms:decrypt"]), resources = toset([aws_kms_key.bazaar_admin_token.arn]) }
+    }
+    error_message = "Each github_read statement grants exactly its actions on exactly its resources: an action moved to a \"*\" statement, or a resource widened, is a change made here on purpose."
+  }
+
+  assert {
+    condition = {
+      for st in jsondecode(aws_iam_policy.github_deploy_writes.policy).Statement : st.Sid => {
+        effect    = st.Effect
+        actions   = toset([for a in flatten([st.Action]) : lower(a)])
+        resources = toset(flatten([st.Resource]))
+      }
+      } == {
+      EcrLogin = { effect = "Allow", actions = toset(["ecr:getauthorizationtoken"]), resources = toset(["*"]) }
+      EcrPushFacilitator = { effect = "Allow", actions = toset([
+        "ecr:batchchecklayeravailability", "ecr:batchgetimage", "ecr:completelayerupload", "ecr:getdownloadurlforlayer",
+        "ecr:initiatelayerupload", "ecr:putimage", "ecr:uploadlayerpart",
+      ]), resources = toset(["arn:aws:ecr:us-east-2:${data.aws_caller_identity.current.account_id}:repository/facilitator"]) }
+      EcsRegisterTaskDefinition = { effect = "Allow", actions = toset(["ecs:registertaskdefinition"]), resources = toset([
+        "arn:aws:ecs:us-east-2:${data.aws_caller_identity.current.account_id}:task-definition/facilitator-production:*",
+      ]) }
+      EcsDeregisterTaskDefinition = { effect = "Allow", actions = toset(["ecs:deregistertaskdefinition"]), resources = toset(["*"]) }
+      EcsRollService = { effect = "Allow", actions = toset(["ecs:updateservice"]), resources = toset([
+        "arn:aws:ecs:us-east-2:${data.aws_caller_identity.current.account_id}:service/facilitator-production/facilitator-production",
+      ]) }
+      EcsTag = { effect = "Allow", actions = toset(["ecs:tagresource"]), resources = toset([
+        "arn:aws:ecs:us-east-2:${data.aws_caller_identity.current.account_id}:cluster/facilitator-production",
+        "arn:aws:ecs:us-east-2:${data.aws_caller_identity.current.account_id}:service/facilitator-production/facilitator-production",
+        "arn:aws:ecs:us-east-2:${data.aws_caller_identity.current.account_id}:task-definition/facilitator-production:*",
+      ]) }
+      PassRoleToEcsTasks = { effect = "Allow", actions = toset(["iam:passrole"]), resources = toset([
+        "arn:aws:iam::${data.aws_caller_identity.current.account_id}:role/${aws_iam_role.ecs_task_execution.name}",
+        "arn:aws:iam::${data.aws_caller_identity.current.account_id}:role/${aws_iam_role.ecs_task.name}",
+      ]) }
+      PassRoleToBalancesLambda = { effect = "Allow", actions = toset(["iam:passrole"]), resources = toset([
+        "arn:aws:iam::${data.aws_caller_identity.current.account_id}:role/${aws_iam_role.balances_lambda.name}",
+      ]) }
+      AlbModify = { effect = "Allow", actions = toset([
+        "elasticloadbalancing:modifylistener", "elasticloadbalancing:modifylistenerattributes",
+        "elasticloadbalancing:modifyloadbalancerattributes", "elasticloadbalancing:modifytargetgroupattributes",
+        ]), resources = toset([
+        "arn:aws:elasticloadbalancing:us-east-2:${data.aws_caller_identity.current.account_id}:loadbalancer/app/facilitator-production/*",
+        "arn:aws:elasticloadbalancing:us-east-2:${data.aws_caller_identity.current.account_id}:listener/app/facilitator-production/*",
+        "arn:aws:elasticloadbalancing:us-east-2:${data.aws_caller_identity.current.account_id}:targetgroup/facilitator-production*/*",
+      ]) }
+      TerraformStateWrite = { effect = "Allow", actions = toset(["s3:putobject"]), resources = toset([
+        "arn:aws:s3:::facilitator-terraform-state/production/terraform.tfstate",
+      ]) }
+      TerraformLockWrite = { effect = "Allow", actions = toset(["dynamodb:putitem", "dynamodb:deleteitem"]), resources = toset([
+        "arn:aws:dynamodb:us-east-2:${data.aws_caller_identity.current.account_id}:table/facilitator-terraform-locks",
+      ]) }
+    }
+    error_message = "Each github_deploy_writes statement grants exactly its actions on exactly its resources: a write widened to another project's repository, service, task family, bucket or table is a change made here on purpose."
+  }
+
   # --- PassRole, in either policy: the three roles of a release, each only to the service that runs it.
 
   assert {

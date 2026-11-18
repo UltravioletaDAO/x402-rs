@@ -57,7 +57,10 @@
 # differently from a CRLF or DrvFs checkout, so it would be redeployed from the
 # operator's copy. tests/github_oidc.tftest.hcl ties each composed ARN to the
 # resource's own name. The KMS key and the API and zone ids are not knowable as
-# text and are referenced; neither has pending changes outside a deploy.
+# text and are referenced, and so is cicd_infra's ARN in its attachment (below):
+# no deploy applies those, so a pending change of theirs would ride along -- the
+# hand apply's plan shows it, and the rule is to stop if it lists anything but the
+# eight new resources.
 #
 # ---------------------------------------------------------------------------
 # WHY THIS IS NOT IN CI'S -target LIST, AND MUST NEVER BE

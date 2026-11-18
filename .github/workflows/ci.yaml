@@ -250,24 +250,27 @@ jobs:
     steps:
       # The roles are assumed by OIDC; what a job needs from the repo is the account to name
       # them in. Until AWS_ACCOUNT_ID exists, nothing below reaches AWS (cicd-oidc.tf has the
-      # order: environment, roles, this secret, all before the merge). A manual run without
-      # it is a release that would ship nothing and go green, so it fails here instead.
+      # order: environment, roles, this secret, all before the pull request is pushed). Without
+      # it the drift gate and the deploy would be skipped and the run would go green -- a
+      # release that ships nothing, a push whose gate never ran, a pull request that never
+      # assumed the plan role -- so it fails instead. Only a pull request from a fork, which
+      # never gets the repository's secrets, skips quietly.
       # tests/scripts/test_ci_oidc.py runs this step.
       - id: check
         env:
           HAS_ACCOUNT: ${{ secrets.AWS_ACCOUNT_ID != '' }}
-          EVENT: ${{ github.event_name }}
+          FORK_PR: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository }}
         run: |
           if [ "$HAS_ACCOUNT" = "true" ]; then
             echo "deploy=true" >> "$GITHUB_OUTPUT"
             echo "AWS account set — the drift gate plans, and a manual Run workflow on main deploys."
-          elif [ "$EVENT" = "workflow_dispatch" ]; then
+          elif [ "$FORK_PR" = "true" ]; then
             echo "deploy=false" >> "$GITHUB_OUTPUT"
-            echo "::error title=Nothing would deploy::AWS_ACCOUNT_ID is not set, so this release would skip the deploy and go green. Switch the OIDC roles on first (docs/CICD_SETUP.md)."
-            exit 1
+            echo "::notice title=Drift gate skipped::A pull request from a fork gets no repository secret; the drift gate runs on the merge."
           else
             echo "deploy=false" >> "$GITHUB_OUTPUT"
-            echo "::notice title=Deploy skipped::AWS_ACCOUNT_ID is not set. Add it (see docs/CICD_SETUP.md) once the OIDC roles exist to enable the drift gate and the manual deploy."
+            echo "::error title=AWS_ACCOUNT_ID is not set::Without it the drift gate and the deploy are skipped and this run would go green with nothing checked or shipped. Switch the OIDC roles on first (docs/CICD_SETUP.md)."
+            exit 1
           fi
 
   # ---------------------------------------------------------------------------
@@ -308,6 +311,9 @@ jobs:
       # The OIDC token that assumes facilitator-github-plan. No environment on purpose: the
       # gate runs on pull requests, and the role trusts pull_request and main's ref alone.
       id-token: write
+      # Reads the production environment's rules (step "The production environment admits
+      # main alone").
+      actions: read
     # Separate from the deploy's concurrency group: a superseded plan is worthless,
     # but it must never sit in the queue a release is waiting in. Keyed by event
     # like the workflow, so a merge's plan and a release's plan do not cancel each
@@ -668,6 +674,60 @@ jobs:
               exit 1
               ;;
           esac
+
+      # ---------------------------------------------------------------------
+      # The deploy role's trust holds only if GitHub keeps branches out
+      # ---------------------------------------------------------------------
+      #
+      # facilitator-github-deploy trusts environment:production and nothing else
+      # (cicd-oidc.tf). What keeps a branch from getting that token is GitHub's side:
+      # the environment must exist (a job that names a missing one creates it with no
+      # rule) and admit main alone. This reads both, read-only, and goes red while they
+      # do not hold -- on the pull request itself, so the switch-on order cannot be
+      # skipped. A missing required reviewer or an unprotected main is a warning: those
+      # are the owner's call (docs/CICD_SETUP.md, step 1). A read that does not complete
+      # warns and passes, like the checks above. tests/scripts/test_ci_oidc.py runs it.
+      - name: The production environment admits main alone
+        if: '!cancelled()'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -o pipefail
+          if ! env_json=$(gh api "repos/${REPO}/environments/production" 2>&1); then
+            case "$env_json" in
+              *"HTTP 404"*|*"Not Found"*)
+                echo "::error title=No production environment::The deploy role trusts environment:production, which does not exist: the first job that names it creates it with no rule at all. Create it with deployment branches = main only (docs/CICD_SETUP.md, step 1)."
+                exit 1
+                ;;
+              *)
+                echo "::warning title=Environment check inconclusive::Could not read the production environment: $(printf '%s' "$env_json" | head -c 200). Not failing on a read we did not complete."
+                exit 0
+                ;;
+            esac
+          fi
+          custom=$(printf '%s' "$env_json" | jq -r '.deployment_branch_policy.custom_branch_policies // false')
+          if [ "$custom" != "true" ]; then
+            echo "::error title=production admits any branch::The production environment has no custom deployment-branch rule, so any branch that names it gets the deploy role's token. Set deployment branches = main only."
+            exit 1
+          fi
+          if ! pol_json=$(gh api "repos/${REPO}/environments/production/deployment-branch-policies" 2>&1); then
+            echo "::warning title=Environment check inconclusive::Could not read the deployment-branch rules. Not failing on a read we did not complete."
+            exit 0
+          fi
+          rules=$(printf '%s' "$pol_json" | jq -r '[.branch_policies[]? | (.type // "branch") + ":" + .name] | sort | join(",")')
+          if [ "$rules" != "branch:main" ]; then
+            echo "::error title=production admits more than main::Its deployment-branch rules are '${rules:-none}'; the deploy role must be reachable from main alone."
+            exit 1
+          fi
+          reviewers=$(printf '%s' "$env_json" | jq -r '[.protection_rules[]? | select(.type == "required_reviewers")] | length')
+          if [ "$reviewers" = "0" ]; then
+            echo "::warning title=production has no required reviewer::Anyone who can push to main can run a release; a required reviewer closes that (docs/CICD_SETUP.md, step 1)."
+          fi
+          if protected=$(gh api "repos/${REPO}/branches/main" 2>/dev/null | jq -r '.protected'); then
+            [ "$protected" = "true" ] || echo "::warning title=main is not protected::Anyone with write access can push a workflow to main, and main is the branch production admits."
+          fi
+          echo "production admits main alone."
 
   deploy:
     name: Push to ECR & deploy to ECS (production)

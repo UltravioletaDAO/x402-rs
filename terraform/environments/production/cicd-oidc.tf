@@ -208,9 +208,9 @@ resource "aws_iam_policy" "github_read" {
     Version = "2012-10-17"
     Statement = [
       {
-        Sid    = "TerraformStateRead"
-        Effect = "Allow"
-        Action = ["s3:GetObject"]
+        Sid      = "TerraformStateRead"
+        Effect   = "Allow"
+        Action   = ["s3:GetObject"]
         Resource = "arn:aws:s3:::${local.ci_state.bucket}/${local.ci_state.key}"
       },
       {

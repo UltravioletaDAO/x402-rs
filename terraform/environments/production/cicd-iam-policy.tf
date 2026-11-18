@@ -60,7 +60,7 @@
 # (aws iam get-policy-version) before applying.
 
 resource "aws_iam_policy" "cicd_infra" {
-  name        = "facilitator-cicd-infra"
+  name = "facilitator-cicd-infra"
   # The description is a ForceNew attribute on aws_iam_policy: changing it REPLACES the policy,
   # and this one is attached to the CI deploy identity. Keep it byte-identical to the live value
   # (imported into state on 2026-09-02) so a plan never asks to replace it; the statements below

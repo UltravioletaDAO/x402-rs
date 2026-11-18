@@ -139,7 +139,7 @@ run "the_ci_roles_trust_github_narrowly_and_grant_only_what_a_release_needs" {
   }
 
   assert {
-    condition = try(toset(jsondecode(aws_iam_role.github_deploy.assume_role_policy).Statement[0].Condition.StringEquals["token.actions.githubusercontent.com:sub"]), toset([])) == toset(["repo:UltravioletaDAO/x402-rs:environment:production"])
+    condition     = try(toset(jsondecode(aws_iam_role.github_deploy.assume_role_policy).Statement[0].Condition.StringEquals["token.actions.githubusercontent.com:sub"]), toset([])) == toset(["repo:UltravioletaDAO/x402-rs:environment:production"])
     error_message = "facilitator-github-deploy must trust the production environment of UltravioletaDAO/x402-rs and nothing else."
   }
 

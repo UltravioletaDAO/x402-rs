@@ -2794,31 +2794,17 @@
                     </div>
                 </div>
 
-                <!-- x402r Escrow Extension -->
+                <!-- x402r refund extension (retired in 2.59.0) -->
                 <div class="endpoint-group">
-                    <h4 data-i18n="endpoints.group.escrow">x402r Escrow (Refund Support)</h4>
+                    <h4 data-i18n="endpoints.group.escrow">x402r refund extension (retired)</h4>
                     <div class="endpoint">
                         <span class="method post">POST</span>
                         <span class="endpoint-path">/settle</span>
-                        <span class="endpoint-desc" data-i18n="endpoints.escrowSettle">Settle to escrow proxy when "refund" extension is present</span>
+                        <span class="endpoint-desc" data-i18n="endpoints.escrowSettle">Answers 400 refund_extension_retired when the "refund" extension is present</span>
                     </div>
                     <p style="color: var(--text-muted); font-size: 0.8rem; margin: 0.5rem 0 0 0; padding-left: 1rem;" data-i18n="endpoints.escrowNote">
-                        Add {"refund": {"window": 86400}} to extensions for trustless refund support via DepositRelay proxies.
+                        Retired in 2.59.0, with the DepositRelay contracts it paid into. For refundable payments use scheme="escrow" (PaymentOperator), below.
                     </p>
-                    <div style="display: flex; gap: 0.5rem; margin-top: 0.5rem; padding-left: 1rem;">
-                        <a href="https://github.com/coinbase/x402/issues/864" target="_blank"
-                           style="font-size: 0.7rem; color: var(--accent); text-decoration: none; padding: 0.25rem 0.6rem; border: 1px solid var(--accent); border-radius: 4px; transition: all 0.2s;"
-                           onmouseover="this.style.background='var(--accent)'; this.style.color='#000';"
-                           onmouseout="this.style.background='transparent'; this.style.color='var(--accent)';">
-                            x402r Proposal
-                        </a>
-                        <a href="https://github.com/BackTrackCo/x402r-contracts" target="_blank"
-                           style="font-size: 0.7rem; color: var(--accent); text-decoration: none; padding: 0.25rem 0.6rem; border: 1px solid var(--accent); border-radius: 4px; transition: all 0.2s;"
-                           onmouseover="this.style.background='var(--accent)'; this.style.color='#000';"
-                           onmouseout="this.style.background='transparent'; this.style.color='var(--accent)';">
-                            Contracts
-                        </a>
-                    </div>
                 </div>
 
                 <!-- x402r PaymentOperator Escrow Scheme (Advanced) -->
@@ -3214,7 +3200,7 @@
                 "endpoints.group.status": "Status & Info",
                 "endpoints.group.protocol": "x402 Protocol",
                 "endpoints.group.compliance": "Compliance",
-                "endpoints.group.escrow": "x402r Escrow (Refund Support)",
+                "endpoints.group.escrow": "x402r refund extension (retired)",
                 "endpoints.group.discovery": "Discovery (Bazaar)",
                 "endpoints.group.mcp": "MCP Server",
                 "endpoints.mcpPost": "MCP server (Streamable HTTP, stateless): the same four calls as tools",
@@ -3229,8 +3215,8 @@
                 "mcp.byHand.text": "A handshake is optional on a stateless server, but Accept has to name both application/json and text/event-stream or the transport answers 406 with no other explanation. It is the first wall a hand-written client runs into.",
                 "mcp.link.guide": "MCP Guide",
                 "mcp.link.card": "Server Card",
-                "endpoints.escrowSettle": "Settle to escrow proxy when 'refund' extension is present",
-                "endpoints.escrowNote": "Add {\"refund\": {\"window\": 86400}} to extensions for trustless refund support via DepositRelay proxies.",
+                "endpoints.escrowSettle": "Answers 400 refund_extension_retired when the \"refund\" extension is present",
+                "endpoints.escrowNote": "Retired in 2.59.0, with the DepositRelay contracts it paid into. For refundable payments use scheme=\"escrow\" (PaymentOperator), below.",
                 "endpoints.group.paymentOperator": "x402r PaymentOperator (Advanced Escrow)",
                 "endpoints.paymentOperatorSettle": "Settle via AuthCaptureEscrow when scheme=\"escrow\"",
                 "endpoints.paymentOperatorNote": "Advanced escrow with authorize/charge/release/refund flows. Funds held in TokenStore until capture.",
@@ -3394,7 +3380,7 @@
                 "endpoints.group.status": "Estado e Info",
                 "endpoints.group.protocol": "Protocolo x402",
                 "endpoints.group.compliance": "Cumplimiento",
-                "endpoints.group.escrow": "x402r Escrow (Soporte de Reembolsos)",
+                "endpoints.group.escrow": "Extensi\u00f3n refund de x402r (retirada)",
                 "endpoints.group.discovery": "Descubrimiento (Bazaar)",
                 "endpoints.group.mcp": "Servidor MCP",
                 "endpoints.mcpPost": "Servidor MCP (Streamable HTTP, sin estado): las mismas cuatro llamadas como herramientas",
@@ -3409,8 +3395,8 @@
                 "mcp.byHand.text": "El handshake es opcional en un servidor sin estado, pero Accept tiene que nombrar application/json y text/event-stream a la vez o el transporte responde 406 sin m\u00e1s explicaci\u00f3n. Es la primera pared con la que choca un cliente escrito a mano.",
                 "mcp.link.guide": "Gu\u00eda MCP",
                 "mcp.link.card": "Server Card",
-                "endpoints.escrowSettle": "Liquidar a proxy escrow cuando la extension 'refund' esta presente",
-                "endpoints.escrowNote": "Agrega {\"refund\": {\"window\": 86400}} a extensions para soporte de reembolsos sin confianza via proxies DepositRelay.",
+                "endpoints.escrowSettle": "Responde 400 refund_extension_retired cuando la extensi\u00f3n \"refund\" est\u00e1 presente",
+                "endpoints.escrowNote": "Retirada en 2.59.0, junto con los contratos DepositRelay a los que pagaba. Para pagos reembolsables usa scheme=\"escrow\" (PaymentOperator), m\u00e1s abajo.",
                 "endpoints.group.paymentOperator": "x402r PaymentOperator (Escrow Avanzado)",
                 "endpoints.paymentOperatorSettle": "Liquidar via AuthCaptureEscrow cuando scheme=\"escrow\"",
                 "endpoints.paymentOperatorNote": "Escrow avanzado con flujos authorize/charge/release/refund. Fondos retenidos en TokenStore hasta captura.",

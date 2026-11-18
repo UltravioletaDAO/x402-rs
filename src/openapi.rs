@@ -141,6 +141,13 @@ which `/supported` put on `celo-sepolia` by mistake through 2.39.0;
 `hyperevm-testnet` (chain 998), is not in the list: 333 belongs to another
 chain, so it is refused as unknown.
 
+`refund_extension_retired` (`400` on `/verify` and `/settle`, in `invalidReason` or
+`errorReason`, with a `message` and a `hint`) means the payment carried the x402r
+`refund` extension (`paymentPayload.extensions.refund`, a DepositRelay proxy as
+`payTo`), retired in 2.59.0. Nothing was read from or sent to a chain, and the
+payment is not verified or settled as `exact` either. Refundable payments use the
+`escrow` scheme (PaymentOperator), listed in `/supported`.
+
 ## Rate limits
 
 Limits are per client IP and are reported on every rate-limited response, not
@@ -790,11 +797,11 @@ lost), the answer is `502` with `reason: forward_unconfirmed`,
 `retryable: false` and no `Retry-After`: it may have been executed, so do not
 ask for a new signature.
 
-`upto`, `escrow` and the `refund` extension answer a transaction that may have
-left the same way: `502` with `success: false`, `retryable: false`, `error`
+`upto` and `escrow` answer a transaction that may have left the same way:
+`502` with `success: false`, `retryable: false`, `error`
 (`settlement_unconfirmed` with `transaction` and `paymentId`, or
-`broadcast_uncertain`) and `errorReason`. Until 2.39.6 `upto` and `refund`
-answered `400` with the error text, and the escrow scheme answered without the
+`broadcast_uncertain`) and `errorReason`. Until 2.39.6 `upto` answered `400`
+with the error text, and the escrow scheme answered without the
 hash. `fhe-transfer` settles on the FHE facilitator's side: its `502` carries
 `retryable: false` unless the request provably never reached it or it answered
 with a `4xx`.

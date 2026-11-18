@@ -120,6 +120,5 @@ Arc testnet is still pending. Other networks
 retain their existing responses. Full contract:
 https://github.com/UltravioletaDAO/x402-rs/blob/main/docs/facilitator-receipts.md
 
-Receipts cover plain `exact` payments only. On every network, `upto`,
-`escrow`/`commerce` and the x402r `refund` extension keep their own settlement
-paths and carry no `receipt`.
+Receipts cover plain `exact` payments only. On every network, `upto` and
+`escrow`/`commerce` keep their own settlement paths and carry no `receipt`.

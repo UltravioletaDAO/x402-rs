@@ -1250,19 +1250,6 @@ resource "aws_ecs_task_definition" "facilitator" {
           value = "https://facilitator.ultravioletadao.xyz"
         },
         # ============================================================
-        # CRITICAL: Escrow Settlement - DO NOT DISABLE
-        # ============================================================
-        # This enables the escrow/settle endpoint for x402 payments.
-        # Without this, ALL payment settlements will fail with error:
-        # "Escrow settlement is disabled. Set ENABLE_ESCROW=true"
-        #
-        # WARNING: Never set this to "false" or remove this variable!
-        # ============================================================
-        {
-          name  = "ENABLE_ESCROW"
-          value = "true"
-        },
-        # ============================================================
         # PaymentOperator Escrow Scheme (x402r v2)
         # ============================================================
         # This enables the advanced escrow scheme using PaymentOperator

@@ -79,6 +79,9 @@ run "the_ci_roles_trust_github_narrowly_and_grant_only_what_a_release_needs" {
       aws_iam_role_policy_attachment.github_deploy_read,
       aws_iam_role_policy_attachment.github_deploy_writes,
       aws_iam_role_policy_attachment.github_deploy_infra,
+      # Named on its own: an attachment that stops referencing it must fail the attachment check,
+      # not leave its ARN unknown.
+      aws_iam_policy.cicd_infra,
     ]
   }
 
@@ -96,30 +99,49 @@ run "the_ci_roles_trust_github_narrowly_and_grant_only_what_a_release_needs" {
     target = aws_iam_role.balances_lambda
     values = { arn = "arn:aws:iam:::role/facilitator-production-balances-lambda" }
   }
+  # And for the three policies the roles hold: with one mocked ARN for all, attaching the wrong
+  # one would pass the attachment check (a mutant did, 2026-11-18).
+  override_resource {
+    target = aws_iam_policy.github_read
+    values = { arn = "arn:aws:iam:::policy/facilitator-github-read" }
+  }
+  override_resource {
+    target = aws_iam_policy.github_deploy_writes
+    values = { arn = "arn:aws:iam:::policy/facilitator-github-deploy-writes" }
+  }
+  override_resource {
+    target = aws_iam_policy.cicd_infra
+    values = { arn = "arn:aws:iam:::policy/facilitator-cicd-infra" }
+  }
 
   # --- Trust: one statement each, GitHub's provider, the STS audience, an exact subject list.
+  # try() everywhere a changed document could lack the attribute: in 1.9.8 && does not
+  # short-circuit, and an evaluation error would hide which promise broke.
 
   assert {
     condition = alltrue([
       for doc in [aws_iam_role.github_plan.assume_role_policy, aws_iam_role.github_deploy.assume_role_policy] :
-      length(jsondecode(doc).Statement) == 1 &&
-      jsondecode(doc).Statement[0].Effect == "Allow" &&
-      jsondecode(doc).Statement[0].Action == "sts:AssumeRoleWithWebIdentity" &&
-      jsondecode(doc).Statement[0].Principal.Federated == "arn:aws:iam::${data.aws_caller_identity.current.account_id}:oidc-provider/token.actions.githubusercontent.com" &&
-      toset(keys(jsondecode(doc).Statement[0].Condition)) == toset(["StringEquals"]) &&
-      toset(keys(jsondecode(doc).Statement[0].Condition.StringEquals)) == toset(["token.actions.githubusercontent.com:aud", "token.actions.githubusercontent.com:sub"]) &&
-      jsondecode(doc).Statement[0].Condition.StringEquals["token.actions.githubusercontent.com:aud"] == "sts.amazonaws.com"
+      try(
+        length(jsondecode(doc).Statement) == 1 &&
+        jsondecode(doc).Statement[0].Effect == "Allow" &&
+        jsondecode(doc).Statement[0].Action == "sts:AssumeRoleWithWebIdentity" &&
+        jsondecode(doc).Statement[0].Principal.Federated == "arn:aws:iam::${data.aws_caller_identity.current.account_id}:oidc-provider/token.actions.githubusercontent.com" &&
+        toset(keys(jsondecode(doc).Statement[0].Condition)) == toset(["StringEquals"]) &&
+        toset(keys(jsondecode(doc).Statement[0].Condition.StringEquals)) == toset(["token.actions.githubusercontent.com:aud", "token.actions.githubusercontent.com:sub"]) &&
+        jsondecode(doc).Statement[0].Condition.StringEquals["token.actions.githubusercontent.com:aud"] == "sts.amazonaws.com",
+        false
+      )
     ])
     error_message = "Each CI role trusts GitHub's OIDC provider alone, for audience sts.amazonaws.com, with StringEquals on aud and sub only (no StringLike, no wildcard)."
   }
 
   assert {
-    condition = toset(jsondecode(aws_iam_role.github_deploy.assume_role_policy).Statement[0].Condition.StringEquals["token.actions.githubusercontent.com:sub"]) == toset(["repo:UltravioletaDAO/x402-rs:environment:production"])
+    condition = try(toset(jsondecode(aws_iam_role.github_deploy.assume_role_policy).Statement[0].Condition.StringEquals["token.actions.githubusercontent.com:sub"]), toset([])) == toset(["repo:UltravioletaDAO/x402-rs:environment:production"])
     error_message = "facilitator-github-deploy must trust the production environment of UltravioletaDAO/x402-rs and nothing else."
   }
 
   assert {
-    condition = toset(jsondecode(aws_iam_role.github_plan.assume_role_policy).Statement[0].Condition.StringEquals["token.actions.githubusercontent.com:sub"]) == toset([
+    condition = try(toset(jsondecode(aws_iam_role.github_plan.assume_role_policy).Statement[0].Condition.StringEquals["token.actions.githubusercontent.com:sub"]), toset([])) == toset([
       "repo:UltravioletaDAO/x402-rs:pull_request",
       "repo:UltravioletaDAO/x402-rs:ref:refs/heads/main",
     ])
@@ -161,7 +183,7 @@ run "the_ci_roles_trust_github_narrowly_and_grant_only_what_a_release_needs" {
   assert {
     condition = toset(flatten([
       for st in jsondecode(aws_iam_policy.github_deploy_writes.policy).Statement : [
-        for r in flatten([st.Resource]) : "${r} -> ${st.Condition.StringEquals["iam:PassedToService"]}"
+        for r in flatten([st.Resource]) : "${r} -> ${try(st.Condition.StringEquals["iam:PassedToService"], "any service")}"
       ] if contains(flatten([st.Action]), "iam:PassRole")
       ])) == toset([
       "arn:aws:iam:::role/facilitator-production-ecs-execution -> ecs-tasks.amazonaws.com",
@@ -274,14 +296,14 @@ run "the_immutable_subject_names_the_repository_by_its_ids" {
   }
 
   assert {
-    condition = toset(jsondecode(aws_iam_role.github_deploy.assume_role_policy).Statement[0].Condition.StringEquals["token.actions.githubusercontent.com:sub"]) == toset([
+    condition = try(toset(jsondecode(aws_iam_role.github_deploy.assume_role_policy).Statement[0].Condition.StringEquals["token.actions.githubusercontent.com:sub"]), toset([])) == toset([
       "repo:UltravioletaDAO@172868068/x402-rs@1080715557:environment:production",
     ])
     error_message = "With the immutable subject, the deploy role trusts the production environment of owner 172868068 / repository 1080715557 alone."
   }
 
   assert {
-    condition = toset(jsondecode(aws_iam_role.github_plan.assume_role_policy).Statement[0].Condition.StringEquals["token.actions.githubusercontent.com:sub"]) == toset([
+    condition = try(toset(jsondecode(aws_iam_role.github_plan.assume_role_policy).Statement[0].Condition.StringEquals["token.actions.githubusercontent.com:sub"]), toset([])) == toset([
       "repo:UltravioletaDAO@172868068/x402-rs@1080715557:pull_request",
       "repo:UltravioletaDAO@172868068/x402-rs@1080715557:ref:refs/heads/main",
     ])

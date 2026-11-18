@@ -342,6 +342,12 @@ jobs:
         working-directory: terraform/environments/production
         run: |
           set -o pipefail
+          # This log is public, like the repository. A plan prints ARNs, and an ARN carries the
+          # account id, which is never published (no-account-id.yml): every 12-digit number a
+          # plan log puts in this log or the summary goes through this first. The credentials
+          # step's mask-aws-account-id registers this account with the runner's log masking;
+          # this does not depend on it, and also covers any other account a plan names.
+          mask() { perl -pe 's/(?<![0-9])[0-9]{12}(?![0-9])/<account>/g'; }
           terraform init -input=false
 
           # What a deploy CAN apply is not the literal -target list. A targeted apply
@@ -386,7 +392,7 @@ jobs:
           # rather than toward a false accusation.
           if ! terraform plan -input=false -lock=false -no-color -out=targeted.tfplan "${TARGETS[@]}" > targeted.log 2>&1; then
             echo "::error title=Drift gate failed::The targeted plan errored; see the log below."
-            tail -60 targeted.log
+            tail -60 targeted.log | mask
             exit 1
           fi
 
@@ -399,7 +405,7 @@ jobs:
           # -detailed-exitcode: 0 = empty, 2 = changes present, 1 = the plan itself broke.
           if [ "$code" = "1" ]; then
             echo "::error title=Drift gate failed::terraform plan errored; see the log below."
-            tail -80 full.log
+            tail -80 full.log | mask
             exit 1
           fi
           echo "Full plan exit code: $code"
@@ -408,6 +414,8 @@ jobs:
         working-directory: terraform/environments/production
         run: |
           set -o pipefail
+          # The summary is as public as the log: the plan output it embeds is masked like the Plan step's.
+          mask() { perl -pe 's/(?<![0-9])[0-9]{12}(?![0-9])/<account>/g'; }
           CHANGED='.resource_changes[]? | select(.change.actions != ["no-op"] and .change.actions != ["read"])'
 
           terraform show -json full.tfplan     > full.json
@@ -503,7 +511,7 @@ jobs:
               echo "<details><summary>Full plan output</summary>"
               echo
               echo '```'
-              cat full.log
+              mask < full.log
               echo '```'
               echo
               echo "</details>"

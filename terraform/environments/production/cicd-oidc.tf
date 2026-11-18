@@ -60,7 +60,9 @@
 # text and are referenced, and so is cicd_infra's ARN in its attachment (below):
 # no deploy applies those, so a pending change of theirs would ride along -- the
 # hand apply's plan shows it, and the rule is to stop if it lists anything but the
-# eight new resources.
+# eight new resources and the task role's permissions boundary that goes with them
+# (main.tf: aws_iam_policy.ecs_task_boundary created, aws_iam_role.ecs_task and
+# aws_iam_policy.cicd_infra updated in place) -- 9 to add, 2 to change, 0 to destroy.
 #
 # ---------------------------------------------------------------------------
 # WHY THIS IS NOT IN CI'S -target LIST, AND MUST NEVER BE
@@ -77,7 +79,15 @@
 #     -target=aws_iam_role_policy_attachment.github_plan_read \
 #     -target=aws_iam_role_policy_attachment.github_deploy_read \
 #     -target=aws_iam_role_policy_attachment.github_deploy_writes \
-#     -target=aws_iam_role_policy_attachment.github_deploy_infra
+#     -target=aws_iam_role_policy_attachment.github_deploy_infra \
+#     -target=aws_iam_policy.ecs_task_boundary -target=aws_iam_role.ecs_task \
+#     -target=aws_iam_policy.cicd_infra
+#
+# The last three are the task role's permissions boundary and the CI grant that
+# depends on it: cicd_infra lets CI write the task role's inline policies only while
+# the role carries that boundary, so the two go in the same apply (the attachment of
+# cicd_infra would bring its new version in anyway; the role would not get its
+# boundary). docs/CICD_SETUP.md has the plan to expect, line by line.
 #
 # The order, all of it BEFORE the change that switches ci.yaml to the roles is
 # merged (the old ci.yaml keeps using the key meanwhile; the pull request's own
@@ -557,8 +567,9 @@ resource "aws_iam_role_policy_attachment" "github_deploy_writes" {
 #
 # Referenced, not composed like the ARNs inside the policies: an attachment's policy_arn is
 # validated as an ARN, and in every tftest whose mock makes up the account a composed one fails the
-# teardown -- and the whole `terraform test` step of CI with it (measured 2026-11-18). A pending
-# change to cicd_infra would show in the hand apply's plan: stop there if it does.
+# teardown -- and the whole `terraform test` step of CI with it (measured 2026-11-18). The hand apply
+# that creates these roles also applies cicd_infra's pending version (the condition on the task
+# role's permissions boundary, and DenyBoundaryChanges); any other change to it in that plan: stop.
 resource "aws_iam_role_policy_attachment" "github_deploy_infra" {
   role       = aws_iam_role.github_deploy.name
   policy_arn = aws_iam_policy.cicd_infra.arn

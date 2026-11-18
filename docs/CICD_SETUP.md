@@ -37,9 +37,11 @@ while it has no required reviewer or `main` is unprotected.
    protection, no ruleset): they push a workflow to `main` and get the deploy role's token. And a job
    that names an environment that does not exist yet creates it with no rule at all.
 2. Apply the roles by hand, with a human's credentials, on Terraform 1.9.8 — the command is in the
-   header of `cicd-oidc.tf`. Read the plan: it must create 2 roles, 2 policies and 4 attachments, and
-   touch nothing else (the policies compose their ARNs from names, so the balances Lambda is not
-   dragged in).
+   header of `cicd-oidc.tf`. Read the plan: it must create 2 roles, 2 policies and 4 attachments,
+   plus the task role's permissions boundary (`aws_iam_policy.ecs_task_boundary`), and update in
+   place `aws_iam_role.ecs_task` (the boundary) and `aws_iam_policy.cicd_infra` (the grant that
+   depends on it) — **9 to add, 2 to change, 0 to destroy** — and touch nothing else (the policies
+   compose their ARNs from names, so the balances Lambda is not dragged in).
 3. Set the repository secret `AWS_ACCOUNT_ID`.
 4. Merge. After one green push run (drift gate on the plan role) and one green release (deploy role),
    deactivate and delete the access key of `github-actions-facilitator-deploy`, delete the secrets
@@ -75,8 +77,11 @@ then give it the policies below.
 > decorative. Declaring it is safe only because the deploy user has no `iam:CreatePolicyVersion`.
 > Apply it by hand, with a human's credentials, on Terraform 1.9.8.
 >
-> Its statements, as declared: `DynamoTableManage`, `IamRolePolicyForTaskRoleOnly`,
-> `DenyPrivilegeEscalation` (Deny), `BalancesLambdaDeploy`, `AlertTopicManage`,
+> Its statements, as declared: `DynamoTableManage`, `IamRolePolicyReadForTaskRole`,
+> `IamRolePolicyForTaskRoleOnly` (the task role's inline policies, only while the role carries its
+> permissions boundary `facilitator-production-ecs-task-boundary`, declared in `main.tf`),
+> `DenyPrivilegeEscalation` (Deny), `DenyBoundaryChanges` (Deny: no boundary set or removed, no
+> managed policy's versions changed, nothing detached), `BalancesLambdaDeploy`, `AlertTopicManage`,
 > `FacilitatorAlarmManage`, `FacilitatorMetricFilterManage`, `FacilitatorScheduleManage`,
 > `AlertsBackupQueueManage`, `FacilitatorLogRetention`, `DiscoveryBucketVersioning`,
 > `EcsClusterUpdate`, `EcsDeployUntag`, `DenyBazaarTokenDecrypt` (Deny). The `.tf` file is the list;

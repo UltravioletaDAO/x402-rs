@@ -93,15 +93,33 @@ resource "aws_iam_policy" "cicd_infra" {
         ]
       },
       {
+        "Sid" : "IamRolePolicyReadForTaskRole",
+        "Effect" : "Allow",
+        "Action" : [
+          "iam:GetRolePolicy",
+          "iam:ListRolePolicies"
+        ],
+        "Resource" : "arn:aws:iam::${data.aws_caller_identity.current.account_id}:role/facilitator-production-ecs-task"
+      },
+      {
+        # CI writes the task role's inline policies (the deploy applies two of them), and
+        # only while the role carries its permissions boundary (main.tf,
+        # aws_iam_policy.ecs_task_boundary): whatever an inline policy says, the running
+        # task gets no more than the boundary. Without it, PutRolePolicy here was a path
+        # from the CI credentials to anything in the account, through a task definition
+        # that runs as this role. DenyBoundaryChanges below keeps CI from lifting it.
         "Sid" : "IamRolePolicyForTaskRoleOnly",
         "Effect" : "Allow",
         "Action" : [
           "iam:PutRolePolicy",
-          "iam:GetRolePolicy",
-          "iam:DeleteRolePolicy",
-          "iam:ListRolePolicies"
+          "iam:DeleteRolePolicy"
         ],
-        "Resource" : "arn:aws:iam::${data.aws_caller_identity.current.account_id}:role/facilitator-production-ecs-task"
+        "Resource" : "arn:aws:iam::${data.aws_caller_identity.current.account_id}:role/facilitator-production-ecs-task",
+        "Condition" : {
+          "StringEquals" : {
+            "iam:PermissionsBoundary" : "${aws_iam_policy.ecs_task_boundary.arn}"
+          }
+        }
       },
       {
         "Sid" : "DenyPrivilegeEscalation",
@@ -121,6 +139,25 @@ resource "aws_iam_policy" "cicd_infra" {
         "NotResource" : [
           "arn:aws:iam::${data.aws_caller_identity.current.account_id}:role/facilitator-production-ecs-task"
         ]
+      },
+      {
+        # Everywhere, the task role included: no boundary set, changed or removed by CI, no
+        # managed policy rewritten or rolled back to another version, nothing detached.
+        "Sid" : "DenyBoundaryChanges",
+        "Effect" : "Deny",
+        "Action" : [
+          "iam:PutRolePermissionsBoundary",
+          "iam:DeleteRolePermissionsBoundary",
+          "iam:PutUserPermissionsBoundary",
+          "iam:DeleteUserPermissionsBoundary",
+          "iam:CreatePolicyVersion",
+          "iam:SetDefaultPolicyVersion",
+          "iam:DeletePolicyVersion",
+          "iam:DeletePolicy",
+          "iam:DetachRolePolicy",
+          "iam:DetachUserPolicy"
+        ],
+        "Resource" : "*"
       },
       {
         "Sid" : "BalancesLambdaDeploy",

@@ -43,6 +43,7 @@ def declared_ci_policy() -> dict:
             body = source[start : i + 1]
             break
     body = "\n".join(line for line in body.split("\n") if not line.strip().startswith("#"))
+    body = body.replace("${aws_iam_policy.ecs_task_boundary.arn}", BOUNDARY_ARN)
     return json.loads(body.replace("${data.aws_caller_identity.current.account_id}", ACCOUNT))
 
 
@@ -77,12 +78,16 @@ def role_policy_change(address: str, role: str, actions=("update",), unknown_rol
 
 
 def plan(changes, policy=True, where="prior_state") -> dict:
+    """A targeted plan with the declared CI policy, and the task role in state carrying its boundary, as both are
+    live once the CI policy grants the role's inline policies only under that boundary."""
     doc = {"resource_changes": list(changes)}
     if policy:
         resources = [policy_resource(declared_ci_policy())]
+        role = [role_resource(TASK_ROLE, BOUNDARY_ARN)]
         if where == "prior_state":
-            doc["prior_state"] = {"values": {"root_module": {"resources": resources}}}
+            doc["prior_state"] = {"values": {"root_module": {"resources": resources + role}}}
         else:
+            doc["prior_state"] = {"values": {"root_module": {"resources": role}}}
             doc["planned_values"] = {"root_module": {"resources": resources}}
     return doc
 
@@ -117,9 +122,23 @@ class TheDeclaredPolicy(unittest.TestCase):
     def arn(self, role):
         return f"arn:aws:iam::{ACCOUNT}:role/{role}"
 
-    def test_the_task_role_is_writable(self):
-        self.assertEqual(gate.evaluate(self.doc, "iam:PutRolePolicy", self.arn(TASK_ROLE)), "allow")
-        self.assertEqual(gate.evaluate(self.doc, "iam:DeleteRolePolicy", self.arn(TASK_ROLE)), "allow")
+    def test_the_task_role_is_writable_while_it_carries_its_boundary(self):
+        bounded = {"iam:PermissionsBoundary": BOUNDARY_ARN}
+        self.assertEqual(gate.evaluate(self.doc, "iam:PutRolePolicy", self.arn(TASK_ROLE), bounded), "allow")
+        self.assertEqual(gate.evaluate(self.doc, "iam:DeleteRolePolicy", self.arn(TASK_ROLE), bounded), "allow")
+
+    def test_without_its_boundary_the_task_role_is_not_writable(self):
+        for context in (None, {"iam:PermissionsBoundary": None}, {"iam:PermissionsBoundary": OTHER_BOUNDARY_ARN}):
+            with self.subTest(context=context):
+                for call in ("iam:PutRolePolicy", "iam:DeleteRolePolicy"):
+                    self.assertEqual(gate.evaluate(self.doc, call, self.arn(TASK_ROLE), context), "no_allow")
+
+    def test_ci_cannot_set_or_lift_a_boundary_anywhere(self):
+        for role in (TASK_ROLE, EXECUTION_ROLE, "anything-else"):
+            for call in ("iam:PutRolePermissionsBoundary", "iam:DeleteRolePermissionsBoundary"):
+                self.assertEqual(gate.evaluate(self.doc, call, self.arn(role)), "explicit_deny", (role, call))
+        for call in ("iam:CreatePolicyVersion", "iam:SetDefaultPolicyVersion", "iam:DeletePolicyVersion", "iam:DeletePolicy"):
+            self.assertEqual(gate.evaluate(self.doc, call, BOUNDARY_ARN), "explicit_deny", call)
 
     def test_every_other_role_is_denied(self):
         for role in (EXECUTION_ROLE, LAMBDA_ROLE, "anything-else"):
@@ -228,6 +247,14 @@ class TheGate(unittest.TestCase):
         self.assertEqual(code, 0, summary)
         self.assertNotIn("::error", out)
         self.assertIn("| yes |", summary)
+
+    def test_a_task_role_policy_is_red_while_the_role_lacks_its_boundary(self):
+        # The declared CI policy live, the role not yet bounded: the deploy would be refused the write.
+        targeted = plan([role_policy_change(HEDERA, TASK_ROLE)])
+        targeted["prior_state"]["values"]["root_module"]["resources"][-1] = role_resource(TASK_ROLE, None)
+        code, _, summary = run(targeted)
+        self.assertEqual(code, 1, summary)
+        self.assertIn("only while the role carries its permissions boundary", summary)
 
     def test_a_plan_that_errored_is_red_not_clean(self):
         """Terraform 1.9 still writes the plan file when planning fails (PR #122's run)."""

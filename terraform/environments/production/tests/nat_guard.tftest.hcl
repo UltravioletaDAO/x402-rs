@@ -21,6 +21,14 @@ mock_provider "aws" {
       arn = "arn:aws:acm:us-east-2::certificate/mock"
     }
   }
+  # The task definition's task role ARN is composed from the account id (main.tf,
+  # local.ecs_task_role_arn) and validated: a placeholder of the right shape, as in
+  # receipts_store.tftest.hcl, not an account.
+  mock_data "aws_caller_identity" {
+    defaults = {
+      account_id = "000000000000"
+    }
+  }
 }
 mock_provider "archive" {}
 

@@ -8501,12 +8501,11 @@ mod gas_ceiling_send_tests {
     }
 
     /// The other sends a request can make the facilitator pay for: an `upto`
-    /// settle, the `refund` extension's deposit, a PaymentOperator call and a
-    /// relayed ERC-8004 rating (type-4, with the rater's authorization).
+    /// settle, a PaymentOperator call and a relayed ERC-8004 rating (type-4,
+    /// with the rater's authorization).
     fn sends() -> Vec<(&'static str, Option<Vec<SignedAuthorization>>)> {
         vec![
             ("upto", None),
-            ("escrow-deposit", None),
             ("operator", None),
             ("erc8004-relay", Some(vec![rater_authorization()])),
         ]
@@ -8538,12 +8537,6 @@ mod gas_ceiling_send_tests {
         assert_refused_above_its_ceiling("upto", 50_000_000, None).await;
     }
 
-    /// The `refund` extension's deposit, sent to the proxy the request names.
-    #[tokio::test]
-    async fn a_refund_deposit_estimated_above_its_ceiling_sends_nothing() {
-        assert_refused_above_its_ceiling("escrow-deposit", 50_000_000, None).await;
-    }
-
     /// A PaymentOperator call.
     #[tokio::test]
     async fn an_operator_call_estimated_above_its_ceiling_sends_nothing() {
@@ -8563,14 +8556,14 @@ mod gas_ceiling_send_tests {
     }
 
     /// Each of them at its measured cost goes out as before, with its estimate
-    /// plus a quarter: an `upto` settle (99,566 used on Base), a deposit
-    /// (provisional: none was measured), a PaymentOperator authorize (286,226,
-    /// as Polygon's went out at limits of about 357,783) and a relayed rating
-    /// (332,814, sent at 416,017 on Ethereum, Celo and Optimism). At the
-    /// ceiling it goes out at the ceiling; one gas above it, not at all.
+    /// plus a quarter: an `upto` settle (99,566 used on Base), a
+    /// PaymentOperator authorize (286,226, as Polygon's went out at limits of
+    /// about 357,783) and a relayed rating (332,814, sent at 416,017 on
+    /// Ethereum, Celo and Optimism). At the ceiling it goes out at the ceiling;
+    /// one gas above it, not at all.
     #[tokio::test]
     async fn every_send_within_its_ceiling_is_sent_as_before() {
-        let measured = [99_566, 250_000, 286_226, 332_814];
+        let measured = [99_566, 286_226, 332_814];
         for ((kind, authorization_list), measured) in sends().into_iter().zip(measured) {
             let ceiling = ceiling_on_base(kind);
             for (estimate, sent) in [

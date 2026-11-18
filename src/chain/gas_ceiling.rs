@@ -5,9 +5,8 @@
 //! payer that is a contract (EIP-1271, or an EOA delegated by EIP-7702) answers
 //! `isValidSignature` inside an `exact` or `upto` settle; an ERC-721
 //! recipient's `onERC721Received` runs inside an identity delivery; a rater's
-//! delegated code runs inside a relayed rating; the `refund` extension calls
-//! the proxy its request names. The node's estimate is whatever that code
-//! burns, and it was signed as estimated. Every send now names its
+//! delegated code runs inside a relayed rating. The node's estimate is
+//! whatever that code burns, and it was signed as estimated. Every send now names its
 //! [`GasKind`], and `chain::evm` holds it to that kind's ceiling on its
 //! network:
 //!
@@ -35,8 +34,8 @@
 //! Robinhood Chain), delivery 75,951, rating 215,580.
 //! The head-room above them is for contract wallets, whose own signature check
 //! (a passkey verified without a P-256 precompile costs a few hundred thousand)
-//! runs inside the payment. The deposit of the `refund` extension and the
-//! EIP-6492 deploy have no measured transaction; their values are provisional.
+//! runs inside the payment. The EIP-6492 deploy has no measured transaction;
+//! its value is provisional.
 //!
 //! The same contract costs the same gas on every network measured except
 //! where the gas schedule differs: a FiatToken `transfer` estimated 39,945 to
@@ -84,8 +83,6 @@ pub enum GasKind {
     ExactSettleDeploy,
     /// An `upto` settle through the Permit2 proxy.
     UptoSettle,
-    /// The `refund` extension's `executeDeposit` on the merchant's relay proxy.
-    EscrowDeposit,
     /// A PaymentOperator call: authorize, charge, capture or release, refund,
     /// void.
     PaymentOperator,
@@ -102,11 +99,10 @@ pub enum GasKind {
 
 impl GasKind {
     /// Every kind, in the order `GET /config` lists them.
-    pub const ALL: [GasKind; 9] = [
+    pub const ALL: [GasKind; 8] = [
         GasKind::ExactSettle,
         GasKind::ExactSettleDeploy,
         GasKind::UptoSettle,
-        GasKind::EscrowDeposit,
         GasKind::PaymentOperator,
         GasKind::Erc8004Relay,
         GasKind::Erc8004Register,
@@ -120,7 +116,6 @@ impl GasKind {
             GasKind::ExactSettle => "exact",
             GasKind::ExactSettleDeploy => "exact-deploy",
             GasKind::UptoSettle => "upto",
-            GasKind::EscrowDeposit => "escrow-deposit",
             GasKind::PaymentOperator => "operator",
             GasKind::Erc8004Relay => "erc8004-relay",
             GasKind::Erc8004Register => "erc8004-register",
@@ -136,7 +131,6 @@ impl GasKind {
             GasKind::ExactSettle => 500_000,
             GasKind::ExactSettleDeploy => 1_000_000,
             GasKind::UptoSettle => 500_000,
-            GasKind::EscrowDeposit => 600_000,
             GasKind::PaymentOperator => 800_000,
             GasKind::Erc8004Relay => 1_000_000,
             GasKind::Erc8004Register => 1_000_000,
@@ -293,7 +287,6 @@ mod tests {
             (GasKind::ExactSettle, 500_000),
             (GasKind::ExactSettleDeploy, 1_000_000),
             (GasKind::UptoSettle, 500_000),
-            (GasKind::EscrowDeposit, 600_000),
             (GasKind::PaymentOperator, 800_000),
             (GasKind::Erc8004Relay, 1_000_000),
             (GasKind::Erc8004Register, 1_000_000),
@@ -401,16 +394,16 @@ mod tests {
             }
         }
 
-        let var = "EVM_MAX_GAS_ESCROW_DEPOSIT_CELO_SEPOLIA";
+        let var = "EVM_MAX_GAS_EXACT_DEPLOY_CELO_SEPOLIA";
         assert_eq!(
-            env_var_for(Network::CeloSepolia, GasKind::EscrowDeposit),
+            env_var_for(Network::CeloSepolia, GasKind::ExactSettleDeploy),
             var
         );
         std::env::set_var(var, "123456");
         let ceilings = GasCeilings::from_env();
         std::env::remove_var(var);
         assert_eq!(
-            ceilings.ceiling(Network::CeloSepolia, GasKind::EscrowDeposit),
+            ceilings.ceiling(Network::CeloSepolia, GasKind::ExactSettleDeploy),
             123_456
         );
     }

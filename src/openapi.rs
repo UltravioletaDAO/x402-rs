@@ -3576,7 +3576,7 @@ Rate limited per IP like the other cheap reads.",
                     "perNetwork": {
                         "base": {
                             "exact": 500000, "exact-deploy": 1000000, "upto": 500000,
-                            "escrow-deposit": 600000, "operator": 800000, "erc8004-relay": 1000000,
+                            "operator": 800000, "erc8004-relay": 1000000,
                             "erc8004-register": 1000000, "erc8004-transfer": 300000, "erc8004-write": 1000000
                         }
                     },

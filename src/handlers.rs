@@ -17868,10 +17868,10 @@ mod settle_idempotency_tests {
         (node, OnNode(Arc::new(providers)))
     }
 
-    /// What `arm` holds, plus the writer flag's own lock and both escrow
-    /// switches: these tests settle for real, so another test flipping either
-    /// halfway through would turn a replay into a refusal. The switches are
-    /// put back as they were when it drops.
+    /// What `arm` holds, plus the writer flag's own lock and the escrow
+    /// switch: these tests settle for real, so another test flipping it
+    /// halfway through would turn a replay into a refusal. The switch is put
+    /// back as it was when it drops.
     struct Armed {
         previous: Vec<(&'static str, Option<String>)>,
         _lock: std::sync::MutexGuard<'static, ()>,
@@ -17888,7 +17888,7 @@ mod settle_idempotency_tests {
         let flags = test_rpc::ESCROW_FLAGS
             .lock()
             .unwrap_or_else(|e| e.into_inner());
-        let previous = ["ENABLE_PAYMENT_OPERATOR", "ENABLE_ESCROW"]
+        let previous = ["ENABLE_PAYMENT_OPERATOR"]
             .into_iter()
             .map(|var| {
                 let was = std::env::var(var).ok();
@@ -20564,10 +20564,9 @@ mod post_send_response_tests {
         }
     }
 
-    /// `upto`, the escrow scheme and the `refund` extension: a typed
-    /// unconfirmed send answers with its hash; the nonce guard's text, which
-    /// has none, still answers not retryable; any other failure keeps its own
-    /// answer.
+    /// `upto` and the escrow scheme: a typed unconfirmed send answers with its
+    /// hash; the nonce guard's text, which has none, still answers not
+    /// retryable; any other failure keeps its own answer.
     #[tokio::test]
     async fn an_alternative_scheme_past_the_broadcast_answers_like_the_exact_path() {
         let tx = TransactionHash::Evm([0x66; 32]);
@@ -20588,7 +20587,7 @@ mod post_send_response_tests {
             crate::dx402::payment_id(Network::Base, &tx.to_string())
         );
 
-        let guard = crate::escrow::EscrowError::ContractCall(
+        let guard = crate::payment_operator::errors::OperatorError::ContractCall(
             "ContractCall(\"Nonce error and TX count could not be verified, original TX may have been mined\")"
                 .into(),
         );

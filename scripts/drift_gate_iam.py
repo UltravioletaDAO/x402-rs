@@ -20,6 +20,12 @@ to apply it by hand, before the merge, on Terraform 1.9.8. Since X402-SEG-CI the
 facilitator-github-deploy instead of the user; it holds the same cicd_infra plus `facilitator-github-deploy-writes`,
 which grants no IAM write but `iam:PassRole` either (cicd-oidc.tf), so the evaluation is unchanged.
 
+An Allow under a Condition grants nothing, with one exception the CI policy relies on: a StringEquals on
+`iam:PermissionsBoundary` for a call on a role's inline policies. IAM checks it against the boundary the role
+carries when the call is made, and the deploy never changes a role's boundary, so the gate checks it against the
+role's boundary in the plans' prior state (the full plan's first). A role that is not there, or carries another
+boundary or none, is not granted.
+
 The ECS cluster gets the same treatment. `aws_ecs_cluster.main` is in no -target list, but it rides into every
 image deploy as a dependency of the service, and on 2026-10-07 the deploy of #115 died on `ecs:UpdateCluster`.
 Only the ECS calls whose grant can live in the managed policy are evaluated: UpdateCluster (`EcsClusterUpdate`),
@@ -101,8 +107,56 @@ def ci_policy(plans: list[dict]) -> tuple[dict | None, str | None, str]:
     return None, None, "not found"
 
 
+def role_boundaries(plans: list[dict]) -> dict[str, str | None]:
+    """Role name -> the permissions boundary ARN it carries (None: none), from the plans' prior state, the
+    first plan that holds the role winning (the full plan is passed first)."""
+    found: dict[str, str | None] = {}
+    for plan in plans:
+        section = plan.get("prior_state") or {}
+        for resource in _walk(section.get("values", section).get("root_module")):
+            if resource.get("type") != "aws_iam_role":
+                continue
+            values = resource.get("values") or {}
+            name = values.get("name")
+            if name and name not in found:
+                found[name] = values.get("permissions_boundary") or None
+    return found
+
+
 def _as_list(value) -> list:
     return value if isinstance(value, list) else ([] if value is None else [value])
+
+
+# The only condition keys the gate can answer, and the one operator it evaluates them with.
+KNOWN_CONDITION_KEYS = ("iam:permissionsboundary",)
+
+
+def _boundaries_named(document: dict | None) -> list[str]:
+    """Every boundary ARN an iam:PermissionsBoundary condition of the policy names."""
+    names = []
+    for statement in _as_list((document or {}).get("Statement")):
+        for operator, block in (statement.get("Condition") or {}).items():
+            for key, value in (block or {}).items() if isinstance(block, dict) else []:
+                if str(key).lower() in KNOWN_CONDITION_KEYS:
+                    names += [str(v) for v in _as_list(value)]
+    return names
+
+
+def _condition_holds(condition, context: dict | None) -> bool:
+    """True only for a Condition made of StringEquals on keys the gate knows, every one of which holds."""
+    if not isinstance(condition, dict) or not condition:
+        return False
+    known = {str(k).lower(): v for k, v in (context or {}).items() if v}
+    for operator, block in condition.items():
+        if operator != "StringEquals" or not isinstance(block, dict) or not block:
+            return False
+        for key, expected in block.items():
+            key = str(key).lower()
+            if key not in KNOWN_CONDITION_KEYS or key not in known:
+                return False
+            if known[key] not in [str(e) for e in _as_list(expected)]:
+                return False
+    return True
 
 
 def _matches(patterns, value: str, case_sensitive: bool) -> bool:
@@ -114,9 +168,10 @@ def _matches(patterns, value: str, case_sensitive: bool) -> bool:
     return False
 
 
-def evaluate(document: dict, action: str, resource: str | None) -> str:
+def evaluate(document: dict, action: str, resource: str | None, context: dict | None = None) -> str:
     """'allow', 'explicit_deny' or 'no_allow' for one IAM call. An unknown resource ARN never matches an Allow,
-    and a statement with a Condition never grants (and always denies): no guessing in the permissive direction."""
+    and a statement with a Condition always denies and grants only when the Condition is one the gate can answer
+    from `context` and it holds (_condition_holds): no guessing in the permissive direction."""
     allowed = False
     for statement in _as_list(document.get("Statement")):
         effect = statement.get("Effect")
@@ -136,7 +191,7 @@ def evaluate(document: dict, action: str, resource: str | None) -> str:
             continue
         if effect == "Deny":
             return "explicit_deny"
-        if effect == "Allow" and "Condition" not in statement:
+        if effect == "Allow" and ("Condition" not in statement or _condition_holds(statement["Condition"], context)):
             allowed = True
     return "allow" if allowed else "no_allow"
 
@@ -217,7 +272,19 @@ def untag_calls(actions: list[str], change: dict) -> list[str]:
     return []
 
 
-def verdicts(targeted: dict, document: dict | None, account: str | None) -> list[dict]:
+def call_context(rtype: str, change: dict, boundaries: dict | None) -> dict | None:
+    """What a Condition on the call may be checked against: the permissions boundary of the role whose inline
+    policies the change writes, as the prior state holds it. Nothing for any other change."""
+    if rtype not in ("aws_iam_role_policy", "aws_iam_role_policy_attachment") or not boundaries:
+        return None
+    role = _value(change, "role")
+    if not role or (change.get("after_unknown") or {}).get("role") or role not in boundaries:
+        return None
+    return {"iam:PermissionsBoundary": boundaries[role]}
+
+
+def verdicts(targeted: dict, document: dict | None, account: str | None,
+             boundaries: dict | None = None) -> list[dict]:
     """One row per aws_iam_* the targeted plan changes, and per ECS change that needs a call the managed
     policy can grant: the calls it needs and whether CI may make them."""
     rows = []
@@ -245,7 +312,8 @@ def verdicts(targeted: dict, document: dict | None, account: str | None) -> list
         elif document is None:
             outcome, why = "unknown", f"{CI_POLICY_ADDRESS} is not in the plan, so nothing says CI may"
         else:
-            results = {call: evaluate(document, call, arn) for call in needed}
+            context = call_context(rtype, rc.get("change", {}), boundaries)
+            results = {call: evaluate(document, call, arn, context) for call in needed}
             refused = [c for c, r in results.items() if r != "allow"]
             if not refused:
                 outcome, why = "allow", ""
@@ -253,6 +321,10 @@ def verdicts(targeted: dict, document: dict | None, account: str | None) -> list
                 outcome, why = "explicit_deny", "explicitly denied to CI: " + ", ".join(refused)
             else:
                 outcome, why = "no_allow", "no statement grants CI " + ", ".join(refused)
+                if any(evaluate(document, c, arn, {"iam:PermissionsBoundary": b}) == "allow"
+                       for c in refused for b in _boundaries_named(document)):
+                    why += (" (the CI policy grants it only while the role carries its permissions boundary, "
+                            "and the role's state shows another one or none)")
         rows.append({"address": rc["address"], "actions": "+".join(actions), "on": label,
                      "outcome": outcome, "why": why, "stop": stop})
     return rows
@@ -329,7 +401,7 @@ def main(argv: list[str] | None = None) -> int:
     plans.append(targeted)
 
     document, account, source = ci_policy(plans)
-    rows = verdicts(targeted, document, account)
+    rows = verdicts(targeted, document, account, role_boundaries(plans))
     markdown, blocked = report(rows, source)
     if a.summary:
         with open(a.summary, "a", encoding="utf-8") as f:

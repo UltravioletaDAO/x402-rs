@@ -343,6 +343,104 @@ class TheGate(unittest.TestCase):
             self.assertNotIn("arn:aws", text)
 
 
+BOUNDARY_ARN = "arn:aws:iam::" + ACCOUNT + ":policy/facilitator-production-ecs-task-boundary"
+OTHER_BOUNDARY_ARN = "arn:aws:iam::" + ACCOUNT + ":policy/something-else"
+
+
+def role_resource(name: str, boundary: str | None) -> dict:
+    """An aws_iam_role as the prior state holds it."""
+    return {"address": "aws_iam_role.x", "type": "aws_iam_role",
+            "values": {"name": name, "arn": "arn:aws:iam::" + ACCOUNT + ":role/" + name,
+                       "permissions_boundary": boundary}}
+
+
+def bounded_plan(changes, policy_doc: dict, roles=(), full_roles=None):
+    """(targeted, full) with the CI policy live and the given roles in the targeted / the full plan's state."""
+    targeted = {"resource_changes": list(changes),
+                "prior_state": {"values": {"root_module": {"resources": [policy_resource(policy_doc), *roles]}}}}
+    full = None
+    if full_roles is not None:
+        full = {"resource_changes": [],
+                "prior_state": {"values": {"root_module": {"resources": [policy_resource(policy_doc), *full_roles]}}}}
+    return targeted, full
+
+
+class AGrantUnderTheRolesBoundary(unittest.TestCase):
+    """The CI policy grants iam:PutRolePolicy on the task role only under the condition iam:PermissionsBoundary = the
+    role's boundary. IAM checks it against the boundary the role carries when the call is made, which the deploy never
+    changes: the gate reads it from the role's prior state."""
+
+    CONDITIONED = allow_put_role_policy_on(TASK_ROLE, condition={"StringEquals": {"iam:PermissionsBoundary": BOUNDARY_ARN}})
+
+    def arn(self, role=TASK_ROLE):
+        return f"arn:aws:iam::{ACCOUNT}:role/{role}"
+
+    def test_evaluate_grants_only_with_the_named_boundary(self):
+        self.assertEqual(gate.evaluate(self.CONDITIONED, "iam:PutRolePolicy", self.arn(),
+                                       {"iam:PermissionsBoundary": BOUNDARY_ARN}), "allow")
+        for context in ({"iam:PermissionsBoundary": OTHER_BOUNDARY_ARN}, {"iam:PermissionsBoundary": None}, {}, None):
+            with self.subTest(context=context):
+                self.assertEqual(gate.evaluate(self.CONDITIONED, "iam:PutRolePolicy", self.arn(), context), "no_allow")
+
+    def test_the_condition_key_is_case_insensitive_as_in_iam(self):
+        doc = allow_put_role_policy_on(TASK_ROLE, condition={"StringEquals": {"IAM:permissionsBoundary": BOUNDARY_ARN}})
+        self.assertEqual(gate.evaluate(doc, "iam:PutRolePolicy", self.arn(),
+                                       {"iam:PermissionsBoundary": BOUNDARY_ARN}), "allow")
+
+    def test_any_other_condition_still_grants_nothing(self):
+        for condition in ({"StringLike": {"iam:PermissionsBoundary": BOUNDARY_ARN}},
+                          {"StringEquals": {"iam:PermissionsBoundary": BOUNDARY_ARN, "aws:RequestedRegion": "us-east-2"}},
+                          {"StringEquals": {"iam:PermissionsBoundary": BOUNDARY_ARN},
+                           "Bool": {"aws:MultiFactorAuthPresent": "true"}}):
+            with self.subTest(condition=condition):
+                doc = allow_put_role_policy_on(TASK_ROLE, condition=condition)
+                self.assertEqual(gate.evaluate(doc, "iam:PutRolePolicy", self.arn(),
+                                               {"iam:PermissionsBoundary": BOUNDARY_ARN}), "no_allow")
+
+    def test_a_deny_under_a_condition_still_denies(self):
+        doc = {"Version": "2012-10-17", "Statement": [
+            {"Effect": "Allow", "Action": "iam:PutRolePolicy", "Resource": self.arn()},
+            {"Effect": "Deny", "Action": "iam:PutRolePolicy", "Resource": self.arn(),
+             "Condition": {"StringEquals": {"iam:PermissionsBoundary": OTHER_BOUNDARY_ARN}}}]}
+        self.assertEqual(gate.evaluate(doc, "iam:PutRolePolicy", self.arn(),
+                                       {"iam:PermissionsBoundary": BOUNDARY_ARN}), "explicit_deny")
+
+    def test_the_bounded_role_is_green(self):
+        targeted, _ = bounded_plan([role_policy_change(HEDERA, TASK_ROLE)], self.CONDITIONED,
+                                   roles=[role_resource(TASK_ROLE, BOUNDARY_ARN)])
+        code, out, summary = run(targeted)
+        self.assertEqual(code, 0, summary)
+        self.assertNotIn("::error", out)
+
+    def test_the_role_from_the_full_plan_counts(self):
+        # The deploy's targeted plan does not carry the task role; the full plan's state does.
+        targeted, full = bounded_plan([role_policy_change(HEDERA, TASK_ROLE)], self.CONDITIONED,
+                                      full_roles=[role_resource(TASK_ROLE, BOUNDARY_ARN)])
+        code, _, summary = run(targeted, full)
+        self.assertEqual(code, 0, summary)
+
+    def test_a_role_without_the_boundary_is_red_and_says_why(self):
+        for roles in ([role_resource(TASK_ROLE, None)], [role_resource(TASK_ROLE, OTHER_BOUNDARY_ARN)], []):
+            with self.subTest(roles=roles):
+                targeted, _ = bounded_plan([role_policy_change(HEDERA, TASK_ROLE)], self.CONDITIONED, roles=roles)
+                code, out, summary = run(targeted)
+                self.assertEqual(code, 1, summary)
+                self.assertIn("only while the role carries its permissions boundary", summary)
+                self.assertNotIn(ACCOUNT, out + summary)
+                self.assertNotIn("arn:aws", out + summary)
+
+    def test_another_roles_boundary_does_not_lend_its_grant(self):
+        # The boundary of the role being written, never of some other role in state.
+        targeted, _ = bounded_plan([role_policy_change(HEDERA, TASK_ROLE)], self.CONDITIONED,
+                                   roles=[role_resource(EXECUTION_ROLE, BOUNDARY_ARN), role_resource(TASK_ROLE, None)])
+        self.assertEqual(run(targeted)[0], 1)
+
+    def test_a_role_unknown_until_apply_gets_no_boundary(self):
+        targeted, _ = bounded_plan([role_policy_change(HEDERA, TASK_ROLE, unknown_role=True)], self.CONDITIONED,
+                                   roles=[role_resource(TASK_ROLE, BOUNDARY_ARN)])
+        self.assertEqual(run(targeted)[0], 1)
+
+
 def ci_policy_without(sid: str) -> dict:
     """The declared policy minus one statement: what is live until a new statement is applied by hand."""
     doc = declared_ci_policy()

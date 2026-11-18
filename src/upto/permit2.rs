@@ -257,14 +257,24 @@ fn validate_offchain(request: &UptoRequest) -> Result<(), UptoError> {
         });
     }
 
-    // Witness.to must match pay_to (recipient binding)
+    // Witness.to must be the seller's payee (recipient binding). The payee is
+    // the one in `paymentRequirements`; the buyer's `accepted` copy is held to
+    // it, never used in its place.
     let witness_to = parse_address(&permit2_auth.witness.to)?;
-    let pay_to = parse_address(&accepted.pay_to)?;
+    let pay_to = parse_address(&requirements.pay_to)?;
     if witness_to != pay_to {
         return Err(UptoError::RecipientMismatch {
             expected: format!("{:#x}", pay_to),
             actual: format!("{:#x}", witness_to),
         });
+    }
+    if parse_address(&accepted.pay_to)? != pay_to {
+        return Err(UptoError::InvalidPayload(format!(
+            "{}: paymentPayload.accepted.payTo ({}) does not match paymentRequirements.payTo ({})",
+            crate::types_v2::ACCEPTED_REQUIREMENTS_MISMATCH,
+            accepted.pay_to,
+            requirements.pay_to
+        )));
     }
 
     // Permitted amount must match accepted amount (client authorized the max)
@@ -486,6 +496,7 @@ async fn execute_settlement(
 
     let meta_tx = MetaTransaction {
         authorization_list: None,
+        gas_kind: crate::chain::gas_ceiling::GasKind::UptoSettle,
         to: UPTO_PERMIT2_PROXY_ADDRESS,
         calldata: Bytes::from(calldata),
         confirmations: 1,
@@ -606,4 +617,83 @@ async fn eth_call(
     })?;
 
     Ok(result)
+}
+
+#[cfg(test)]
+mod payee_tests {
+    use super::*;
+    use serde_json::json;
+
+    const SELLER: &str = "0xabcdef0123456789abcdef0123456789abcdef01";
+    const BUYER: &str = "0x1111111111111111111111111111111111111111";
+    const BASE_USDC: &str = "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913";
+
+    /// An upto request on Base that passes every off-chain check but the
+    /// payee: `seller` is `paymentRequirements.payTo`, `accepted` the buyer's
+    /// copy of it, `witness` the recipient the buyer signed.
+    fn request(seller: &str, accepted: &str, witness: &str) -> UptoRequest {
+        let terms = |pay_to: &str| {
+            json!({
+                "scheme": "upto", "network": "eip155:8453", "amount": "1000000",
+                "asset": BASE_USDC, "payTo": pay_to, "maxTimeoutSeconds": 60,
+            })
+        };
+        serde_json::from_value(json!({
+            "x402Version": 2,
+            "paymentPayload": {
+                "x402Version": 2,
+                "accepted": terms(accepted),
+                "payload": {
+                    "permit2Authorization": {
+                        "deadline": "1900000000",
+                        "from": BUYER,
+                        "nonce": "1",
+                        "permitted": {"token": BASE_USDC, "amount": "1000000"},
+                        "spender": format!("{:#x}", UPTO_PERMIT2_PROXY_ADDRESS),
+                        "witness": {"to": witness, "validAfter": "0"},
+                    },
+                    "signature": format!("0x{}", "11".repeat(65)),
+                },
+            },
+            "paymentRequirements": terms(seller),
+        }))
+        .unwrap()
+    }
+
+    /// The buyer signs itself as recipient and echoes itself as `accepted`:
+    /// the seller's payee is the one the witness is held to.
+    #[test]
+    fn the_witness_is_held_to_the_seller_payee() {
+        match validate_offchain(&request(SELLER, BUYER, BUYER)) {
+            Err(UptoError::RecipientMismatch { expected, actual }) => {
+                assert_eq!(expected, SELLER);
+                assert_eq!(actual, BUYER);
+            }
+            other => panic!("a payment to the buyer was not refused: {other:?}"),
+        }
+    }
+
+    /// A buyer's copy that names another payee is refused even when the
+    /// witness pays the seller, and the refusal names the field.
+    #[test]
+    fn the_buyer_copy_is_held_to_the_seller_payee() {
+        let refusal = validate_offchain(&request(SELLER, BUYER, SELLER))
+            .expect_err("a buyer's copy naming another payee was accepted")
+            .to_string();
+        assert!(
+            refusal.contains("accepted_payment_requirements_mismatch"),
+            "{refusal}"
+        );
+        assert!(
+            refusal.contains("paymentPayload.accepted.payTo"),
+            "{refusal}"
+        );
+    }
+
+    /// The same payee in another letter case is the same payee.
+    #[test]
+    fn the_seller_payee_in_any_letter_case_passes() {
+        let shouted = format!("0x{}", SELLER[2..].to_uppercase());
+        validate_offchain(&request(&shouted, SELLER, &shouted)).expect("one payee, two spellings");
+    }
 }

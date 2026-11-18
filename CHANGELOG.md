@@ -1,5 +1,56 @@
 # Changelog
 
+## [2.59.0] - 2026-11-18
+
+One release for 2.57.7 (Algorand, below), 2.57.8, 2.58.0 and 2.59.0.
+
+### EVM
+
+- Every EVM transaction the facilitator pays for is held to a gas ceiling for
+  its kind of call and network (`src/chain/gas_ceiling.rs`, published in
+  `GET /config` as `evmGasCeilings`, overridden by
+  `EVM_MAX_GAS_<CALL>_<NETWORK>`). An estimate above it is refused before a
+  nonce is reserved (`400 gas_over_limit`); a call that could not be
+  estimated is sent with the ceiling as its gas limit. The EIP-7702 relays
+  are covered. Ethereum `exact` settles are held to 250000.
+- A v2 body whose `paymentPayload.accepted` names another scheme, network,
+  asset, amount or payTo than `paymentRequirements` is refused with
+  `400 accepted_payment_requirements_mismatch` and the `field`. The
+  payment is checked against the seller's requirements. The `upto` witness
+  recipient and the `escrow` `paymentInfo.receiver` are held to the
+  seller's `payTo`.
+
+### Removed
+
+- The x402r `refund` extension (DepositRelay). Its contracts were removed
+  upstream in January 2026; refundable payments use the `escrow` scheme.
+  `/verify` and `/settle` with `paymentPayload.extensions.refund` answer
+  `400 refund_extension_retired` without touching the chain.
+  `ENABLE_ESCROW` is gone.
+
+### Solana
+
+- A smart-wallet payment (transfer found in the simulation's inner
+  instructions) settles only if the transaction that landed paid payTo the
+  price; otherwise `success: false`,
+  `settlement_landed_without_payment`.
+- `/verify` requires every signature but the fee payer's to be present and
+  valid.
+- Settlement account: the credit that counts is the one to the account the
+  `settleSecretKey` controls, the sweep moves the full price or nothing,
+  and the replay claim is taken after verification.
+
+### Configuration
+
+- `ENABLE_SETTLEMENT_ACCOUNT=false` in production: the Solana/Fogo
+  settlement-account path is off (held by
+  `tests/switched_off_paths.tftest.hcl`). With it off, a settlement-account
+  payment is refused.
+- ERC-8004: daily write limit of 100 on the networks with an EIP-7702 relay
+  (base, polygon, arbitrum, optimism, celo, bsc, monad, base-sepolia), and a
+  gas ceiling of 1000000 per write on every EVM ERC-8004 network without a
+  built-in one.
+
 ## [2.57.7] - 2026-11-17
 
 Algorand: the fee transaction the facilitator signs pays only the

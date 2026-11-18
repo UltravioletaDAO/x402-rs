@@ -1249,19 +1249,6 @@ resource "aws_ecs_task_definition" "facilitator" {
           name  = "FACILITATOR_URL"
           value = "https://facilitator.ultravioletadao.xyz"
         },
-        # ============================================================
-        # CRITICAL: Escrow Settlement - DO NOT DISABLE
-        # ============================================================
-        # This enables the escrow/settle endpoint for x402 payments.
-        # Without this, ALL payment settlements will fail with error:
-        # "Escrow settlement is disabled. Set ENABLE_ESCROW=true"
-        #
-        # WARNING: Never set this to "false" or remove this variable!
-        # ============================================================
-        {
-          name  = "ENABLE_ESCROW"
-          value = "true"
-        },
         # Solana/Fogo settlement-account payments (Crossmint custodial wallets,
         # src/chain/solana.rs): OFF. One real payment on this path in the 14
         # days to 2026-11-18. Standard exact payments on Solana and Fogo are
@@ -1385,6 +1372,14 @@ resource "aws_ecs_task_definition" "facilitator" {
         {
           name  = "ERC8004_RELAY_DEADLINE_SECS"
           value = "900"
+        },
+        # Ethereum mainnet gas is the dearest the facilitator pays: an exact
+        # settle there is held to 250000 gas instead of the built-in 500000
+        # (src/chain/gas_ceiling.rs). The most an Ethereum exact settle was
+        # measured to use is 104927 (2026-11-12).
+        {
+          name  = "EVM_MAX_GAS_EXACT_ETHEREUM"
+          value = "250000"
         },
         # PAUSED (owner's decision, 2026-09-28): 0 ERC-8004 writes per UTC
         # day on Ethereum mainnet; `0` refuses every write on the network

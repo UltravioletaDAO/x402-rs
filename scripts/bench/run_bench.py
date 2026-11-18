@@ -113,7 +113,6 @@ class Facilitator:
             "DISCOVERY_ENABLE_AGGREGATION": "false",
             "DISCOVERY_ENABLE_CRAWLER": "false",
             "DISCOVERY_ENABLE_HEALTH": "false",
-            "ENABLE_ESCROW": "true",
             "ENABLE_UPTO": "true",
             "X402_EVENTS_ENABLED": "true",
             "X402_EVENTS_DETAIL": "full",

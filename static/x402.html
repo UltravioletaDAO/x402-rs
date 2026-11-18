@@ -117,7 +117,7 @@
 </table>
 </div></section>
 <section class="content-section" id="escrow"><h2 data-i18n="h.escrow">Hold funds in escrow</h2>
-<p data-i18n="escrow.p1">Plain x402 is final on arrival: the buyer signs, the transfer lands, and there is no step in between where a refund could live. Escrow adds one. Funds are authorized into a contract and released, captured or refunded when a condition is met, so a payment can be undone by the terms both sides already agreed to rather than by trusting the seller afterwards.</p><p data-i18n="escrow.p2">It is the same <code>POST /settle</code> — there is no separate endpoint. The escrow path is taken when <code>paymentPayload.extensions.refund</code> is present; a plain settle never touches it. Where it can run is not a matter of configuration: the contracts have to be deployed on that chain, and <code>/supported</code> is what says where they are.</p><p class="muted" data-i18n="escrow.netsLabel">Where <code>escrow</code> is advertised right now, straight from <code>/supported</code>:</p><div id="escrow-nets"><span class="muted" data-i18n="loading">loading…</span></div><h3 data-i18n="rutas.escrow">The escrow routes</h3>
+<p data-i18n="escrow.p1">Plain x402 is final on arrival: the buyer signs, the transfer lands, and there is no step in between where a refund could live. Escrow adds one. Funds are authorized into a contract and released, captured or refunded when a condition is met, so a payment can be undone by the terms both sides already agreed to rather than by trusting the seller afterwards.</p><p data-i18n="escrow.p2">It is the same <code>POST /settle</code> — there is no separate endpoint. The escrow path is taken when the payment names the <code>escrow</code> scheme (or its alias <code>commerce</code>); a plain settle never touches it. Where it can run is not a matter of configuration: the contracts have to be deployed on that chain, and <code>/supported</code> is what says where they are.</p><p class="muted" data-i18n="escrow.netsLabel">Where <code>escrow</code> is advertised right now, straight from <code>/supported</code>:</p><div id="escrow-nets"><span class="muted" data-i18n="loading">loading…</span></div><h3 data-i18n="rutas.escrow">The escrow routes</h3>
 <div class="scroll">
 <table>
 <thead><tr><th data-i18n="rutas.th.method">Method</th><th data-i18n="rutas.th.route">Route</th><th data-i18n="rutas.th.what">What it answers</th><th data-i18n="rutas.th.money">Moves money</th></tr></thead>
@@ -125,8 +125,8 @@
 <tr>
 <td><code>POST</code></td>
 <td><code>/settle</code></td>
-<td data-i18n="endpoints.escrowSettle">Settle to escrow proxy when 'refund' extension is present</td>
-<td data-i18n="money.settle">yes, irreversibly</td>
+<td data-i18n="endpoints.escrowSettle">Answers 400 refund_extension_retired when the 'refund' extension is present</td>
+<td data-i18n="money.no">no</td>
 </tr>
 <tr>
 <td><code>POST</code></td>
@@ -136,7 +136,7 @@
 </tr>
 </tbody>
 </table>
-</div><p class="note" data-i18n="endpoints.escrowNote">Add {"refund": {"window": 86400}} to extensions for trustless refund support via DepositRelay proxies.</p><p class="note" data-i18n="endpoints.paymentOperatorNote">Advanced escrow with authorize/charge/release/refund flows. Funds held in TokenStore until capture.</p></section>
+</div><p class="note" data-i18n="endpoints.escrowNote">The x402r refund extension was retired in 2.59.0, with the DepositRelay contracts it paid into. For refundable payments use scheme="escrow" (PaymentOperator).</p><p class="note" data-i18n="endpoints.paymentOperatorNote">Advanced escrow with authorize/charge/release/refund flows. Funds held in TokenStore until capture.</p></section>
 <section class="content-section" id="upto"><h2 data-i18n="h.upto">Charge for actual usage</h2>
 <p data-i18n="upto.p1">A metered call cannot know its price before it runs. <code>exact</code> forces the seller to pick a number up front and be wrong in one direction or the other; <code>upto</code> lets the buyer authorize a <em>ceiling</em> and be charged what was actually consumed, in one signature, still gasless. It is built on Uniswap's Permit2, which is what makes a variable amount possible without a second round trip.</p><p data-i18n="upto.p2">The scheme is advertised only where the Permit2 proxy is genuinely deployed. That list is not a config file somebody edits optimistically — it is checked against the chain with <code>eth_getCode</code> on two independent RPCs before an entry is added, because advertising a scheme that cannot settle is worse than not offering it.</p><p class="muted" data-i18n="upto.netsLabel">Where <code>upto</code> is advertised right now, straight from <code>/supported</code>:</p><div id="upto-nets"><span class="muted" data-i18n="loading">loading…</span></div><h3 data-i18n="rutas.upto">The upto routes</h3>
 <div class="scroll">
@@ -231,8 +231,8 @@ const I18N = {
     "def.verify": "The free call. It answers whether an authorization <em>would</em> settle and submits nothing, so it is safe to repeat.",
     "def.x402": "The protocol. An HTTP endpoint answers <code>402 Payment Required</code> with the terms it accepts; the caller signs one of them off-chain and retries with the signature in a header.",
     "endpoints.accepts": "Negotiate and enrich payment requirements (Faremeter middleware)",
-    "endpoints.escrowNote": "Add {\"refund\": {\"window\": 86400}} to extensions for trustless refund support via DepositRelay proxies.",
-    "endpoints.escrowSettle": "Settle to escrow proxy when 'refund' extension is present",
+    "endpoints.escrowNote": "The x402r refund extension was retired in 2.59.0, with the DepositRelay contracts it paid into. For refundable payments use scheme=\"escrow\" (PaymentOperator).",
+    "endpoints.escrowSettle": "Answers 400 refund_extension_retired when the 'refund' extension is present",
     "endpoints.mcpGet": "The MCP guide for humans: transports, the tools, and the traps",
     "endpoints.mcpPost": "MCP server (Streamable HTTP, stateless): the same four calls as tools",
     "endpoints.paymentOperatorNote": "Advanced escrow with authorize/charge/release/refund flows. Funds held in TokenStore until capture.",
@@ -290,7 +290,7 @@ const I18N = {
     "two.warnText": "The transaction may already be on its way. Retry with the same <code>Idempotency-Key</code> header: the same key with the same payment returns the first result instead of settling twice, and the same key with a <em>different</em> payment is refused with 409. Generate a fresh unguessable value per payment — keys share one namespace across all callers, so a predictable one can be claimed by somebody else's settle first.",
     "h.escrow": "Hold funds in escrow",
     "escrow.p1": "Plain x402 is final on arrival: the buyer signs, the transfer lands, and there is no step in between where a refund could live. Escrow adds one. Funds are authorized into a contract and released, captured or refunded when a condition is met, so a payment can be undone by the terms both sides already agreed to rather than by trusting the seller afterwards.",
-    "escrow.p2": "It is the same <code>POST /settle</code> — there is no separate endpoint. The escrow path is taken when <code>paymentPayload.extensions.refund</code> is present; a plain settle never touches it. Where it can run is not a matter of configuration: the contracts have to be deployed on that chain, and <code>/supported</code> is what says where they are.",
+    "escrow.p2": "It is the same <code>POST /settle</code> — there is no separate endpoint. The escrow path is taken when the payment names the <code>escrow</code> scheme (or its alias <code>commerce</code>); a plain settle never touches it. Where it can run is not a matter of configuration: the contracts have to be deployed on that chain, and <code>/supported</code> is what says where they are.",
     "h.upto": "Charge for actual usage",
     "upto.p1": "A metered call cannot know its price before it runs. <code>exact</code> forces the seller to pick a number up front and be wrong in one direction or the other; <code>upto</code> lets the buyer authorize a <em>ceiling</em> and be charged what was actually consumed, in one signature, still gasless. It is built on Uniswap's Permit2, which is what makes a variable amount possible without a second round trip.",
     "upto.p2": "The scheme is advertised only where the Permit2 proxy is genuinely deployed. That list is not a config file somebody edits optimistically — it is checked against the chain with <code>eth_getCode</code> on two independent RPCs before an entry is added, because advertising a scheme that cannot settle is worse than not offering it.",
@@ -333,8 +333,8 @@ const I18N = {
     "def.verify": "La llamada gratis. Contesta si una autorización <em>liquidaría</em> y no envía nada, así que se puede repetir sin riesgo.",
     "def.x402": "El protocolo. Un endpoint HTTP contesta <code>402 Payment Required</code> con los términos que acepta; quien llama firma uno de ellos fuera de la cadena y reintenta con la firma en un header.",
     "endpoints.accepts": "Negociar y enriquecer requisitos de pago (middleware Faremeter)",
-    "endpoints.escrowNote": "Agrega {\"refund\": {\"window\": 86400}} a extensions para soporte de reembolsos sin confianza via proxies DepositRelay.",
-    "endpoints.escrowSettle": "Liquidar a proxy escrow cuando la extension 'refund' esta presente",
+    "endpoints.escrowNote": "La extensión refund de x402r se retiró en 2.59.0, junto con los contratos DepositRelay a los que pagaba. Para pagos reembolsables usa scheme=\"escrow\" (PaymentOperator).",
+    "endpoints.escrowSettle": "Responde 400 refund_extension_retired cuando está presente la extensión 'refund'",
     "endpoints.mcpGet": "La guía MCP para humanos: transportes, las herramientas y las trampas",
     "endpoints.mcpPost": "Servidor MCP (Streamable HTTP, sin estado): las mismas cuatro llamadas como herramientas",
     "endpoints.paymentOperatorNote": "Escrow avanzado con flujos authorize/charge/release/refund. Fondos retenidos en TokenStore hasta captura.",
@@ -392,7 +392,7 @@ const I18N = {
     "two.warnText": "La transacción puede estar ya en camino. Reintentá con el mismo header <code>Idempotency-Key</code>: la misma clave con el mismo pago devuelve el primer resultado en vez de liquidar dos veces, y la misma clave con un pago <em>distinto</em> se rechaza con 409. Generá un valor nuevo e impredecible por pago — las claves comparten un solo espacio de nombres entre todos los que llaman, así que una predecible se la puede quedar el settle de otro primero.",
     "h.escrow": "Mantén fondos en escrow",
     "escrow.p1": "El x402 pelado es definitivo apenas llega: el comprador firma, la transferencia entra y no hay ningún paso intermedio donde pueda vivir un reembolso. El escrow agrega uno. Los fondos se autorizan hacia un contrato y se liberan, capturan o reembolsan cuando se cumple una condición, así un pago se puede deshacer por los términos que las dos partes ya acordaron y no confiando en el vendedor después.",
-    "escrow.p2": "Es el mismo <code>POST /settle</code> — no hay un endpoint aparte. El camino de escrow se toma cuando está presente <code>paymentPayload.extensions.refund</code>; un settle común nunca lo toca. Dónde puede correr no es cuestión de configuración: los contratos tienen que estar desplegados en esa cadena, y <code>/supported</code> es lo que dice dónde están.",
+    "escrow.p2": "Es el mismo <code>POST /settle</code> — no hay un endpoint aparte. El camino de escrow se toma cuando el pago nombra el esquema <code>escrow</code> (o su alias <code>commerce</code>); un settle común nunca lo toca. Dónde puede correr no es cuestión de configuración: los contratos tienen que estar desplegados en esa cadena, y <code>/supported</code> es lo que dice dónde están.",
     "h.upto": "Cobra por el uso real",
     "upto.p1": "Una llamada medida no puede saber su precio antes de correr. <code>exact</code> obliga al vendedor a elegir un número por adelantado y a equivocarse para un lado o para el otro; <code>upto</code> deja que el comprador autorice un <em>techo</em> y que se le cobre lo que realmente consumió, en una sola firma y sin gas. Está construido sobre Permit2 de Uniswap, que es lo que hace posible un monto variable sin un segundo viaje de ida y vuelta.",
     "upto.p2": "El esquema se anuncia solo donde el proxy de Permit2 está realmente desplegado. Esa lista no es un archivo de configuración que alguien edita con optimismo — se chequea contra la cadena con <code>eth_getCode</code> en dos RPC independientes antes de agregar una entrada, porque anunciar un esquema que no puede liquidar es peor que no ofrecerlo.",

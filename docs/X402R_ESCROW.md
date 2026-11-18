@@ -1,5 +1,14 @@
 # x402r Escrow/Refund Extension
 
+> **Retired in 2.59.0.** The x402r `refund` extension (DepositRelay / DepositRelayFactory) is no
+> longer served. Its authors withdrew the DepositRelay contracts (x402r-contracts `2a5d5f1`,
+> January 2026), archived `@x402r/extensions` and moved refundable payments to PaymentOperator,
+> which this facilitator serves as the `escrow` scheme (alias `commerce`; `src/payment_operator/`,
+> `docs/ESCROW_SCHEME.md`). `POST /verify` and `POST /settle` now answer a payment that carries
+> `paymentPayload.extensions.refund` with `400` and `invalidReason` / `errorReason`
+> `refund_extension_retired`, before any chain read and without verifying or settling it as
+> `exact`. `ENABLE_ESCROW` and `src/escrow.rs` no longer exist. What follows describes the extension as it was, for history.
+
 This document describes the x402r escrow extension implementation in the x402-rs facilitator, enabling trustless refunds for x402 payments.
 
 ## Overview

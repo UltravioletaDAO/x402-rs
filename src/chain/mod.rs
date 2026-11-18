@@ -26,6 +26,7 @@ pub mod hedera;
 #[cfg(feature = "hedera")]
 use hedera::HederaProvider;
 pub mod failure;
+pub mod gas_ceiling;
 pub mod near;
 pub mod solana;
 pub mod stellar;
@@ -341,6 +342,15 @@ pub enum FacilitatorLocalError {
     /// perfectly good payload that the payload was wrong.
     #[error("writer lease not held: {0}")]
     WriterLeaseUnavailable(String),
+    /// The transaction's gas estimate is above the ceiling for its kind of
+    /// call on its network (`chain::gas_ceiling`). Refused before a nonce was
+    /// reserved: nothing was sent.
+    #[error("gas_over_limit: estimated {estimated} gas on {network}, above the ceiling of {ceiling} for this call; not sent")]
+    GasOverLimit {
+        network: Network,
+        estimated: u64,
+        ceiling: u64,
+    },
     /// The asset is not on this network's allow-list (`src/network.rs`).
     ///
     /// A verdict on the request, not a failure of the facilitator. Reported as

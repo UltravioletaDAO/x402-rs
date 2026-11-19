@@ -231,7 +231,7 @@ curl http://localhost:8080/
 | `/version` | GET | Current version |
 | `/supported` | GET | List all networks |
 | `/verify` | POST | Verify payment authorization |
-| `/settle` | POST | Submit payment on-chain (supports escrow with `refund` extension) |
+| `/settle` | POST | Submit payment on-chain (also the `escrow` / `commerce` schemes) |
 | `/blacklist` | GET | OFAC sanctioned addresses |
 | `/feedback` | GET/POST | ERC-8004 reputation (query/submit) |
 | `/identity/:network/:agentId` | GET | Agent identity lookup |
@@ -558,11 +558,12 @@ curl -X POST https://facilitator.ultravioletadao.xyz/feedback \
 
 ## x402r Escrow Extension (Trustless Refunds)
 
-The facilitator supports the [x402r extension](https://github.com/coinbase/x402/issues/864) for trustless refunds via escrow contracts.
+The facilitator supports x402r escrow for trustless refunds: the funds of a payment are held by an escrow contract
+until they are released to the merchant or refunded to the buyer.
 
-It runs three escrow rails, each with its own table below: the `escrow` scheme on EVM networks, through a declared
-PaymentOperator; the older `refund` extension on Base and Base Sepolia, through a DepositRelay proxy (the escrow flow
-drawn below); and the `escrow` scheme on NEAR, into the Arras contracts.
+It runs two escrow rails, each with its own table below: the `escrow` scheme on EVM networks, through a declared
+PaymentOperator, and the `escrow` scheme on NEAR, into the Arras contracts. The older `refund` extension (DepositRelay)
+was retired in 2.59.0 (see below).
 
 ### Architecture Overview
 
@@ -575,24 +576,10 @@ drawn below); and the `escrow` scheme on NEAR, into the Arras contracts.
        │                 │
        │  EIP-3009       │  transferWithAuthorization()
        │  signature      │
-
-                           ESCROW PAYMENT FLOW (x402r)
-  ┌──────────┐    ┌───────────────┐    ┌──────────────┐    ┌──────────┐
-  │  Buyer   │───>│  Facilitator  │───>│ DepositRelay │───>│  Escrow  │
-  │ (signs)  │    │  (pays gas)   │    │   (proxy)    │    │ (holds)  │
-  └──────────┘    └───────────────┘    └──────────────┘    └──────────┘
-       │                 │                    │                  │
-       │  EIP-3009       │  executeDeposit()  │  deposit()       │
-       │  to PROXY       │                    │                  │
-       │                 │                    │                  ▼
-       │                 │                    │            ┌──────────┐
-       │                 │                    │            │ Merchant │
-       │                 │                    └───────────>│(after    │
-       │                 │                      release()  │ window)  │
-       │                 │                                 └──────────┘
-       │                 │
-       └─────────────────┴───── Buyer can request refund within window
 ```
+
+On the `escrow` scheme the transfer above becomes an `authorize` into the network's `AuthCaptureEscrow`, through a
+PaymentOperator; the funds are released or refunded later through the same operator.
 
 ### Supported Networks
 
@@ -626,14 +613,11 @@ Robinhood Chain Testnet carries the canonical set but no declared operator, so i
 entries name the contract set a merchant deploys its own operator against; `POST /settle` relays only to declared
 operators (see [Escrow PaymentOperators](#escrow-paymentoperators)).
 
-**`refund` extension (DepositRelay).** The flow drawn above: a payment that carries `extensions.refund` is settled to the
-merchant's DepositRelay proxy, which deposits it into the escrow. Code in [`src/escrow.rs`](src/escrow.rs), on while
-`ENABLE_ESCROW` is true, on Base and Base Sepolia only:
-
-| Network | Chain ID | Factory | Escrow | Status |
-|---------|----------|---------|--------|--------|
-| Base | 8453 | `0x41Cc...A814` | `0xC409...f6bC` | Production |
-| Base Sepolia | 84532 | `0xf981...BaC2` | `0xF7F2...e058` | Testnet |
+**`refund` extension (DepositRelay): retired in 2.59.0.** A payment that carried `extensions.refund` was settled to
+the merchant's DepositRelay proxy, which deposited it into an escrow, on Base and Base Sepolia. Its authors withdrew
+the DepositRelay contracts and moved refundable payments to PaymentOperator, the `escrow` scheme above. `/verify` and
+`/settle` now answer such a payment `400` with `invalidReason` / `errorReason` `refund_extension_retired`, before
+any chain read and without verifying or settling it as `exact`. `ENABLE_ESCROW` no longer exists.
 
 ### NEAR escrow (Arras)
 

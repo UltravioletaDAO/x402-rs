@@ -141,6 +141,13 @@ which `/supported` put on `celo-sepolia` by mistake through 2.39.0;
 `hyperevm-testnet` (chain 998), is not in the list: 333 belongs to another
 chain, so it is refused as unknown.
 
+`refund_extension_retired` (`400` on `/verify` and `/settle`, in `invalidReason` or
+`errorReason`, with a `message` and a `hint`) means the payment carried the x402r
+`refund` extension (`paymentPayload.extensions.refund`, a DepositRelay proxy as
+`payTo`), retired in 2.59.0. Nothing was read from or sent to a chain, and the
+payment is not verified or settled as `exact` either. Refundable payments use the
+`escrow` scheme (PaymentOperator), listed in `/supported`.
+
 ## Rate limits
 
 Limits are per client IP and are reported on every rate-limited response, not
@@ -790,11 +797,11 @@ lost), the answer is `502` with `reason: forward_unconfirmed`,
 `retryable: false` and no `Retry-After`: it may have been executed, so do not
 ask for a new signature.
 
-`upto`, `escrow` and the `refund` extension answer a transaction that may have
-left the same way: `502` with `success: false`, `retryable: false`, `error`
+`upto` and `escrow` answer a transaction that may have left the same way:
+`502` with `success: false`, `retryable: false`, `error`
 (`settlement_unconfirmed` with `transaction` and `paymentId`, or
-`broadcast_uncertain`) and `errorReason`. Until 2.39.6 `upto` and `refund`
-answered `400` with the error text, and the escrow scheme answered without the
+`broadcast_uncertain`) and `errorReason`. Until 2.39.6 `upto` answered `400`
+with the error text, and the escrow scheme answered without the
 hash. `fhe-transfer` settles on the FHE facilitator's side: its `502` carries
 `retryable: false` unless the request provably never reached it or it answered
 with a `4xx`.
@@ -3505,7 +3512,9 @@ them too (`ipAllowlist`: how many entries are in force and how its last read wen
 `unreadable`, `missing`, `failing`, `stale` or `never` -- as it stands at this request; never an \
 address), admission (the per-address \
 ceiling behind `429 too_many_concurrent_requests`, the body deadline behind `408 request_timeout`, \
-the task's ceiling behind `503 overloaded`), and the ERC-8004 daily write limit per network.
+the task's ceiling behind `503 overloaded`), the ERC-8004 daily write limit per network, and the \
+gas ceiling of every EVM transaction the facilitator pays for, per network and per call \
+(`evmGasCeilings`: an estimate above it is refused before anything is sent, `400 gas_over_limit`).
 
 **What skips what.** A request carrying a recognized `X-UVD-Stack-Key` is not charged to its \
 address by any budget nor by the per-address ceiling, and is answered with \
@@ -3565,9 +3574,22 @@ Rate limited per IP like the other cheap reads.",
                     "perNetwork": { "ethereum": 100, "solana": 150 },
                     "maxGasPerWrite": {
                         "perNetwork": { "robinhood": 1000000, "robinhood-testnet": 1000000 },
-                        "otherNetworks": "no ceiling", "env": "ERC8004_MAX_GAS_<NETWORK>",
+                        "otherNetworks": "no ERC-8004 ceiling; each write is still held to its call's ceiling in evmGasCeilings",
+                        "env": "ERC8004_MAX_GAS_<NETWORK>",
                         "refusal": { "status": 400, "errorCode": "erc8004_gas_over_limit" }
                     }
+                },
+                "evmGasCeilings": {
+                    "perNetwork": {
+                        "base": {
+                            "exact": 500000, "exact-deploy": 1000000, "upto": 500000,
+                            "operator": 800000, "erc8004-relay": 1000000,
+                            "erc8004-register": 1000000, "erc8004-transfer": 300000, "erc8004-write": 1000000
+                        }
+                    },
+                    "env": "EVM_MAX_GAS_<CALL>_<NETWORK>",
+                    "refusal": { "status": 400, "error": "gas_over_limit", "erc8004ErrorCode": "erc8004_gas_over_limit" },
+                    "withoutAnEstimate": "sent with the ceiling as its gas limit"
                 }
             })
         ),

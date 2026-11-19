@@ -75,7 +75,6 @@ mod discovery_terms;
 mod discovery_usage;
 mod dx402;
 mod erc8004;
-mod escrow;
 mod events;
 mod facilitator;
 mod facilitator_local;

@@ -1428,7 +1428,9 @@ fn unreadable_body(error: &axum::Error) -> axum::response::Response {
 /// default, its override variables and the value in force; the stack identities
 /// by name; the in-flight ceiling; and the ERC-8004 daily write cap when the
 /// writes are mounted, with the gas ceilings per write the process holds them
-/// to (`erc8004::max_gas::global`). Never a key or a digest.
+/// to (`erc8004::max_gas::global`); and the gas ceiling of every EVM
+/// transaction per network and call (`chain::gas_ceiling::global`). Never a
+/// key or a digest.
 pub fn document(
     policy: &RatePolicy,
     admission: &Admission,
@@ -1439,6 +1441,7 @@ pub fn document(
         admission,
         daily_cap,
         crate::erc8004::max_gas::global(),
+        crate::chain::gas_ceiling::global(),
         |var| std::env::var(var).ok(),
     )
 }
@@ -1446,12 +1449,13 @@ pub fn document(
 /// [`document`], reading each budget's overrides through `lookup` -- the same
 /// lookup [`Budget::limit_from`] takes, so a test can put an override in force
 /// and see `/config` publish it -- and publishing the gas ceilings of
-/// `max_gas`.
+/// `max_gas` and of `gas_ceilings`.
 pub fn document_from(
     policy: &RatePolicy,
     admission: &Admission,
     daily_cap: Option<&crate::erc8004::daily_cap::DailyWriteCap>,
     max_gas: &crate::erc8004::max_gas::GasCeilings,
+    gas_ceilings: &crate::chain::gas_ceiling::GasCeilings,
     lookup: impl Fn(&str) -> Option<String>,
 ) -> Value {
     let budgets: Vec<Value> = BUDGETS
@@ -1519,6 +1523,7 @@ pub fn document_from(
             "bodyDeadlineAppliesTo": "every caller, stack identities included: the whole body, not the gap between two bytes",
         },
         "erc8004DailyWriteCap": daily,
+        "evmGasCeilings": gas_ceilings_document(gas_ceilings),
     })
 }
 
@@ -1532,10 +1537,39 @@ fn max_gas_document(max_gas: &crate::erc8004::max_gas::GasCeilings) -> Value {
             .into_iter()
             .map(|(network, gas)| (network.to_string(), json!(gas)))
             .collect::<serde_json::Map<String, Value>>(),
-        "otherNetworks": "no ceiling",
+        "otherNetworks": "no ERC-8004 ceiling; each write is still held to its call's ceiling in evmGasCeilings",
         "env": format!("{ENV_MAX_GAS_PREFIX}<NETWORK>"),
         "refusal": { "status": 400, "errorCode": GAS_OVER_LIMIT_CODE },
         "withoutAnEstimate": "sent with the ceiling as its gas limit",
+    })
+}
+
+/// What `GET /config` says about the gas ceiling of every EVM transaction the
+/// facilitator pays for (`chain::gas_ceiling`): the ceiling in force per
+/// network and per call.
+fn gas_ceilings_document(gas_ceilings: &crate::chain::gas_ceiling::GasCeilings) -> Value {
+    use crate::chain::gas_ceiling::{ENV_PREFIX, GAS_OVER_LIMIT_CODE};
+    json!({
+        "perNetwork": gas_ceilings
+            .configured()
+            .into_iter()
+            .map(|(network, kinds)| {
+                let kinds: serde_json::Map<String, Value> = kinds
+                    .into_iter()
+                    .map(|(kind, gas)| (kind.as_str().to_string(), json!(gas)))
+                    .collect();
+                (network.to_string(), Value::Object(kinds))
+            })
+            .collect::<serde_json::Map<String, Value>>(),
+        "env": format!("{ENV_PREFIX}<CALL>_<NETWORK>"),
+        "refusal": {
+            "status": 400,
+            "error": GAS_OVER_LIMIT_CODE,
+            "erc8004ErrorCode": crate::erc8004::max_gas::GAS_OVER_LIMIT_CODE,
+        },
+        "gasLimit": "the estimate (plus a quarter on payment and relay sends), never above the ceiling",
+        "withoutAnEstimate": "sent with the ceiling as its gas limit",
+        "erc8004": "a write the facilitator signs as itself is held to the lower of this and erc8004DailyWriteCap.maxGasPerWrite",
     })
 }
 
@@ -3135,7 +3169,15 @@ mod tests {
         let cap =
             crate::erc8004::daily_cap::DailyWriteCap::new(1000, HashMap::new(), Box::new(|| 0));
         let max_gas = crate::erc8004::max_gas::GasCeilings::from_lookup(lookup);
-        let doc = document_from(&policy, &admission, Some(&cap), &max_gas, lookup);
+        let gas_ceilings = crate::chain::gas_ceiling::GasCeilings::from_lookup(lookup);
+        let doc = document_from(
+            &policy,
+            &admission,
+            Some(&cap),
+            &max_gas,
+            &gas_ceilings,
+            lookup,
+        );
         let ceilings = &doc["erc8004DailyWriteCap"]["maxGasPerWrite"];
         assert_eq!(ceilings["perNetwork"]["robinhood"], 250_000, "{ceilings}");
         assert_eq!(
@@ -3157,6 +3199,69 @@ mod tests {
         assert_eq!(published, &Value::Object(in_force));
     }
 
+    /// `/config` publishes the gas ceiling in force for every call on every
+    /// EVM network, overrides included, and what the instance the send path
+    /// reads holds.
+    #[test]
+    fn the_config_document_publishes_the_evm_gas_ceilings_in_force() {
+        use crate::chain::gas_ceiling::{GasCeilings, GasKind};
+        let vars: HashMap<&str, &str> = HashMap::from([("EVM_MAX_GAS_EXACT_BASE", "250000")]);
+        let lookup = |var: &str| vars.get(var).map(|v| v.to_string());
+        let policy = stack_policy();
+        let admission = Admission::new(&policy, 512, 32, Duration::from_millis(5_000));
+        let gas_ceilings = GasCeilings::from_lookup(lookup);
+        let doc = document_from(
+            &policy,
+            &admission,
+            None,
+            &crate::erc8004::max_gas::GasCeilings::from_lookup(lookup),
+            &gas_ceilings,
+            lookup,
+        );
+        let ceilings = &doc["evmGasCeilings"];
+        assert_eq!(
+            ceilings["perNetwork"]["base"]["exact"], 250_000,
+            "{ceilings}"
+        );
+        assert_eq!(
+            ceilings["perNetwork"]["base"]["upto"], 500_000,
+            "{ceilings}"
+        );
+        assert_eq!(
+            ceilings["perNetwork"]["monad"]["exact"], 1_000_000,
+            "{ceilings}"
+        );
+        assert_eq!(
+            ceilings["perNetwork"]["base-sepolia"]["erc8004-relay"], 1_000_000,
+            "{ceilings}"
+        );
+        assert!(ceilings["perNetwork"]["solana"].is_null(), "{ceilings}");
+        assert_eq!(ceilings["env"], "EVM_MAX_GAS_<CALL>_<NETWORK>");
+        assert_eq!(ceilings["refusal"]["status"], 400);
+        assert_eq!(ceilings["refusal"]["error"], "gas_over_limit");
+        for (network, kinds) in gas_ceilings.configured() {
+            for (kind, gas) in kinds {
+                assert_eq!(
+                    ceilings["perNetwork"][network.to_string()][kind.as_str()],
+                    gas,
+                    "{network} {}",
+                    kind.as_str()
+                );
+            }
+        }
+
+        let served = config_document(&policy);
+        let base = &served["evmGasCeilings"]["perNetwork"]["base"];
+        for kind in GasKind::ALL {
+            assert_eq!(
+                base[kind.as_str()],
+                crate::chain::gas_ceiling::ceiling(crate::network::Network::Base, kind),
+                "{}",
+                kind.as_str()
+            );
+        }
+    }
+
     /// `/config` publishes the override in force, not the default: the same
     /// numbers `Budget::limit_from` gives the bucket, and so the same
     /// `RateLimit-Policy` and the same manifest entry.
@@ -3171,6 +3276,7 @@ mod tests {
             &admission,
             None,
             &crate::erc8004::max_gas::GasCeilings::from_lookup(lookup),
+            &crate::chain::gas_ceiling::GasCeilings::from_lookup(lookup),
             lookup,
         );
         let budgets = doc["rateLimits"]["budgets"].as_array().unwrap();

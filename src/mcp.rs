@@ -55,7 +55,8 @@ use once_cell::sync::Lazy;
 use rmcp::model::{
     CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock, ErrorCode,
     Implementation, InitializeResult, JsonObject, ListToolsResult, MetaObject,
-    PaginatedRequestParams, ProtocolVersion, ServerCapabilities, ServerInfo, Tool, ToolAnnotations,
+    PaginatedRequestParams, ProtocolVersion, ServerCapabilities, ServerConfig, Tool,
+    ToolAnnotations,
 };
 use rmcp::service::RequestContext;
 use rmcp::transport::streamable_http_server::session::never::NeverSessionManager;
@@ -1470,7 +1471,7 @@ impl FacilitatorMcp {
 }
 
 impl ServerHandler for FacilitatorMcp {
-    fn get_info(&self) -> ServerInfo {
+    fn get_info(&self) -> ServerConfig {
         let mut info = InitializeResult::new(ServerCapabilities::builder().enable_tools().build());
         info.protocol_version = ProtocolVersion::LATEST;
         // NOT `Implementation::from_build_env()`: that reads CARGO_PKG_VERSION,

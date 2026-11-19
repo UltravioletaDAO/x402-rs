@@ -37,7 +37,13 @@ case "$1" in
     : > "$out"
     if [ "$out" = "full.tfplan" ]; then
       echo "Error: fake full plan output"
+      [ -n "${FAKE_PLAN_TEXT:-}" ] && echo "$FAKE_PLAN_TEXT"
       exit "${FAKE_FULL_PLAN_EXIT:-0}"
+    fi
+    if [ -n "${FAKE_TARGETED_PLAN_EXIT:-}" ]; then
+      echo "Error: fake targeted plan output"
+      [ -n "${FAKE_PLAN_TEXT:-}" ] && echo "$FAKE_PLAN_TEXT"
+      exit "$FAKE_TARGETED_PLAN_EXIT"
     fi
     exit 0 ;;
 esac
@@ -118,12 +124,12 @@ class StepHarness(unittest.TestCase):
         self.summary = self.tmp / "summary.md"
         self.summary.write_text("", encoding="utf-8")
 
-    def run_step(self, name: str, full=(), targeted=(), extra_env=None):
+    def run_step(self, name: str, full=(), targeted=(), extra_env=None, full_log="Plan: fixture full plan log\n"):
         (self.work / "full.plan.json").write_text(json.dumps({"resource_changes": list(full)}), encoding="utf-8")
         (self.work / "targeted.plan.json").write_text(json.dumps({"resource_changes": list(targeted)}), encoding="utf-8")
         (self.work / "full.tfplan").write_text("", encoding="utf-8")
         (self.work / "targeted.tfplan").write_text("", encoding="utf-8")
-        (self.work / "full.log").write_text("Plan: fixture full plan log\n", encoding="utf-8")
+        (self.work / "full.log").write_text(full_log, encoding="utf-8")
         script = self.tmp / "step.sh"
         script.write_text(step_script(name), encoding="utf-8")
         env = dict(os.environ)
@@ -216,6 +222,44 @@ class ReportStep(StepHarness):
         self.assertIn("No unapplied infrastructure.", proc.stdout)
         self.assertNotIn("::error", proc.stdout)
         self.assertIn("**Clean.**", summary)
+
+
+class NoAccountIdIsPublished(StepHarness):
+    """The run's log and summary are public. A plan prints ARNs, and the account id inside them is never
+    published (no-account-id.yml): both steps mask every 12-digit number of the plan output they print."""
+
+    # Assembled, so no line of this file is an account-bearing ARN.
+    ACCOUNT = "4444" + "55556666"
+    ARN_LINE = "  ~ role_arn = \"arn:aws:iam::" + ACCOUNT + ":role/facilitator-production-ecs-task\""
+
+    def test_the_summary_masks_the_plan_it_embeds(self):
+        proc, summary = self.run_step(REPORT_STEP, full=[updated("aws_vpc_endpoint.s3")],
+                                      full_log="Plan: 1 to change\n" + self.ARN_LINE + "\n" + self.ACCOUNT + "\n")
+        self.assertEqual(proc.returncode, 1, proc.stdout + proc.stderr)
+        self.assertIn("<summary>Full plan output</summary>", summary)
+        self.assertNotIn(self.ACCOUNT, summary + proc.stdout)
+        self.assertIn("arn:aws:iam::<account>:role/facilitator-production-ecs-task", summary)
+
+    def test_longer_and_shorter_numbers_are_left_alone(self):
+        # A 13-digit millisecond timestamp, a 10-digit second one: not account ids.
+        proc, summary = self.run_step(REPORT_STEP, full=[updated("aws_vpc_endpoint.s3")],
+                                      full_log="1731700000000 1731700000 " + self.ACCOUNT + "\n")
+        self.assertEqual(proc.returncode, 1, proc.stdout + proc.stderr)
+        self.assertIn("1731700000000 1731700000 <account>", summary)
+
+    def test_a_broken_full_plan_prints_its_log_masked(self):
+        proc, _ = self.run_step(PLAN_STEP, extra_env={"FAKE_FULL_PLAN_EXIT": "1", "FAKE_PLAN_TEXT": self.ARN_LINE})
+        self.assertEqual(proc.returncode, 1, proc.stdout + proc.stderr)
+        self.assertIn("Error: fake full plan output", proc.stdout)
+        self.assertNotIn(self.ACCOUNT, proc.stdout + proc.stderr)
+        self.assertIn("arn:aws:iam::<account>:role/", proc.stdout)
+
+    def test_a_broken_targeted_plan_prints_its_log_masked(self):
+        proc, _ = self.run_step(PLAN_STEP, extra_env={"FAKE_TARGETED_PLAN_EXIT": "1", "FAKE_PLAN_TEXT": self.ARN_LINE})
+        self.assertEqual(proc.returncode, 1, proc.stdout + proc.stderr)
+        self.assertIn("Error: fake targeted plan output", proc.stdout)
+        self.assertNotIn(self.ACCOUNT, proc.stdout + proc.stderr)
+        self.assertIn("arn:aws:iam::<account>:role/", proc.stdout)
 
 
 class PlanStep(StepHarness):

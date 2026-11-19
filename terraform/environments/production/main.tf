@@ -785,8 +785,26 @@ resource "aws_iam_role_policy" "secrets_access" {
 }
 
 # ECS Task Role (for application to access AWS services)
+#
+# The image deploy reaches this role by its name and ARN, never through a reference to
+# the resource: the task definition and two of the role's inline policies are in its
+# target list, and a reference would bring the role -- and its permissions boundary
+# below -- into every deploy as a dependency, which CI may not change (it cannot set a
+# boundary or create a policy). Composed, the role stays out of the deploy's reach and
+# a change to it is applied by hand. The value is the same string the reference gave:
+# the role has the default path "/".
+locals {
+  ecs_task_role_name = "facilitator-${var.environment}-ecs-task"
+  ecs_task_role_arn  = "arn:aws:iam::${data.aws_caller_identity.current.account_id}:role/${local.ecs_task_role_name}"
+}
+
 resource "aws_iam_role" "ecs_task" {
-  name = "facilitator-${var.environment}-ecs-task"
+  name = local.ecs_task_role_name
+
+  # The most any policy on this role can grant (aws_iam_policy.ecs_task_boundary). CI may
+  # write the role's inline policies (cicd-iam-policy.tf), and without a boundary an
+  # inline policy CI wrote could grant the running task anything in the account.
+  permissions_boundary = aws_iam_policy.ecs_task_boundary.arn
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
@@ -804,6 +822,95 @@ resource "aws_iam_role" "ecs_task" {
   tags = {
     Name = "facilitator-${var.environment}-ecs-task"
   }
+}
+
+# The task role's permissions boundary: the facilitator's own tables, buckets and IP
+# allowlist secret, with the data-plane calls on them, and nothing else -- no IAM, no
+# other project's resource, no secret of the wallets (those reach the container through
+# the execution role, not this one). The role's inline policies grant less than this; a
+# policy that grants more is cut to it. tests/ecs_task_boundary.tftest.hcl fails when an
+# inline policy of the role asks for an action or a resource this does not cover, and
+# tests/scripts/test_ci_task_role_boundary.py when a new inline policy is not checked.
+#
+# Wider than the inline policies on purpose: a boundary that mirrored them exactly would
+# turn every call a policy forgot, or that the live policy grants and the file does not,
+# into an AccessDenied in production. kms:Decrypt and GenerateDataKey through these three
+# services only, so the boundary never blocks a read of a store encrypted under a KMS key.
+locals {
+  ecs_task_table_arns = [
+    aws_dynamodb_table.nonce_store.arn,
+    aws_dynamodb_table.transactions.arn,
+    aws_dynamodb_table.idempotency_store.arn,
+    aws_dynamodb_table.hedera_settlements.arn,
+    aws_dynamodb_table.dx402_evidence.arn,
+  ]
+  ecs_task_bucket_arns = [
+    "arn:aws:s3:::facilitator-discovery-prod",
+    aws_s3_bucket.dx402_evidence.arn,
+  ]
+}
+
+resource "aws_iam_policy" "ecs_task_boundary" {
+  name        = "facilitator-${var.environment}-ecs-task-boundary"
+  description = "Permissions boundary of the facilitator task role: its own tables, buckets and IP allowlist secret."
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid    = "FacilitatorTables"
+        Effect = "Allow"
+        Action = [
+          "dynamodb:GetItem",
+          "dynamodb:PutItem",
+          "dynamodb:UpdateItem",
+          "dynamodb:DeleteItem",
+          "dynamodb:ConditionCheckItem",
+          "dynamodb:BatchGetItem",
+          "dynamodb:BatchWriteItem",
+          "dynamodb:Query",
+          "dynamodb:Scan",
+          "dynamodb:DescribeTable",
+        ]
+        Resource = flatten([for arn in local.ecs_task_table_arns : [arn, "${arn}/index/*"]])
+      },
+      {
+        Sid      = "FacilitatorObjects"
+        Effect   = "Allow"
+        Action   = ["s3:GetObject", "s3:PutObject", "s3:DeleteObject", "s3:PutObjectTagging"]
+        Resource = [for arn in local.ecs_task_bucket_arns : "${arn}/*"]
+      },
+      {
+        # s3:HeadBucket is not an IAM action (HeadBucket is authorized as ListBucket); it is
+        # here because S3DiscoveryStoreAccess names it.
+        Sid      = "FacilitatorBuckets"
+        Effect   = "Allow"
+        Action   = ["s3:ListBucket", "s3:HeadBucket"]
+        Resource = local.ecs_task_bucket_arns
+      },
+      {
+        Sid      = "IpAllowlistSecret"
+        Effect   = "Allow"
+        Action   = ["secretsmanager:GetSecretValue"]
+        Resource = "arn:aws:secretsmanager:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:secret:${var.ip_allowlist_secret_name}-??????"
+      },
+      {
+        Sid      = "KeysOfThoseStores"
+        Effect   = "Allow"
+        Action   = ["kms:Decrypt", "kms:GenerateDataKey"]
+        Resource = "*"
+        Condition = {
+          StringEquals = {
+            "kms:ViaService" = [
+              "dynamodb.${var.aws_region}.amazonaws.com",
+              "s3.${var.aws_region}.amazonaws.com",
+              "secretsmanager.${var.aws_region}.amazonaws.com",
+            ]
+          }
+        }
+      },
+    ]
+  })
 }
 
 # DynamoDB table for nonce/replay protection (Stellar, Algorand)
@@ -1009,7 +1116,8 @@ resource "aws_iam_role_policy" "s3_discovery_access" {
 # without any address, and exempts nobody: it fails closed.
 resource "aws_iam_role_policy" "ip_allowlist_read" {
   name = "IpAllowlistRead"
-  role = aws_iam_role.ecs_task.id
+  # By name: this policy is in the image deploy's target list (local.ecs_task_role_arn).
+  role = local.ecs_task_role_name
 
   policy = jsonencode({
     Version = "2012-10-17"
@@ -1062,7 +1170,8 @@ resource "aws_ecs_task_definition" "facilitator" {
   cpu                      = var.task_cpu
   memory                   = var.task_memory
   execution_role_arn       = aws_iam_role.ecs_task_execution.arn
-  task_role_arn            = aws_iam_role.ecs_task.arn
+  # Composed, not aws_iam_role.ecs_task.arn: see local.ecs_task_role_arn.
+  task_role_arn = local.ecs_task_role_arn
 
   container_definitions = jsonencode(concat([
     {

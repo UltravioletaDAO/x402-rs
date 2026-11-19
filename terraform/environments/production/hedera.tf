@@ -56,7 +56,8 @@ resource "aws_dynamodb_table" "hedera_settlements" {
 
 resource "aws_iam_role_policy" "hedera_settlement_access" {
   name = "HederaSettlementAccess"
-  role = aws_iam_role.ecs_task.id
+  # By name: this policy is in the image deploy's target list (local.ecs_task_role_arn in main.tf).
+  role = local.ecs_task_role_name
   policy = jsonencode({
     Version = "2012-10-17"
     Statement = [{

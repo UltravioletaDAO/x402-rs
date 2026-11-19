@@ -600,6 +600,10 @@ self-feedback.
 | `200` + `isValid: false` | the payment does not check out | fix the payload; do not retry as-is |
 | `200` + `success: false` + `errorReason` | settlement was attempted and refused | read `errorReason`; most are terminal |
 | `400` | your request body was malformed | fix the request, not the payment |
+| `400` + `"code": "accepted_payment_requirements_mismatch"` | a v2 body's `paymentPayload.accepted` names other terms than its `paymentRequirements` (`field` says which); the payment is checked against `paymentRequirements` | send the seller's terms in both places |
+| `400` + `"error": "gas_over_limit"` | the transaction would cost more gas than the facilitator pays for its kind of call on that network (`GET /config`, `evmGasCeilings`); nothing was sent | do not retry as-is |
+| `400` + `refund_extension_retired` | the payment carried the retired x402r `refund` extension; nothing was read or sent | use the `escrow` scheme listed in `/supported` |
+| `200` + `success: false` + `"errorReason": "settlement_landed_without_payment"` | Solana/Fogo smart wallet: the transaction confirmed but did not credit `payTo` the price | the payment did not happen: do not deliver |
 | `404` on an admin route | the operator configured no token; the route is closed | treat as absent |
 | `404` from `/identity/.../owner/...` | that address owns no agent | a real negative answer |
 | `503` + `"retryable": true` | the lookup reached **no verdict** | retry; never persist this as "not registered" |

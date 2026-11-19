@@ -164,7 +164,9 @@ jobs:
   test:
     name: Build & test
     runs-on: ubuntu-latest
-    timeout-minutes: 35
+    # 35 cut a healthy release run on 2026-11-19 mid-way through the crate tests (a slow
+    # runner; the push run of the same commit passed). 50 leaves room for that runner.
+    timeout-minutes: 50
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - name: Install build dependencies

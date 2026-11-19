@@ -14,12 +14,210 @@ holding the union of what its four jobs read. `docs/handoffs/2026-09-11-ci-paths
 job-by-job table and `python3 scripts/ci_paths_selftest.py` asserts the list is neither too
 wide nor too narrow. `workflow_dispatch` has no `paths` and deploys whatever `main` holds.
 
-It authenticates to AWS with **IAM access-key secrets**. Until those secrets exist the deploy job
-is **skipped** (the run still goes green on the `test` job), so merging the workflow itself is safe.
+It authenticates to AWS with **GitHub OIDC** (since X402-SEG-CI, 2026-11-18): no key is stored. The
+drift gate (`plan`) assumes **`facilitator-github-plan`**, read-only, trusted for pull requests and
+`main`; the release (`deploy`) assumes **`facilitator-github-deploy`**, trusted for the **`production`
+environment** alone. Both are declared in `terraform/environments/production/cicd-oidc.tf` and applied
+by hand. The only repo secret is `AWS_ACCOUNT_ID` (to name the roles; a secret so GitHub masks it in
+the public logs). Until it exists **every run but a fork's pull request fails in `preflight`** (the
+drift gate and the deploy would otherwise be skipped and the run would go green with nothing checked
+or shipped): see "Until steps 1-3 are done, this CI is red on purpose" below. Every action is pinned
+to a commit SHA (`tests/scripts/test_ci_actions_pinned.py`). Every workflow's token defaults to
+`contents: read`; only `plan` and `deploy` raise theirs (`id-token: write`, `actions: read`).
 
-> Security note: long-lived access keys in GitHub are the quick path you chose. They grant an
-> automated actor standing access to production. Rotate them periodically, and consider migrating
-> to **GitHub OIDC** (no stored keys) later — see "Hardening" at the bottom.
+### Switching on the OIDC roles (once, in this order, all before the merge)
+
+The old `ci.yaml` keeps using the access key until the change merges. **Push the pull request only
+after steps 1-3**: without `AWS_ACCOUNT_ID` every run but a fork's pull request fails in `preflight`
+(it would otherwise go green with the drift gate and the deploy skipped), and with it the pull
+request's own run proves the plan role and runs the step "The production environment admits main
+alone", which is red while the environment is missing or admits any branch but `main`, and warns
+while it has no required reviewer or `main` is unprotected.
+
+1. On GitHub, **first**: the environment **`production`** with *Deployment branches and tags* = `main`
+   only and a **required reviewer**, and `main` protected (no direct push, no force-push). The branch
+   rule alone does not stop anyone with write access while `main` is open (measured 2026-11-18: no
+   protection, no ruleset): they push a workflow to `main` and get the deploy role's token. And a job
+   that names an environment that does not exist yet creates it with no rule at all.
+2. Apply the roles by hand, with a human's credentials, on Terraform 1.9.8 — the command is in the
+   header of `cicd-oidc.tf`. Read the plan: it must create 2 roles, 2 policies and 4 attachments,
+   plus the task role's permissions boundary (`aws_iam_policy.ecs_task_boundary`), and update in
+   place `aws_iam_role.ecs_task` (the boundary) and `aws_iam_policy.cicd_infra` (the grant that
+   depends on it) — **9 to add, 2 to change, 0 to destroy** — and touch nothing else (the policies
+   compose their ARNs from names, so the balances Lambda is not dragged in). The checks before it, the
+   plan to expect line by line and the checks after it: "The hand apply (step 2), in detail" below.
+3. Set the repository secret `AWS_ACCOUNT_ID`.
+4. Merge. After one green push run (drift gate on the plan role) and one green release (deploy role),
+   deactivate and delete the access key of `github-actions-facilitator-deploy`, delete the secrets
+   `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY`, then the user. Until then the key is still readable
+   by any workflow on any branch: deactivate it on the first green run, not at the next release
+   ("After the merge" below has the two moves).
+5. Optional, later: opt the repository in to the immutable OIDC subject
+   (`use_immutable_subject: true` on `PUT /repos/UltravioletaDAO/x402-rs/actions/oidc/customization/sub`)
+   and apply with `-var github_oidc_immutable_subject=true` right after, so the trust names the
+   repository by its ids and survives a rename. Between the two the roles refuse every token: do it
+   with no run in flight.
+
+#### Until steps 1-3 are done, this CI is red on purpose
+
+Merging this change before the switch-on stops every release, and nothing deploys until it is done:
+
+| Missing | What goes red |
+|---|---|
+| Step 3 (`AWS_ACCOUNT_ID`) | `preflight`, on every push, every pull request from this repository and every "Run workflow". `plan` and `deploy` do not start. A pull request from a fork passes, its drift gate skipped. |
+| Step 2 (the apply) | `plan` and `deploy` at "Configure AWS credentials": the role does not exist, so the token is refused. |
+| Step 1 (the environment) | `plan` at "The production environment admits main alone". `deploy` does not wait for `plan` (it needs `test` and `preflight`): a release started now would run, and if the environment does not exist GitHub creates it with no rule when the job starts -- which the step then reports red on every run until the rule is set. |
+
+What the step "The production environment admits main alone" reads (read-only, with the job's own
+token, `actions: read`):
+
+| Read | Red | Warning, the run passes |
+|---|---|---|
+| `GET repos/UltravioletaDAO/x402-rs/environments/production` | 404: no environment | any other failure to read ("inconclusive") |
+| its `deployment_branch_policy.custom_branch_policies` | anything but `true` (no rule, or "protected branches") | |
+| `GET .../environments/production/deployment-branch-policies` | anything but exactly one rule, of type `branch`, named `main` | a failure to read ("inconclusive") |
+| its `protection_rules` | | no `required_reviewers` rule |
+| `GET repos/UltravioletaDAO/x402-rs/branches/main` | | `protected` is not `true` |
+
+So the minimum on GitHub is the environment `production` with *Deployment branches and tags* =
+*Selected branches and tags* and one branch rule, `main`. A required reviewer and the protection of
+`main` are the owner's call; without them the step warns and passes.
+
+#### The hand apply (step 2), in detail
+
+All of it from a checkout of `main` with this change (LF line endings, on a native filesystem), with a
+human's administrator credentials, on Terraform 1.9.8. Nothing here is run by CI, and CI cannot run it.
+
+Before:
+
+```bash
+# The account's GitHub OIDC provider exists (another stack owns it; cicd-oidc.tf only names it) and
+# accepts the audience the roles require. Missing: stop -- creating it is not a step of this runbook.
+ACCT=$(aws sts get-caller-identity --query Account --output text)
+aws iam get-open-id-connect-provider \
+  --open-id-connect-provider-arn "arn:aws:iam::${ACCT}:oidc-provider/token.actions.githubusercontent.com" \
+  --query ClientIDList   # must list "sts.amazonaws.com"
+
+# The repository's OIDC subject template is the default one, or every sub the roles trust is wrong
+# (step 5 changes it on purpose, later).
+gh api repos/UltravioletaDAO/x402-rs/actions/oidc/customization/sub   # "use_default": true
+
+# facilitator-cicd-infra gets a new version, and AWS keeps five: the provider deletes the oldest
+# non-default one without showing it in the plan. Keep the current one as a rollback copy.
+P="arn:aws:iam::${ACCT}:policy/facilitator-cicd-infra"
+V=$(aws iam get-policy --policy-arn "$P" --query Policy.DefaultVersionId --output text)
+aws iam get-policy-version --policy-arn "$P" --version-id "$V" > "/dev/shm/cicd-infra-$V.json"
+
+# What the user's inline write policy grants that the deploy role would not. Every write action in
+# it that facilitator-github-deploy-writes and facilitator-cicd-infra lack is either added (a pull
+# request, applied by hand) or shown unused by the user's recent events.
+aws iam get-user-policy --user-name github-actions-facilitator-deploy --policy-name facilitator-cicd \
+  --query PolicyDocument > /dev/shm/user-inline.json
+aws cloudtrail lookup-events --region us-east-2 --max-results 50 \
+  --lookup-attributes AttributeKey=Username,AttributeValue=github-actions-facilitator-deploy \
+  --query 'Events[].EventName' --output text | tr '\t' '\n' | sort | uniq -c
+```
+
+Plan, with the `-target` list of the header of `cicd-oidc.tf`:
+
+```bash
+cd terraform/environments/production
+terraform version            # Terraform v1.9.8
+terraform init -input=false
+terraform plan -input=false -out=oidc.tfplan \
+  -target=aws_iam_role.github_plan -target=aws_iam_role.github_deploy \
+  -target=aws_iam_policy.github_read -target=aws_iam_policy.github_deploy_writes \
+  -target=aws_iam_role_policy_attachment.github_plan_read \
+  -target=aws_iam_role_policy_attachment.github_deploy_read \
+  -target=aws_iam_role_policy_attachment.github_deploy_writes \
+  -target=aws_iam_role_policy_attachment.github_deploy_infra \
+  -target=aws_iam_policy.ecs_task_boundary -target=aws_iam_role.ecs_task \
+  -target=aws_iam_policy.cicd_infra
+```
+
+Compare the plan with this list and stop on any difference:
+
+| Address | Expected |
+|---|---|
+| `aws_iam_role.github_plan`, `aws_iam_role.github_deploy` | create |
+| `aws_iam_policy.github_read`, `aws_iam_policy.github_deploy_writes` | create |
+| `aws_iam_role_policy_attachment.github_plan_read`, `.github_deploy_read`, `.github_deploy_writes`, `.github_deploy_infra` | create (4) |
+| `aws_iam_policy.ecs_task_boundary` | create |
+| `aws_iam_role.ecs_task` | update in place: `permissions_boundary` added, nothing else |
+| `aws_iam_policy.cicd_infra` | update in place, `policy` only (`IamRolePolicyReadForTaskRole` and `DenyBoundaryChanges` added, a `Condition` on `IamRolePolicyForTaskRoleOnly`). Never a replacement: its `description` does not change |
+
+Plan summary: **9 to add, 2 to change, 0 to destroy.** The boundary names the facilitator's DynamoDB
+tables and the DX402 bucket, and the read policy the Bazaar token's KMS key, the balances API and the
+zone: a pending change on any of them would ride along, and there should be none. The task definition,
+the service and the two task-role policies in the image deploy's target list
+(`hedera_settlement_access`, `ip_allowlist_read`) must not appear at all: they name the role by its
+composed name and ARN, the same strings as before. A change to `aws_ecs_task_definition.facilitator` or
+to either policy's `role` means the composed ARN is not the live one: stop.
+
+Apply and verify:
+
+```bash
+terraform apply oidc.tfplan
+aws iam get-role --role-name facilitator-production-ecs-task --query Role.PermissionsBoundary
+aws iam simulate-principal-policy --policy-source-arn "arn:aws:iam::${ACCT}:role/facilitator-github-plan" \
+  --action-names ssm:GetParameter secretsmanager:GetSecretValue iam:PassRole ecs:UpdateService \
+  --resource-arns '*' --query 'EvaluationResults[].[EvalActionName,EvalDecision]' --output text
+# explicitDeny x2 (the parameter and the secret), implicitDeny x2: the plan role writes nothing
+aws iam simulate-principal-policy --policy-source-arn "arn:aws:iam::${ACCT}:role/facilitator-github-deploy" \
+  --action-names ssm:GetParameter secretsmanager:GetSecretValue \
+  --resource-arns '*' --query 'EvaluationResults[].[EvalActionName,EvalDecision]' --output text
+# explicitDeny x2: the deploy role reads no secret either
+```
+
+The boundary takes effect on the running tasks at once (IAM is evaluated on every call). It is wider
+than the role's inline policies, so nothing should change; confirm it over the next minutes:
+
+```bash
+S=$(( ($(date +%s) - 900) * 1000 ))
+aws logs filter-log-events --log-group-name /ecs/facilitator-production --region us-east-2 \
+  --start-time $S --filter-pattern AccessDenied --query 'length(events)' --output text
+# 0 -- the CLI prints one number per page: sum them. Also /health/ready, GET /api/stats (the
+# transactions table), GET /discovery/resources (the discovery bucket), and the receipt-store alarms.
+```
+
+If the task is refused anything, lift the boundary at once and revert it in a pull request together
+with the condition in `cicd-iam-policy.tf` (applied by hand), or the deploy loses the task role's
+inline-policy writes:
+
+```bash
+aws iam delete-role-permissions-boundary --role-name facilitator-production-ecs-task
+```
+
+#### After the merge: verify, roll back, retire the key
+
+- **The pull request and the push to `main`**: "Terraform plan (drift gate)" assumes
+  `facilitator-github-plan` (session `x402-rs-plan-<run id>`), the plan completes, and "The production
+  environment admits main alone" passes.
+- **The first release**: "Configure AWS credentials" in `deploy` assumes `facilitator-github-deploy`
+  (session `x402-rs-deploy-<run id>`), the image is pushed, the targeted applies, the rollout wait and
+  `/health` pass. Compare `curl -s https://facilitator.ultravioletadao.xyz/version` with `cat VERSION`.
+  A release that fails half way is followed by a new release, never by a re-run of the old one.
+- **CloudTrail** shows `AssumeRoleWithWebIdentity` for both sessions, and nothing new under the user:
+  `aws iam get-access-key-last-used --access-key-id <ACCESS_KEY_ID>` stays at its pre-merge date.
+- **Rollback** while the key still exists: a pull request that reverts the `ci.yaml` change brings the
+  access-key path back. Once the key is inactive, reactivate it first (`--status Active`); once it is
+  deleted, a rollback is a new key created and stored by a human.
+- **Retiring the key** (step 4), in two moves:
+  1. On the first green push and release, **deactivate** it -- reversible, and an inactive key is
+     useless to whoever can read the secrets:
+     `aws iam update-access-key --user-name github-actions-facilitator-deploy --access-key-id <ACCESS_KEY_ID> --status Inactive`.
+  2. After one more green release on the roles, **delete** it and the two secrets
+     (`aws iam delete-access-key ...`, `gh secret delete AWS_ACCESS_KEY_ID -R UltravioletaDAO/x402-rs`,
+     the same for `AWS_SECRET_ACCESS_KEY`), then the user: detach every managed policy
+     (`aws iam list-attached-user-policies`), delete every inline one (`aws iam list-user-policies`),
+     `aws iam delete-user`. The managed policy `facilitator-cicd-infra` stays: the deploy role holds it.
+
+What the plan role can still read that is not this stack's: `ecs:DescribeTaskDefinition`, which IAM
+authorizes on `*` only, returns the plaintext `environment` of every task definition in the account.
+Secrets go in `secrets`/`valueFrom`, never in `environment`. A `workflow_dispatch` of `ci.yaml` from a
+branch other than `main` now fails at the plan's AssumeRole (the role trusts pull requests and `main`).
+
+The sections below describe the **legacy** access-key user, kept until step 4 removes it.
 
 ---
 
@@ -38,8 +236,11 @@ then give it the policies below.
 > decorative. Declaring it is safe only because the deploy user has no `iam:CreatePolicyVersion`.
 > Apply it by hand, with a human's credentials, on Terraform 1.9.8.
 >
-> Its statements, as declared: `DynamoTableManage`, `IamRolePolicyForTaskRoleOnly`,
-> `DenyPrivilegeEscalation` (Deny), `BalancesLambdaDeploy`, `AlertTopicManage`,
+> Its statements, as declared: `DynamoTableManage`, `IamRolePolicyReadForTaskRole`,
+> `IamRolePolicyForTaskRoleOnly` (the task role's inline policies, only while the role carries its
+> permissions boundary `facilitator-production-ecs-task-boundary`, declared in `main.tf`),
+> `DenyPrivilegeEscalation` (Deny), `DenyBoundaryChanges` (Deny: no boundary set or removed, no
+> managed policy's versions changed, nothing detached), `BalancesLambdaDeploy`, `AlertTopicManage`,
 > `FacilitatorAlarmManage`, `FacilitatorMetricFilterManage`, `FacilitatorScheduleManage`,
 > `AlertsBackupQueueManage`, `FacilitatorLogRetention`, `DiscoveryBucketVersioning`,
 > `EcsClusterUpdate`, `EcsDeployUntag`, `DenyBazaarTokenDecrypt` (Deny). The `.tf` file is the list;
@@ -337,11 +538,11 @@ terraform apply -var="image_tag=<version>"
 
 ## Hardening (recommended follow-ups)
 
-1. **Migrate to GitHub OIDC** — drop the long-lived keys entirely: add an
-   `aws_iam_openid_connect_provider` for `token.actions.githubusercontent.com` and an IAM role whose
-   trust policy is scoped to `repo:UltravioletaDAO/x402-rs:ref:refs/heads/main`, then swap the
-   `configure-aws-credentials` step to `role-to-assume`. No secrets in GitHub.
-2. **Require a manual gate for prod** — wrap the `deploy` job in a GitHub **Environment**
-   (`production`) with required reviewers if you later want a human approval before each apply.
-3. **Scope `iam:PassRole`** to the two ECS role ARNs (above).
-4. **Rotate** the access keys on a schedule until OIDC lands.
+1. ~~Migrate to GitHub OIDC~~ — done in X402-SEG-CI (`cicd-oidc.tf`; the account's provider for
+   `token.actions.githubusercontent.com` already existed and is referenced, not declared). Pending
+   only the switch-on steps at the top of this file.
+2. **Require a manual gate for prod** — the `deploy` job now runs in the **`production`**
+   environment; add required reviewers to it if you want a human approval before each apply.
+3. ~~Scope `iam:PassRole`~~ — done: the deploy role passes only the execution, task and balances
+   Lambda roles, each with `iam:PassedToService` (`cicd-oidc.tf`, `PassRoleTo*`).
+4. **Rotate** the legacy access key until step 4 of the switch-on deletes it.

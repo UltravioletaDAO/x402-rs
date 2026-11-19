@@ -131,7 +131,69 @@ impl PaymentRequirementsV2 {
             extra: self.extra.clone(),
         })
     }
+
+    /// The first of the terms that decide what is paid on which `accepted`
+    /// names something other than `self`, or `None` when they agree.
+    ///
+    /// The terms are `scheme`, `network`, `asset`, `amount` and `payTo`, and
+    /// they are compared by what they mean, not by how they are spelled: the
+    /// addresses as parsed (an EVM address in any letter case is the same 20
+    /// bytes), the amount as a number, the network as the chain it names.
+    /// `maxTimeoutSeconds` and `extra` are not terms of the payment and are not
+    /// compared, so a copy that leaves them out or carries keys of its own still
+    /// agrees.
+    pub fn first_differing_term(&self, accepted: &PaymentRequirementsV2) -> Option<PaymentTerm> {
+        let same_network = match (
+            Network::from_caip2(&self.network.to_string()),
+            Network::from_caip2(&accepted.network.to_string()),
+        ) {
+            (Some(ours), Some(theirs)) => ours == theirs,
+            _ => self.network == accepted.network,
+        };
+        if self.scheme != accepted.scheme {
+            Some(PaymentTerm::Scheme)
+        } else if !same_network {
+            Some(PaymentTerm::Network)
+        } else if self.asset != accepted.asset {
+            Some(PaymentTerm::Asset)
+        } else if self.amount != accepted.amount {
+            Some(PaymentTerm::Amount)
+        } else if self.pay_to != accepted.pay_to {
+            Some(PaymentTerm::PayTo)
+        } else {
+            None
+        }
+    }
 }
+
+/// One of the terms that decide what a payment pays: see
+/// [`PaymentRequirementsV2::first_differing_term`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PaymentTerm {
+    Scheme,
+    Network,
+    Asset,
+    Amount,
+    PayTo,
+}
+
+impl PaymentTerm {
+    /// The field's name on the wire, the same in both copies of the terms.
+    pub fn wire_name(self) -> &'static str {
+        match self {
+            PaymentTerm::Scheme => "scheme",
+            PaymentTerm::Network => "network",
+            PaymentTerm::Asset => "asset",
+            PaymentTerm::Amount => "amount",
+            PaymentTerm::PayTo => "payTo",
+        }
+    }
+}
+
+/// The error code of a body whose `paymentPayload.accepted` names other terms
+/// than its `paymentRequirements`. The same token the native Hedera envelope
+/// refuses that body with.
+pub const ACCEPTED_REQUIREMENTS_MISMATCH: &str = "accepted_payment_requirements_mismatch";
 
 // ============================================================================
 // PaymentRequirements v1 -> v2 conversion
@@ -532,6 +594,13 @@ pub struct X402rPaymentPayloadNested {
 ///   "paymentRequirements": {...}
 /// }
 /// ```
+///
+/// It is also the x402 v2 body every upstream SDK sends: `paymentRequirements`
+/// is what the seller asks for, and `paymentPayload.accepted` is the buyer's
+/// copy of it, forwarded by the seller. The payment is checked against the
+/// seller's copy. The buyer's copy is held to it on every term that decides
+/// what is paid ([`PaymentRequirementsV2::first_differing_term`]): when they
+/// disagree the body is refused, never read the buyer's way.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct VerifyRequestX402rNested {
@@ -554,6 +623,15 @@ impl VerifyRequestX402rNested {
         use std::str::FromStr;
 
         let inner = &self.payment_payload;
+
+        // What is owed is the seller's to say. A buyer's copy that names other
+        // terms is refused before anything else is read.
+        if let Some(term) = self
+            .payment_requirements
+            .first_differing_term(&inner.accepted)
+        {
+            return Err(NetworkParseError::RequirementsMismatch(term));
+        }
 
         // Parse the authorization values
         let from = Address::from_str(&inner.payload.authorization.from).map_err(|_| {
@@ -636,8 +714,8 @@ impl VerifyRequestX402rNested {
                 }
             });
 
-        // Build v1 PaymentRequirements from inner.accepted
-        let payment_requirements = inner.accepted.to_v1(&resource)?;
+        // The seller's requirements, which `accepted` was just held to.
+        let payment_requirements = self.payment_requirements.to_v1(&resource)?;
 
         Ok(VerifyRequest {
             x402_version: X402Version::V1,
@@ -1042,6 +1120,28 @@ pub enum NetworkParseError {
     UnknownStellarNetwork(String),
     #[error("Unknown Fogo network: {0}")]
     UnknownFogoNetwork(String),
+    #[error(
+        "{code}: paymentPayload.accepted.{field} does not match \
+         paymentRequirements.{field}; the payment is checked against paymentRequirements, \
+         so the buyer's copy must name the same {field}",
+        code = ACCEPTED_REQUIREMENTS_MISMATCH,
+        field = .0.wire_name()
+    )]
+    RequirementsMismatch(PaymentTerm),
+}
+
+impl NetworkParseError {
+    /// The body of the `400` a conversion refusal answers with: `error` is the
+    /// caller's message, and a refusal that has a stable code also carries
+    /// `code` and the `field` it names.
+    pub fn refusal_body(&self, error: String) -> serde_json::Value {
+        let mut body = serde_json::json!({ "error": error });
+        if let NetworkParseError::RequirementsMismatch(term) = self {
+            body["code"] = ACCEPTED_REQUIREMENTS_MISMATCH.into();
+            body["field"] = term.wire_name().into();
+        }
+        body
+    }
 }
 
 // ============================================================================
@@ -2681,5 +2781,147 @@ mod tests {
             serde_json::json!({ "other": { "info": { "input": { "method": "GET" } } } })
         ));
         assert!(!bare_listing("x").has_input_schema());
+    }
+}
+
+/// The upstream v2 body: `paymentRequirements` from the seller next to the
+/// buyer's `paymentPayload.accepted`.
+#[cfg(test)]
+mod nested_terms_tests {
+    use super::*;
+    use serde_json::{json, Value};
+
+    const SELLER: &str = "0x5555555555555555555555555555555555555555";
+    const BUYER: &str = "0x1111111111111111111111111111111111111111";
+    const OTHER: &str = "0x2222222222222222222222222222222222222222";
+    const BASE_USDC: &str = "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913";
+    const CODE: &str = "accepted_payment_requirements_mismatch";
+
+    fn terms(pay_to: &str, amount: &str) -> Value {
+        json!({
+            "scheme": "exact",
+            "network": "eip155:8453",
+            "asset": BASE_USDC,
+            "amount": amount,
+            "payTo": pay_to,
+            "maxTimeoutSeconds": 60,
+            "extra": { "name": "USD Coin", "version": "2" },
+        })
+    }
+
+    /// A body whose authorization pays what `accepted` names.
+    fn body(seller: Value, accepted: Value) -> Value {
+        json!({
+            "x402Version": 2,
+            "paymentPayload": {
+                "x402Version": 2,
+                "resource": {
+                    "url": "https://seller.example/item",
+                    "description": "one item",
+                    "mimeType": "application/json",
+                },
+                "accepted": accepted.clone(),
+                "payload": {
+                    "authorization": {
+                        "from": BUYER,
+                        "to": accepted["payTo"],
+                        "value": accepted["amount"],
+                        "validAfter": "0",
+                        "validBefore": "1900000000",
+                        "nonce": format!("0x{}", "ab".repeat(32)),
+                    },
+                    "signature": format!("0x{}", "11".repeat(65)),
+                },
+            },
+            "paymentRequirements": seller,
+        })
+    }
+
+    fn parse(body: &Value) -> VerifyRequestEnvelope {
+        let envelope: VerifyRequestEnvelope = serde_json::from_value(body.clone()).unwrap();
+        assert!(
+            matches!(envelope, VerifyRequestEnvelope::X402rNested(_)),
+            "the upstream v2 body is read as the nested shape"
+        );
+        envelope
+    }
+
+    /// The seller asks 1 USDC to its own address; the buyer's copy names 1
+    /// unit to an address of the buyer's, and the authorization pays that.
+    #[test]
+    fn a_buyer_copy_naming_its_own_terms_is_refused() {
+        let body = body(terms(SELLER, "1000000"), terms(BUYER, "1"));
+        let refusal = match parse(&body).to_v1() {
+            Ok(request) => panic!(
+                "converted against the buyer's terms: payTo {} amount {}",
+                request.payment_requirements.pay_to,
+                request.payment_requirements.max_amount_required
+            ),
+            Err(e) => e.to_string(),
+        };
+        assert!(refusal.contains(CODE), "{refusal}");
+        assert!(refusal.contains("paymentRequirements.amount"), "{refusal}");
+    }
+
+    /// Each term that decides what is paid, alone, is enough to refuse.
+    #[test]
+    fn every_payment_term_is_held_to_the_seller() {
+        let cases = [
+            ("scheme", json!("upto")),
+            ("network", json!("eip155:84532")),
+            ("asset", json!(OTHER)),
+            ("amount", json!("999999")),
+            ("payTo", json!(BUYER)),
+        ];
+        for (field, buyer_value) in cases {
+            let mut accepted = terms(SELLER, "1000000");
+            accepted[field] = buyer_value;
+            let body = body(terms(SELLER, "1000000"), accepted);
+            let refusal = match parse(&body).to_v1() {
+                Ok(_) => panic!("{field}: a buyer's {field} was accepted"),
+                Err(e) => e.to_string(),
+            };
+            assert!(refusal.contains(CODE), "{field}: {refusal}");
+            assert!(
+                refusal.contains(&format!("paymentPayload.accepted.{field} ")),
+                "{field}: the refusal names the field: {refusal}"
+            );
+        }
+    }
+
+    /// Spelling is not a term: letter case of an address, and what neither
+    /// term compares (`maxTimeoutSeconds`, `extra`, keys of the buyer's own).
+    /// What is checked is the seller's object, whole.
+    #[test]
+    fn copies_that_agree_on_the_terms_pass_with_the_seller_requirements() {
+        let seller = terms(SELLER, "1000000");
+        let mut accepted = terms(&SELLER.to_lowercase(), "1000000");
+        accepted["asset"] = json!(BASE_USDC.to_lowercase());
+        accepted["maxTimeoutSeconds"] = json!(300);
+        accepted.as_object_mut().unwrap().remove("extra");
+        accepted["maxAmountRequired"] = json!("1000000");
+        accepted["description"] = json!("echoed from the 402");
+        let request = parse(&body(seller.clone(), accepted)).to_v1().unwrap();
+        let r = &request.payment_requirements;
+        assert_eq!(r.pay_to.to_string(), SELLER);
+        assert_eq!(r.asset.to_string(), BASE_USDC);
+        assert_eq!(r.max_amount_required, TokenAmount::from(1_000_000u64));
+        assert_eq!(r.network, Network::Base);
+        assert_eq!(r.max_timeout_seconds, 60, "the seller's timeout");
+        assert_eq!(r.extra, Some(seller["extra"].clone()), "the seller's extra");
+        assert_eq!(request.payment_payload.network, Network::Base);
+    }
+
+    /// The common case: the seller forwards the buyer's copy unchanged.
+    #[test]
+    fn identical_copies_pass() {
+        let request = parse(&body(terms(SELLER, "1000000"), terms(SELLER, "1000000")))
+            .to_v1()
+            .unwrap();
+        assert_eq!(request.payment_requirements.pay_to.to_string(), SELLER);
+        assert_eq!(
+            request.payment_requirements.max_amount_required,
+            TokenAmount::from(1_000_000u64)
+        );
     }
 }

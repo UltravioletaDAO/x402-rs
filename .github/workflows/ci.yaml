@@ -11,9 +11,16 @@ name: CI/CD — build, test, and deploy to AWS
 #     then verify. A merge never deploys by itself (owner's rule, 2026-09-27: one release a
 #     day, started by hand); see the deploy job's `if:`.
 #
-# AWS auth: IAM access keys stored as repo secrets AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY.
-# See docs/CICD_SETUP.md for the IAM policy and secret setup. Until those secrets exist,
-# the deploy job is skipped (the run still goes green on the test job).
+# AWS auth: GitHub OIDC, no stored key. The drift gate assumes facilitator-github-plan
+# (read-only) and the release facilitator-github-deploy, which trusts the `production`
+# environment alone (terraform/environments/production/cicd-oidc.tf). The only repo secret
+# is AWS_ACCOUNT_ID, so GitHub masks the account in these public logs. Until it exists,
+# preflight fails every run but a fork's pull request (plan and deploy would otherwise be
+# skipped and the run would go green with nothing checked or shipped); docs/CICD_SETUP.md
+# lists what is red at each step of the switch-on.
+#
+# Every action is pinned to a full commit SHA, its version in the comment: a tag can be
+# moved under us, a commit cannot. tests/scripts/test_ci_actions_pinned.py holds it.
 
 # What does NOT trigger this pipeline, and why that is safe
 # ---------------------------------------------------------
@@ -146,13 +153,20 @@ concurrency:
   # tests/scripts/test_ci_deploy_job.py holds the key and the step.
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
+# The token every job gets unless it asks for more: read the repository, nothing else,
+# whatever the repository's default is. A job that needs more lists it in its own
+# `permissions:`, which replaces this block rather than adding to it (plan and deploy
+# below). tests/scripts/test_ci_oidc.py holds both.
+permissions:
+  contents: read
+
 jobs:
   test:
     name: Build & test
     runs-on: ubuntu-latest
     timeout-minutes: 35
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - name: Install build dependencies
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends pkg-config libssl-dev protobuf-compiler libprotobuf-dev
       # The compiler is rust-toolchain.toml's exact channel, and that file decides:
@@ -162,9 +176,11 @@ jobs:
       # that nothing runs -- @stable brought 1.100.0 on 2026-11-13, which cannot
       # compile algonaut_client 0.4.2 (run 43338805993). The action also sets
       # CARGO_INCREMENTAL=0. tests/scripts/test_ci_toolchain_pin.py fails when this
-      # ref, the file and the Dockerfile's base image disagree.
-      - uses: dtolnay/rust-toolchain@1.99.1
-      - uses: Swatinem/rust-cache@v2
+      # ref, the file and the Dockerfile's base image disagree. The ref is the commit the
+      # action's 1.99.1 branch pointed at (its action.yml hardcodes toolchain 1.99.1), and
+      # the comment names that version: the guard reads the comment.
+      - uses: dtolnay/rust-toolchain@263313d2989f864a2b8613f97277288638e7d8f8 # 1.99.1
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       # The landing page states network counts in three places -- the English
       # markup, the `en` dictionary and the `es` dictionary -- and until
       # 2026-09-02 only the first was ever checked, by a script whose own
@@ -217,7 +233,7 @@ jobs:
       # fire in the hand apply or in a deploy, too late to learn that one stopped guarding.
       # terraform test plans them against a mocked AWS (tests/nat_guard.tftest.hcl): no
       # credentials, no backend, nothing applied. 1.9.8, the version of the plan and deploy jobs.
-      - uses: hashicorp/setup-terraform@v3
+      - uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd # v3.1.2
         with:
           terraform_version: "1.9.8"
           terraform_wrapper: false
@@ -241,16 +257,29 @@ jobs:
     outputs:
       deploy: ${{ steps.check.outputs.deploy }}
     steps:
+      # The roles are assumed by OIDC; what a job needs from the repo is the account to name
+      # them in. Until AWS_ACCOUNT_ID exists, nothing below reaches AWS (cicd-oidc.tf has the
+      # order: environment, roles, this secret, all before the pull request is pushed). Without
+      # it the drift gate and the deploy would be skipped and the run would go green -- a
+      # release that ships nothing, a push whose gate never ran, a pull request that never
+      # assumed the plan role -- so it fails instead. Only a pull request from a fork, which
+      # never gets the repository's secrets, skips quietly.
+      # tests/scripts/test_ci_oidc.py runs this step.
       - id: check
         env:
-          HAS_KEY: ${{ secrets.AWS_ACCESS_KEY_ID != '' && secrets.AWS_SECRET_ACCESS_KEY != '' }}
+          HAS_ACCOUNT: ${{ secrets.AWS_ACCOUNT_ID != '' }}
+          FORK_PR: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository }}
         run: |
-          if [ "$HAS_KEY" = "true" ]; then
+          if [ "$HAS_ACCOUNT" = "true" ]; then
             echo "deploy=true" >> "$GITHUB_OUTPUT"
-            echo "AWS credentials present — a manual Run workflow on main deploys."
+            echo "AWS account set — the drift gate plans, and a manual Run workflow on main deploys."
+          elif [ "$FORK_PR" = "true" ]; then
+            echo "deploy=false" >> "$GITHUB_OUTPUT"
+            echo "::notice title=Drift gate skipped::A pull request from a fork gets no repository secret; the drift gate runs on the merge."
           else
             echo "deploy=false" >> "$GITHUB_OUTPUT"
-            echo "::notice title=Deploy skipped::AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY are not set. Add them (see docs/CICD_SETUP.md) to enable the manual deploy."
+            echo "::error title=AWS_ACCOUNT_ID is not set::Without it the drift gate and the deploy are skipped and this run would go green with nothing checked or shipped. Switch the OIDC roles on first (docs/CICD_SETUP.md)."
+            exit 1
           fi
 
   # ---------------------------------------------------------------------------
@@ -288,6 +317,12 @@ jobs:
     timeout-minutes: 25
     permissions:
       contents: read
+      # The OIDC token that assumes facilitator-github-plan. No environment on purpose: the
+      # gate runs on pull requests, and the role trusts pull_request and main's ref alone.
+      id-token: write
+      # Reads the production environment's rules (step "The production environment admits
+      # main alone").
+      actions: read
     # Separate from the deploy's concurrency group: a superseded plan is worthless,
     # but it must never sit in the queue a release is waiting in. Keyed by event
     # like the workflow, so a merge's plan and a release's plan do not cancel each
@@ -296,25 +331,32 @@ jobs:
       group: tfplan-${{ github.ref }}-${{ github.event_name }}
       cancel-in-progress: true
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
-      - uses: hashicorp/setup-terraform@v3
+      - uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd # v3.1.2
         with:
           # Must match the deploy job. The state was written by 1.9.8 and a newer
           # binary upgrades it on contact, which locks 1.9.8 out afterwards.
           terraform_version: "1.9.8"
 
       - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v4
+        uses: aws-actions/configure-aws-credentials@7474bc4690e29a8392af63c5b98e7449536d5c3a # v4.3.1
         with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          role-to-assume: arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/facilitator-github-plan
+          role-session-name: x402-rs-plan-${{ github.run_id }}
+          mask-aws-account-id: true
           aws-region: ${{ env.AWS_REGION }}
 
       - name: Plan
         working-directory: terraform/environments/production
         run: |
           set -o pipefail
+          # This log is public, like the repository. A plan prints ARNs, and an ARN carries the
+          # account id, which is never published (no-account-id.yml): every 12-digit number a
+          # plan log puts in this log or the summary goes through this first. The credentials
+          # step's mask-aws-account-id registers this account with the runner's log masking;
+          # this does not depend on it, and also covers any other account a plan names.
+          mask() { perl -pe 's/(?<![0-9])[0-9]{12}(?![0-9])/<account>/g'; }
           terraform init -input=false
 
           # What a deploy CAN apply is not the literal -target list. A targeted apply
@@ -359,7 +401,7 @@ jobs:
           # rather than toward a false accusation.
           if ! terraform plan -input=false -lock=false -no-color -out=targeted.tfplan "${TARGETS[@]}" > targeted.log 2>&1; then
             echo "::error title=Drift gate failed::The targeted plan errored; see the log below."
-            tail -60 targeted.log
+            tail -60 targeted.log | mask
             exit 1
           fi
 
@@ -372,7 +414,7 @@ jobs:
           # -detailed-exitcode: 0 = empty, 2 = changes present, 1 = the plan itself broke.
           if [ "$code" = "1" ]; then
             echo "::error title=Drift gate failed::terraform plan errored; see the log below."
-            tail -80 full.log
+            tail -80 full.log | mask
             exit 1
           fi
           echo "Full plan exit code: $code"
@@ -381,6 +423,8 @@ jobs:
         working-directory: terraform/environments/production
         run: |
           set -o pipefail
+          # The summary is as public as the log: the plan output it embeds is masked like the Plan step's.
+          mask() { perl -pe 's/(?<![0-9])[0-9]{12}(?![0-9])/<account>/g'; }
           CHANGED='.resource_changes[]? | select(.change.actions != ["no-op"] and .change.actions != ["read"])'
 
           terraform show -json full.tfplan     > full.json
@@ -476,7 +520,7 @@ jobs:
               echo "<details><summary>Full plan output</summary>"
               echo
               echo '```'
-              cat full.log
+              mask < full.log
               echo '```'
               echo
               echo "</details>"
@@ -648,6 +692,60 @@ jobs:
               ;;
           esac
 
+      # ---------------------------------------------------------------------
+      # The deploy role's trust holds only if GitHub keeps branches out
+      # ---------------------------------------------------------------------
+      #
+      # facilitator-github-deploy trusts environment:production and nothing else
+      # (cicd-oidc.tf). What keeps a branch from getting that token is GitHub's side:
+      # the environment must exist (a job that names a missing one creates it with no
+      # rule) and admit main alone. This reads both, read-only, and goes red while they
+      # do not hold -- on the pull request itself, so the switch-on order cannot be
+      # skipped. A missing required reviewer or an unprotected main is a warning: those
+      # are the owner's call (docs/CICD_SETUP.md, step 1). A read that does not complete
+      # warns and passes, like the checks above. tests/scripts/test_ci_oidc.py runs it.
+      - name: The production environment admits main alone
+        if: '!cancelled()'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -o pipefail
+          if ! env_json=$(gh api "repos/${REPO}/environments/production" 2>&1); then
+            case "$env_json" in
+              *"HTTP 404"*|*"Not Found"*)
+                echo "::error title=No production environment::The deploy role trusts environment:production, which does not exist: the first job that names it creates it with no rule at all. Create it with deployment branches = main only (docs/CICD_SETUP.md, step 1)."
+                exit 1
+                ;;
+              *)
+                echo "::warning title=Environment check inconclusive::Could not read the production environment: $(printf '%s' "$env_json" | head -c 200). Not failing on a read we did not complete."
+                exit 0
+                ;;
+            esac
+          fi
+          custom=$(printf '%s' "$env_json" | jq -r '.deployment_branch_policy.custom_branch_policies // false')
+          if [ "$custom" != "true" ]; then
+            echo "::error title=production admits any branch::The production environment has no custom deployment-branch rule, so any branch that names it gets the deploy role's token. Set deployment branches = main only."
+            exit 1
+          fi
+          if ! pol_json=$(gh api "repos/${REPO}/environments/production/deployment-branch-policies" 2>&1); then
+            echo "::warning title=Environment check inconclusive::Could not read the deployment-branch rules. Not failing on a read we did not complete."
+            exit 0
+          fi
+          rules=$(printf '%s' "$pol_json" | jq -r '[.branch_policies[]? | (.type // "branch") + ":" + .name] | sort | join(",")')
+          if [ "$rules" != "branch:main" ]; then
+            echo "::error title=production admits more than main::Its deployment-branch rules are '${rules:-none}'; the deploy role must be reachable from main alone."
+            exit 1
+          fi
+          reviewers=$(printf '%s' "$env_json" | jq -r '[.protection_rules[]? | select(.type == "required_reviewers")] | length')
+          if [ "$reviewers" = "0" ]; then
+            echo "::warning title=production has no required reviewer::Anyone who can push to main can run a release; a required reviewer closes that (docs/CICD_SETUP.md, step 1)."
+          fi
+          if protected=$(gh api "repos/${REPO}/branches/main" 2>/dev/null | jq -r '.protected'); then
+            [ "$protected" = "true" ] || echo "::warning title=main is not protected::Anyone with write access can push a workflow to main, and main is the branch production admits."
+          fi
+          echo "production admits main alone."
+
   deploy:
     name: Push to ECR & deploy to ECS (production)
     needs: [test, preflight]
@@ -661,8 +759,13 @@ jobs:
       github.ref == 'refs/heads/main' &&
       github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
+    # facilitator-github-deploy trusts this environment and nothing else (cicd-oidc.tf). What
+    # keeps a branch out of it is the environment's deployment-branch rule (main only), set
+    # on GitHub: without it, any branch that names the environment gets the token.
+    environment: production
     # ~16-min image build + terraform + ECS rollout wait; 50 leaves headroom so the
-    # "wait for stable" + verify steps complete (30 was cut off mid-rollout).
+    # "wait for stable" + verify steps complete (30 was cut off mid-rollout). Under the
+    # role's one-hour session.
     timeout-minutes: 50
     concurrency:
       group: deploy-production
@@ -671,6 +774,8 @@ jobs:
       contents: read
       # scripts/ci_last_green_deploy.py reads this workflow's runs and jobs.
       actions: read
+      # The OIDC token that assumes facilitator-github-deploy.
+      id-token: write
     steps:
       # A re-run runs on the commit its run was started at, so re-running an old
       # release deployed that old commit: a rollback nobody asked for, with a
@@ -691,7 +796,7 @@ jobs:
           fi
           echo "Deploying main's head ${RELEASE_SHA}."
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       - name: Compute image tag (version + short SHA)
         id: tag
@@ -708,20 +813,21 @@ jobs:
           echo "Deploying image tag: ${VER}-${SHA}"
 
       - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v4
+        uses: aws-actions/configure-aws-credentials@7474bc4690e29a8392af63c5b98e7449536d5c3a # v4.3.1
         with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          role-to-assume: arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/facilitator-github-deploy
+          role-session-name: x402-rs-deploy-${{ github.run_id }}
+          mask-aws-account-id: true
           aws-region: ${{ env.AWS_REGION }}
 
       - name: Log in to Amazon ECR
         id: ecr
-        uses: aws-actions/amazon-ecr-login@v2
+        uses: aws-actions/amazon-ecr-login@7290e214a610b32bc0eef81748948b6d466a8783 # v2.2.0
 
-      - uses: docker/setup-buildx-action@v3
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
 
       - name: Build and push image to ECR
-        uses: docker/build-push-action@v5
+        uses: docker/build-push-action@ca052bb54ab0790a636c9b5f226502c73d547a25 # v5.4.0
         with:
           context: .
           platforms: linux/amd64
@@ -735,7 +841,7 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      - uses: hashicorp/setup-terraform@v3
+      - uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd # v3.1.2
         with:
           terraform_version: "1.9.8"
 
@@ -943,7 +1049,7 @@ jobs:
             -target=aws_s3_bucket_lifecycle_configuration.discovery > apply.log 2>&1; then
             tail -60 apply.log
             if grep -qi 'AccessDenied\|not authorized' apply.log; then
-              echo "::error title=Discovery bucket: the deploy user lacks the S3 grant::The apply was refused. github-actions-facilitator-deploy needs s3:PutBucketVersioning and s3:PutLifecycleConfiguration on the facilitator-discovery-prod bucket. That is an IAM change and is applied BY HAND, before this merges -- see docs/handoffs/2026-09-10-bucket-versioning.md. Nothing was changed; re-run this workflow once the grant is in place."
+              echo "::error title=Discovery bucket: the deploy role lacks the S3 grant::The apply was refused. facilitator-github-deploy needs s3:PutBucketVersioning and s3:PutLifecycleConfiguration on the facilitator-discovery-prod bucket. That is an IAM change and is applied BY HAND, before this merges -- see docs/handoffs/2026-09-10-bucket-versioning.md. Nothing was changed; re-run this workflow once the grant is in place."
             fi
             exit 1
           fi

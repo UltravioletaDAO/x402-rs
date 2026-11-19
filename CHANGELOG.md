@@ -1,5 +1,104 @@
 # Changelog
 
+## [2.59.0] - 2026-11-18
+
+One release for 2.57.7 (Algorand, below), 2.57.8, 2.58.0 and 2.59.0.
+
+### EVM
+
+- Every EVM transaction the facilitator pays for is held to a gas ceiling for
+  its kind of call and network (`src/chain/gas_ceiling.rs`, published in
+  `GET /config` as `evmGasCeilings`, overridden by
+  `EVM_MAX_GAS_<CALL>_<NETWORK>`). An estimate above it is refused before a
+  nonce is reserved (`400 gas_over_limit`); a call that could not be
+  estimated is sent with the ceiling as its gas limit. The EIP-7702 relays
+  are covered. Ethereum `exact` settles are held to 250000.
+- A v2 body whose `paymentPayload.accepted` names another scheme, network,
+  asset, amount or payTo than `paymentRequirements` is refused with
+  `400 accepted_payment_requirements_mismatch` and the `field`. The
+  payment is checked against the seller's requirements. The `upto` witness
+  recipient and the `escrow` `paymentInfo.receiver` are held to the
+  seller's `payTo`.
+
+### Removed
+
+- The x402r `refund` extension (DepositRelay). Its contracts were removed
+  upstream in January 2026; refundable payments use the `escrow` scheme.
+  `/verify` and `/settle` with `paymentPayload.extensions.refund` answer
+  `400 refund_extension_retired` without touching the chain.
+  `ENABLE_ESCROW` is gone.
+
+### Solana
+
+- A smart-wallet payment (transfer found in the simulation's inner
+  instructions) settles only if the transaction that landed paid payTo the
+  price; otherwise `success: false`,
+  `settlement_landed_without_payment`.
+- `/verify` requires every signature but the fee payer's to be present and
+  valid.
+- Settlement account: the credit that counts is the one to the account the
+  `settleSecretKey` controls, the sweep moves the full price or nothing,
+  and the replay claim is taken after verification.
+
+### Configuration
+
+- `ENABLE_SETTLEMENT_ACCOUNT=false` in production: the Solana/Fogo
+  settlement-account path is off (held by
+  `tests/switched_off_paths.tftest.hcl`). With it off, a settlement-account
+  payment is refused.
+- ERC-8004: daily write limit of 100 on the networks with an EIP-7702 relay
+  (base, polygon, arbitrum, optimism, celo, bsc, monad, base-sepolia), and a
+  gas ceiling of 1000000 per write on every EVM ERC-8004 network without a
+  built-in one.
+
+## [2.57.7] - 2026-11-17
+
+Algorand: the fee transaction the facilitator signs pays only the
+facilitator itself, its fee is capped by the size of its group, and
+`/verify` checks the payer's authorization. The transactions the known
+clients build (`uvd-x402-sdk` TypeScript and Python, `@x402/avm`) still
+verify and settle.
+
+### Fixed
+
+- The fee transaction (index 0), which the client builds and the
+  facilitator signs, must be a payment to the facilitator's own address, as
+  every known client sends it and the official facilitator requires: another
+  receiver is refused with `Fee transaction receiver mismatch`. Its note is
+  empty, `x402-fee-payer`, or the one `@x402/avm` writes, `x402-fee-payer-`
+  followed by the 13 digits of `Date.now()`; any other note is a forbidden
+  field (`note`).
+- Its fee is capped at 5_000 microAlgos per transaction in the group, the
+  official facilitator's cap (10_000 for the two-transaction group the
+  clients send, which set 2_000), instead of a flat 100_000. A group of more
+  than 16 transactions, which algod refuses, is refused first.
+- `/verify` and `/settle` check that the transfer is authorized by its
+  sender: a signature of the sender's key, a multisignature of the multisig
+  account it is (at most 255 keys), or a logic signature of that account,
+  its own program's or one the sender delegated with its signature (the
+  program is not run). A logic signature delegated with a multisignature,
+  which algod refuses since consensus v41, is refused. An authorization that
+  does not verify answers `invalid_signature`.
+- `/settle` applies all of the above before it claims the group in the
+  replay store, signs or broadcasts anything.
+
+### Tests
+
+- `replay_verify_tests` (`src/chain/algorand.rs`) holds each refusal on
+  `verify` and on `settle`: the fee transaction to another receiver, with a
+  note no client writes, above the cap of its group, in a group of 17, and
+  thirteen authorizations the sender did not give or algod refuses
+  (signature, multisignature and logic signature); and that `verify`
+  accepts the notes clients write, the fee at each cap, a group of 16, and
+  six authorizations of the sender.
+- `tests/fixtures/algorand/`: the groups `uvd-x402-sdk` 2.116.0 (npm),
+  `uvd-x402-sdk` 0.114.0 (PyPI) and `@x402/avm` 2.31.0 build, run against a
+  local algod (the README there says how; the published Python
+  `build_atomic_group` raises before it returns, so its file holds the
+  transactions it builds). `verify` and `settle` accept each one, and the
+  group id the client computed holds over the transactions as `/settle`
+  re-encodes them for the broadcast.
+
 ## [2.57.6] - 2026-11-15
 
 Native Hedera: one `success: true` per transaction id.

@@ -188,9 +188,9 @@ pub enum EstimatedSendError {
     /// Gas estimation executed the call and it reverted. Nothing was sent and
     /// no nonce was reserved.
     Reverted(alloy::contract::Error),
-    /// The estimate is above the network's ceiling for one ERC-8004
-    /// transaction ([`crate::erc8004::max_gas`]). Nothing was sent, no nonce
-    /// was reserved and this send did not keep the write's daily slot.
+    /// The estimate is above the ceiling for this ERC-8004 transaction
+    /// ([`erc8004_write_ceiling`]). Nothing was sent, no nonce was reserved
+    /// and this send did not keep the write's daily slot.
     GasOverLimit { estimated: u64, ceiling: u64 },
     /// The broadcast itself failed.
     Send(alloy::contract::Error),
@@ -236,36 +236,36 @@ impl std::error::Error for EstimatedSendError {}
 /// `transfer_agent_nft`).
 ///
 /// Same rules as `settle`: estimate against `latest`, and only an execution
-/// revert stops the send -- a transport failure falls through to the filler,
-/// so a flaky RPC behaves exactly as before. Estimating goes through the same
-/// `FillProvider`, whose `estimate_gas` runs only `prepare_call_sync` (the
-/// wallet's `from`), never the nonce filler.
+/// revert stops the send. Estimating goes through the same `FillProvider`,
+/// whose `estimate_gas` runs only `prepare_call_sync` (the wallet's `from`),
+/// never the nonce filler.
 ///
-/// On a network with a gas ceiling for one ERC-8004 transaction
-/// ([`crate::erc8004::max_gas`], today Robinhood Chain and its testnet), an
-/// estimate above it is refused here, before the write keeps its daily slot
-/// and before a nonce is reserved ([`EstimatedSendError::GasOverLimit`]), and
-/// a call that could not be estimated is sent with the ceiling as its gas
-/// limit instead of the filler's. Every caller of this function is an
-/// ERC-8004 write; a network without a ceiling sends as before.
+/// Every call is held to its ceiling ([`erc8004_write_ceiling`]): an estimate
+/// above it is refused here, before the write keeps its daily slot and before
+/// a nonce is reserved ([`EstimatedSendError::GasOverLimit`]), and a call
+/// that could not be estimated is sent with the ceiling as its gas limit
+/// instead of the filler's. Every caller of this function is an ERC-8004
+/// write.
 pub async fn send_call_estimated<P, D>(
     call: alloy::contract::CallBuilder<P, D, AlloyEthereum>,
     network: Network,
+    kind: crate::chain::gas_ceiling::GasKind,
 ) -> Result<alloy::providers::PendingTransactionBuilder<AlloyEthereum>, EstimatedSendError>
 where
     P: Provider<AlloyEthereum>,
     D: alloy::contract::CallDecoder,
 {
-    let ceiling = crate::erc8004::max_gas::ceiling(network);
+    let ceiling = erc8004_write_ceiling(network, kind);
     let call = call.block(BlockId::latest());
     match call.estimate_gas().await {
         Ok(gas) => {
-            if let Some(ceiling) = ceiling.filter(|ceiling| gas > *ceiling) {
+            if gas > ceiling {
                 tracing::warn!(
                     %network,
+                    kind = kind.as_str(),
                     estimated = gas,
                     ceiling,
-                    "ERC-8004 write above the network's gas ceiling; call not sent, no nonce consumed"
+                    "ERC-8004 write above its gas ceiling; call not sent, no nonce consumed"
                 );
                 return Err(EstimatedSendError::GasOverLimit {
                     estimated: gas,
@@ -286,31 +286,28 @@ where
                 return Err(EstimatedSendError::Reverted(e));
             }
             crate::erc8004::daily_cap::mark_sent();
-            match ceiling {
-                // Never sent blind where a ceiling holds: at most the ceiling.
-                Some(ceiling) => {
-                    tracing::warn!(
-                        %network,
-                        error = %msg,
-                        ceiling,
-                        "Gas estimation unavailable, sending with the network's ERC-8004 gas ceiling"
-                    );
-                    call.gas(ceiling)
-                        .send()
-                        .await
-                        .map_err(EstimatedSendError::Send)
-                }
-                None => {
-                    tracing::warn!(
-                        %network,
-                        error = %msg,
-                        "Gas estimation unavailable, falling back to filler"
-                    );
-                    call.send().await.map_err(EstimatedSendError::Send)
-                }
-            }
+            // Never sent blind: at most the ceiling.
+            tracing::warn!(
+                %network,
+                kind = kind.as_str(),
+                error = %msg,
+                ceiling,
+                "Gas estimation unavailable, sending with the write's gas ceiling"
+            );
+            call.gas(ceiling)
+                .send()
+                .await
+                .map_err(EstimatedSendError::Send)
         }
     }
+}
+
+/// The gas ceiling of one ERC-8004 write the facilitator signs as itself: its
+/// call's ([`crate::chain::gas_ceiling`]), or its network's ERC-8004 one
+/// ([`crate::erc8004::max_gas`]) where that is lower.
+pub fn erc8004_write_ceiling(network: Network, kind: crate::chain::gas_ceiling::GasKind) -> u64 {
+    let call = crate::chain::gas_ceiling::ceiling(network, kind);
+    crate::erc8004::max_gas::ceiling(network).map_or(call, |erc8004| erc8004.min(call))
 }
 
 /// Combined filler type for gas, blob gas, nonce, and chain ID.
@@ -805,6 +802,10 @@ pub struct MetaTransaction {
     /// and the same receipt-status check as every other write. A second send
     /// path would be a second place to forget them.
     pub authorization_list: Option<Vec<alloy::eips::eip7702::SignedAuthorization>>,
+    /// What this transaction does, which sets the most gas it may be sent
+    /// with on its network (`chain::gas_ceiling`). A field without a default
+    /// on purpose: every send names its kind, so none goes out unbounded.
+    pub gas_kind: crate::chain::gas_ceiling::GasKind,
 }
 
 impl MetaEvmProvider for EvmProvider {
@@ -988,6 +989,9 @@ impl EvmProvider {
         let calldata = tx.calldata;
         let confirmations = tx.confirmations;
         let authorization_list = tx.authorization_list;
+        let gas_kind = tx.gas_kind;
+        // The most gas this transaction may be sent with.
+        let ceiling = crate::chain::gas_ceiling::ceiling(self.chain.network, gas_kind);
 
         // Two retries rather than one: with several settles queued on the same
         // signer, the first retry can lose the race again to a sibling that
@@ -1101,9 +1105,10 @@ impl EvmProvider {
             // `PendingNonceManager`; they get the same guard through
             // `send_call_estimated` (top of this file), which is where the
             // nonce-reservation regression test lives.
-            // Only a revert is treated as fatal here: if estimation fails for
-            // transport reasons we fall through and let the filler try, which
-            // preserves the previous behaviour on flaky RPCs.
+            // A revert, and an estimate above the call's ceiling
+            // (`chain::gas_ceiling`), end the send here. If estimation fails
+            // for transport reasons the send goes on with the ceiling as its
+            // gas limit, so a flaky RPC still settles and never unbounded.
             // Estimate against `latest`, not alloy's default `pending`: some
             // RPCs (publicnode's Fuji endpoint, 2026-08-11) reject state
             // execution on the pending block with `-32000 state not available`,
@@ -1119,8 +1124,24 @@ impl EvmProvider {
                 .await
             {
                 Ok(gas) => {
-                    // Head-room for state drift between estimate and inclusion.
-                    txr.set_gas_limit(gas.saturating_mul(5) / 4);
+                    if gas > ceiling {
+                        tracing::warn!(
+                            %from_address,
+                            network = %self.chain.network,
+                            kind = gas_kind.as_str(),
+                            estimated = gas,
+                            ceiling,
+                            "Gas estimate above the ceiling for this call; not sent, no nonce consumed"
+                        );
+                        return Err(FacilitatorLocalError::GasOverLimit {
+                            network: self.chain.network,
+                            estimated: gas,
+                            ceiling,
+                        });
+                    }
+                    // Head-room for state drift between estimate and
+                    // inclusion, never above the ceiling.
+                    txr.set_gas_limit((gas.saturating_mul(5) / 4).min(ceiling));
                 }
                 Err(e) => {
                     let msg = format!("{e:?}");
@@ -1135,9 +1156,13 @@ impl EvmProvider {
                     }
                     tracing::warn!(
                         %from_address,
+                        network = %self.chain.network,
+                        kind = gas_kind.as_str(),
+                        ceiling,
                         error = %msg,
-                        "Gas estimation unavailable, falling back to filler"
+                        "Gas estimation unavailable, sending with the ceiling for this call as its gas limit"
                     );
+                    txr.set_gas_limit(ceiling);
                 }
             }
 
@@ -1964,6 +1989,7 @@ where
                         // transferWithAuthorization with v,r,s signature (PYUSD)
                         self.send_transaction(MetaTransaction {
                             authorization_list: None,
+                            gas_kind: crate::chain::gas_ceiling::GasKind::ExactSettle,
                             to: transfer_call.tx.target(),
                             calldata: transfer_call.tx.calldata().clone(),
                             confirmations: 1,
@@ -2001,6 +2027,7 @@ where
                         };
                         self.send_transaction(MetaTransaction {
                             authorization_list: None,
+                            gas_kind: crate::chain::gas_ceiling::GasKind::ExactSettleDeploy,
                             to: MULTICALL3_ADDRESS,
                             calldata: aggregate_call.abi_encode().into(),
                             confirmations: 1,
@@ -2029,6 +2056,7 @@ where
                         // transferWithAuthorization with inner signature
                         self.send_transaction(MetaTransaction {
                             authorization_list: None,
+                            gas_kind: crate::chain::gas_ceiling::GasKind::ExactSettle,
                             to: transfer_call.tx.target(),
                             calldata: transfer_call.tx.calldata().clone(),
                             confirmations: 1,
@@ -2064,6 +2092,7 @@ where
                         };
                         self.send_transaction(MetaTransaction {
                             authorization_list: None,
+                            gas_kind: crate::chain::gas_ceiling::GasKind::ExactSettleDeploy,
                             to: MULTICALL3_ADDRESS,
                             calldata: aggregate_call.abi_encode().into(),
                             confirmations: 1,
@@ -2093,6 +2122,7 @@ where
                     // transferWithAuthorization with v,r,s signature for PYUSD
                     self.send_transaction(MetaTransaction {
                         authorization_list: None,
+                        gas_kind: crate::chain::gas_ceiling::GasKind::ExactSettle,
                         to: transfer_call.tx.target(),
                         calldata: transfer_call.tx.calldata().clone(),
                         confirmations: 1,
@@ -2119,6 +2149,7 @@ where
                     // transferWithAuthorization with eip1271 signature
                     self.send_transaction(MetaTransaction {
                         authorization_list: None,
+                        gas_kind: crate::chain::gas_ceiling::GasKind::ExactSettle,
                         to: transfer_call.tx.target(),
                         calldata: transfer_call.tx.calldata().clone(),
                         confirmations: 1,
@@ -3736,7 +3767,7 @@ mod tests {
         let nonces = PendingNonceManager::default();
         let (call, from) = scripted_call(rpc.clone(), nonces.clone());
 
-        let outcome = send_call_estimated(call, Network::Base).await;
+        let outcome = send_call_estimated(call, Network::Base, WRITE).await;
 
         assert!(
             !rpc.calls().iter().any(|m| m == "eth_getTransactionCount"),
@@ -3774,7 +3805,7 @@ mod tests {
         let nonces = PendingNonceManager::default();
         let (call, from) = scripted_call(rpc.clone(), nonces.clone());
 
-        let pending = send_call_estimated(call, Network::Base)
+        let pending = send_call_estimated(call, Network::Base, WRITE)
             .await
             .expect("a call whose estimate passes is sent");
         assert_eq!(*pending.tx_hash(), FixedBytes::<32>::from([0xab; 32]));
@@ -3823,10 +3854,18 @@ mod tests {
         (cap, output)
     }
 
-    /// The ceiling of a network that must have one.
+    /// What the tests below send: a rating, revocation, response or URI.
+    const WRITE: crate::chain::gas_ceiling::GasKind =
+        crate::chain::gas_ceiling::GasKind::Erc8004Write;
+
+    /// The ceiling of one [`WRITE`] on a network that has an ERC-8004 ceiling
+    /// of its own (`erc8004::max_gas`).
     fn ceiling_of(network: Network) -> u64 {
-        crate::erc8004::max_gas::ceiling(network)
-            .unwrap_or_else(|| panic!("{network} has no ERC-8004 gas ceiling"))
+        assert!(
+            crate::erc8004::max_gas::ceiling(network).is_some(),
+            "{network} has no ERC-8004 gas ceiling"
+        );
+        erc8004_write_ceiling(network, WRITE)
     }
 
     /// An estimate above the ceiling is refused before the write keeps its
@@ -3840,7 +3879,8 @@ mod tests {
             let nonces = PendingNonceManager::default();
             let (call, from) = scripted_call(rpc.clone(), nonces.clone());
 
-            let (cap, outcome) = in_a_daily_slot(network, send_call_estimated(call, network)).await;
+            let (cap, outcome) =
+                in_a_daily_slot(network, send_call_estimated(call, network, WRITE)).await;
 
             assert!(
                 matches!(
@@ -3884,7 +3924,8 @@ mod tests {
             let nonces = PendingNonceManager::default();
             let (call, from) = scripted_call(rpc.clone(), nonces.clone());
 
-            let (cap, outcome) = in_a_daily_slot(network, send_call_estimated(call, network)).await;
+            let (cap, outcome) =
+                in_a_daily_slot(network, send_call_estimated(call, network, WRITE)).await;
 
             let pending =
                 outcome.unwrap_or_else(|e| panic!("an estimate of {estimate} was not sent: {e}"));
@@ -3895,58 +3936,126 @@ mod tests {
         }
     }
 
-    /// A network without a ceiling sends whatever it is estimated, as before.
+    /// A network without an ERC-8004 ceiling of its own still holds each write
+    /// to its call's ceiling (`chain::gas_ceiling`): an identity delivery whose
+    /// recipient's hook makes it cost 12,000,000 is refused before the daily
+    /// slot, a nonce or a send; one at the 75,951 a real delivery used is sent
+    /// with its estimate.
     #[tokio::test]
-    async fn a_network_without_a_ceiling_sends_any_estimate() {
+    async fn a_network_without_an_erc8004_ceiling_holds_each_write_to_its_calls() {
+        use crate::chain::gas_ceiling::GasKind;
         let network = Network::Base;
         assert_eq!(crate::erc8004::max_gas::ceiling(network), None);
-        let huge = 50_000_000;
-        let rpc = ScriptedRpc::answering(EstimateAnswer::Gas(huge));
+        let ceiling = erc8004_write_ceiling(network, GasKind::Erc8004Transfer);
+        assert_eq!(
+            ceiling,
+            crate::chain::gas_ceiling::ceiling(network, GasKind::Erc8004Transfer)
+        );
+
+        let rpc = ScriptedRpc::answering(EstimateAnswer::Gas(12_000_000));
+        let nonces = PendingNonceManager::default();
+        let (call, from) = scripted_call(rpc.clone(), nonces.clone());
+        let (cap, outcome) = in_a_daily_slot(
+            network,
+            send_call_estimated(call, network, GasKind::Erc8004Transfer),
+        )
+        .await;
+        assert!(
+            matches!(
+                outcome,
+                Err(EstimatedSendError::GasOverLimit { estimated: 12_000_000, ceiling: limit })
+                    if limit == ceiling
+            ),
+            "got {:?}",
+            outcome.map(|_| ())
+        );
+        assert_eq!(
+            cap.used_today(&network),
+            0,
+            "the refused write kept its slot"
+        );
+        assert!(rpc.sent_gas_limits().is_empty());
+        assert_eq!(read_next(&nonces, from).await, None);
+
+        let rpc = ScriptedRpc::answering(EstimateAnswer::Gas(75_951));
         let (call, _) = scripted_call(rpc.clone(), PendingNonceManager::default());
-
-        let (cap, outcome) = in_a_daily_slot(network, send_call_estimated(call, network)).await;
-
-        let pending = outcome.unwrap_or_else(|e| panic!("base did not send: {e}"));
-        assert_eq!(*pending.tx_hash(), FixedBytes::<32>::from([0xab; 32]));
-        assert_eq!(rpc.sent_gas_limits(), vec![huge]);
+        let (cap, outcome) = in_a_daily_slot(
+            network,
+            send_call_estimated(call, network, GasKind::Erc8004Transfer),
+        )
+        .await;
+        outcome.unwrap_or_else(|e| panic!("a delivery at its measured cost was not sent: {e}"));
+        assert_eq!(rpc.sent_gas_limits(), vec![75_951]);
         assert_eq!(cap.used_today(&network), 1);
     }
 
-    /// Where a ceiling holds, a call whose gas could not be estimated is sent
-    /// with the ceiling as its limit, and the filler is not asked to estimate
-    /// again. Where none holds, it falls to the filler as before: here the
-    /// filler's own estimate fails too and nothing is broadcast.
+    /// Where a network has both, the lower ceiling holds: on Robinhood Chain a
+    /// delivery is held to its call's ceiling, below the network's ERC-8004
+    /// one, and a mint to the ERC-8004 one.
     #[tokio::test]
-    async fn without_an_estimate_a_capped_network_sends_at_its_ceiling() {
+    async fn the_lower_of_the_two_ceilings_holds_an_erc8004_write() {
+        use crate::chain::gas_ceiling::GasKind;
         let network = Network::Robinhood;
-        let ceiling = ceiling_of(network);
-        let rpc = ScriptedRpc::answering(EstimateAnswer::Unavailable);
+        let erc8004 = crate::erc8004::max_gas::ceiling(network).expect("Robinhood has one");
+        let transfer = crate::chain::gas_ceiling::ceiling(network, GasKind::Erc8004Transfer);
+        assert!(transfer < erc8004, "{transfer} {erc8004}");
+        assert_eq!(
+            erc8004_write_ceiling(network, GasKind::Erc8004Transfer),
+            transfer
+        );
+        assert_eq!(
+            erc8004_write_ceiling(network, GasKind::Erc8004Register),
+            erc8004.min(crate::chain::gas_ceiling::ceiling(
+                network,
+                GasKind::Erc8004Register
+            ))
+        );
+
+        let rpc = ScriptedRpc::answering(EstimateAnswer::Gas(transfer + 1));
         let (call, _) = scripted_call(rpc.clone(), PendingNonceManager::default());
+        let (cap, outcome) = in_a_daily_slot(
+            network,
+            send_call_estimated(call, network, GasKind::Erc8004Transfer),
+        )
+        .await;
+        assert!(
+            matches!(outcome, Err(EstimatedSendError::GasOverLimit { ceiling, .. }) if ceiling == transfer),
+            "got {:?}",
+            outcome.map(|_| ())
+        );
+        assert!(rpc.sent_gas_limits().is_empty());
+        assert_eq!(cap.used_today(&network), 0);
+    }
 
-        let (cap, outcome) = in_a_daily_slot(network, send_call_estimated(call, network)).await;
-
-        let pending = outcome.unwrap_or_else(|e| panic!("not sent with the ceiling: {e}"));
-        assert_eq!(*pending.tx_hash(), FixedBytes::<32>::from([0xab; 32]));
-        assert_eq!(rpc.sent_gas_limits(), vec![ceiling]);
+    /// A call whose gas could not be estimated is sent with its ceiling as its
+    /// limit, and the filler is not asked to estimate again: on Robinhood
+    /// Chain, the network's ERC-8004 ceiling; on Base, which has none, the
+    /// call's own (`chain::gas_ceiling`), where it used to fall to the filler.
+    #[tokio::test]
+    async fn without_an_estimate_a_write_is_sent_at_its_ceiling() {
         let estimates = |rpc: &ScriptedRpc| {
             rpc.calls()
                 .iter()
                 .filter(|m| *m == "eth_estimateGas")
                 .count()
         };
-        assert_eq!(estimates(&rpc), 1, "{:?}", rpc.calls());
-        assert_eq!(cap.used_today(&network), 1);
+        for (network, ceiling) in [
+            (Network::Robinhood, ceiling_of(Network::Robinhood)),
+            (Network::Base, erc8004_write_ceiling(Network::Base, WRITE)),
+        ] {
+            let rpc = ScriptedRpc::answering(EstimateAnswer::Unavailable);
+            let (call, _) = scripted_call(rpc.clone(), PendingNonceManager::default());
 
-        let rpc = ScriptedRpc::answering(EstimateAnswer::Unavailable);
-        let (call, _) = scripted_call(rpc.clone(), PendingNonceManager::default());
-        let outcome = send_call_estimated(call, Network::Base).await;
-        assert!(
-            matches!(outcome, Err(EstimatedSendError::Send(_))),
-            "got {:?}",
-            outcome.map(|_| ())
-        );
-        assert_eq!(estimates(&rpc), 2, "{:?}", rpc.calls());
-        assert!(rpc.sent_gas_limits().is_empty());
+            let (cap, outcome) =
+                in_a_daily_slot(network, send_call_estimated(call, network, WRITE)).await;
+
+            let pending =
+                outcome.unwrap_or_else(|e| panic!("{network}: not sent with the ceiling: {e}"));
+            assert_eq!(*pending.tx_hash(), FixedBytes::<32>::from([0xab; 32]));
+            assert_eq!(rpc.sent_gas_limits(), vec![ceiling], "{network}");
+            assert_eq!(estimates(&rpc), 1, "{network}: {:?}", rpc.calls());
+            assert_eq!(cap.used_today(&network), 1, "{network}");
+        }
     }
 
     // ---------------------------------------------------------------
@@ -4925,6 +5034,7 @@ mod settlement_unconfirmed_tests {
         let result = provider
             .send_transaction(MetaTransaction {
                 authorization_list: None,
+                gas_kind: crate::chain::gas_ceiling::GasKind::ExactSettle,
                 to: address!("0000000000000000000000000000000000000001"),
                 calldata: Bytes::from_static(&[0u8; 4]),
                 confirmations: 1,
@@ -4961,6 +5071,7 @@ mod settlement_unconfirmed_tests {
     fn meta_transaction() -> MetaTransaction {
         MetaTransaction {
             authorization_list: None,
+            gas_kind: crate::chain::gas_ceiling::GasKind::ExactSettle,
             to: address!("0000000000000000000000000000000000000001"),
             calldata: Bytes::from_static(&[0u8; 4]),
             confirmations: 1,
@@ -5448,6 +5559,7 @@ mod broadcast_outcome_tests {
     fn meta_transaction() -> MetaTransaction {
         MetaTransaction {
             authorization_list: None,
+            gas_kind: crate::chain::gas_ceiling::GasKind::ExactSettle,
             to: address!("0000000000000000000000000000000000000001"),
             calldata: Bytes::from_static(&[0u8; 4]),
             confirmations: 1,
@@ -8194,5 +8306,284 @@ mod proof_of_payment_tests {
             "the settle waited {:?} on a proof it does not need",
             settled.elapsed,
         );
+    }
+}
+
+/// Every EVM send held to the gas ceiling of its call (`chain::gas_ceiling`),
+/// against a node the test scripts (`payment_operator::test_rpc`).
+///
+/// What a payer's wallet contract, a rater's delegated code or a proxy named
+/// in a request burns is what the node estimates. These hold the send path to
+/// the ceiling of each call: above it nothing is sent and no nonce is
+/// reserved; without an estimate it is sent at the ceiling, never at whatever
+/// the filler finds; and what each real call was measured to cost still goes
+/// out as before. Calls are named as `GET /config` names them
+/// (`GasKind::as_str`).
+#[cfg(test)]
+mod gas_ceiling_send_tests {
+    use super::*;
+    use crate::facilitator::Facilitator as _;
+    use crate::payment_operator::test_rpc::{self, CallAnswer, MockNode};
+    use alloy::eips::eip7702::SignedAuthorization;
+    use alloy::sol_types::SolCall;
+
+    /// The calldata of every send below that is not a settle; the node
+    /// estimates it by this selector.
+    const CALL: [u8; 4] = [0xde, 0xad, 0xbe, 0xef];
+
+    fn base_usdc() -> Address {
+        USDCDeployment::by_network(Network::Base)
+            .expect("Base has a USDC deployment")
+            .address()
+            .try_into()
+            .expect("Base USDC is an EVM address")
+    }
+
+    /// A node on Base where every payer holds plenty of USDC and both the
+    /// settle's `transferWithAuthorization` and [`CALL`] are estimated at
+    /// `gas`, and a provider on it pricing by EIP-1559 as Base does.
+    async fn node_estimating(gas: u64) -> (MockNode, EvmProvider) {
+        crate::writer_lease::set_writer_for_test(true);
+        let node = MockNode::start(Network::Base).await;
+        node.on_call(
+            base_usdc(),
+            USDC::balanceOfCall::SELECTOR,
+            CallAnswer::Return(U256::MAX.to_be_bytes::<32>().to_vec()),
+        );
+        node.estimate_gas_for(USDC::transferWithAuthorization_0Call::SELECTOR, gas);
+        node.estimate_gas_for(CALL, gas);
+        let provider = test_rpc::provider(Network::Base, &node, true).await;
+        (node, provider)
+    }
+
+    /// An `exact` settle on Base whose signature is 65 bytes of anything:
+    /// outside Arc nothing recovers the signer, so a payer that is a contract
+    /// passes it by its own answer.
+    fn exact_settle() -> SettleRequest {
+        serde_json::from_value(serde_json::json!({
+            "x402Version": 1,
+            "paymentPayload": {"x402Version": 1, "scheme": "exact", "network": "base", "payload": {
+                "signature": format!("0x{}", "11".repeat(65)),
+                "authorization": {
+                    "from": "0x1111111111111111111111111111111111111111",
+                    "to": "0x2222222222222222222222222222222222222222",
+                    "value": "1000", "validAfter": "0", "validBefore": "2000000000",
+                    "nonce": format!("0x{}", "01".repeat(32))}}},
+            "paymentRequirements": {"scheme": "exact", "network": "base",
+                "maxAmountRequired": "1000", "resource": "https://merchant.example/data",
+                "description": "fixture", "mimeType": "application/json",
+                "payTo": "0x2222222222222222222222222222222222222222", "maxTimeoutSeconds": 60,
+                "asset": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+                "extra": {"name": "USD Coin", "version": "2"}}
+        }))
+        .expect("settle request parses")
+    }
+
+    /// An EIP-7702 authorization to some delegate, as a rater hands one in:
+    /// what makes a relayed rating a type-4 transaction.
+    fn rater_authorization() -> SignedAuthorization {
+        crate::erc8004::relay::signed_authorization(
+            U256::from(8453u64),
+            address!("0x00000000000000000000000000000000000de1e9"),
+            3,
+            0,
+            U256::from(1u64),
+            U256::from(1u64),
+        )
+    }
+
+    /// Every nonce `provider` holds reserved, by signer.
+    async fn reserved_nonces(provider: &EvmProvider) -> Vec<(Address, u64)> {
+        let mut reserved = Vec::new();
+        for signer in provider.signer_addresses() {
+            let lock = provider
+                .nonce_manager
+                .nonces
+                .get(signer)
+                .map(|r| Arc::clone(r.value()));
+            if let Some(lock) = lock {
+                if let Some(next) = lock.lock().await.next {
+                    reserved.push((*signer, next));
+                }
+            }
+        }
+        reserved
+    }
+
+    /// The gas limit of every transaction the node was handed, in order.
+    fn sent_limits(node: &MockNode) -> Vec<u64> {
+        node.sent().iter().map(|tx| tx.gas_limit).collect()
+    }
+
+    /// A send of [`CALL`] that `kind` names, carrying `authorization_list`.
+    fn meta(kind: &str, authorization_list: Option<Vec<SignedAuthorization>>) -> MetaTransaction {
+        MetaTransaction {
+            to: address!("0x00000000000000000000000000000000000c0de0"),
+            calldata: Bytes::from_static(&CALL),
+            confirmations: 1,
+            authorization_list,
+            gas_kind: kind_named(kind),
+        }
+    }
+
+    /// The ceiling in force for `kind` on Base.
+    fn ceiling_on_base(kind: &str) -> u64 {
+        crate::chain::gas_ceiling::ceiling(Network::Base, kind_named(kind))
+    }
+
+    fn kind_named(kind: &str) -> crate::chain::gas_ceiling::GasKind {
+        crate::chain::gas_ceiling::GasKind::ALL
+            .into_iter()
+            .find(|k| k.as_str() == kind)
+            .unwrap_or_else(|| panic!("no call is named {kind}"))
+    }
+
+    /// A settle estimated at 13,000,000 -- what a payer's `isValidSignature`
+    /// makes it cost when it burns gas -- is refused before a nonce is
+    /// reserved, and nothing reaches the node.
+    #[tokio::test]
+    async fn an_exact_settle_estimated_above_its_ceiling_sends_nothing() {
+        let (node, provider) = node_estimating(13_000_000).await;
+        let settled = provider.settle(&exact_settle()).await;
+        assert_eq!(sent_limits(&node), Vec::<u64>::new(), "{settled:?}");
+        assert_eq!(reserved_nonces(&provider).await, vec![], "{settled:?}");
+        assert!(
+            format!("{settled:?}").contains("GasOverLimit"),
+            "{settled:?}"
+        );
+    }
+
+    /// A settle within its ceiling goes out as before, with its estimate plus
+    /// a quarter as its gas limit, never above the ceiling. 103,401 is the
+    /// most gas an `exact` settle was measured to use.
+    #[tokio::test]
+    async fn an_exact_settle_within_its_ceiling_is_sent_as_before() {
+        let ceiling = ceiling_on_base("exact");
+        for (estimate, limit) in [
+            (103_401, 103_401 * 5 / 4),
+            (ceiling * 9 / 10, ceiling),
+            (ceiling, ceiling),
+        ] {
+            let (node, provider) = node_estimating(estimate).await;
+            let settled = provider.settle(&exact_settle()).await;
+            assert!(
+                settled.as_ref().is_ok_and(|r| r.success),
+                "{estimate}: {settled:?}"
+            );
+            assert_eq!(sent_limits(&node), vec![limit], "{estimate}");
+        }
+    }
+
+    /// When the node cannot estimate the settle (a transport failure, not a
+    /// revert), it is sent with its ceiling as its gas limit, and the filler
+    /// is not asked: whatever the filler would find is never what is signed.
+    #[tokio::test]
+    async fn an_exact_settle_that_could_not_be_estimated_is_sent_at_its_ceiling() {
+        let (node, provider) = node_estimating(13_000_000).await;
+        node.estimates_unavailable_at_latest(true);
+        let settled = provider.settle(&exact_settle()).await;
+        assert_eq!(
+            sent_limits(&node),
+            vec![ceiling_on_base("exact")],
+            "{settled:?}"
+        );
+        let estimates = node
+            .requests()
+            .iter()
+            .filter(|m| *m == "eth_estimateGas")
+            .count();
+        assert_eq!(
+            estimates,
+            1,
+            "the filler estimated again: {:?}",
+            node.requests()
+        );
+    }
+
+    /// The other sends a request can make the facilitator pay for: an `upto`
+    /// settle, a PaymentOperator call and a relayed ERC-8004 rating (type-4,
+    /// with the rater's authorization).
+    fn sends() -> Vec<(&'static str, Option<Vec<SignedAuthorization>>)> {
+        vec![
+            ("upto", None),
+            ("operator", None),
+            ("erc8004-relay", Some(vec![rater_authorization()])),
+        ]
+    }
+
+    /// A `kind` send estimated at `estimate`, far above its ceiling, is
+    /// refused before a nonce is reserved, and nothing reaches the node.
+    async fn assert_refused_above_its_ceiling(
+        kind: &str,
+        estimate: u64,
+        authorization_list: Option<Vec<SignedAuthorization>>,
+    ) {
+        let (node, provider) = node_estimating(estimate).await;
+        let sent = provider
+            .send_transaction_from(provider.pinned_signer(), meta(kind, authorization_list))
+            .await;
+        assert_eq!(sent_limits(&node), Vec::<u64>::new(), "{kind}: {sent:?}");
+        assert_eq!(reserved_nonces(&provider).await, vec![], "{kind}");
+        assert!(
+            format!("{sent:?}").contains("GasOverLimit"),
+            "{kind}: {sent:?}"
+        );
+    }
+
+    /// An `upto` settle through the Permit2 proxy whose payer contract burns
+    /// gas in `isValidSignature`.
+    #[tokio::test]
+    async fn an_upto_settle_estimated_above_its_ceiling_sends_nothing() {
+        assert_refused_above_its_ceiling("upto", 50_000_000, None).await;
+    }
+
+    /// A PaymentOperator call.
+    #[tokio::test]
+    async fn an_operator_call_estimated_above_its_ceiling_sends_nothing() {
+        assert_refused_above_its_ceiling("operator", 50_000_000, None).await;
+    }
+
+    /// A relayed ERC-8004 rating: type-4, carrying the rater's authorization,
+    /// to an account whose delegated code burns gas.
+    #[tokio::test]
+    async fn a_relayed_rating_estimated_above_its_ceiling_sends_nothing() {
+        assert_refused_above_its_ceiling(
+            "erc8004-relay",
+            15_000_000,
+            Some(vec![rater_authorization()]),
+        )
+        .await;
+    }
+
+    /// Each of them at its measured cost goes out as before, with its estimate
+    /// plus a quarter: an `upto` settle (99,566 used on Base), a
+    /// PaymentOperator authorize (286,226, as Polygon's went out at limits of
+    /// about 357,783) and a relayed rating (332,814, sent at 416,017 on
+    /// Ethereum, Celo and Optimism). At the ceiling it goes out at the ceiling;
+    /// one gas above it, not at all.
+    #[tokio::test]
+    async fn every_send_within_its_ceiling_is_sent_as_before() {
+        let measured = [99_566, 286_226, 332_814];
+        for ((kind, authorization_list), measured) in sends().into_iter().zip(measured) {
+            let ceiling = ceiling_on_base(kind);
+            for (estimate, sent) in [
+                (measured, vec![measured * 5 / 4]),
+                (ceiling, vec![ceiling]),
+                (ceiling + 1, vec![]),
+            ] {
+                let (node, provider) = node_estimating(estimate).await;
+                let outcome = provider
+                    .send_transaction_from(
+                        provider.pinned_signer(),
+                        meta(kind, authorization_list.clone()),
+                    )
+                    .await;
+                assert_eq!(
+                    sent_limits(&node),
+                    sent,
+                    "{kind} estimated at {estimate}: {outcome:?}"
+                );
+            }
+        }
     }
 }

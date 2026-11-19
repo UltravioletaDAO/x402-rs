@@ -26,7 +26,9 @@ use std::sync::Arc;
 
 use algonaut::algod::v2::Algod;
 use algonaut::core::Address as AlgoAddress;
+use algonaut::core::{LogicSignature, MultisigAddress, MultisigSignature};
 use algonaut::transaction::account::Account;
+use algonaut::transaction::transaction::TransactionSignature;
 use algonaut::transaction::{SignedTransaction, Transaction as AlgoTransaction, TransactionType};
 
 use crate::chain::{FacilitatorLocalError, FromEnvByNetworkBuild, NetworkProviderOps};
@@ -57,14 +59,37 @@ pub const ALGORAND_MAINNET_ALGOD: &str = "https://mainnet-api.algonode.cloud";
 /// Default Algorand testnet algod endpoint
 pub const ALGORAND_TESTNET_ALGOD: &str = "https://testnet-api.algonode.cloud";
 
-/// Maximum fee the facilitator will pay in a fee transaction, in microAlgos.
+/// Most transactions an Algorand atomic group may hold (the consensus
+/// parameter `MaxTxGroupSize`): algod refuses a larger group.
+pub const MAX_ALGORAND_GROUP_SIZE: usize = 16;
+
+/// Most the facilitator's fee transaction may pay per transaction in its
+/// group, in microAlgos.
 ///
-/// Standard minimum network fee is 1_000 microAlgos (0.001 ALGO).
-/// A 2-transaction atomic group requires at minimum 2_000 microAlgos in fee pooling.
-/// This cap is set to 100_000 microAlgos (0.1 ALGO) -- 50x the typical needed amount --
-/// to allow for network congestion while bounding the worst-case drain to 0.1 ALGO
-/// per settlement call in the event that the sender check is somehow bypassed.
-pub const MAX_ALGORAND_FEE_TX_MICROALGOS: u64 = 100_000;
+/// Through fee pooling the fee transaction pays for the whole group, so its
+/// cap is this times the group's size. The standard minimum fee is 1_000
+/// microAlgos per transaction; five times that is the cap the official
+/// facilitator (`@x402/avm`, `MAX_REASONABLE_FEE_PER_TXN`) applies, room for
+/// congestion. The two-transaction group every known client sends sets
+/// 2_000 against a cap of 10_000.
+pub const MAX_ALGORAND_FEE_PER_GROUP_TXN_MICROALGOS: u64 = 5_000;
+
+/// The note clients put on the fee transaction: `@x402/avm` writes it
+/// followed by `-` and `Date.now()`, other public x402 clients write it
+/// alone, and the uvd-x402-sdk clients write none. The facilitator signs the
+/// fee transaction, so its note is published from the facilitator's account.
+const FEE_NOTE: &[u8] = b"x402-fee-payer";
+
+/// How many digits the fee note carries after `FEE_NOTE` and `-`: those of
+/// `Date.now()`, 13 from September 2001 until the year 2286.
+const FEE_NOTE_DIGITS: usize = 13;
+
+/// The only multisignature version Algorand defines (algonaut keeps its own
+/// copy private).
+const MULTISIG_VERSION: u8 = 1;
+
+/// Most keys algod takes in a multisignature.
+const MAX_MULTISIG_KEYS: usize = 255;
 
 // =============================================================================
 // Error Types
@@ -229,6 +254,9 @@ pub enum AlgorandError {
     #[error("Fee transaction sender mismatch: expected facilitator {expected}, got {actual}")]
     FeeSenderMismatch { expected: String, actual: String },
 
+    #[error("Fee transaction receiver mismatch: expected facilitator {expected}, got {actual}")]
+    FeeReceiverMismatch { expected: String, actual: String },
+
     #[error("Fee transaction amount {amount} exceeds maximum allowed {max}")]
     FeeTooHigh { amount: u64, max: u64 },
 
@@ -243,7 +271,17 @@ pub enum AlgorandError {
 
 impl From<AlgorandError> for FacilitatorLocalError {
     fn from(e: AlgorandError) -> Self {
-        FacilitatorLocalError::Other(e.to_string())
+        match e {
+            // The payer's authorization does not verify: the protocol's
+            // `invalid_signature`, as on the other chains.
+            AlgorandError::InvalidSignature { ref address } => {
+                FacilitatorLocalError::InvalidSignature(
+                    MixedAddress::Algorand(address.clone()),
+                    e.to_string(),
+                )
+            }
+            other => FacilitatorLocalError::Other(other.to_string()),
+        }
     }
 }
 
@@ -557,10 +595,18 @@ impl AlgorandProvider {
     /// - Draining the facilitator's funds (close_remainder_to)
     /// - Taking over the facilitator's account (rekey_to)
     /// - Signing as a sender that is NOT the facilitator (sender check -- B2)
-    /// - Paying an unbounded fee from the facilitator wallet (fee cap -- B2)
+    /// - Paying more fee than the group needs from the facilitator wallet (fee
+    ///   cap per transaction in the group of `group_size`)
     /// - Moving funds or acting for the facilitator's account: only a payment
-    ///   of zero microAlgos, with no lease, is ever signed
-    fn validate_fee_transaction(&self, tx: &AlgoTransaction) -> Result<(), AlgorandError> {
+    ///   of zero microAlgos from the facilitator to itself, with no lease, is
+    ///   ever signed
+    /// - Publishing the client's text from the facilitator's account: the only
+    ///   notes allowed are the fixed ones clients write
+    fn validate_fee_transaction(
+        &self,
+        tx: &AlgoTransaction,
+        group_size: usize,
+    ) -> Result<(), AlgorandError> {
         // B2 invariant 1: The fee transaction MUST be sent FROM the facilitator address.
         // An attacker could otherwise embed Payment(facilitator -> attacker, amount) in the
         // atomic group and get the facilitator to co-sign it, draining the facilitator wallet.
@@ -577,19 +623,21 @@ impl AlgorandProvider {
             });
         }
 
-        // B2 invariant 2: The fee amount must not exceed MAX_ALGORAND_FEE_TX_MICROALGOS.
-        // Even with the sender check above, we bound the fee so that a misconfigured or
-        // future-buggy caller cannot extract more than 0.1 ALGO per settlement call.
+        // B2 invariant 2: the fee is bounded by the group it pays for, at
+        // MAX_ALGORAND_FEE_PER_GROUP_TXN_MICROALGOS per transaction, so a settle
+        // never spends from the facilitator wallet more than its group can need.
         let fee_amount = tx.fee.0;
-        if fee_amount > MAX_ALGORAND_FEE_TX_MICROALGOS {
+        let max_fee = MAX_ALGORAND_FEE_PER_GROUP_TXN_MICROALGOS.saturating_mul(group_size as u64);
+        if fee_amount > max_fee {
             tracing::warn!(
                 fee_amount = fee_amount,
-                max = MAX_ALGORAND_FEE_TX_MICROALGOS,
+                max = max_fee,
+                group_size = group_size,
                 "Fee transaction amount exceeds cap -- rejecting"
             );
             return Err(AlgorandError::FeeTooHigh {
                 amount: fee_amount,
-                max: MAX_ALGORAND_FEE_TX_MICROALGOS,
+                max: max_fee,
             });
         }
 
@@ -608,10 +656,12 @@ impl AlgorandProvider {
             });
         }
 
-        // The fee transaction may only be a payment that moves nothing. Any amount,
-        // or any other type, would spend the facilitator's funds or act for its
-        // account under its signature. The receiver is left free: with a zero
-        // amount nothing reaches it.
+        // The fee transaction may only be a payment that moves nothing, from the
+        // facilitator to itself. Any amount, or any other type, would spend the
+        // facilitator's funds or act for its account under its signature; any
+        // other receiver would be a payment the facilitator signs to an address
+        // the client chose. Every known client sends a self-payment, and the
+        // official facilitator refuses anything else.
         match &tx.txn_type {
             TransactionType::Payment(payment) => {
                 // close_remainder_to would send remaining funds to attacker
@@ -625,12 +675,30 @@ impl AlgorandProvider {
                         field: "amount".to_string(),
                     });
                 }
+                let receiver = payment.receiver.to_string();
+                if receiver != self.public_address {
+                    tracing::warn!(
+                        expected = %self.public_address,
+                        actual = %receiver,
+                        "Fee transaction receiver is not the facilitator address -- rejecting"
+                    );
+                    return Err(AlgorandError::FeeReceiverMismatch {
+                        expected: self.public_address.clone(),
+                        actual: receiver,
+                    });
+                }
             }
             _ => {
                 return Err(AlgorandError::InvalidAtomicGroup(
                     "Fee transaction must be a payment transaction".to_string(),
                 ));
             }
+        }
+
+        if !fee_note_is_allowed(tx.note.as_deref()) {
+            return Err(AlgorandError::ForbiddenFeeField {
+                field: "note".to_string(),
+            });
         }
 
         Ok(())
@@ -647,6 +715,15 @@ impl AlgorandProvider {
             return Err(AlgorandError::InvalidAtomicGroup(
                 "Group must have at least 2 transactions".to_string(),
             ));
+        }
+
+        // The fee cap grows with the group, so the group is held to the size
+        // algod accepts.
+        if payload.payment_group.len() > MAX_ALGORAND_GROUP_SIZE {
+            return Err(AlgorandError::InvalidAtomicGroup(format!(
+                "Group has {} transactions, at most {MAX_ALGORAND_GROUP_SIZE} allowed",
+                payload.payment_group.len()
+            )));
         }
 
         if payload.payment_index >= payload.payment_group.len() {
@@ -671,7 +748,7 @@ impl AlgorandProvider {
         let fee_tx = self.decode_transaction(&payload.payment_group[0])?;
 
         // Validate fee transaction security
-        self.validate_fee_transaction(&fee_tx)?;
+        self.validate_fee_transaction(&fee_tx, payload.payment_group.len())?;
 
         // Decode the payment transaction (signed by client)
         let payment_signed =
@@ -801,6 +878,19 @@ impl AlgorandProvider {
                     });
                 }
             }
+        }
+
+        // (f) the transfer is authorized by its sender, who is the payer verify
+        // reports, so verify does not vouch for a payment its sender never
+        // signed. The rest of the chain's verdict is still algod's.
+        if !payment_authorized_by_sender(&payment_signed)? {
+            tracing::warn!(
+                sender = %sender,
+                "Algorand payment authorization does not verify -- rejecting"
+            );
+            return Err(AlgorandError::InvalidSignature {
+                address: sender.to_string(),
+            });
         }
 
         // Get current round for validity checks
@@ -1071,6 +1161,96 @@ impl AlgorandProvider {
     }
 }
 
+/// Whether `note`, the fee transaction's, is one the clients write: none,
+/// `FEE_NOTE`, or `FEE_NOTE` and `-` followed by `FEE_NOTE_DIGITS` ASCII
+/// digits.
+fn fee_note_is_allowed(note: Option<&[u8]>) -> bool {
+    let Some(note) = note.filter(|note| !note.is_empty()) else {
+        return true;
+    };
+    let Some(rest) = note.strip_prefix(FEE_NOTE) else {
+        return false;
+    };
+    match rest.strip_prefix(b"-") {
+        None => rest.is_empty(),
+        Some(digits) => digits.len() == FEE_NOTE_DIGITS && digits.iter().all(u8::is_ascii_digit),
+    }
+}
+
+/// Whether the authorization `signed` carries is the sender's own, judged
+/// from the bytes alone:
+/// - a single signature by the sender's key;
+/// - a multisignature of the multisig account the sender is;
+/// - a logic signature of the sender: the account of its own program, or a
+///   program the sender delegated with its signature. The program is not run
+///   here. A program delegated with a multisignature (the logic signature's
+///   `msig` field, the only one algonaut reads) is refused: algod has refused
+///   that field since consensus v41.
+///
+/// algonaut drops `sgnr` when it decodes, and the facilitator broadcasts the
+/// payment re-encoded without it, so only the sender's own key can authorize
+/// it. What else the chain decides (a rekeyed sender, the program's verdict,
+/// the balance) is left to algod.
+fn payment_authorized_by_sender(signed: &SignedTransaction) -> Result<bool, AlgorandError> {
+    let sender = signed.transaction.sender();
+    let message = signed.transaction.bytes_to_sign().map_err(|e| {
+        AlgorandError::InvalidEncoding(format!("Payment transaction encoding failed: {e}"))
+    })?;
+    Ok(match &signed.sig {
+        TransactionSignature::Single(signature) => ed25519_signs(&sender.0, &message, &signature.0),
+        TransactionSignature::Multi(msig) => multisig_authorizes(msig, &sender, &message),
+        TransactionSignature::Logic(lsig) => match &lsig.sig {
+            LogicSignature::ContractAccount => lsig.as_address() == sender,
+            LogicSignature::DelegatedSig(signature) => {
+                ed25519_signs(&sender.0, &lsig.logic.bytes_to_sign(), &signature.0)
+            }
+            LogicSignature::DelegatedMultiSig(_) => false,
+        },
+    })
+}
+
+/// Whether `msig` is a multisignature of `account` over `message`, checked
+/// as algod checks one: version 1, a threshold of at least one, at most
+/// `MAX_MULTISIG_KEYS` keys, keys that hash to `account`, every signature
+/// present valid, and at least `threshold` of them (so no fewer keys than
+/// the threshold).
+fn multisig_authorizes(msig: &MultisigSignature, account: &AlgoAddress, message: &[u8]) -> bool {
+    let threshold = usize::from(msig.threshold);
+    if msig.version != MULTISIG_VERSION || threshold == 0 {
+        return false;
+    }
+    if msig.subsigs.len() > MAX_MULTISIG_KEYS {
+        return false;
+    }
+    let keys = MultisigAddress {
+        version: msig.version,
+        threshold: msig.threshold,
+        public_keys: msig.subsigs.iter().map(|subsig| subsig.key).collect(),
+    };
+    if keys.address() != *account {
+        return false;
+    }
+    let mut signatures = 0;
+    for subsig in &msig.subsigs {
+        if let Some(signature) = &subsig.sig {
+            if !ed25519_signs(&subsig.key.0, message, &signature.0) {
+                return false;
+            }
+            signatures += 1;
+        }
+    }
+    signatures >= threshold
+}
+
+/// Strict Ed25519 verification: it also refuses small-order keys and nonce
+/// points, which a wallet's signature never uses.
+fn ed25519_signs(public_key: &[u8; 32], message: &[u8], signature: &[u8; 64]) -> bool {
+    ed25519_dalek::VerifyingKey::from_bytes(public_key).is_ok_and(|key| {
+        key.verify_strict(message, &ed25519_dalek::Signature::from_bytes(signature))
+            .is_ok()
+    })
+}
+
 /// Result of verifying an Algorand payment group
 pub struct VerifyGroupResult {
     pub payer: AlgorandAddress,
@@ -1247,27 +1427,64 @@ mod tests {
         assert_eq!(testnet.usdc_asa_id, USDC_ASA_ID_TESTNET);
     }
 
-    // NOTE: Unit tests for validate_fee_transaction's B2 invariants (sender check and fee
-    // cap) are not implemented here because algonaut does not expose a public constructor
-    // for AlgoTransaction -- transactions must be built through the SDK's builder API which
-    // requires live genesis hash/id parameters (fetched from algod).  Constructing a valid
-    // fake AlgoTransaction struct for pure unit testing would require either:
-    //   (a) unsafe transmute / raw struct init (unsound),
-    //   (b) a live algod connection (integration test, not unit), or
-    //   (c) an algonaut test-helper crate that does not yet exist.
-    //
-    // The invariants are covered by the integration test suite in tests/integration/ which
-    // exercises the full verify/settle flow against a live testnet.  The logic itself is
-    // straightforward string equality and integer comparison on data already validated by
-    // algonaut deserialization, so the risk of the check itself being wrong is low.
+    // validate_fee_transaction is exercised through verify and settle in
+    // replay_verify_tests below, on groups built with algonaut's builder (no
+    // node needed) and on the groups the known clients build.
 
     #[test]
     fn test_fee_cap_constant_is_sane() {
-        // Standard Algorand minimum fee is 1_000 microAlgos.
-        // A 2-transaction group needs at least 2_000.
-        // The cap should be strictly above the minimum and below 1 ALGO (1_000_000).
-        assert!(MAX_ALGORAND_FEE_TX_MICROALGOS > 2_000);
-        assert!(MAX_ALGORAND_FEE_TX_MICROALGOS < 1_000_000);
+        // Standard Algorand minimum fee is 1_000 microAlgos per transaction.
+        // The cap per transaction sits above it, and the largest group's cap
+        // stays below 1 ALGO (1_000_000).
+        assert!(MAX_ALGORAND_FEE_PER_GROUP_TXN_MICROALGOS > 1_000);
+        assert!(
+            MAX_ALGORAND_FEE_PER_GROUP_TXN_MICROALGOS * (MAX_ALGORAND_GROUP_SIZE as u64)
+                < 1_000_000
+        );
+    }
+
+    /// The fee note is absent, `x402-fee-payer` (other public clients), or
+    /// the one `@x402/avm` writes: `x402-fee-payer-` and the 13 digits of
+    /// `Date.now()`.
+    #[test]
+    fn only_the_notes_a_known_client_writes_are_allowed_on_the_fee_transaction() {
+        for allowed in [
+            None,
+            Some(&b""[..]),
+            Some(&b"x402-fee-payer"[..]),
+            Some(&b"x402-fee-payer-1794934694448"[..]),
+            Some(&b"x402-fee-payer-1000000000000"[..]),
+            Some(&b"x402-fee-payer-9999999999999"[..]),
+        ] {
+            assert!(fee_note_is_allowed(allowed), "refused {allowed:?}");
+        }
+        for refused in [
+            &b"x402-fee-payer-"[..],
+            b"x402-fee-payer-0",
+            b"x402-fee-payer-179493469444",
+            b"x402-fee-payer-17949346944480",
+            b"x402-fee-payer-9007199254740991",
+            b"x402-fee-payer-12345678901234567",
+            b"x402-fee-payer-1794934694448 ",
+            b"x402-fee-payer-1794934694448\n",
+            b" x402-fee-payer-1794934694448",
+            b"X402-FEE-PAYER-1794934694448",
+            b"x402-fee-payer--1794934694448",
+            b"x402-fee-payer-17949346944a8",
+            "x402-fee-payer-\u{0661}\u{0662}".as_bytes(),
+            b"x402-fee-payer ",
+            b"x402-fee-payerX",
+            b"x402-fee-payer_1794934694448",
+            b"x402-fee-paye",
+            b"any other text",
+            b"\0",
+        ] {
+            assert!(
+                !fee_note_is_allowed(Some(refused)),
+                "allowed {:?}",
+                String::from_utf8_lossy(refused)
+            );
+        }
     }
 }
 
@@ -1282,9 +1499,14 @@ mod tests {
 mod replay_verify_tests {
     use super::*;
     use crate::types::{PaymentPayload, TokenAmount};
-    use algonaut::core::{MicroAlgos, Round, SuggestedTransactionParams};
+    use algonaut::core::{
+        CompiledTeal, LogicSignature, MicroAlgos, MultisigAddress, MultisigSignature,
+        MultisigSubsig, Round, SuggestedTransactionParams,
+    };
     use algonaut::crypto::HashDigest;
     use algonaut::transaction::builder::TxnFee;
+    use algonaut::transaction::contract_account::ContractAccount;
+    use algonaut::transaction::transaction::{SignedLogic, TransactionSignature};
     use algonaut::transaction::tx_group::TxGroup;
     use algonaut::transaction::{AcceptAsset, Pay, RegisterKey, TransferAsset, TxnBuilder};
     use std::collections::HashSet;
@@ -1394,25 +1616,76 @@ mod replay_verify_tests {
         algod_calls: AlgodCalls,
     }
 
+    /// The payer: the address the transfer is sent from, and how that
+    /// account signs it.
+    struct Payer {
+        address: AlgoAddress,
+        sign: Box<dyn FnOnce(AlgoTransaction) -> SignedTransaction>,
+    }
+
+    impl Payer {
+        /// An account that signs with its own key, as a wallet does.
+        fn single() -> Self {
+            let account = Account::generate();
+            Payer {
+                address: account.address(),
+                sign: Box::new(move |txn| account.sign_transaction(txn).unwrap()),
+            }
+        }
+    }
+
+    /// A test's group: the fee transaction's body (built from the
+    /// facilitator's address), fee, lease and note; the payer; and how many
+    /// transactions follow the payment.
+    struct Group {
+        fee_txn: FeeTxn,
+        fee: u64,
+        fee_lease: Option<HashDigest>,
+        fee_note: Option<Vec<u8>>,
+        payer: Payer,
+        trailing: u8,
+    }
+
+    impl Default for Group {
+        /// The group the uvd-x402-sdk clients send: a zero-amount payment
+        /// from the facilitator to itself paying 2_000 for both
+        /// transactions, without lease or note.
+        fn default() -> Self {
+            Group {
+                fee_txn: Box::new(|f| Pay::new(f, f, MicroAlgos(0)).build()),
+                fee: 2_000,
+                fee_lease: None,
+                fee_note: None,
+                payer: Payer::single(),
+                trailing: 0,
+            }
+        }
+    }
+
     /// A group as a client sends it: the facilitator's unsigned fee
     /// transaction, then the payer's signed USDC transfer. `note` gives each
     /// test its own group_id.
     async fn fixture(note: &[u8]) -> Fixture {
-        fixture_with(
-            note,
-            |facilitator| Pay::new(facilitator, facilitator, MicroAlgos(0)).build(),
-            None,
-        )
-        .await
+        fixture_of(note, Group::default()).await
     }
 
     /// `fixture` with the fee transaction's body, built from the
     /// facilitator's address, and its lease chosen by the test.
     async fn fixture_with(
         note: &[u8],
-        fee_txn: impl FnOnce(AlgoAddress) -> TransactionType,
+        fee_txn: impl FnOnce(AlgoAddress) -> TransactionType + 'static,
         fee_lease: Option<HashDigest>,
     ) -> Fixture {
+        let group = Group {
+            fee_txn: Box::new(fee_txn),
+            fee_lease,
+            ..Group::default()
+        };
+        fixture_of(note, group).await
+    }
+
+    /// `fixture` with every part of the group chosen by the test.
+    async fn fixture_of(note: &[u8], group: Group) -> Fixture {
         let (algod_url, algod_calls) = algod_stub().await;
         let provider = AlgorandProvider::try_new(
             Account::generate().mnemonic(),
@@ -1421,7 +1694,6 @@ mod replay_verify_tests {
         )
         .unwrap();
         let facilitator = AlgoAddress::from_str(&provider.public_address).unwrap();
-        let payer = Account::generate();
         let pay_to = Account::generate().address();
 
         let params = SuggestedTransactionParams {
@@ -1435,33 +1707,74 @@ mod replay_verify_tests {
         };
         let mut fee_builder = TxnBuilder::with_fee(
             &params,
-            TxnFee::Fixed(MicroAlgos(2_000)),
-            fee_txn(facilitator),
+            TxnFee::Fixed(MicroAlgos(group.fee)),
+            (group.fee_txn)(facilitator),
         );
-        if let Some(lease) = fee_lease {
+        if let Some(lease) = group.fee_lease {
             fee_builder = fee_builder.lease(lease);
+        }
+        if let Some(fee_note) = group.fee_note {
+            fee_builder = fee_builder.note(fee_note);
         }
         let mut fee_tx = fee_builder.build().unwrap();
         let mut payment_tx = TxnBuilder::with_fee(
             &params,
             TxnFee::zero(),
-            TransferAsset::new(payer.address(), USDC_ASA_ID_TESTNET, AMOUNT, pay_to).build(),
+            TransferAsset::new(group.payer.address, USDC_ASA_ID_TESTNET, AMOUNT, pay_to).build(),
         )
         .note(note.to_vec())
         .build()
         .unwrap();
-        TxGroup::assign_group_id(&mut [&mut fee_tx, &mut payment_tx]).unwrap();
+        // Transactions after the payment, from an account of their own.
+        let other = Account::generate();
+        let mut trailing: Vec<AlgoTransaction> = (0..group.trailing)
+            .map(|i| {
+                TxnBuilder::with_fee(
+                    &params,
+                    TxnFee::zero(),
+                    Pay::new(other.address(), other.address(), MicroAlgos(0)).build(),
+                )
+                .note(vec![i])
+                .build()
+                .unwrap()
+            })
+            .collect();
+        let mut members: Vec<&mut AlgoTransaction> = vec![&mut fee_tx, &mut payment_tx];
+        members.extend(trailing.iter_mut());
+        TxGroup::assign_group_id(&mut members).unwrap();
         let group_id = fee_tx.group.unwrap().0;
-        let payment_signed = payer.sign_transaction(payment_tx).unwrap();
+        let payment_signed = (group.payer.sign)(payment_tx);
 
+        let mut payment_group = vec![
+            BASE64.encode(rmp_serde::to_vec_named(&fee_tx).unwrap()),
+            BASE64.encode(rmp_serde::to_vec_named(&payment_signed).unwrap()),
+        ];
+        payment_group.extend(trailing.into_iter().map(|txn| {
+            BASE64.encode(rmp_serde::to_vec_named(&other.sign_transaction(txn).unwrap()).unwrap())
+        }));
         let payload = ExactAlgorandPayload {
             payment_index: 1,
-            payment_group: vec![
-                BASE64.encode(rmp_serde::to_vec_named(&fee_tx).unwrap()),
-                BASE64.encode(rmp_serde::to_vec_named(&payment_signed).unwrap()),
-            ],
+            payment_group,
         };
-        let request = VerifyRequest {
+
+        Fixture {
+            provider,
+            request: verify_request(payload, pay_to.to_string(), AMOUNT, USDC_ASA_ID_TESTNET),
+            group_id,
+            payer: group.payer.address.to_string(),
+            algod_calls,
+        }
+    }
+
+    /// A testnet request for `payload` paying `amount` of ASA `asset` to
+    /// `pay_to`.
+    fn verify_request(
+        payload: ExactAlgorandPayload,
+        pay_to: String,
+        amount: u64,
+        asset: u64,
+    ) -> VerifyRequest {
+        VerifyRequest {
             x402_version: X402Version::V1,
             payment_payload: PaymentPayload {
                 x402_version: X402Version::V1,
@@ -1472,23 +1785,57 @@ mod replay_verify_tests {
             payment_requirements: PaymentRequirements {
                 scheme: Scheme::Exact,
                 network: Network::AlgorandTestnet,
-                max_amount_required: TokenAmount(alloy::primitives::U256::from(AMOUNT)),
+                max_amount_required: TokenAmount(alloy::primitives::U256::from(amount)),
                 resource: url::Url::parse("https://example.com/paid").unwrap(),
                 description: String::new(),
                 mime_type: "application/json".to_string(),
                 output_schema: None,
-                pay_to: MixedAddress::Algorand(pay_to.to_string()),
+                pay_to: MixedAddress::Algorand(pay_to),
                 max_timeout_seconds: 60,
-                asset: MixedAddress::Offchain(USDC_ASA_ID_TESTNET.to_string()),
+                asset: MixedAddress::Offchain(asset.to_string()),
                 extra: None,
             },
-        };
+        }
+    }
 
+    /// The group a known client built, from `tests/fixtures/algorand/`
+    /// (README there), before a provider that answers for the fixture's
+    /// facilitator address. verify signs nothing; settle signs the fee
+    /// transaction with the provider's own key, and the stub records the
+    /// broadcast and refuses it.
+    async fn client_fixture(json: &str) -> Fixture {
+        let fixture: serde_json::Value = serde_json::from_str(json).unwrap();
+        let text = |key: &str| fixture[key].as_str().unwrap().to_string();
+        let (algod_url, algod_calls) = algod_stub().await;
+        let mut provider = AlgorandProvider::try_new(
+            Account::generate().mnemonic(),
+            Some(algod_url),
+            Network::AlgorandTestnet,
+        )
+        .unwrap();
+        provider.public_address = text("facilitator");
+        let payment_group: Vec<String> = fixture["paymentGroup"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|txn| txn.as_str().unwrap().to_string())
+            .collect();
+        let fee_tx: AlgoTransaction =
+            rmp_serde::from_slice(&BASE64.decode(&payment_group[0]).unwrap()).unwrap();
+        let payload = ExactAlgorandPayload {
+            payment_index: usize::try_from(fixture["paymentIndex"].as_u64().unwrap()).unwrap(),
+            payment_group,
+        };
         Fixture {
             provider,
-            request,
-            group_id,
-            payer: payer.address().to_string(),
+            request: verify_request(
+                payload,
+                text("payTo"),
+                text("amount").parse().unwrap(),
+                text("asset").parse().unwrap(),
+            ),
+            group_id: fee_tx.group.unwrap().0,
+            payer: text("payer"),
             algod_calls,
         }
     }
@@ -1507,8 +1854,11 @@ mod replay_verify_tests {
         let sent = f.algod_calls.lock().unwrap().clone();
         let key = algorand_nonce_key(f.provider.chain_name(), &f.group_id);
         let claimed = store.used.lock().unwrap().contains(&key);
-        let refused =
-            matches!(&outcome, Err(FacilitatorLocalError::Other(msg)) if msg.contains(reason));
+        let refused = matches!(
+            &outcome,
+            Err(FacilitatorLocalError::Other(msg) | FacilitatorLocalError::InvalidSignature(_, msg))
+                if msg.contains(reason)
+        );
         if sent.is_empty() && !claimed && refused {
             Ok(())
         } else {
@@ -1646,11 +1996,11 @@ mod replay_verify_tests {
         );
     }
 
-    /// The receiver of the fee payment is not pinned to the facilitator: a
-    /// zero amount moves nothing to it, and the original client design
-    /// (docs/ALGORAND_IMPLEMENTATION_PLAN.md) addressed it to the payer.
+    /// The facilitator signs the fee transaction, so it may only pay the
+    /// facilitator itself: every known client sends a self-payment, and the
+    /// official facilitator refuses any other receiver.
     #[tokio::test]
-    async fn verify_accepts_a_zero_amount_fee_payment_to_another_receiver() {
+    async fn verify_rejects_a_fee_payment_to_another_receiver() {
         scripted_store();
         let other = Account::generate().address();
         let f = fixture_with(
@@ -1660,14 +2010,151 @@ mod replay_verify_tests {
         )
         .await;
 
-        let response = f
+        let err = f
             .provider
             .verify(&f.request)
             .await
-            .expect("a zero-amount fee payment verifies whatever its receiver");
+            .expect_err("a fee payment to another receiver must not verify");
         assert!(
-            matches!(&response, VerifyResponse::Valid { payer } if *payer == MixedAddress::Algorand(f.payer.clone())),
-            "got {response:?}"
+            matches!(&err, FacilitatorLocalError::Other(msg) if msg.contains("receiver mismatch")),
+            "got {err:?}"
+        );
+    }
+
+    /// Fee notes no known client writes, each named.
+    fn fee_notes_no_client_writes() -> Vec<(&'static str, Vec<u8>)> {
+        vec![
+            ("text", b"any other text".to_vec()),
+            ("the prefix alone", b"x402-fee-payer-".to_vec()),
+            ("twelve digits", b"x402-fee-payer-179493469444".to_vec()),
+            ("fourteen digits", b"x402-fee-payer-17949346944480".to_vec()),
+            (
+                "digits and text",
+                b"x402-fee-payer-1794934694448 more".to_vec(),
+            ),
+        ]
+    }
+
+    /// The fee transaction's note is published from the facilitator's
+    /// account: only the one a known client writes is signed.
+    #[tokio::test]
+    async fn verify_rejects_a_fee_note_no_client_writes() {
+        scripted_store();
+        let mut verified = Vec::new();
+        for (case, note) in fee_notes_no_client_writes() {
+            let group = Group {
+                fee_note: Some(note),
+                ..Group::default()
+            };
+            let f = fixture_of(format!("fee note: {case}").as_bytes(), group).await;
+            match f.provider.verify(&f.request).await {
+                Ok(response) => verified.push(format!("{case}: {response:?}")),
+                Err(err) => assert!(
+                    matches!(&err, FacilitatorLocalError::Other(msg) if msg.contains("forbidden fields: note")),
+                    "{case}: got {err:?}"
+                ),
+            }
+        }
+        assert!(
+            verified.is_empty(),
+            "fee notes that verified: {verified:#?}"
+        );
+    }
+
+    /// `@x402/avm` writes `x402-fee-payer-` and `Date.now()` on its fee
+    /// transaction, other public clients `x402-fee-payer` alone.
+    #[tokio::test]
+    async fn verify_accepts_the_fee_notes_clients_write() {
+        scripted_store();
+        let mut refused = Vec::new();
+        for note in [&b"x402-fee-payer-1794934694448"[..], b"x402-fee-payer"] {
+            let group = Group {
+                fee_note: Some(note.to_vec()),
+                ..Group::default()
+            };
+            let case = String::from_utf8_lossy(note).into_owned();
+            let f = fixture_of(format!("client fee note: {case}").as_bytes(), group).await;
+            match f.provider.verify(&f.request).await {
+                Ok(VerifyResponse::Valid { payer })
+                    if payer == MixedAddress::Algorand(f.payer.clone()) => {}
+                other => refused.push(format!("{case}: {other:?}")),
+            }
+        }
+        assert!(refused.is_empty(), "client fee notes refused: {refused:#?}");
+    }
+
+    /// The fee transaction pays for its whole group: up to 5_000 microAlgos
+    /// for each transaction in it.
+    #[tokio::test]
+    async fn verify_holds_the_fee_to_the_size_of_its_group() {
+        scripted_store();
+        let mut wrong = Vec::new();
+        for (case, fee, trailing, refusal) in [
+            ("2 transactions, fee 10_000", 10_000, 0, None),
+            (
+                "2 transactions, fee 10_001",
+                10_001,
+                0,
+                Some("exceeds maximum allowed 10000"),
+            ),
+            ("3 transactions, fee 15_000", 15_000, 1, None),
+            (
+                "3 transactions, fee 15_001",
+                15_001,
+                1,
+                Some("exceeds maximum allowed 15000"),
+            ),
+            ("16 transactions, fee 80_000", 80_000, 14, None),
+        ] {
+            let group = Group {
+                fee,
+                trailing,
+                ..Group::default()
+            };
+            let f = fixture_of(case.as_bytes(), group).await;
+            let outcome = f.provider.verify(&f.request).await;
+            let as_expected = match (refusal, &outcome) {
+                (None, Ok(VerifyResponse::Valid { .. })) => true,
+                (Some(reason), Err(FacilitatorLocalError::Other(msg))) => msg.contains(reason),
+                _ => false,
+            };
+            if !as_expected {
+                wrong.push(format!("{case}: {outcome:?}"));
+            }
+        }
+        assert!(wrong.is_empty(), "{wrong:#?}");
+    }
+
+    /// Appends a copy of the group's last transaction to `f`'s payload, past
+    /// what algonaut lets a test group: 16 transactions.
+    fn append_a_transaction(f: &mut Fixture) {
+        let ExactPaymentPayload::Algorand(payload) = &mut f.request.payment_payload.payload else {
+            unreachable!("the fixture builds an Algorand payload")
+        };
+        let last = payload.payment_group.last().unwrap().clone();
+        payload.payment_group.push(last);
+    }
+
+    /// The fee cap grows with the group, so the group is held to the 16
+    /// transactions algod accepts.
+    #[tokio::test]
+    async fn verify_rejects_a_group_larger_than_algod_accepts() {
+        scripted_store();
+        let group = Group {
+            trailing: 14,
+            ..Group::default()
+        };
+        let mut f = fixture_of(b"17 transactions", group).await;
+        append_a_transaction(&mut f);
+
+        let err = f
+            .provider
+            .verify(&f.request)
+            .await
+            .expect_err("a group of 17 transactions must not verify");
+        assert!(
+            matches!(&err, FacilitatorLocalError::Other(msg) if msg.contains("at most 16 allowed")),
+            "got {err:?}"
         );
     }
 
@@ -1768,10 +2255,8 @@ mod replay_verify_tests {
             });
     }
 
-    /// What the refusals above rely on: a group settle accepts is claimed
-    /// and reaches algod's broadcast, which the stub records.
     #[tokio::test]
-    async fn settle_claims_and_broadcasts_a_zero_amount_fee_payment_to_another_receiver() {
+    async fn settle_rejects_a_fee_payment_to_another_receiver() {
         let store = scripted_store();
         let other = Account::generate().address();
         let f = fixture_with(
@@ -1780,6 +2265,67 @@ mod replay_verify_tests {
             None,
         )
         .await;
+
+        settle_refused(&f, &store, "receiver mismatch")
+            .await
+            .unwrap_or_else(|problem| panic!("a fee payment to another receiver: {problem}"));
+    }
+
+    #[tokio::test]
+    async fn settle_rejects_a_fee_note_no_client_writes() {
+        let store = scripted_store();
+        let mut settled = Vec::new();
+        for (case, note) in fee_notes_no_client_writes() {
+            let group = Group {
+                fee_note: Some(note),
+                ..Group::default()
+            };
+            let f = fixture_of(format!("settle: fee note: {case}").as_bytes(), group).await;
+            if let Err(problem) = settle_refused(&f, &store, "forbidden fields: note").await {
+                settled.push(format!("{case}: {problem}"));
+            }
+        }
+        assert!(
+            settled.is_empty(),
+            "fee notes settle did not refuse: {settled:#?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn settle_rejects_a_fee_above_the_cap_of_its_group() {
+        let store = scripted_store();
+        let group = Group {
+            fee: 10_001,
+            ..Group::default()
+        };
+        let f = fixture_of(b"settle: 2 transactions, fee 10_001", group).await;
+
+        settle_refused(&f, &store, "exceeds maximum allowed 10000")
+            .await
+            .unwrap_or_else(|problem| panic!("a fee above the cap of its group: {problem}"));
+    }
+
+    #[tokio::test]
+    async fn settle_rejects_a_group_larger_than_algod_accepts() {
+        let store = scripted_store();
+        let group = Group {
+            trailing: 14,
+            ..Group::default()
+        };
+        let mut f = fixture_of(b"settle: 17 transactions", group).await;
+        append_a_transaction(&mut f);
+
+        settle_refused(&f, &store, "at most 16 allowed")
+            .await
+            .unwrap_or_else(|problem| panic!("a group of 17 transactions: {problem}"));
+    }
+
+    /// What the refusals above rely on: a group settle accepts is claimed
+    /// and reaches algod's broadcast, which the stub records.
+    #[tokio::test]
+    async fn settle_claims_and_broadcasts_a_group_it_accepts() {
+        let store = scripted_store();
+        let f = fixture(b"settle: accepted group").await;
 
         let outcome = f.provider.settle(&f.request).await;
         let key = algorand_nonce_key(f.provider.chain_name(), &f.group_id);
@@ -1792,6 +2338,386 @@ mod replay_verify_tests {
             ["POST /v2/transactions"],
             "settle answered {outcome:?}"
         );
+    }
+
+    /// The signature `account` makes over `message`, as a wallet makes it.
+    fn raw_signature(account: &Account, message: &[u8]) -> algonaut::crypto::Signature {
+        use ed25519_dalek::Signer;
+        let key = ed25519_dalek::SigningKey::from_bytes(&account.seed());
+        algonaut::crypto::Signature(key.sign(message).to_bytes())
+    }
+
+    /// The multisig account of `keys` with `version` and `threshold`.
+    fn multisig_account(version: u8, threshold: u8, keys: &[Account]) -> AlgoAddress {
+        MultisigAddress {
+            version,
+            threshold,
+            public_keys: keys
+                .iter()
+                .map(|key| key.address().as_public_key())
+                .collect(),
+        }
+        .address()
+    }
+
+    /// A multisignature over `message` of `keys` with `version` and
+    /// `threshold`, carrying the signatures of the keys at `signers`.
+    fn multisignature(
+        version: u8,
+        threshold: u8,
+        keys: &[Account],
+        signers: &[usize],
+        message: &[u8],
+    ) -> MultisigSignature {
+        MultisigSignature {
+            version,
+            threshold,
+            subsigs: keys
+                .iter()
+                .enumerate()
+                .map(|(i, key)| MultisigSubsig {
+                    key: key.address().as_public_key(),
+                    sig: signers.contains(&i).then(|| raw_signature(key, message)),
+                })
+                .collect(),
+        }
+    }
+
+    /// `txn` carrying `sig`, as a client sends it.
+    fn signed(txn: AlgoTransaction, sig: TransactionSignature) -> SignedTransaction {
+        SignedTransaction {
+            transaction_id: txn.id().unwrap(),
+            transaction: txn,
+            sig,
+            auth_address: None,
+        }
+    }
+
+    /// A program the tests sign as logic; it is never run.
+    fn program(byte: u8) -> CompiledTeal {
+        CompiledTeal(vec![0x06, 0x81, byte])
+    }
+
+    /// A payer that is a multisig account of `keys` keys, with `version` and
+    /// `threshold`, signing with the keys at `signers`.
+    fn multisig_payer(keys: usize, version: u8, threshold: u8, signers: &'static [usize]) -> Payer {
+        let keys: Vec<Account> = (0..keys).map(|_| Account::generate()).collect();
+        Payer {
+            address: multisig_account(version, threshold, &keys),
+            sign: Box::new(move |txn| {
+                let message = txn.bytes_to_sign().unwrap();
+                let msig = multisignature(version, threshold, &keys, signers, &message);
+                signed(txn, TransactionSignature::Multi(msig))
+            }),
+        }
+    }
+
+    /// A payer whose transfer carries `sig` over `program(1)` as a logic
+    /// signature.
+    fn logic_payer(address: AlgoAddress, sig: LogicSignature) -> Payer {
+        Payer {
+            address,
+            sign: Box::new(move |txn| {
+                let logic = SignedLogic {
+                    logic: program(1),
+                    args: vec![],
+                    sig,
+                };
+                signed(txn, TransactionSignature::Logic(logic))
+            }),
+        }
+    }
+
+    /// Authorizations of a payment's sender, each named: an ordinary
+    /// account's signature, a multisig account's multisignature, and a logic
+    /// signature of a contract account or of a delegating one (as algonaut
+    /// encodes a logic signature).
+    fn authorizations_the_sender_gives() -> Vec<(&'static str, Payer)> {
+        let contract = ContractAccount::new(program(1));
+        let delegator = Account::generate();
+        vec![
+            ("single signature", Payer::single()),
+            (
+                "multisig 2 of 3, two signatures",
+                multisig_payer(3, 1, 2, &[0, 1]),
+            ),
+            (
+                "multisig 2 of 3, three signatures",
+                multisig_payer(3, 1, 2, &[0, 1, 2]),
+            ),
+            (
+                "multisig of 255 keys, threshold 1",
+                multisig_payer(255, 1, 1, &[254]),
+            ),
+            (
+                "contract account",
+                Payer {
+                    address: *contract.address(),
+                    sign: Box::new(move |txn| contract.sign(txn, vec![]).unwrap()),
+                },
+            ),
+            (
+                "delegated logic signature",
+                logic_payer(
+                    delegator.address(),
+                    LogicSignature::DelegatedSig(delegator.generate_program_sig(&program(1))),
+                ),
+            ),
+        ]
+    }
+
+    /// Authorizations the payment's sender did not give, or that algod
+    /// refuses, each named.
+    fn authorizations_the_sender_did_not_give() -> Vec<(&'static str, Payer)> {
+        let zeroed = Account::generate().address();
+        let rekeyed = Account::generate().address();
+        let rekeyed_to = Account::generate();
+        let mut small_order_key = [0; 32];
+        small_order_key[0] = 1;
+        let other_keys = {
+            let keys: Vec<Account> = (0..3).map(|_| Account::generate()).collect();
+            let address = multisig_account(1, 2, &keys);
+            let mut others = keys;
+            others[2] = Account::generate();
+            Payer {
+                address,
+                sign: Box::new(move |txn| {
+                    let message = txn.bytes_to_sign().unwrap();
+                    let msig = multisignature(1, 2, &others, &[0, 1], &message);
+                    signed(txn, TransactionSignature::Multi(msig))
+                }),
+            }
+        };
+        let invalid_beside_valid = {
+            let keys: Vec<Account> = (0..3).map(|_| Account::generate()).collect();
+            Payer {
+                address: multisig_account(1, 2, &keys),
+                sign: Box::new(move |txn| {
+                    let message = txn.bytes_to_sign().unwrap();
+                    let mut msig = multisignature(1, 2, &keys, &[0, 1], &message);
+                    msig.subsigs[2].sig = Some(algonaut::crypto::Signature([1; 64]));
+                    signed(txn, TransactionSignature::Multi(msig))
+                }),
+            }
+        };
+        let contract = ContractAccount::new(program(1));
+        let delegator = Account::generate().address();
+        let not_the_delegator = Account::generate();
+        let delegators: Vec<Account> = (0..3).map(|_| Account::generate()).collect();
+        vec![
+            (
+                "single signature of zeros",
+                Payer {
+                    address: zeroed,
+                    sign: Box::new(|txn| {
+                        let zeros = algonaut::crypto::Signature([0; 64]);
+                        signed(txn, TransactionSignature::Single(zeros))
+                    }),
+                },
+            ),
+            (
+                "single signature by another key, as a rekeyed account's",
+                Payer {
+                    address: rekeyed,
+                    sign: Box::new(move |txn| rekeyed_to.sign_transaction(txn).unwrap()),
+                },
+            ),
+            (
+                "single signature that only holds for a small-order key",
+                Payer {
+                    // The identity point as a key, and R = identity, s = 0:
+                    // the cofactorless equation holds for any message.
+                    address: AlgoAddress(small_order_key),
+                    sign: Box::new(move |txn| {
+                        let mut forged = [0; 64];
+                        forged[..32].copy_from_slice(&small_order_key);
+                        signed(
+                            txn,
+                            TransactionSignature::Single(algonaut::crypto::Signature(forged)),
+                        )
+                    }),
+                },
+            ),
+            (
+                "multisig below its threshold",
+                multisig_payer(3, 1, 2, &[0]),
+            ),
+            ("multisig of other keys", other_keys),
+            (
+                "multisig with an invalid signature beside two valid ones",
+                invalid_beside_valid,
+            ),
+            ("multisig of version 2", multisig_payer(3, 2, 2, &[0, 1])),
+            ("multisig of version 0", multisig_payer(3, 0, 2, &[0, 1])),
+            ("multisig of threshold 0", multisig_payer(3, 1, 0, &[])),
+            (
+                "multisig of 256 keys, threshold 1",
+                multisig_payer(256, 1, 1, &[255]),
+            ),
+            (
+                "contract account of another program",
+                Payer {
+                    address: *ContractAccount::new(program(2)).address(),
+                    sign: Box::new(move |txn| contract.sign(txn, vec![]).unwrap()),
+                },
+            ),
+            (
+                "delegated logic signature by another key",
+                logic_payer(
+                    delegator,
+                    LogicSignature::DelegatedSig(
+                        not_the_delegator.generate_program_sig(&program(1)),
+                    ),
+                ),
+            ),
+            (
+                "delegated logic multisignature 2 of 3, a field algod refuses since consensus v41",
+                logic_payer(
+                    multisig_account(1, 2, &delegators),
+                    LogicSignature::DelegatedMultiSig(multisignature(
+                        1,
+                        2,
+                        &delegators,
+                        &[0, 1],
+                        &program(1).bytes_to_sign(),
+                    )),
+                ),
+            ),
+        ]
+    }
+
+    /// verify reports as the payer the account that authorized the transfer,
+    /// with any authorization algod accepts from it.
+    #[tokio::test]
+    async fn verify_accepts_every_authorization_the_sender_gives() {
+        scripted_store();
+        let mut refused = Vec::new();
+        for (case, payer) in authorizations_the_sender_gives() {
+            let group = Group {
+                payer,
+                ..Group::default()
+            };
+            let f = fixture_of(format!("authorized: {case}").as_bytes(), group).await;
+            match f.provider.verify(&f.request).await {
+                Ok(VerifyResponse::Valid { payer })
+                    if payer == MixedAddress::Algorand(f.payer.clone()) => {}
+                other => refused.push(format!("{case}: {other:?}")),
+            }
+        }
+        assert!(
+            refused.is_empty(),
+            "authorizations verify refused: {refused:#?}"
+        );
+    }
+
+    /// A transfer its sender did not authorize does not verify: verify would
+    /// report as the payer an account that never agreed to pay.
+    #[tokio::test]
+    async fn verify_rejects_an_authorization_the_sender_did_not_give() {
+        scripted_store();
+        let mut verified = Vec::new();
+        for (case, payer) in authorizations_the_sender_did_not_give() {
+            let group = Group {
+                payer,
+                ..Group::default()
+            };
+            let f = fixture_of(format!("not authorized: {case}").as_bytes(), group).await;
+            match f.provider.verify(&f.request).await {
+                Err(FacilitatorLocalError::InvalidSignature(payer, _))
+                    if payer == MixedAddress::Algorand(f.payer.clone()) => {}
+                other => verified.push(format!("{case}: {other:?}")),
+            }
+        }
+        assert!(
+            verified.is_empty(),
+            "authorizations verify did not refuse as invalid_signature: {verified:#?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn settle_rejects_an_authorization_the_sender_did_not_give() {
+        let store = scripted_store();
+        let mut settled = Vec::new();
+        for (case, payer) in authorizations_the_sender_did_not_give() {
+            let group = Group {
+                payer,
+                ..Group::default()
+            };
+            let f = fixture_of(format!("settle: not authorized: {case}").as_bytes(), group).await;
+            if let Err(problem) = settle_refused(&f, &store, "Invalid signature").await {
+                settled.push(format!("{case}: {problem}"));
+            }
+        }
+        assert!(
+            settled.is_empty(),
+            "authorizations settle did not refuse: {settled:#?}"
+        );
+    }
+
+    /// The groups the known clients build, from `tests/fixtures/algorand/`.
+    const CLIENT_GROUPS: [(&str, &str); 3] = [
+        (
+            "uvd-x402-sdk (TypeScript)",
+            include_str!("../../tests/fixtures/algorand/uvd-x402-sdk-typescript.json"),
+        ),
+        (
+            "uvd-x402-sdk (Python)",
+            include_str!("../../tests/fixtures/algorand/uvd-x402-sdk-python.json"),
+        ),
+        (
+            "@x402/avm",
+            include_str!("../../tests/fixtures/algorand/x402-avm.json"),
+        ),
+    ];
+
+    /// What the known clients send passes every check: verify reports their
+    /// payer, and settle claims the group and broadcasts it. Verify and
+    /// settle run in the one test because the group ids are fixed and the
+    /// replay store is shared.
+    #[tokio::test]
+    async fn the_groups_the_known_clients_build_verify_and_settle() {
+        let store = scripted_store();
+        for (client, json) in CLIENT_GROUPS {
+            let f = client_fixture(json).await;
+
+            // settle broadcasts algonaut's re-encoding of the transactions it
+            // decoded: the group id the client computed has to hold over
+            // them, or algod refuses the group. (The payer's signature over
+            // the re-encoded payment is what verify checks below.)
+            let ExactPaymentPayload::Algorand(payload) = &f.request.payment_payload.payload else {
+                unreachable!("the fixture builds an Algorand payload")
+            };
+            let fee_tx: AlgoTransaction =
+                rmp_serde::from_slice(&BASE64.decode(&payload.payment_group[0]).unwrap()).unwrap();
+            let payment: SignedTransaction =
+                rmp_serde::from_slice(&BASE64.decode(&payload.payment_group[1]).unwrap()).unwrap();
+            let (mut fee_body, mut payment_body) = (fee_tx.clone(), payment.transaction);
+            fee_body.group = None;
+            payment_body.group = None;
+            TxGroup::assign_group_id(&mut [&mut fee_body, &mut payment_body]).unwrap();
+            assert_eq!(
+                fee_body.group, fee_tx.group,
+                "{client}: the group id does not hold over the transactions as settle re-encodes them"
+            );
+
+            let verified = f.provider.verify(&f.request).await;
+            assert!(
+                matches!(&verified, Ok(VerifyResponse::Valid { payer }) if *payer == MixedAddress::Algorand(f.payer.clone())),
+                "{client}: verify answered {verified:?}"
+            );
+
+            let settled = f.provider.settle(&f.request).await;
+            let key = algorand_nonce_key(f.provider.chain_name(), &f.group_id);
+            assert!(
+                store.used.lock().unwrap().contains(&key),
+                "{client}: the group was not claimed; settle answered {settled:?}"
+            );
+            assert_eq!(
+                *f.algod_calls.lock().unwrap(),
+                ["POST /v2/transactions"],
+                "{client}: settle answered {settled:?}"
+            );
+        }
     }
 }
 

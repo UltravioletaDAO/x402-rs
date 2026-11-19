@@ -855,13 +855,18 @@ mod tests {
         (format!("http://{addr}"), accepted)
     }
 
+    /// The AWS variables the `from_env` tests set, one test at a time even
+    /// when the suite runs threads in parallel. No other test in the crate
+    /// reads these variables.
+    static AWS_ENV: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
     /// The production constructor applies the configured bound: the store
     /// `from_env` builds gives up on a silent endpoint at
     /// `NONCE_STORE_OPERATION_TIMEOUT_MS`. The environment stays set until the
     /// call returns, because the SDK reads credentials on the first request.
-    /// No other test in the crate reads these variables.
     #[tokio::test]
     async fn from_env_bounds_calls_with_the_configured_operation_timeout() {
+        let _serial = AWS_ENV.lock().await;
         let (endpoint, accepted) = silent_listener().await;
         let _env = EnvGuard::set(&[
             ("AWS_ENDPOINT_URL", Some(endpoint.as_str())),
@@ -911,6 +916,162 @@ mod tests {
         assert!(
             elapsed < Duration::from_secs(2),
             "gave up after {elapsed:?}"
+        );
+    }
+
+    /// The credential path the ECS task takes in production, end to end over
+    /// the SDK's default HTTP client: `from_env` loads aws-config's default
+    /// chain, nothing ahead of the container provider answers, that provider
+    /// fetches the task role's credentials over HTTP, and the DynamoDB call is
+    /// signed with them. Here the provider is reached through
+    /// `AWS_CONTAINER_CREDENTIALS_FULL_URI` on loopback; in ECS it is
+    /// `AWS_CONTAINER_CREDENTIALS_RELATIVE_URI`, the same provider and HTTP
+    /// client against `169.254.170.2`. The SDK is built without its legacy
+    /// hyper 0.14 connector (Cargo.toml), so this goes red if a client or a
+    /// credential provider is ever left without an HTTP client.
+    #[tokio::test]
+    async fn from_env_signs_with_ecs_container_credentials() {
+        const KEY_ID: &str = "ecs-task-role-key";
+        const SESSION_TOKEN: &str = "ecs-task-role-session";
+
+        let _serial = AWS_ENV.lock().await;
+        let fetched = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let signed = Arc::new(std::sync::Mutex::new(Vec::<(String, String)>::new()));
+        let app = {
+            let fetched = fetched.clone();
+            let signed = signed.clone();
+            axum::Router::new()
+                .route(
+                    "/creds",
+                    axum::routing::get(move || {
+                        fetched.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                        async {
+                            axum::Json(serde_json::json!({
+                                "AccessKeyId": KEY_ID,
+                                "SecretAccessKey": "ecs-task-role-secret",
+                                "Token": SESSION_TOKEN,
+                                "Expiration": "2099-01-01T00:00:00Z",
+                            }))
+                        }
+                    }),
+                )
+                .route(
+                    "/",
+                    axum::routing::post(move |headers: axum::http::HeaderMap| {
+                        let header = |name: &str| {
+                            headers
+                                .get(name)
+                                .and_then(|v| v.to_str().ok())
+                                .unwrap_or_default()
+                                .to_string()
+                        };
+                        signed
+                            .lock()
+                            .unwrap()
+                            .push((header("authorization"), header("x-amz-security-token")));
+                        async {
+                            (
+                                [(
+                                    axum::http::header::CONTENT_TYPE,
+                                    "application/x-amz-json-1.0",
+                                )],
+                                "{}",
+                            )
+                        }
+                    }),
+                )
+        };
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let endpoint = format!("http://{addr}");
+        let credentials_uri = format!("http://{addr}/creds");
+
+        let _env = EnvGuard::set(&[
+            ("AWS_ENDPOINT_URL", Some(endpoint.as_str())),
+            ("AWS_REGION", Some("us-east-2")),
+            // Every provider ahead of the container one in the default chain
+            // finds nothing: environment keys, profile files, web identity.
+            ("AWS_ACCESS_KEY_ID", None),
+            ("AWS_SECRET_ACCESS_KEY", None),
+            ("AWS_SESSION_TOKEN", None),
+            ("AWS_PROFILE", None),
+            ("AWS_CONFIG_FILE", Some("/nonexistent/aws-config")),
+            (
+                "AWS_SHARED_CREDENTIALS_FILE",
+                Some("/nonexistent/aws-credentials"),
+            ),
+            ("AWS_WEB_IDENTITY_TOKEN_FILE", None),
+            ("AWS_ROLE_ARN", None),
+            ("AWS_CONTAINER_CREDENTIALS_RELATIVE_URI", None),
+            (
+                "AWS_CONTAINER_CREDENTIALS_FULL_URI",
+                Some(credentials_uri.as_str()),
+            ),
+            ("AWS_CONTAINER_AUTHORIZATION_TOKEN", None),
+            ("AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE", None),
+            ("AWS_EC2_METADATA_DISABLED", Some("true")),
+            (ENV_OPERATION_TIMEOUT_MS, Some("5000")),
+        ]);
+
+        let store = DynamoNonceStore::from_env()
+            .await
+            .expect("the store builds");
+        let read = tokio::time::timeout(
+            Duration::from_secs(10),
+            store.is_used("stellar#GABC123#12345"),
+        )
+        .await
+        .expect("the read must return, not hang");
+
+        assert!(matches!(read, Ok(false)), "got {read:?}");
+        assert!(
+            fetched.load(std::sync::atomic::Ordering::SeqCst) >= 1,
+            "the container credentials endpoint was never asked"
+        );
+        let signed = signed.lock().unwrap();
+        assert_eq!(signed.len(), 1, "got {signed:?}");
+        let (authorization, session_token) = &signed[0];
+        assert!(
+            authorization.starts_with(&format!("AWS4-HMAC-SHA256 Credential={KEY_ID}/")),
+            "the call was not signed with the container credentials: {authorization}"
+        );
+        assert_eq!(session_token, SESSION_TOKEN);
+    }
+
+    /// Without the legacy connector in the build (Cargo.toml), a client built
+    /// from a behavior version older than 2026-01-12 has no HTTP client at all:
+    /// it builds, and its first call fails with "No HTTP client was available".
+    /// aws-config's own examples pass such a version, so every AWS client in
+    /// the crate is held to `BehaviorVersion::latest()`.
+    #[test]
+    fn every_aws_client_is_built_from_the_latest_behavior_version() {
+        fn sources(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+            for entry in std::fs::read_dir(dir).unwrap() {
+                let path = entry.unwrap().path();
+                if path.is_dir() {
+                    sources(&path, out);
+                } else if path.extension().is_some_and(|e| e == "rs") {
+                    out.push(path);
+                }
+            }
+        }
+
+        let pinned = ["BehaviorVersion", "::v"].concat();
+        let mut files = Vec::new();
+        sources(
+            &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src"),
+            &mut files,
+        );
+        assert!(files.len() > 50, "found only {} sources", files.len());
+        let offending: Vec<String> = files
+            .iter()
+            .filter(|path| std::fs::read_to_string(path).unwrap().contains(&pinned))
+            .map(|path| path.display().to_string())
+            .collect();
+        assert!(
+            offending.is_empty(),
+            "an AWS client built from a pinned behavior version has no HTTP client: {offending:?}"
         );
     }
 }

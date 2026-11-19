@@ -983,6 +983,10 @@ jobs:
             -target=aws_cloudwatch_metric_alarm.solana_mint_fee_payer_dry \
             -target=aws_cloudwatch_log_metric_filter.evm_signer_transactions_stuck \
             -target=aws_cloudwatch_metric_alarm.evm_signer_transactions_stuck \
+            -target=aws_cloudwatch_log_metric_filter.gas_ceiling_refusals \
+            -target=aws_cloudwatch_metric_alarm.gas_ceiling_refusals \
+            -target=aws_cloudwatch_log_metric_filter.erc8004_daily_limit_refusals \
+            -target=aws_cloudwatch_metric_alarm.erc8004_daily_limit_refusals \
             -target=aws_cloudwatch_log_metric_filter.network_startup_probe \
             -target=aws_cloudwatch_metric_alarm.network_startup_probe \
             -target=aws_cloudwatch_log_metric_filter.receipt_store_failure \

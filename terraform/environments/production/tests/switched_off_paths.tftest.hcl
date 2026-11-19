@@ -21,6 +21,13 @@ mock_provider "aws" {
       arn = "arn:aws:acm:us-east-2::certificate/mock"
     }
   }
+  # The task role's ARN is composed from the account id (local.ecs_task_role_arn): a mock's random
+  # string is not an account id. As in ecs_task_boundary.tftest.hcl.
+  mock_data "aws_caller_identity" {
+    defaults = {
+      account_id = "000000000000"
+    }
+  }
 }
 mock_provider "archive" {}
 

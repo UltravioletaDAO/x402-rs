@@ -148,6 +148,20 @@ chain, so it is refused as unknown.
 payment is not verified or settled as `exact` either. Refundable payments use the
 `escrow` scheme (PaymentOperator), listed in `/supported`.
 
+`accepted_payment_requirements_mismatch` (`400` on `/verify` and `/settle`, in `code`,
+with the term it names in `field`) means a v2 body whose `paymentPayload.accepted`
+names other terms than its `paymentRequirements`. The payment is checked against
+`paymentRequirements`, the seller's terms, so the buyer's copy must name the same.
+
+`gas_over_limit` (`400` on `/settle`, in `error`) means the transaction would cost
+more gas than the facilitator pays for its kind of call on that network
+(`GET /config`, `evmGasCeilings`). Nothing was sent and no nonce was used; the same
+request is refused again.
+
+`settlement_landed_without_payment` (`200` on `/settle` with `success: false`, in
+`errorReason`; Solana and Fogo) means a smart-wallet transaction confirmed on chain
+without crediting `payTo` the price. The payment did not happen.
+
 ## Rate limits
 
 Limits are per client IP and are reported on every rate-limited response, not

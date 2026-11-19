@@ -4008,6 +4008,11 @@ pub fn swagger_routes() -> Router {
 /// operation -- the `/supported` scheme list, the `/settle` failure notes, the
 /// `/discovery` scheme vocabulary -- through the same cuts as every other
 /// surface ([`crate::zama::text`]). On, the document is left exactly as built.
+///
+/// Every operation means every slot a path item has: the eight HTTP methods,
+/// and the OpenAPI 3.2 `query` and `additionalOperations` slots utoipa 6 added.
+/// Neither carries an operation today; a cut that skipped them would let the
+/// first one documented there through ungated.
 fn gate_zama_prose(doc: &mut utoipa::openapi::OpenApi) {
     if crate::zama::is_enabled() {
         return;
@@ -4022,8 +4027,10 @@ fn gate_zama_prose(doc: &mut utoipa::openapi::OpenApi) {
             &mut item.head,
             &mut item.patch,
             &mut item.trace,
+            &mut item.query,
         ];
-        for operation in operations.into_iter().flatten() {
+        let additional = item.additional_operations.values_mut();
+        for operation in operations.into_iter().flatten().chain(additional) {
             for prose in [&mut operation.summary, &mut operation.description]
                 .into_iter()
                 .flatten()
@@ -4313,6 +4320,75 @@ mod tests {
         assert_eq!(
             doc["info"]["version"],
             crate::version::facilitator_version()
+        );
+    }
+
+    /// `/docs` serves Swagger UI, and that Swagger UI loads this document.
+    ///
+    /// utoipa-swagger-ui embeds a Swagger UI release at build time and writes
+    /// its configuration into that release's `swagger-initializer.js` by a
+    /// pattern over the file. CI builds against the release the crate names by
+    /// default, local builds often against another (`SWAGGER_UI_DOWNLOAD_URL`).
+    /// A release whose initializer no longer matched the pattern would still
+    /// answer 200 at `/docs` and show the Swagger petstore instead of this API.
+    #[tokio::test]
+    async fn the_swagger_ui_at_docs_loads_this_document() {
+        use axum::body::Body;
+        use axum::http::Request;
+        use tower::ServiceExt;
+
+        async fn get(path: &str) -> (StatusCode, String, String, String) {
+            let response = swagger_routes()
+                .oneshot(Request::builder().uri(path).body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+            let status = response.status();
+            let header = |name: &str| {
+                response
+                    .headers()
+                    .get(name)
+                    .and_then(|v| v.to_str().ok())
+                    .unwrap_or_default()
+                    .to_string()
+            };
+            let (ctype, location) = (header("content-type"), header("location"));
+            let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .unwrap();
+            let body = String::from_utf8_lossy(&bytes).into_owned();
+            (status, ctype, location, body)
+        }
+
+        let (status, _, location, _) = get("/docs").await;
+        assert!(status.is_redirection(), "/docs answered {status}");
+        assert_eq!(location, "/docs/");
+
+        let (status, ctype, _, page) = get("/docs/").await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(
+            ctype.starts_with("text/html"),
+            "/docs/ answered content-type {ctype:?}"
+        );
+        for asset in [
+            "swagger-ui.css",
+            "swagger-ui-bundle.js",
+            "swagger-ui-standalone-preset.js",
+            "swagger-initializer.js",
+        ] {
+            assert!(page.contains(asset), "/docs/ does not load {asset}");
+            let (status, _, _, body) = get(&format!("/docs/{asset}")).await;
+            assert_eq!(status, StatusCode::OK, "/docs/{asset}");
+            assert!(!body.is_empty(), "/docs/{asset} is empty");
+        }
+
+        let (_, _, _, initializer) = get("/docs/swagger-initializer.js").await;
+        assert!(
+            initializer.contains("\"/api-docs/openapi.json\""),
+            "Swagger UI does not load /api-docs/openapi.json: {initializer}"
+        );
+        assert!(
+            !initializer.contains("petstore"),
+            "Swagger UI still loads its sample document: {initializer}"
         );
     }
 

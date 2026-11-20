@@ -117,12 +117,26 @@ curve25519-dalek = { version = "4.1" }  # X25519 ECDH for ed25519 payers (Solana
 subtle = { version = "2.6" }          # constant-time small-order check (RFC 7748 6.1)
 
 # AWS SDK (for Bazaar discovery persistence and nonce store)
+#
+# Every client, and every credential provider aws-config builds (the ECS task
+# role's included), sends its requests through the SDK's hyper 1.x + rustls 0.23
+# client: the `default-https-client` feature. The service crates' default set
+# also carries `rustls`, which is NOT that client: it adds the legacy hyper 0.14
+# + rustls 0.21 connector, which aws-smithy-runtime selects only for a behavior
+# version older than 2026-01-12. Every client here is built from
+# `BehaviorVersion::latest()` and aws-config's providers default to it, so that
+# connector was compiled in and never used. Hence `default-features = false` with
+# the other defaults restated (`sigv4a` is S3's alone); aws-config's own default
+# set names only the new client. Same TLS roots (the platform's, through
+# rustls-native-certs) and the same timeouts, since the client in use is the same.
+# `nonce_store::tests::from_env_signs_with_ecs_container_credentials` holds the
+# task-role path to a working HTTP client.
 aws-config = { version = "1.5" }
-aws-sdk-s3 = { version = "1.65" }
-aws-sdk-dynamodb = { version = "1.54" }
+aws-sdk-s3 = { version = "1.65", default-features = false, features = ["sigv4a", "default-https-client", "rt-tokio"] }
+aws-sdk-dynamodb = { version = "1.54", default-features = false, features = ["default-https-client", "rt-tokio"] }
 # The IP allowlist (src/ip_allowlist.rs) is re-read from its secret while the
 # task runs. 1.101 needs exactly the smithy runtime the lock already carries.
-aws-sdk-secretsmanager = { version = "1.101" }
+aws-sdk-secretsmanager = { version = "1.101", default-features = false, features = ["default-https-client", "rt-tokio"] }
 
 # Swagger/OpenAPI Documentation
 utoipa = { version = "5", features = ["axum_extras"] }

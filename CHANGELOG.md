@@ -1,5 +1,26 @@
 # Changelog
 
+## [2.59.2] - 2026-11-20
+
+Two dependency moves that take advisories out of the build. Behavior does not
+change.
+
+### Security
+
+- `utoipa` 5 -> 6 and `utoipa-swagger-ui` 9 -> 10, which removes the `zip`
+  3.0.0 build dependency; `zip` moves to 9.0.5 (RUSTSEC-2026-0548) and `libc`
+  0.2.182 -> 0.2.186. `GET /api-docs/openapi.json` and `/openapi.json` are
+  byte-identical with `ENABLE_ZAMA` off and on; the Swagger UI embedded in
+  `/docs` moves from 5.17.14 to 5.32.6.
+- The AWS SDK clients (`aws-sdk-s3`, `aws-sdk-dynamodb`,
+  `aws-sdk-secretsmanager`) no longer compile in the SDK's legacy HTTPS
+  connector (hyper 0.14 + rustls 0.21): `default-features = false` with
+  `default-https-client`, `rt-tokio` and, on S3, `sigv4a`. Every client is
+  built with `BehaviorVersion::latest()`, which already used the hyper 1.x /
+  rustls 0.23 client, so the connector that sends requests does not change.
+  `rustls` 0.21 / `rustls-webpki` 0.101 remain through Solana 2.x and Sui's
+  git dependencies.
+
 ## [2.59.1] - 2026-11-19
 
 Dependencies with a high advisory and a fix inside their own major version

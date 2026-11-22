@@ -269,6 +269,39 @@ pub fn revalidation_shared_ttl_secs() -> u64 {
     positive("DISCOVERY_REVALIDATION_SHARED_TTL", 3_600)
 }
 
+/// Seconds between two probes of a listing that is alive: the periodic sweep
+/// that revalidates the WHOLE catalog's prices. Six hours by default, never
+/// under fifteen minutes, and never later than the healthy cadence and the
+/// verification window already require (`discovery_health::alive_reprobe_secs`).
+///
+/// Budget, measured 2026-11-22: the 3 043 listings exposed reserve 4 209
+/// request slots a pass, ~12 a minute at six hours, out of the 120 a tick
+/// allows -- the sweep spends a share of the same allowance, never an extra
+/// one. A whole pass is bounded by the host with the most slots, held to
+/// `MAX_PER_HOST_PER_TICK` (3) a tick: 368 listings on one host that declare
+/// no method take two slots each, one probe a tick, 368 ticks -- 6 h 8 min;
+/// every other host is done within 254 (`discovery_health`'s
+/// `the_measured_catalog_is_swept_in_six_hours_and_eight_minutes`).
+pub fn price_sweep_secs() -> u64 {
+    positive("DISCOVERY_PRICE_SWEEP_SECS", 6 * 3600).max(15 * 60)
+}
+
+/// Whether a probe that reads a different amount for an offer the listing
+/// declares moves the listing to it (`DiscoveryRegistry::adopt_live_price`).
+/// Kill-switch, default ON: the live 402 is the price a buyer signs.
+pub fn adopt_live_price() -> bool {
+    flag("DISCOVERY_ADOPT_LIVE_PRICE", true)
+}
+
+/// Seconds between two re-registrations of the same URL. A re-registration
+/// reads the listing's live 402 once (`discovery_health::reregister`), so this
+/// bounds what a caller can make the facilitator send to an origin: one
+/// request per URL per window, on top of the route's own per-IP limit. Never
+/// under a minute.
+pub fn reregister_cooldown_secs() -> u64 {
+    positive("DISCOVERY_REREGISTER_COOLDOWN_SECS", 10 * 60).max(60)
+}
+
 /// Whether demand-driven revalidation runs at all. Kill-switch, default ON.
 ///
 /// Off means the prober does only its periodic sweep, which is 2.21.2's
@@ -355,6 +388,8 @@ pub fn effective() -> serde_json::Value {
             "concurrency": health_concurrency(),
             "budgetPerTick": health_budget_per_tick(),
             "overlayPersistSeconds": health_persist_secs(),
+            "maxRequestsPerHostPerTick": crate::discovery_health::MAX_PER_HOST_PER_TICK,
+            "priceSweepSeconds": price_sweep_secs(),
         },
         "revalidation": {
             "enabled": revalidation_enabled(),
@@ -368,6 +403,10 @@ pub fn effective() -> serde_json::Value {
             "sharedClaimMax": revalidation_claim_max(),
             "sharedCap": revalidation_shared_cap(),
             "sharedTtlSeconds": revalidation_shared_ttl_secs(),
+            "adoptLivePrice": adopt_live_price(),
+        },
+        "registration": {
+            "reregisterCooldownSeconds": reregister_cooldown_secs(),
         },
         "observedTerms": {
             "freshnessWindowSeconds": terms_fresh_secs(),
@@ -401,6 +440,7 @@ mod tests {
             "observedTerms",
             "ownership",
             "search",
+            "registration",
         ] {
             assert!(
                 v.get(group).is_some(),
@@ -416,6 +456,27 @@ mod tests {
         assert_eq!(
             health_budget_per_tick(),
             (health_max_rps() * health_tick_secs()) as usize
+        );
+    }
+
+    #[test]
+    fn the_price_sweep_is_six_hours_and_published() {
+        assert_eq!(price_sweep_secs(), 6 * 3600);
+        assert!(adopt_live_price());
+        assert_eq!(reregister_cooldown_secs(), 600);
+        let published = effective();
+        assert_eq!(
+            published["healthProber"]["priceSweepSeconds"],
+            json!(21_600)
+        );
+        assert_eq!(
+            published["healthProber"]["maxRequestsPerHostPerTick"],
+            json!(3)
+        );
+        assert_eq!(published["revalidation"]["adoptLivePrice"], json!(true));
+        assert_eq!(
+            published["registration"]["reregisterCooldownSeconds"],
+            json!(600)
         );
     }
 

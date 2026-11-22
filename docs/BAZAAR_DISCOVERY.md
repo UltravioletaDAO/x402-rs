@@ -85,13 +85,32 @@ Register a new resource in the discovery registry.
 }
 ```
 
-**Response:** `201 Created`, `400 Bad Request`, or `409 Conflict` when the URL is already in the
-catalog from any source (listed, or waiting for its first verification). The URL is stored and
-compared in its canonical spelling (lowercase host, no trailing dot, no default port). There is no
-public route to update or remove a listing; the operator does that.
+**Response:** `201 Created` or `400 Bad Request`. The URL is stored and compared in its canonical
+spelling (lowercase host, no trailing dot, no default port).
 
-**Ownership.** Registration takes the URL and its description from anyone and makes no outbound
-fetch; so does a settlement that asks to be discoverable. Once such a listing verifies alive, the
+**Re-registration.** Posting a URL the catalog already holds (from any source, listed or waiting
+for its first verification) re-registers its payment terms: the facilitator reads that URL's live
+402 once -- through the prober's connector, with the request the listing declares -- and applies
+the submitted `accepts` only when that 402 is the URL's own answer, offers a payment, and makes
+every submitted offer (`scheme`, `network`, `asset`, `payTo`) at the submitted amount: a new
+amount, an option the 402 no longer makes (left out), an offer moved to another network for the
+same `payTo`. Every `payTo` submitted must be one the listing already declares: a re-registration
+never changes who is paid. Its description, `metadata` and `extensions` are not read; the listing
+keeps its own. `200` with `updated` true (or false when nothing changed); otherwise `409`
+`reregistration_does_not_match_live_402` (with `mismatches` and each `liveAmount`),
+`reregistration_recipient_change` or `reregistration_live_recipient_undeclared`, `422`
+`reregistration_no_live_402`, or `429` `reregistration_too_soon` (one per URL per
+`registration.reregisterCooldownSeconds`). There is no public route to remove a listing; the
+operator does that.
+
+**The listed price follows the 402.** The prober reads every listing's 402 at least once per
+`healthProber.priceSweepSeconds`; when it quotes another amount for an offer the listing declares
+(same scheme, network, asset and recipient), a self-registered listing takes that amount, dated by
+`priceAdoptedAt`. Recipients, networks and assets are never taken from a 402. `DISCOVERY_ADOPT_LIVE_PRICE=false`
+turns it off; all of these are published by `GET /discovery/config`.
+
+**Ownership.** A first registration takes the URL and its description from anyone and makes no
+outbound fetch; so does a settlement that asks to be discoverable. Once such a listing verifies alive, the
 health prober reads `/.well-known/x402` on the URL's host and publishes the verdict as
 `health.ownership` on the listing in `GET /discovery/resources`:
 

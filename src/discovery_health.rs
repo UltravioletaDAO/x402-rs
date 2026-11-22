@@ -61,7 +61,7 @@ const BACKOFF_SECS: [u64; 4] = [3600, 6 * 3600, 24 * 3600, 72 * 3600];
 /// backoff, and a day to spare.
 pub const QUARANTINE_PROTECTION_SECS: u64 = 7 * 24 * 3600;
 /// Max probes issued to a single host in one tick (politeness for mega-hosts).
-const MAX_PER_HOST_PER_TICK: usize = 3;
+pub const MAX_PER_HOST_PER_TICK: usize = 3;
 /// Probe request timeout.
 const PROBE_TIMEOUT: Duration = Duration::from_secs(12);
 /// User-Agent for probes.
@@ -558,14 +558,23 @@ pub fn legacy_verified_at(state: &HealthState, observed_at: Option<u64>) -> Opti
     (checked.abs_diff(seen) <= LEGACY_OBSERVATION_SLACK_SECS).then_some(seen)
 }
 
-/// When an alive record is probed again: the healthy cadence, but never later
-/// than its verification would expire. Exposure needs a verification no older
-/// than the observed-terms window, so the re-probe lands inside it, with an
-/// eighth of the window to spare for a full tick or a host at its cap.
+/// When an alive record is probed again: the price sweep
+/// ([`crate::discovery_config::price_sweep_secs`], six hours), and never later
+/// than the healthy cadence or than its verification would expire. Exposure
+/// needs a verification no older than the observed-terms window, so the
+/// re-probe lands inside it, with an eighth of the window to spare for a full
+/// tick or a host at its cap.
+///
+/// The sweep is what bounds how long a listed price can trail the one its
+/// origin charges: every probe of a verified listing reads its 402, and a
+/// different amount for an offer it declares moves the listing
+/// ([`crate::discovery::DiscoveryRegistry::adopt_live_price`]). At the healthy
+/// cadence alone a repriced listing waited up to six days.
 fn alive_reprobe_secs() -> u64 {
     let window = crate::discovery_terms::freshness_window_secs();
     HEALTHY_REPROBE_SECS
         .min(window.saturating_sub(window / 8))
+        .min(crate::discovery_config::price_sweep_secs())
         .max(1)
 }
 
@@ -3494,6 +3503,21 @@ async fn probe_and_record<T: ProbeTransport + ?Sized>(
         }
     }
 
+    // The live 402 is the price (X402-PRECIOS): a 402 that just verified the
+    // listing, about this listing, and quoting another amount for an offer it
+    // declares moves the listing to that amount -- before the origin proof,
+    // which judges the listing as it now stands, and before the observation,
+    // which dates itself against it. Never from a challenge whose two
+    // transports disagree: there is no one price to take from it.
+    if verified_by == Some(VerifiedBy::X402Challenge) {
+        if let Some(live) = live
+            .as_ref()
+            .filter(|l| l.conflict.is_none() && names_listing(&l.resource_urls, &u))
+        {
+            registry.adopt_live_price(u.as_str(), &live.accepts).await;
+        }
+    }
+
     // Origin proof ([`prove_from_cache`]): asked only of a listing from a route
     // that takes a URL from anyone ([`needs_origin_proof`]), and only once this
     // probe verified it, since a listing that is not alive is not exposed
@@ -3841,6 +3865,226 @@ fn probed_with_another_request(rec: &HealthRecord, target: &ProbeTarget) -> bool
                 && matches!(rec.http_status, Some(405) | Some(400) | Some(404))
         }
     }
+}
+
+// ============================================================================
+// Re-registration (X402-PRECIOS): a seller updates its own listing
+// ============================================================================
+
+/// One submitted option the live 402 does not make as submitted.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OptionMismatch {
+    pub scheme: String,
+    pub network: String,
+    pub asset: String,
+    pub pay_to: String,
+    /// The amount submitted.
+    pub amount: String,
+    /// What the live 402 quotes for the same offer -- scheme, network, asset
+    /// and recipient. Absent when it makes no such offer.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub live_amount: Option<String>,
+}
+
+/// Why a re-registration was not applied ([`reregister`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ReregisterRefusal {
+    /// The URL was re-registered less than the cooldown ago
+    /// ([`crate::discovery_config::reregister_cooldown_secs`]).
+    TooSoon { retry_after_secs: u64 },
+    /// The URL is no longer in the catalog.
+    NotListed,
+    /// A submitted option pays a recipient the listing does not declare.
+    RecipientChange { pay_to: String },
+    /// The URL did not answer its request with a readable 402 of its own that
+    /// offers a payment.
+    NoLiveChallenge { http_status: Option<u16> },
+    /// The live 402 pays a recipient the submission does not declare on a
+    /// network it does: the drift check, run against the submission.
+    UndeclaredLiveRecipient,
+    /// Submitted options the live 402 does not make as submitted.
+    Mismatch(Vec<OptionMismatch>),
+}
+
+impl ReregisterRefusal {
+    /// The error token `POST /discovery/register` answers with.
+    pub fn code(&self) -> &'static str {
+        match self {
+            ReregisterRefusal::TooSoon { .. } => "reregistration_too_soon",
+            ReregisterRefusal::NotListed => "reregistration_not_listed",
+            ReregisterRefusal::RecipientChange { .. } => "reregistration_recipient_change",
+            ReregisterRefusal::NoLiveChallenge { .. } => "reregistration_no_live_402",
+            ReregisterRefusal::UndeclaredLiveRecipient => {
+                "reregistration_live_recipient_undeclared"
+            }
+            ReregisterRefusal::Mismatch(_) => "reregistration_does_not_match_live_402",
+        }
+    }
+}
+
+/// What an accepted re-registration did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Reregistered {
+    /// The listing now carries what was submitted.
+    Updated,
+    /// It already did; nothing was written.
+    Unchanged,
+}
+
+/// Re-register the payment terms of `submitted` over the listing held under
+/// `key`, once the facilitator has read the URL's live 402 and found it making
+/// every submitted offer at the submitted amount.
+///
+/// Only terms the live 402 verifies change: an amount, an option the 402 no
+/// longer makes (left out of the submission), or the network of an offer to
+/// the same recipient. Who is paid never changes -- every submitted recipient
+/// must be one the listing already declares, on any network
+/// ([`DeclaredOffer::declares_recipient`]), and the live 402 must pass the
+/// drift check against the submission -- so a re-registration is never the
+/// way around a payTo-drift quarantine. The rest of the submission
+/// (description, metadata, extensions, type) is not read: the listing keeps
+/// its own ([`crate::types_v2::DiscoveryResource::revise_onto`]).
+///
+/// One read of the URL per [`crate::discovery_config::reregister_cooldown_secs`],
+/// through the prober's own SSRF-checked transport and request
+/// ([`probe_listing`]); the slot is spent before the read, refused or not.
+/// A new registration still reads nothing.
+pub async fn reregister(
+    registry: &DiscoveryRegistry,
+    key: &str,
+    submitted: crate::types_v2::DiscoveryResource,
+) -> Result<Reregistered, ReregisterRefusal> {
+    reregister_through(
+        &SafeTransport,
+        registry,
+        key,
+        submitted,
+        now_secs(),
+        crate::discovery_owner::owns_jobs(),
+    )
+    .await
+}
+
+/// [`reregister`] through `transport`, at `now`, on a replica that does
+/// (`owner`) or does not run the prober.
+async fn reregister_through<T: ProbeTransport + ?Sized>(
+    transport: &T,
+    registry: &DiscoveryRegistry,
+    key: &str,
+    submitted: crate::types_v2::DiscoveryResource,
+    now: u64,
+    owner: bool,
+) -> Result<Reregistered, ReregisterRefusal> {
+    let mut submitted = submitted;
+    submitted.strip_response_only();
+    let Some(held) = registry.get(key).await else {
+        return Err(ReregisterRefusal::NotListed);
+    };
+    registry
+        .take_reregistration_slot(key, now)
+        .map_err(|retry_after_secs| ReregisterRefusal::TooSoon { retry_after_secs })?;
+
+    // Who is paid never changes here: every recipient submitted is one the
+    // listing already declares. Checked before anything is read.
+    let declared = declared_offers(&held.accepts);
+    for option in &submitted.accepts {
+        let pay_to = option.pay_to.to_string();
+        if !declared.iter().any(|d| d.declares_recipient(&pay_to)) {
+            return Err(ReregisterRefusal::RecipientChange { pay_to });
+        }
+    }
+
+    // An MCP endpoint is verified by its handshake, which quotes no price.
+    if held.resource_type == "mcp" {
+        return Err(ReregisterRefusal::NoLiveChallenge { http_status: None });
+    }
+    // The request the listing declares: the submission's declaration is not
+    // what changes here.
+    let url = held.url.clone();
+    let request = listing_probe_request(&held, registry.curation().probes_get_only(&url));
+    let recorded = registry.health().recorded_method(url.as_str()).await;
+    let probed = probe_listing(transport, &url, &request, recorded).await;
+    let answered_as_sent = probed.outcome.answered_as_sent(&url);
+    let method = probed.method;
+    let ProbeOutcome {
+        class,
+        http,
+        body,
+        challenge_header,
+        ..
+    } = probed.outcome;
+    let live = (class == ProbeClass::Alive
+        && answered_as_sent
+        && (body.is_some() || challenge_header.is_some()))
+    .then(|| pay_to_from_402(body.as_deref(), challenge_header.as_deref()))
+    .filter(|l| l.offers_payment() && names_listing(&l.resource_urls, &url));
+    let Some(live) = live else {
+        return Err(ReregisterRefusal::NoLiveChallenge { http_status: http });
+    };
+
+    let submitted_offers = declared_offers(&submitted.accepts);
+    if compare_recipients(&submitted_offers, &live) == Recipients::Drifted {
+        return Err(ReregisterRefusal::UndeclaredLiveRecipient);
+    }
+    let live_offers: Vec<(DeclaredOffer, &CatalogPaymentOption)> = live
+        .accepts
+        .iter()
+        .map(|o| (DeclaredOffer::of(o), o))
+        .collect();
+    let mut mismatches = Vec::new();
+    for (option, offer) in submitted.accepts.iter().zip(&submitted_offers) {
+        let same: Vec<&CatalogPaymentOption> = live_offers
+            .iter()
+            .filter(|(l, _)| offer.is_offered_by(l))
+            .map(|(_, o)| *o)
+            .collect();
+        if same.iter().any(|o| o.amount == option.amount) {
+            continue;
+        }
+        mismatches.push(OptionMismatch {
+            scheme: option.scheme.to_string(),
+            network: option.network.to_string(),
+            asset: option.asset.to_string(),
+            pay_to: option.pay_to.to_string(),
+            amount: option.amount.to_string(),
+            live_amount: same.first().map(|o| o.amount.to_string()),
+        });
+    }
+    if !mismatches.is_empty() {
+        return Err(ReregisterRefusal::Mismatch(mismatches));
+    }
+
+    let resource_type = held.resource_type.clone();
+    let changed = registry
+        .apply_reregistration(key, submitted)
+        .await
+        .ok_or(ReregisterRefusal::NotListed)?;
+    // The reading that just matched dates the price at once where the prober
+    // runs (the overlay's one writer); any other replica asks the owner to
+    // read it, and the listing reads `stale` / `pending` until it has.
+    if owner {
+        record_observation(
+            registry,
+            &registry.terms(),
+            &url,
+            &resource_type,
+            method,
+            http,
+            live,
+        )
+        .await;
+    } else {
+        let queue = registry.revalidation();
+        if queue.request(key, RefreshReason::OwnerNotified, now).await {
+            queue.offer_to_owner(vec![key.to_string()]);
+        }
+    }
+    Ok(if changed {
+        Reregistered::Updated
+    } else {
+        Reregistered::Unchanged
+    })
 }
 
 #[cfg(test)]
@@ -9273,6 +9517,561 @@ mod declared_method_tests {
             .unwrap()
             .get("ownership")
             .is_none());
+    }
+
+    // ------------------------------------------------------------------------
+    // X402-PRECIOS: the live 402 is the price, and the seller can say so
+    // ------------------------------------------------------------------------
+
+    const PRICE_PAYEE: &str = "0xe4dc963c56979E0260fc146b87eE24F18220e545";
+    const PRICE_OTHER: &str = "0x000000000000000000000000000000000000dEaD";
+    const PRICE_USDC: &str = "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913";
+
+    /// One `exact` USDC offer on Base, as the catalog holds it.
+    fn priced(amount: &str, pay_to: &str) -> CatalogPaymentOption {
+        normalize_declared_option(DeclaredPaymentOption {
+            scheme: Some("exact".to_string()),
+            network: Some("base".to_string()),
+            asset: Some(PRICE_USDC.to_string()),
+            amount: Some(json!(amount)),
+            pay_to: Some(pay_to.to_string()),
+            max_timeout_seconds: Some(60),
+            ..Default::default()
+        })
+        .expect("fixture option must normalize")
+    }
+
+    /// The same offer as an origin's 402 spells it.
+    fn quoted(amount: &str, pay_to: &str) -> Value {
+        json!({
+            "scheme": "exact",
+            "network": "eip155:8453",
+            "asset": PRICE_USDC,
+            "amount": amount,
+            "payTo": pay_to,
+            "maxTimeoutSeconds": 60
+        })
+    }
+
+    fn quote(options: &[Value]) -> Value {
+        json!({ "x402Version": 2, "accepts": options })
+    }
+
+    /// A self-registered listing at `seller.example/r` listed at `amount`.
+    fn listed_at(amount: &str) -> crate::types_v2::DiscoveryResource {
+        let mut listing = registered(None);
+        listing.accepts = vec![priced(amount, PRICE_PAYEE)];
+        listing
+    }
+
+    fn amounts(listing: &crate::types_v2::DiscoveryResource) -> Vec<String> {
+        listing
+            .accepts
+            .iter()
+            .map(|o| o.amount.to_string())
+            .collect()
+    }
+
+    /// The P0 report of 2026-11-22: listed at 0.002, its 402 asks 0.003. One
+    /// probe later the catalog lists what the 402 asks, says when it learned
+    /// it, and the reading agrees with the listing.
+    #[tokio::test]
+    async fn a_repriced_402_moves_the_listed_amount_and_the_listing_reads_fresh() {
+        let says = Says::header(&quote(&[quoted("3000", PRICE_PAYEE)]));
+        let (registry, held) = probed_times(listed_at("2000"), &says, 1).await;
+        assert_eq!(amounts(&held), ["3000"], "the listing kept the old price");
+        assert!(held.price_adopted_at.is_some());
+        assert!(held.accepts[0]
+            .pay_to
+            .to_string()
+            .eq_ignore_ascii_case(PRICE_PAYEE));
+
+        let listed = registry.list(10, 0, None).await.items.remove(0);
+        assert_eq!(listed.price_freshness.as_deref(), Some("fresh"));
+        assert_eq!(amounts(&listed), ["3000"]);
+        assert_eq!(
+            serde_json::to_value(&listed).unwrap()["priceAdoptedAt"],
+            json!(held.price_adopted_at)
+        );
+    }
+
+    /// A 402 that pays somebody else is the drift check's business: it holds
+    /// the listing, and no amount of it is taken.
+    #[tokio::test]
+    async fn a_402_that_pays_another_recipient_moves_no_price() {
+        let says = Says::header(&quote(&[quoted("3000", PRICE_OTHER)]));
+        let (registry, held) = probed_times(listed_at("2000"), &says, 1).await;
+        assert_eq!(amounts(&held), ["2000"]);
+        assert!(held.price_adopted_at.is_none());
+        assert_eq!(
+            status_of(&registry.health(), held.url.as_str()).await,
+            HealthStatus::Quarantined
+        );
+    }
+
+    /// When the header and the body quote different amounts there is no one
+    /// price to take.
+    #[tokio::test]
+    async fn a_402_whose_transports_disagree_moves_no_price() {
+        let says = Says {
+            header: Some(header_of(&quote(&[quoted("3000", PRICE_PAYEE)]))),
+            body: quote(&[quoted("4000", PRICE_PAYEE)]).to_string(),
+            redirect: None,
+            only: None,
+        };
+        let (_registry, held) = probed_times(listed_at("2000"), &says, 1).await;
+        assert_eq!(amounts(&held), ["2000"]);
+    }
+
+    /// An aggregated copy is its feed's: the next import would put the feed's
+    /// amount back, so the prober leaves it to the feed.
+    #[tokio::test]
+    async fn an_aggregated_copy_keeps_its_source_amount() {
+        let mut copy = listing_of("/r", None);
+        copy.accepts = vec![priced("2000", PRICE_PAYEE)];
+        assert_ne!(
+            copy.source,
+            crate::types_v2::DiscoverySource::SelfRegistered
+        );
+        let says = Says::header(&quote(&[quoted("3000", PRICE_PAYEE)]));
+        let (_registry, held) = probed_times(copy, &says, 1).await;
+        assert_eq!(amounts(&held), ["2000"]);
+    }
+
+    /// What a build without adoption left behind: a current reading that
+    /// contradicts the listing. It is queued as a conflict, and the first
+    /// revalidation resolves it.
+    #[tokio::test]
+    async fn a_conflict_is_resolved_by_its_first_revalidation() {
+        let registry = DiscoveryRegistry::new();
+        let listing = listed_at("2000");
+        let url = listing.url.to_string();
+        registry.register(listing).await.unwrap();
+        let held = registry.get(&url).await.unwrap();
+        let now = now_secs();
+        registry
+            .terms()
+            .record(
+                &url,
+                ObservedTerms {
+                    accepts: vec![priced("3000", PRICE_PAYEE)],
+                    observed_at: now,
+                    context: ObservationContext::anonymous("GET", "http"),
+                    phase: ObservationPhase::Verification,
+                    provenance: TermsProvenance::OriginResponse,
+                    transport: TermsTransport::Header,
+                    x402_version: Some(2),
+                    http_status: Some(402),
+                    content_hash: Some(held.content_fingerprint()),
+                    conflict: None,
+                    rejected: BTreeMap::new(),
+                    truncated: false,
+                },
+            )
+            .await;
+        let window = crate::discovery_terms::freshness_window_secs();
+        let freshness = |r: &crate::types_v2::DiscoveryResource, o: Option<ObservedTerms>| {
+            crate::discovery_terms::assess_freshness(r, o.as_ref(), now_secs(), window)
+        };
+        assert_eq!(
+            freshness(&held, registry.terms().get(&url).await),
+            crate::discovery_terms::PriceFreshness::Conflict
+        );
+
+        let queue = registry.revalidation();
+        assert!(queue.request(&url, RefreshReason::Conflict, now).await);
+        let batch = queue.take_batch(10, now).await;
+        assert_eq!(batch, vec![(url.clone(), RefreshReason::Conflict)]);
+        let target = registry.probe_targets().await.remove(0);
+        let says = Says::header(&quote(&[quoted("3000", PRICE_PAYEE)]));
+        probe_and_record(&says, &registry, &registry.health(), target).await;
+
+        let held = registry.get(&url).await.unwrap();
+        assert_eq!(amounts(&held), ["3000"]);
+        assert_eq!(
+            freshness(&held, registry.terms().get(&url).await),
+            crate::discovery_terms::PriceFreshness::Fresh
+        );
+    }
+
+    /// The sweep takes due targets in the order `probe_targets` gives them:
+    /// a conflict before a listing nothing has read, and that before a fresh
+    /// one.
+    #[tokio::test]
+    async fn the_sweep_takes_a_conflict_first() {
+        let registry = DiscoveryRegistry::new();
+        let mut urls = Vec::new();
+        for path in ["/fresh", "/unknown", "/conflict"] {
+            let mut listing = listed_at("2000");
+            listing.url = url::Url::parse(&format!("https://seller.example{path}")).unwrap();
+            urls.push(listing.url.to_string());
+            registry.register(listing).await.unwrap();
+        }
+        let now = now_secs();
+        for (url, amount) in [(&urls[0], "2000"), (&urls[2], "3000")] {
+            let held = registry.get(url).await.unwrap();
+            registry
+                .terms()
+                .record(
+                    url,
+                    ObservedTerms {
+                        accepts: vec![priced(amount, PRICE_PAYEE)],
+                        observed_at: now,
+                        context: ObservationContext::anonymous("GET", "http"),
+                        phase: ObservationPhase::Verification,
+                        provenance: TermsProvenance::OriginResponse,
+                        transport: TermsTransport::Header,
+                        x402_version: Some(2),
+                        http_status: Some(402),
+                        content_hash: Some(held.content_fingerprint()),
+                        conflict: None,
+                        rejected: BTreeMap::new(),
+                        truncated: false,
+                    },
+                )
+                .await;
+        }
+        let order: Vec<String> = registry
+            .probe_targets()
+            .await
+            .into_iter()
+            .map(|t| t.url.to_string())
+            .collect();
+        assert_eq!(order, [urls[2].clone(), urls[1].clone(), urls[0].clone()]);
+    }
+
+    /// The sweep's cadence, and what one pass of the measured catalog costs
+    /// under the per-host limit. Every listing is due at once (an empty
+    /// tracker), and each tick admits what `plan_tick` admits: at most the
+    /// tick's budget, at most `MAX_PER_HOST_PER_TICK` request slots a host.
+    /// The catalog is the one exposed on 2026-11-22, host by host, anonymized
+    /// (`tests/fixtures/bazaar/host-request-slots-2026-11-22.json`).
+    #[test]
+    fn the_measured_catalog_is_swept_in_six_hours_and_eight_minutes() {
+        assert_eq!(
+            alive_reprobe_secs(),
+            6 * 3600,
+            "the price sweep is six hours"
+        );
+        let fixture: Value = serde_json::from_str(include_str!(
+            "../tests/fixtures/bazaar/host-request-slots-2026-11-22.json"
+        ))
+        .unwrap();
+        let mut targets = Vec::new();
+        for (h, slots) in fixture["hosts"].as_array().unwrap().iter().enumerate() {
+            let (one, two) = (slots[0].as_u64().unwrap(), slots[1].as_u64().unwrap());
+            for i in 0..one {
+                targets.push(target(&format!("https://h{h}.example/g{i}"), get()));
+            }
+            for i in 0..two {
+                targets.push(target(
+                    &format!("https://h{h}.example/u{i}"),
+                    ProbeRequest::Undeclared,
+                ));
+            }
+        }
+        assert_eq!(targets.len(), 3_043);
+        let tracker = HealthTracker::new();
+        let budget = crate::discovery_config::health_budget_per_tick();
+        let mut ticks = 0u64;
+        while !targets.is_empty() {
+            ticks += 1;
+            let plan = plan_tick(&tracker, targets.clone(), vec![], vec![], budget, 1_000);
+            let spent: usize = plan.probes.iter().map(ProbeTarget::slots).sum();
+            assert!(spent <= budget, "tick {ticks} spent {spent} of {budget}");
+            let mut per_host: HashMap<String, usize> = HashMap::new();
+            for p in &plan.probes {
+                *per_host
+                    .entry(p.url.host_str().unwrap().to_string())
+                    .or_default() += p.slots();
+            }
+            assert!(per_host.values().all(|&n| n <= MAX_PER_HOST_PER_TICK));
+            assert!(!plan.probes.is_empty(), "a tick admitted nothing");
+            let probed: HashSet<String> = plan.probes.iter().map(|p| p.url.to_string()).collect();
+            targets.retain(|t| !probed.contains(t.url.as_str()));
+        }
+        let tick_secs = crate::discovery_config::health_tick_secs();
+        println!(
+            "one pass of the measured catalog: {ticks} ticks of {tick_secs}s = {}h{:02}m",
+            ticks * tick_secs / 3600,
+            ticks * tick_secs % 3600 / 60
+        );
+        // Bounded by the largest host: 368 listings that declare no method,
+        // two slots each, one probe a tick.
+        assert_eq!(ticks, 368);
+    }
+
+    // --- re-registration ---------------------------------------------------
+
+    /// An `exact` USDC-shaped offer on `network` (v1 name) paying `pay_to`.
+    fn priced_on(network: &str, amount: &str, pay_to: &str) -> CatalogPaymentOption {
+        normalize_declared_option(DeclaredPaymentOption {
+            scheme: Some("exact".to_string()),
+            network: Some(network.to_string()),
+            asset: Some(PRICE_USDC.to_string()),
+            amount: Some(json!(amount)),
+            pay_to: Some(pay_to.to_string()),
+            max_timeout_seconds: Some(60),
+            ..Default::default()
+        })
+        .expect("fixture option must normalize")
+    }
+
+    /// A registry holding the listing at `seller.example/r` with `accepts`.
+    async fn holding(
+        accepts: Vec<CatalogPaymentOption>,
+    ) -> (
+        DiscoveryRegistry,
+        String,
+        crate::types_v2::DiscoveryResource,
+    ) {
+        let registry = DiscoveryRegistry::new();
+        let mut listing = registered(None);
+        listing.accepts = accepts;
+        let key = listing.url.to_string();
+        registry.register(listing.clone()).await.unwrap();
+        (registry, key, listing)
+    }
+
+    /// An option the live 402 no longer makes is dropped by re-registering
+    /// without it.
+    #[tokio::test]
+    async fn a_reregistration_drops_an_option_its_402_no_longer_makes() {
+        let (registry, key, mut submitted) = holding(vec![
+            priced_on("base", "32000", PRICE_PAYEE),
+            priced_on("celo", "32000", PRICE_PAYEE),
+        ])
+        .await;
+        submitted.accepts = vec![priced_on("base", "16000", PRICE_PAYEE)];
+        let origin = Quotes::new(402, quote(&[quoted("16000", PRICE_PAYEE)]));
+        assert_eq!(
+            reregister_through(&origin, &registry, &key, submitted, 1_000, true).await,
+            Ok(Reregistered::Updated)
+        );
+        let held = registry.get(&key).await.unwrap();
+        assert_eq!(held.accepts.len(), 1);
+        assert_eq!(amounts(&held), ["16000"]);
+    }
+
+    /// The same recipient on another network -- a testnet listing whose 402
+    /// now quotes mainnet -- is a change the live 402 verifies.
+    #[tokio::test]
+    async fn a_reregistration_moves_an_offer_to_another_network_for_the_same_recipient() {
+        let (registry, key, mut submitted) =
+            holding(vec![priced_on("base-sepolia", "3000", PRICE_PAYEE)]).await;
+        submitted.accepts = vec![priced_on("base", "5000", PRICE_PAYEE)];
+        let origin = Quotes::new(402, quote(&[quoted("5000", PRICE_PAYEE)]));
+        assert_eq!(
+            reregister_through(&origin, &registry, &key, submitted, 1_000, true).await,
+            Ok(Reregistered::Updated)
+        );
+        let held = registry.get(&key).await.unwrap();
+        assert_eq!(held.accepts[0].network.to_string(), "eip155:8453");
+        assert_eq!(amounts(&held), ["5000"]);
+    }
+
+    /// An origin that answers `status` (with `challenge` in the header when it
+    /// is a 402) and counts what it was sent.
+    struct Quotes {
+        status: u16,
+        challenge: Value,
+        sent: std::sync::atomic::AtomicUsize,
+    }
+
+    impl Quotes {
+        fn new(status: u16, challenge: Value) -> Self {
+            Self {
+                status,
+                challenge,
+                sent: std::sync::atomic::AtomicUsize::new(0),
+            }
+        }
+
+        fn sent(&self) -> usize {
+            self.sent.load(Ordering::SeqCst)
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl ProbeTransport for Quotes {
+        async fn send(
+            &self,
+            _url: &url::Url,
+            _method: ProbeMethod,
+            _body: Option<&str>,
+        ) -> Result<reqwest::Response, SecurityReject> {
+            self.sent.fetch_add(1, Ordering::SeqCst);
+            let mut response = axum::http::Response::builder().status(self.status);
+            if self.status == 402 {
+                response = response.header("payment-required", header_of(&self.challenge));
+            }
+            Ok(reqwest::Response::from(
+                response.body(String::from("{}")).unwrap(),
+            ))
+        }
+
+        async fn send_mcp(
+            &self,
+            _url: &url::Url,
+            _body: &str,
+            _session: Option<&str>,
+        ) -> Result<reqwest::Response, SecurityReject> {
+            Err(SecurityReject::Http("no MCP here".to_string()))
+        }
+    }
+
+    /// A registry holding `listed_at("2000")`, its key, and a submission of
+    /// the same listing at `amount` to `pay_to` with a new description.
+    async fn reregistration(
+        amount: &str,
+        pay_to: &str,
+    ) -> (
+        DiscoveryRegistry,
+        String,
+        crate::types_v2::DiscoveryResource,
+    ) {
+        let registry = DiscoveryRegistry::new();
+        let listing = listed_at("2000");
+        let key = listing.url.to_string();
+        registry.register(listing.clone()).await.unwrap();
+        let mut submitted = listing;
+        submitted.accepts = vec![priced(amount, pay_to)];
+        submitted.description = "the seller's own words, revised".to_string();
+        (registry, key, submitted)
+    }
+
+    /// The terms move to what the live 402 makes; nothing else of the
+    /// submission is taken.
+    #[tokio::test]
+    async fn a_reregistration_that_matches_the_live_402_updates_its_terms_and_nothing_else() {
+        let (registry, key, mut submitted) = reregistration("3000", PRICE_PAYEE).await;
+        submitted.metadata = Some(
+            serde_json::from_value(json!({ "category": "other", "tags": ["rewritten"] })).unwrap(),
+        );
+        let origin = Quotes::new(402, quote(&[quoted("3000", PRICE_PAYEE)]));
+        let outcome = reregister_through(&origin, &registry, &key, submitted, 1_000, true).await;
+        assert_eq!(outcome, Ok(Reregistered::Updated));
+        assert_eq!(origin.sent(), 1, "one read of the URL");
+
+        let held = registry.get(&key).await.unwrap();
+        assert_eq!(amounts(&held), ["3000"]);
+        assert_eq!(
+            held.description, "exposure fixture",
+            "a re-registration rewrote the description"
+        );
+        assert_eq!(
+            serde_json::to_value(&held.metadata).unwrap(),
+            serde_json::to_value(&listed_at("2000").metadata).unwrap(),
+            "a re-registration rewrote the metadata"
+        );
+        // The reading that matched dates the price at once on the owner.
+        let window = crate::discovery_terms::freshness_window_secs();
+        assert_eq!(
+            crate::discovery_terms::assess_freshness(
+                &held,
+                registry.terms().get(&key).await.as_ref(),
+                now_secs(),
+                window
+            ),
+            crate::discovery_terms::PriceFreshness::Fresh
+        );
+    }
+
+    #[tokio::test]
+    async fn a_reregistration_that_does_not_match_is_refused_with_the_live_amount() {
+        let (registry, key, submitted) = reregistration("2500", PRICE_PAYEE).await;
+        let origin = Quotes::new(402, quote(&[quoted("3000", PRICE_PAYEE)]));
+        let outcome = reregister_through(&origin, &registry, &key, submitted, 1_000, true).await;
+        let Err(ReregisterRefusal::Mismatch(mismatches)) = outcome else {
+            panic!("expected a mismatch, got {outcome:?}");
+        };
+        assert_eq!(mismatches.len(), 1);
+        assert_eq!(mismatches[0].amount, "2500");
+        assert_eq!(mismatches[0].live_amount.as_deref(), Some("3000"));
+        let held = registry.get(&key).await.unwrap();
+        assert_eq!(amounts(&held), ["2000"], "a refused re-registration wrote");
+        assert_eq!(held.description, "exposure fixture");
+    }
+
+    /// Who is paid never changes by re-registration -- and the origin is not
+    /// even asked.
+    #[tokio::test]
+    async fn a_reregistration_cannot_change_who_is_paid() {
+        let (registry, key, submitted) = reregistration("3000", PRICE_OTHER).await;
+        let origin = Quotes::new(402, quote(&[quoted("3000", PRICE_OTHER)]));
+        let outcome = reregister_through(&origin, &registry, &key, submitted, 1_000, true).await;
+        assert!(
+            matches!(outcome, Err(ReregisterRefusal::RecipientChange { .. })),
+            "{outcome:?}"
+        );
+        assert_eq!(origin.sent(), 0);
+        assert_eq!(amounts(&registry.get(&key).await.unwrap()), ["2000"]);
+    }
+
+    /// A 402 that also pays an undeclared recipient on the declared network
+    /// fails the drift check against the submission.
+    #[tokio::test]
+    async fn a_reregistration_against_a_402_paying_someone_else_too_is_refused() {
+        let (registry, key, submitted) = reregistration("3000", PRICE_PAYEE).await;
+        let origin = Quotes::new(
+            402,
+            quote(&[quoted("3000", PRICE_PAYEE), quoted("3000", PRICE_OTHER)]),
+        );
+        let outcome = reregister_through(&origin, &registry, &key, submitted, 1_000, true).await;
+        assert_eq!(outcome, Err(ReregisterRefusal::UndeclaredLiveRecipient));
+        assert_eq!(amounts(&registry.get(&key).await.unwrap()), ["2000"]);
+    }
+
+    #[tokio::test]
+    async fn a_reregistration_needs_a_live_402_and_waits_out_its_cooldown() {
+        let (registry, key, submitted) = reregistration("3000", PRICE_PAYEE).await;
+        let gone = Quotes::new(200, Value::Null);
+        assert_eq!(
+            reregister_through(&gone, &registry, &key, submitted.clone(), 1_000, true).await,
+            Err(ReregisterRefusal::NoLiveChallenge {
+                http_status: Some(200)
+            })
+        );
+        // The refused attempt spent the URL's slot: the next read waits.
+        let origin = Quotes::new(402, quote(&[quoted("3000", PRICE_PAYEE)]));
+        let cooldown = crate::discovery_config::reregister_cooldown_secs();
+        assert_eq!(
+            reregister_through(&origin, &registry, &key, submitted.clone(), 1_010, true).await,
+            Err(ReregisterRefusal::TooSoon {
+                retry_after_secs: cooldown - 10
+            })
+        );
+        assert_eq!(origin.sent(), 0);
+        assert_eq!(
+            reregister_through(&origin, &registry, &key, submitted, 1_000 + cooldown, true).await,
+            Ok(Reregistered::Updated)
+        );
+    }
+
+    /// A replica that does not run the prober updates the listing and asks
+    /// the owner to read it; it writes no observation of its own.
+    #[tokio::test]
+    async fn a_reregistration_on_another_replica_asks_the_owner_to_read_it() {
+        let (registry, key, submitted) = reregistration("3000", PRICE_PAYEE).await;
+        let origin = Quotes::new(402, quote(&[quoted("3000", PRICE_PAYEE)]));
+        let outcome = reregister_through(&origin, &registry, &key, submitted, 1_000, false).await;
+        assert_eq!(outcome, Ok(Reregistered::Updated));
+        assert_eq!(amounts(&registry.get(&key).await.unwrap()), ["3000"]);
+        assert!(registry.terms().get(&key).await.is_none());
+        assert!(registry.revalidation().is_pending(&key).await);
+    }
+
+    /// Re-registering the listed terms writes nothing, whatever else the
+    /// submission says.
+    #[tokio::test]
+    async fn a_reregistration_of_what_is_listed_changes_nothing() {
+        let (registry, key, submitted) = reregistration("2000", PRICE_PAYEE).await;
+        assert_ne!(submitted.description, "exposure fixture");
+        let origin = Quotes::new(402, quote(&[quoted("2000", PRICE_PAYEE)]));
+        assert_eq!(
+            reregister_through(&origin, &registry, &key, submitted, 1_000, true).await,
+            Ok(Reregistered::Unchanged)
+        );
     }
 }
 

@@ -249,7 +249,24 @@ impl RevalidationQueue {
             if pending.len() >= cfg::revalidation_queue_cap() && !pending.contains_key(url) {
                 // Bounded. A queue that grows without limit is the same failure
                 // as a catalog that grows without limit, one layer along.
-                return false;
+                //
+                // But full is not first-come-first-served: a request with a
+                // stronger reason takes the place of the weakest entry waiting.
+                // Without that, a queue filled with listings whose reading had
+                // aged out refused every conflict behind them -- on 2026-11-22
+                // the queue sat at its cap of 500 with 1 078 listings unknown
+                // and 243 in conflict. Equal reasons never displace each other,
+                // so a full queue does not churn.
+                let weakest = pending
+                    .values()
+                    .min_by_key(|p| (p.reason, p.score(now)))
+                    .map(|p| (p.url.clone(), p.reason));
+                match weakest {
+                    Some((victim, weaker)) if weaker < reason => {
+                        pending.remove(&victim);
+                    }
+                    _ => return false,
+                }
             }
             let entry = pending.entry(url.to_string()).or_insert_with(|| Pending {
                 url: url.to_string(),
@@ -814,6 +831,59 @@ mod tests {
             q.depth().await <= cap,
             "a queue that grows without limit is the same failure as a catalog that does"
         );
+    }
+
+    /// A full queue of aged-out readings still takes a conflict, which goes
+    /// out first; it does not take one more of the same, so it never churns.
+    #[tokio::test]
+    async fn a_full_queue_makes_room_for_a_conflict_and_not_for_more_of_the_same() {
+        let q = queue();
+        let cap = cfg::revalidation_queue_cap();
+        let now = 1_000;
+        for i in 0..cap {
+            assert!(
+                q.request(
+                    &format!("https://h{i}.example/x"),
+                    RefreshReason::ListingStale,
+                    now,
+                )
+                .await
+            );
+        }
+        assert_eq!(q.depth().await, cap);
+        assert!(
+            !q.request("https://late.example/x", RefreshReason::ListingStale, now)
+                .await,
+            "an equal reason must not displace one already waiting"
+        );
+
+        assert!(
+            q.request(C, RefreshReason::Conflict, now).await,
+            "a full queue refused a conflict behind {cap} aged-out readings"
+        );
+        assert_eq!(q.depth().await, cap, "still bounded");
+        assert!(q.is_pending(C).await);
+        let batch = q.take_batch(1, now).await;
+        assert_eq!(batch, vec![(C.to_string(), RefreshReason::Conflict)]);
+    }
+
+    /// A conflict never displaces another conflict, nor anything stronger.
+    #[tokio::test]
+    async fn a_full_queue_of_conflicts_keeps_them() {
+        let q = queue();
+        let cap = cfg::revalidation_queue_cap();
+        for i in 0..cap {
+            q.request(
+                &format!("https://h{i}.example/x"),
+                RefreshReason::Conflict,
+                1_000,
+            )
+            .await;
+        }
+        assert!(!q.request(C, RefreshReason::Conflict, 1_000).await);
+        assert!(!q.is_pending(C).await);
+        assert!(q.request(A, RefreshReason::PurchaseIntent, 1_000).await);
+        assert_eq!(q.depth().await, cap);
     }
 
     #[tokio::test]

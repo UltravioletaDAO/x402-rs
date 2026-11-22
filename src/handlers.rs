@@ -3140,6 +3140,7 @@ pub async fn post_discovery_register(
     info!(url = %url, resource_type = %request.resource_type, "Registering new resource");
 
     let resource = request.into_resource();
+    let submitted = resource.clone();
 
     match registry.register(resource).await {
         Ok(()) => {
@@ -3154,10 +3155,109 @@ pub async fn post_discovery_register(
             )
                 .into_response()
         }
+        // A URL already held: a re-registration, applied only when its live
+        // 402 makes every offer submitted.
+        Err(DiscoveryError::AlreadyExists(key)) => {
+            reregistration_response(&registry, key, submitted).await
+        }
         Err(e) => {
             warn!(url = %url, error = %e, "Failed to register resource");
             discovery_error_response(e)
         }
+    }
+}
+
+/// `POST /discovery/register` for a URL the catalog already holds: the
+/// seller's re-registration (`discovery_health::reregister`). `200` when the
+/// URL's live 402 makes every submitted offer at the submitted amount -- the
+/// listing then carries the submitted price and metadata -- and an error
+/// naming what did not match otherwise.
+async fn reregistration_response(
+    registry: &DiscoveryRegistry,
+    key: String,
+    submitted: crate::types_v2::DiscoveryResource,
+) -> Response {
+    use crate::discovery_health::{ReregisterRefusal, Reregistered};
+    let refusal = match crate::discovery_health::reregister(registry, &key, submitted).await {
+        Ok(outcome) => {
+            let updated = outcome == Reregistered::Updated;
+            info!(url = %key, updated, "Re-registration matched the live 402");
+            return (
+                StatusCode::OK,
+                Json(json!({
+                    "success": true,
+                    "updated": updated,
+                    "message": if updated {
+                        "Payment terms updated: the live 402 makes every offer submitted. A re-registration changes the payment terms only; the listing keeps its description, metadata and extensions."
+                    } else {
+                        "Already listed with these terms"
+                    },
+                    "url": key
+                })),
+            )
+                .into_response();
+        }
+        Err(refusal) => refusal,
+    };
+    warn!(url = %key, code = refusal.code(), "Re-registration refused");
+    let code = refusal.code();
+    match refusal {
+        ReregisterRefusal::TooSoon { retry_after_secs } => (
+            StatusCode::TOO_MANY_REQUESTS,
+            [(header::RETRY_AFTER, retry_after_secs.to_string())],
+            Json(json!({
+                "error": "This URL was re-registered too recently",
+                "errorCode": code,
+                "url": key,
+                "retryAfterSeconds": retry_after_secs,
+                "hint": "A re-registration reads the URL's live 402 once; each URL may be re-registered once per cooldown (GET /discovery/config, registration.reregisterCooldownSeconds)."
+            })),
+        )
+            .into_response(),
+        ReregisterRefusal::NotListed => discovery_error_response(DiscoveryError::NotFound(key)),
+        ReregisterRefusal::RecipientChange { pay_to } => (
+            StatusCode::CONFLICT,
+            Json(json!({
+                "error": "Resource already registered; a re-registration cannot change who is paid",
+                "errorCode": code,
+                "url": key,
+                "payTo": pay_to,
+                "hint": "Every payTo submitted must be one the listing already declares. Changing a recipient is the facilitator operator's action."
+            })),
+        )
+            .into_response(),
+        ReregisterRefusal::NoLiveChallenge { http_status } => (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Json(json!({
+                "error": "Resource already registered; its URL did not answer with a readable 402",
+                "errorCode": code,
+                "url": key,
+                "httpStatus": http_status,
+                "hint": "A re-registration is applied only when the URL's own 402 to the request the listing declares offers a payment the facilitator can read."
+            })),
+        )
+            .into_response(),
+        ReregisterRefusal::UndeclaredLiveRecipient => (
+            StatusCode::CONFLICT,
+            Json(json!({
+                "error": "Resource already registered; its live 402 pays a recipient this registration does not declare",
+                "errorCode": code,
+                "url": key,
+                "hint": "Submit the options the live 402 makes, recipients included."
+            })),
+        )
+            .into_response(),
+        ReregisterRefusal::Mismatch(mismatches) => (
+            StatusCode::CONFLICT,
+            Json(json!({
+                "error": "Resource already registered; this registration does not match its live 402",
+                "errorCode": code,
+                "url": key,
+                "mismatches": mismatches,
+                "hint": "Submit the amounts the URL's live 402 quotes (each mismatch carries liveAmount when the 402 makes that offer). The catalog also follows a repriced 402 by itself within its price sweep (GET /discovery/config, healthProber.priceSweepSeconds)."
+            })),
+        )
+            .into_response(),
     }
 }
 
@@ -3169,7 +3269,7 @@ fn discovery_error_response(error: DiscoveryError) -> Response {
             Json(json!({
                 "error": "Resource already registered",
                 "url": url,
-                "hint": "This URL is already in the catalog, listed or waiting for its first verification. There is no public route to update or remove a listing; ask the facilitator operator."
+                "hint": "This URL is already in the catalog, listed or waiting for its first verification. POST /discovery/register re-registers it when its live 402 makes every offer submitted; there is no public route to remove a listing."
             })),
         )
             .into_response(),

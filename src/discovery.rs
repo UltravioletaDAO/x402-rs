@@ -989,6 +989,9 @@ pub struct DiscoveryRegistry {
     suppressed: Arc<RwLock<std::collections::HashSet<String>>>,
     /// Catalog writes waiting to be applied, in the order they were issued.
     writes: Arc<WriteQueue>,
+    /// URL -> when its last re-registration was taken
+    /// ([`Self::take_reregistration_slot`]).
+    reregistrations: Arc<std::sync::Mutex<HashMap<String, u64>>>,
     /// Networks this process has a provider for, set once at startup from the
     /// provider map (`GET /supported` iterates the same map). Until it is set
     /// every option reads `network-not-served`: settleability is a claim about
@@ -1071,6 +1074,9 @@ enum StoreOp {
     Save(Box<DiscoveryResource>),
     Delete(String),
     Adopt(Box<Adoption>),
+    /// A seller's re-registration of a listing already held: its verified
+    /// payment terms, as a patch ([`apply_revision`]).
+    Revise(Box<DiscoveryResource>),
     /// A settlement on a listing already held, as a patch ([`apply_settlement`]).
     Settle {
         url: String,
@@ -1106,16 +1112,31 @@ async fn apply_settlement(
     .await
 }
 
-/// A declaration adopted from a listing's own 402, as a patch to the stored
-/// record ([`DiscoveryRegistry::adopt_declaration`]).
+/// What a listing's own 402 gave a stored record, as a patch to it
+/// ([`DiscoveryRegistry::adopt_declaration`], [`DiscoveryRegistry::adopt_live_price`]).
 #[derive(Debug, Clone)]
 struct Adoption {
     url: String,
     /// The content fingerprint of the record the adoption was computed from.
     from: String,
-    extensions: serde_json::Value,
-    /// What the adoption filled in, as JSON Pointers.
-    parts: Vec<String>,
+    what: AdoptedPart,
+}
+
+/// The part of a record an [`Adoption`] writes.
+#[derive(Debug, Clone)]
+enum AdoptedPart {
+    /// The input declaration the 402 carries.
+    Declaration {
+        extensions: serde_json::Value,
+        /// What the adoption filled in, as JSON Pointers.
+        parts: Vec<String>,
+    },
+    /// The amounts the 402 quotes for the offers the listing declares, and
+    /// when they were read.
+    Price {
+        accepts: Vec<crate::discovery_price::CatalogPaymentOption>,
+        at: u64,
+    },
 }
 
 /// Apply adoptions to the stored catalog as ONE conditional patch.
@@ -1124,8 +1145,8 @@ struct Adoption {
 /// up to an aggregation interval behind the store, and writing it back whole
 /// would put a listing an admin deleted on the other replica back in the
 /// catalog, or walk back the settlements recorded there since. This touches
-/// `extensions`, its provenance and its adopted parts and nothing else, only
-/// on a record that is
+/// `extensions`, its provenance and its adopted parts -- or `accepts` and
+/// `priceAdoptedAt` -- and nothing else, only on a record that is
 /// still there with the content the adoption was computed from, and never
 /// inserts one. Nothing is written when no adoption applies.
 async fn apply_adoptions(
@@ -1139,14 +1160,49 @@ async fn apply_adoptions(
                 continue;
             };
             if record.content_fingerprint() == adoption.from {
-                record.extensions = Some(adoption.extensions.clone());
-                record.extensions_provenance =
-                    Some(crate::discovery_terms::TermsProvenance::OriginResponse);
-                record.extensions_adopted = Some(adoption.parts.clone());
+                match &adoption.what {
+                    AdoptedPart::Declaration { extensions, parts } => {
+                        record.extensions = Some(extensions.clone());
+                        record.extensions_provenance =
+                            Some(crate::discovery_terms::TermsProvenance::OriginResponse);
+                        record.extensions_adopted = Some(parts.clone());
+                    }
+                    AdoptedPart::Price { accepts, at } => {
+                        record.accepts = accepts.clone();
+                        record.price_adopted_at = Some(*at);
+                    }
+                }
                 changed = true;
             }
         }
         changed
+    })
+    .await
+}
+
+/// Apply a seller's re-registration to the stored listing as ONE patch
+/// ([`DiscoveryRegistry::apply_reregistration`]).
+///
+/// A patch, for the reason [`apply_settlement`] gives: the record this
+/// replica holds can be behind the store, and written back whole it would walk
+/// back the settlements counted elsewhere. This replaces `accepts` -- the
+/// terms the URL's live 402 was found to make -- clears `priceAdoptedAt` and
+/// stamps `last_updated` ([`DiscoveryResource::revise_onto`]); everything
+/// else stays the store's. It never inserts a listing the store no longer
+/// holds. Returns whether a write landed.
+async fn apply_revision(
+    store: &dyn DiscoveryStore,
+    revised: &DiscoveryResource,
+) -> Result<bool, StoreError> {
+    crate::discovery_store::read_modify_write_if(store, "revise", |catalog| {
+        let Some(record) = catalog
+            .iter_mut()
+            .find(|r| r.url.as_str() == revised.url.as_str())
+        else {
+            return false;
+        };
+        revised.revise_onto(record);
+        true
     })
     .await
 }
@@ -1240,6 +1296,10 @@ impl WriteQueue {
                     let result = apply_settlement(store.as_ref(), &url, at).await;
                     (url, result.map(|_| ()))
                 }
+                StoreOp::Revise(revised) => {
+                    let result = apply_revision(store.as_ref(), &revised).await;
+                    (revised.url.to_string(), result.map(|_| ()))
+                }
                 StoreOp::Adopt(first) => {
                     let mut batch = vec![*first];
                     batch.extend(self.pop_adoptions());
@@ -1283,6 +1343,7 @@ impl Clone for DiscoveryRegistry {
             stats_cache: Arc::clone(&self.stats_cache),
             suppressed: Arc::clone(&self.suppressed),
             writes: Arc::clone(&self.writes),
+            reregistrations: Arc::clone(&self.reregistrations),
             served: Arc::clone(&self.served),
             cached_version: Arc::clone(&self.cached_version),
             catalog_generation: Arc::clone(&self.catalog_generation),
@@ -1320,6 +1381,7 @@ impl DiscoveryRegistry {
             stats_cache: Arc::new(RwLock::new(None)),
             suppressed: Arc::new(RwLock::new(std::collections::HashSet::new())),
             writes: Arc::new(WriteQueue::default()),
+            reregistrations: Arc::new(std::sync::Mutex::new(HashMap::new())),
             served: Arc::new(std::sync::OnceLock::new()),
             cached_version: Arc::new(RwLock::new(Version::Absent)),
             catalog_generation: Arc::new(AtomicU64::new(0)),
@@ -1710,21 +1772,49 @@ impl DiscoveryRegistry {
     /// request the listing declares. `pay_to` is the set of recipients currently
     /// listed for the resource, each with its network, so the prober can detect
     /// a payTo swap in the live 402 body.
+    ///
+    /// Ordered by what the catalog knows about each price -- `conflict` first,
+    /// then `unknown`, `stale`, `fresh` -- because the periodic sweep takes
+    /// the due targets in this order until the tick's budget runs out: a
+    /// listing whose reading contradicts it is the one whose probe moves a
+    /// price ([`Self::adopt_live_price`]).
     pub async fn probe_targets(&self) -> Vec<crate::discovery_health::ProbeTarget> {
-        self.resources
+        use crate::discovery_terms::PriceFreshness;
+        // Taken before the catalog guard, as every listing takes it.
+        let terms = self.terms.snapshot().await;
+        let now = now_secs();
+        let window = crate::discovery_terms::freshness_window_secs();
+        let mut ranked: Vec<(u8, crate::discovery_health::ProbeTarget)> = self
+            .resources
             .read()
             .await
             .values()
-            .map(|r| crate::discovery_health::ProbeTarget {
-                url: r.url.clone(),
-                resource_type: r.resource_type.clone(),
-                pay_to: crate::discovery_health::declared_offers(&r.accepts),
-                request: crate::discovery_health::listing_probe_request(
+            .map(|r| {
+                let rank = match crate::discovery_terms::assess_freshness(
                     r,
-                    self.curation.probes_get_only(&r.url),
-                ),
+                    terms.get(r.url.as_str()),
+                    now,
+                    window,
+                ) {
+                    PriceFreshness::Conflict => 0,
+                    PriceFreshness::Unknown => 1,
+                    PriceFreshness::Stale => 2,
+                    PriceFreshness::Fresh => 3,
+                };
+                let target = crate::discovery_health::ProbeTarget {
+                    url: r.url.clone(),
+                    resource_type: r.resource_type.clone(),
+                    pay_to: crate::discovery_health::declared_offers(&r.accepts),
+                    request: crate::discovery_health::listing_probe_request(
+                        r,
+                        self.curation.probes_get_only(&r.url),
+                    ),
+                };
+                (rank, target)
             })
-            .collect()
+            .collect();
+        ranked.sort_by_key(|(rank, _)| *rank);
+        ranked.into_iter().map(|(_, target)| target).collect()
     }
 
     /// Create a new discovery registry with persistent storage.
@@ -1791,6 +1881,7 @@ impl DiscoveryRegistry {
             stats_cache: Arc::new(RwLock::new(None)),
             suppressed: Arc::new(RwLock::new(std::collections::HashSet::new())),
             writes: Arc::new(WriteQueue::default()),
+            reregistrations: Arc::new(std::sync::Mutex::new(HashMap::new())),
             served: Arc::new(std::sync::OnceLock::new()),
             cached_version: Arc::new(RwLock::new(snapshot.version)),
             catalog_generation: Arc::new(AtomicU64::new(0)),
@@ -3371,11 +3462,142 @@ impl DiscoveryRegistry {
         self.writes.push(StoreOp::Adopt(Box::new(Adoption {
             url: url.to_string(),
             from,
-            extensions: adopted,
-            parts,
+            what: AdoptedPart::Declaration {
+                extensions: adopted,
+                parts,
+            },
         })));
         self.drain_writes();
         true
+    }
+
+    /// Move `url`'s listed amounts to the ones its own live 402 quotes for the
+    /// same offers ([`crate::discovery_terms::adopt_live_amounts`]).
+    ///
+    /// The live 402 is the price a buyer signs, so it is the price the catalog
+    /// lists: a seller that reprices is reflected by the next probe of the
+    /// listing, with nobody re-registering anything. The caller vouches for
+    /// `live`: [`crate::discovery_health`] passes only the accepts of a 402
+    /// that just verified the listing -- its own answer to the request as sent,
+    /// recipients past the drift check, both transports in agreement -- read in
+    /// the verification phase.
+    ///
+    /// Self-registered listings only, like [`Self::adopt_declaration`]: an
+    /// aggregated or crawled copy is its source's, and the next import would
+    /// put the source's amount back. Decided again under the write guard, on
+    /// the listing as it is then; persisted as a patch conditional on the
+    /// content it was computed from ([`apply_adoptions`]), and stamped
+    /// `priceAdoptedAt`. `last_updated` does not move: the seller did not
+    /// revise the listing, the prober read it. Returns whether it changed.
+    /// `DISCOVERY_ADOPT_LIVE_PRICE=false` turns it off.
+    pub async fn adopt_live_price(
+        &self,
+        url: &str,
+        live: &[crate::discovery_price::CatalogPaymentOption],
+    ) -> bool {
+        if !crate::discovery_config::adopt_live_price() {
+            return false;
+        }
+        let adoptable = |r: &DiscoveryResource| {
+            r.source == DiscoverySource::SelfRegistered
+                && crate::discovery_terms::adopt_live_amounts(&r.accepts, live).is_some()
+        };
+        // Nearly every probe reads the listed price back: decide that under
+        // the read guard, as `adopt_declaration` does.
+        if !self.resources.read().await.get(url).is_some_and(adoptable) {
+            return false;
+        }
+
+        let mut cache = self.write_catalog().await;
+        let Some((from, accepts, before)) = cache.get(url).filter(|r| adoptable(r)).and_then(|r| {
+            let accepts = crate::discovery_terms::adopt_live_amounts(&r.accepts, live)?;
+            let before: Vec<String> = r.accepts.iter().map(|o| o.amount.to_string()).collect();
+            Some((r.content_fingerprint(), accepts, before))
+        }) else {
+            return false;
+        };
+        let at = now_secs();
+        let Some(record) = cache.get_mut(url) else {
+            return false;
+        };
+        record.accepts = accepts.clone();
+        record.price_adopted_at = Some(at);
+        drop(cache);
+
+        let after: Vec<String> = accepts.iter().map(|o| o.amount.to_string()).collect();
+        info!(
+            url = %url,
+            listed = ?before,
+            live = ?after,
+            "adopted the price this listing's own 402 quotes"
+        );
+        self.writes.push(StoreOp::Adopt(Box::new(Adoption {
+            url: url.to_string(),
+            from,
+            what: AdoptedPart::Price { accepts, at },
+        })));
+        self.drain_writes();
+        true
+    }
+
+    /// Apply a re-registration the caller has verified against the listing's
+    /// live 402 ([`crate::discovery_health::reregister`]): the submitted
+    /// `accepts` replace the held ones, under the catalog's write guard, and
+    /// reach the store as a patch ([`apply_revision`]). Nothing else of the
+    /// submission is read.
+    ///
+    /// `None` when the listing is no longer held (removed meanwhile): a
+    /// re-registration never inserts one. `Some(false)` when the terms are
+    /// already the listed ones, and nothing is written.
+    pub async fn apply_reregistration(
+        &self,
+        key: &str,
+        submitted: DiscoveryResource,
+    ) -> Option<bool> {
+        let mut submitted = submitted;
+        submitted.strip_response_only();
+        let mut cache = self.write_catalog().await;
+        let held = cache.get(key)?.clone();
+        let mut revised = held.clone();
+        submitted.revise_onto(&mut revised);
+        let changed = revised.content_fingerprint() != held.content_fingerprint()
+            || held.price_adopted_at.is_some();
+        if !changed {
+            return Some(false);
+        }
+        revised.last_updated = now_secs();
+        submitted.last_updated = revised.last_updated;
+        submitted.url = revised.url.clone();
+        cache.insert(key.to_string(), revised);
+        drop(cache);
+        info!(url = %key, "re-registered terms applied; the live 402 makes them");
+        self.writes.push(StoreOp::Revise(Box::new(submitted)));
+        self.drain_writes();
+        Some(true)
+    }
+
+    /// Take the one re-registration `url` may have per cooldown
+    /// ([`crate::discovery_config::reregister_cooldown_secs`]), or how many
+    /// seconds remain before it may. Taken BEFORE the live 402 is read, so a
+    /// refused attempt spends it too: a re-registration reads the origin, and
+    /// that read must not be something a caller can repeat at will.
+    pub fn take_reregistration_slot(&self, url: &str, now: u64) -> Result<(), u64> {
+        let cooldown = crate::discovery_config::reregister_cooldown_secs();
+        let mut slots = self
+            .reregistrations
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(at) = slots.get(url) {
+            let elapsed = now.saturating_sub(*at);
+            if elapsed < cooldown {
+                return Err(cooldown - elapsed);
+            }
+        }
+        // Bounded by the catalog: only a held URL gets here, and an expired
+        // slot is dropped the next time any is taken.
+        slots.retain(|_, at| now.saturating_sub(*at) < cooldown);
+        slots.insert(url.to_string(), now);
+        Ok(())
     }
 
     /// Validate a resource before registration.
@@ -6691,6 +6913,68 @@ mod tests {
         );
     }
 
+    /// X402-PRECIOS: a price taken from a listing's own 402 reaches the store
+    /// as the same conditional patch -- the amount and its date, and nothing
+    /// else -- so a settlement the other replica recorded since stays, and the
+    /// store's copy is the cache's.
+    #[tokio::test]
+    async fn a_price_adoption_is_a_patch_that_keeps_what_the_other_replica_recorded() {
+        let url = "https://paid.example.com/x";
+        let (store, owner, other) = two_replicas(&[url]).await;
+        other
+            .track_settlement(create_test_resource(url, None))
+            .await
+            .unwrap();
+        other.writes.drain(&other.store).await;
+        let settled = other.get(url).await.unwrap().settlement_count;
+        assert!(settled.is_some());
+
+        let mut live = owner.get(url).await.unwrap().accepts;
+        live[0].amount = TokenAmount::from(1_500_000u64);
+        assert!(owner.adopt_live_price(url, &live).await);
+        assert!(
+            !owner.adopt_live_price(url, &live).await,
+            "the same reading moves nothing twice"
+        );
+        owner.writes.drain(&owner.store).await;
+
+        let held = stored_record(&store, url).await.unwrap();
+        assert_eq!(held.accepts[0].amount, TokenAmount::from(1_500_000u64));
+        assert!(held.price_adopted_at.is_some());
+        assert_eq!(
+            held.settlement_count, settled,
+            "the adoption walked back a settlement"
+        );
+        let cached = owner.get(url).await.unwrap();
+        assert_eq!(held.content_fingerprint(), cached.content_fingerprint());
+    }
+
+    /// A price adoption computed from a listing the seller has since revised
+    /// on the other replica lands nowhere: the patch is conditional on the
+    /// content it was computed from.
+    #[tokio::test]
+    async fn a_price_adoption_never_overwrites_a_newer_revision() {
+        let url = "https://paid.example.com/x";
+        let (store, owner, other) = two_replicas(&[url]).await;
+        let mut revised = other.get(url).await.unwrap();
+        revised.accepts[0].amount = TokenAmount::from(1_200_000u64);
+        assert_eq!(other.apply_reregistration(url, revised).await, Some(true));
+        other.writes.drain(&other.store).await;
+
+        let mut live = owner.get(url).await.unwrap().accepts;
+        live[0].amount = TokenAmount::from(1_500_000u64);
+        assert!(owner.adopt_live_price(url, &live).await);
+        owner.writes.drain(&owner.store).await;
+
+        let held = stored_record(&store, url).await.unwrap();
+        assert_eq!(
+            held.accepts[0].amount,
+            TokenAmount::from(1_200_000u64),
+            "an adoption computed from the older revision overwrote the newer one"
+        );
+        assert!(held.price_adopted_at.is_none());
+    }
+
     /// ...and the other way round: a settlement recorded on the replica that
     /// does not own the jobs -- whose copy predates the adoption -- reaches the
     /// store as a patch of the count, and the declaration the owner adopted
@@ -6819,8 +7103,10 @@ mod tests {
             owner.writes.push(StoreOp::Adopt(Box::new(Adoption {
                 url: url.to_string(),
                 from,
-                extensions: serde_json::json!({ "bazaar": declared_get("q") }),
-                parts: vec!["/bazaar".to_string()],
+                what: AdoptedPart::Declaration {
+                    extensions: serde_json::json!({ "bazaar": declared_get("q") }),
+                    parts: vec!["/bazaar".to_string()],
+                },
             })));
         }
         owner.writes.drain(&owner.store).await;

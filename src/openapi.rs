@@ -3184,9 +3184,36 @@ read that failed (`ownership.retrySeconds`), and at most `ownership.maxFileBytes
 served from another host after a redirect counts as none. With `DISCOVERY_REQUIRE_ORIGIN_PROOF`
 on, a self-registered listing that is not `origin-attested` is not listed.
 
-**409:** the URL is already in the catalog, from any source, listed or still waiting for its
-first verification. There is no public route to update or remove a listing; the operator does
-that.
+**The listed price follows your 402.** The health prober reads each listing's 402 at least once
+per `healthProber.priceSweepSeconds` of `GET /discovery/config`, and when it quotes
+another amount for an offer the listing declares -- same `scheme`, `network`, `asset` and
+`payTo` -- the listing takes that amount (`priceAdoptedAt` dates it). A recipient, a network or an
+asset is never taken from the 402. Repricing needs no request here.
+
+**Re-registering a URL already listed** updates its payment terms -- and only them -- when the
+facilitator verifies them against the URL's live 402. This request then reads the URL once, with
+the request the listing declares, through the prober's own connector, and applies the submitted
+`accepts` only if that 402 is the URL's own answer, offers a payment, and makes every submitted
+offer at the submitted amount. That covers a new amount, an option the 402 no longer makes (leave
+it out) and an offer moved to another network for the same `payTo`. Every `payTo` submitted must
+be one the listing already declares: a re-registration never changes who is paid. The
+description, `metadata` and `extensions` of a re-registration are not read; the listing keeps its
+own. One re-registration per URL per `registration.reregisterCooldownSeconds`, refused or not.
+Answers:
+
+- `200` `{"success": true, "updated": true}` -- the listing now carries the submitted `accepts`
+  (`updated: false` when it already did);
+- `409` `reregistration_does_not_match_live_402` -- `mismatches` lists each submitted offer the 402
+  does not make as submitted, with the `liveAmount` it quotes when it makes that offer;
+- `409` `reregistration_recipient_change` (a `payTo` the listing does not declare) or
+  `reregistration_live_recipient_undeclared` (the 402 pays a recipient the submission leaves out
+  on a network it declares);
+- `422` `reregistration_no_live_402` -- the URL did not answer with a readable 402 offering a
+  payment (`httpStatus` is what it answered);
+- `429` `reregistration_too_soon` with `Retry-After`.
+
+A first registration reads nothing. There is no public route to remove a listing; the operator
+does that.
 "#,
     request_body(content = Object, description = "Resource registration request"),
     responses(
@@ -3197,9 +3224,18 @@ that.
                 "url": "https://api.example.com/paid"
             })
         ),
+        (status = 200, description = "Re-registration of a listed URL, verified against its live 402", body = Object,
+            example = json!({
+                "success": true,
+                "updated": true,
+                "message": "Payment terms updated: the live 402 makes every offer submitted. A re-registration changes the payment terms only; the listing keeps its description, metadata and extensions.",
+                "url": "https://api.example.com/paid"
+            })
+        ),
         (status = 400, description = "Validation failure (bad scheme, URL userinfo, private/metadata IP host, empty accepts)", body = Object),
-        (status = 409, description = "Resource already registered", body = Object),
-        (status = 429, description = "Rate limited (roughly 5 requests per minute per IP)", body = Object)
+        (status = 409, description = "Already registered, and this re-registration does not match the URL's live 402 or would change who is paid (errorCode)", body = Object),
+        (status = 422, description = "Already registered, and the URL did not answer with a readable 402 (reregistration_no_live_402)", body = Object),
+        (status = 429, description = "Rate limited (roughly 5 requests per minute per IP), or the URL was re-registered inside its cooldown (reregistration_too_soon)", body = Object)
     )
 )]
 async fn path_bazaar_register() {}

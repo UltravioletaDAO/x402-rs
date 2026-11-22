@@ -1556,6 +1556,16 @@ pub struct DiscoveryResource {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub extensions_adopted: Option<Vec<String>>,
 
+    /// When the prober last moved an amount in `accepts` to the one this
+    /// listing's own live 402 quotes for the same offer -- same scheme,
+    /// network, asset and recipient -- (Unix seconds). Absent while every
+    /// amount is the one the source declared. Only an amount ever moves: a
+    /// recipient, a network or an asset is never taken from the 402
+    /// ([`crate::discovery::DiscoveryRegistry::adopt_live_price`]). Persisted,
+    /// and never taken from a caller ([`DiscoveryResource::strip_response_only`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub price_adopted_at: Option<u64>,
+
     // ========== Meta-Bazaar Source Tracking ==========
     /// How this resource was discovered/registered
     #[serde(default)]
@@ -1845,6 +1855,7 @@ impl DiscoveryResource {
             upstream_source: None,
             extensions_provenance: None,
             extensions_adopted: None,
+            price_adopted_at: None,
             usage: None,
         }
     }
@@ -1912,6 +1923,7 @@ impl DiscoveryResource {
             upstream_source: None,
             extensions_provenance: None,
             extensions_adopted: None,
+            price_adopted_at: None,
             usage: None,
         }
     }
@@ -1972,6 +1984,7 @@ impl DiscoveryResource {
             upstream_source: None,
             extensions_provenance: None,
             extensions_adopted: None,
+            price_adopted_at: None,
             usage: None,
         }
     }
@@ -2098,6 +2111,22 @@ impl DiscoveryResource {
         // says a declaration came from the origin, never whoever registers it.
         self.extensions_provenance = None;
         self.extensions_adopted = None;
+        self.price_adopted_at = None;
+    }
+
+    /// Write a re-registration's payment terms onto `held`, the listing held
+    /// for the same URL: `accepts`, which the caller verified against the
+    /// URL's live 402, and nothing else. Description, metadata, extensions,
+    /// type and source stay `held`'s. A price the prober had adopted is the
+    /// seller's from here on (`price_adopted_at` cleared), and `last_updated`
+    /// is the later of the two.
+    ///
+    /// The one place a re-registration's fields are chosen, for the cache and
+    /// for the store alike ([`crate::discovery::DiscoveryRegistry::apply_reregistration`]).
+    pub fn revise_onto(&self, held: &mut DiscoveryResource) {
+        held.accepts = self.accepts.clone();
+        held.price_adopted_at = None;
+        held.last_updated = held.last_updated.max(self.last_updated);
     }
 
     /// Whether the listing says what to send: the `bazaar` extension's

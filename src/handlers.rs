@@ -6380,6 +6380,21 @@ impl IntoResponse for FacilitatorLocalError {
                 Json(invalid_because(payer, "receiver_mismatch")),
             )
                 .into_response(),
+            // A refusal of the EIP-6492 sponsorship policy names its own
+            // token: the signature may be perfectly valid, and the fix is
+            // another factory, not another signature (`chain::eip6492_sponsor`).
+            FacilitatorLocalError::InvalidSignature(payer, ref message)
+                if message.starts_with(crate::chain::eip6492_sponsor::REFUSAL_CODE) =>
+            {
+                (
+                    StatusCode::OK,
+                    Json(invalid_because(
+                        payer,
+                        crate::chain::eip6492_sponsor::REFUSAL_CODE,
+                    )),
+                )
+                    .into_response()
+            }
             FacilitatorLocalError::InvalidSignature(payer, ..) => (
                 StatusCode::OK,
                 Json(invalid_because(payer, "invalid_signature")),

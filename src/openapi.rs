@@ -427,6 +427,15 @@ open. It was `null` for every cause before 2.13.0. On NEAR,
 contract and the facilitator is not paying for new registrations right now;
 registering it (`storage_deposit`) or retrying later clears it.
 
+**Smart-wallet signatures.** An EVM `exact` signature must be 65 bytes. A
+counterfactual wallet's EIP-6492 envelope never is, so it is `invalid_signature`
+and no wallet is deployed on any network: the wallet has to be deployed first, or
+the payer pays from an EOA. A deployed contract wallet's ERC-1271 signature passes
+only when it is 65 bytes; the wrapped or passkey signatures most smart wallets
+produce are longer and are refused the same way. Deployments are not sponsored;
+the policy one would answer to (factories per network, the gas ceiling of that
+transaction) is published by `GET /config` (`eip6492Sponsorship`), in `log` mode.
+
 **Five things in that shape are load-bearing:**
 - `paymentPayload` carries its own `x402Version`, `scheme` and `network` at its root.
 - The signed data sits under `payload.authorization`, not directly under `payload`.

@@ -25,6 +25,7 @@ pub mod evm;
 pub mod hedera;
 #[cfg(feature = "hedera")]
 use hedera::HederaProvider;
+pub mod eip6492_sponsor;
 pub mod failure;
 pub mod gas_ceiling;
 pub mod near;

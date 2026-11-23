@@ -1608,17 +1608,21 @@ mod tests {
         assert_eq!(declared_signer(&table, Network::Arbitrum, shared), Some(d));
         assert_eq!(declared_signer(&table, Network::Celo, shared), None);
         assert_eq!(declared_signer(&table, Network::Solana, base_a), None);
-        // The real table declares nobody, for any operator of any network.
+        // The real table declares Execution Market's signer and nobody else,
+        // and the gate reads it from the table: never one of the vector's
+        // test keys.
         for &network in crate::payment_operator::addresses::ESCROW_NETWORKS {
-            for operator in OperatorAddresses::for_network(network)
-                .unwrap()
-                .payment_operators
-            {
-                assert_eq!(
-                    declared_signer(OperatorAddresses::for_network, network, operator),
-                    None,
+            let addrs = OperatorAddresses::for_network(network).unwrap();
+            for operator in addrs.payment_operators.clone() {
+                let declared = declared_signer(OperatorAddresses::for_network, network, operator);
+                assert_eq!(declared, addrs.lifecycle_signer(operator), "{network}");
+                assert!(
+                    declared.is_none_or(|s| {
+                        s == crate::payment_operator::addresses::EXECUTION_MARKET_LIFECYCLE_SIGNER
+                    }),
                     "{network}"
                 );
+                assert_ne!(declared, Some(d), "{network}");
             }
         }
 

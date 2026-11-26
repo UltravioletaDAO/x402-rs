@@ -1719,6 +1719,8 @@ impl Facilitator for NearProvider {
                 tokens: Some(crate::network::exact_payment_tokens(self.network())),
                 escrow: None,
                 near_escrow: None,
+                facilitator_address: None,
+                are_fees_sponsored: None,
             }),
         }];
         kinds.extend(self.escrow_supported_kind());

@@ -69,6 +69,18 @@ pub enum StellarError {
         current_ledger: u32,
     },
 
+    /// The spec's payload bounds an entry's expiration by `maxTimeoutSeconds`.
+    #[error("Authorization expires at ledger {expiry_ledger}, after the latest the payment allows ({latest_ledger})")]
+    AuthExpiresTooLate {
+        expiry_ledger: u32,
+        latest_ledger: u32,
+    },
+
+    /// The spec's payload is a whole transaction; this one is not the shape
+    /// `scheme_exact_stellar.md` defines.
+    #[error("Transaction is not an x402 exact payment: {0}")]
+    UnexpectedTransaction(String),
+
     #[error("Invalid authorization signature for address {address}")]
     InvalidSignature { address: String },
 
@@ -452,6 +464,9 @@ pub struct StellarProvider {
     chain: StellarChain,
     /// Custom RPC URL (from environment) or None to use defaults
     rpc_url: Option<String>,
+    /// Where tests serve Horizon; the network's own Horizon otherwise.
+    #[cfg(test)]
+    horizon_url: Option<String>,
 }
 
 impl Debug for StellarProvider {
@@ -504,6 +519,8 @@ impl StellarProvider {
             http_client: Arc::new(http_client),
             chain,
             rpc_url,
+            #[cfg(test)]
+            horizon_url: None,
         })
     }
 
@@ -618,7 +635,14 @@ impl StellarProvider {
 
     /// Get the account sequence number from Horizon
     async fn get_account_sequence(&self, account_id: &str) -> Result<i64, StellarError> {
-        let url = format!("{}/accounts/{}", self.chain.horizon_url(), account_id);
+        #[cfg(test)]
+        let horizon = self
+            .horizon_url
+            .as_deref()
+            .unwrap_or(self.chain.horizon_url());
+        #[cfg(not(test))]
+        let horizon = self.chain.horizon_url();
+        let url = format!("{}/accounts/{}", horizon, account_id);
         let response = self
             .http_client
             .get(&url)
@@ -1298,6 +1322,133 @@ impl StellarProvider {
         Ok(())
     }
 
+    /// Read the payer's authorization out of the x402 Foundation payload: the
+    /// client's whole transaction (`scheme_exact_stellar.md`).
+    ///
+    /// Only the single `invokeHostFunction` and its one signed entry are kept.
+    /// Settle submits that same invocation and entry inside a transaction of
+    /// the facilitator's own (its source, fee and Soroban data), as for the
+    /// entry-only payload, so nothing else the client put in the envelope is
+    /// ever sent. The spec's shape is still required whole: a source account
+    /// or an operation source that is the facilitator, a second operation, a
+    /// second entry, or an operation that invokes something other than what
+    /// the entry authorizes is refused, and so is a contract other than the
+    /// requirements' `asset` (the spec's rule; the entry is still held to this
+    /// network's USDC after). Nonce and expiration are the entry's own, the
+    /// values its signature covers.
+    fn read_spec_transaction(
+        &self,
+        transaction_xdr: &str,
+        requirements: &crate::types::PaymentRequirements,
+    ) -> Result<StellarAuthorization, StellarError> {
+        let unexpected = |why: &str| StellarError::UnexpectedTransaction(why.to_string());
+        let bytes = BASE64
+            .decode(transaction_xdr)
+            .map_err(|e| StellarError::InvalidXdr(format!("Base64 decode failed: {}", e)))?;
+        let envelope = TransactionEnvelope::from_xdr(&bytes, Limits::none())
+            .map_err(|e| StellarError::InvalidXdr(format!("XDR decode failed: {}", e)))?;
+        let transaction = match envelope {
+            TransactionEnvelope::Tx(TransactionV1Envelope { tx, .. }) => tx,
+            _ => return Err(unexpected("expected a v1 transaction envelope")),
+        };
+
+        let facilitator = StellarPublicKey::from_string(&self.public_key)
+            .map_err(|e| StellarError::InvalidXdr(format!("Invalid facilitator key: {}", e)))?
+            .0;
+        let is_facilitator = |account: &MuxedAccount| match account {
+            MuxedAccount::Ed25519(Uint256(key)) => *key == facilitator,
+            MuxedAccount::MuxedEd25519(muxed) => muxed.ed25519.0 == facilitator,
+        };
+        if is_facilitator(&transaction.source_account) {
+            return Err(unexpected(
+                "the transaction source account is the facilitator",
+            ));
+        }
+
+        let [operation] = transaction.operations.as_slice() else {
+            return Err(unexpected("expected exactly one operation"));
+        };
+        if operation
+            .source_account
+            .as_ref()
+            .is_some_and(is_facilitator)
+        {
+            return Err(unexpected(
+                "the operation source account is the facilitator",
+            ));
+        }
+        let OperationBody::InvokeHostFunction(invoke) = &operation.body else {
+            return Err(unexpected("the operation is not invokeHostFunction"));
+        };
+        let HostFunction::InvokeContract(invoked) = &invoke.host_function else {
+            return Err(StellarError::InvalidInvocationType);
+        };
+        let [auth_entry] = invoke.auth.as_slice() else {
+            return Err(unexpected("expected exactly one authorization entry"));
+        };
+        // Settle builds its operation from the entry: they must be one call.
+        match &auth_entry.root_invocation.function {
+            SorobanAuthorizedFunction::ContractFn(authorized) if authorized == invoked => {}
+            _ => {
+                return Err(unexpected(
+                    "the operation invokes something other than what its entry authorizes",
+                ))
+            }
+        }
+        let credentials = match &auth_entry.credentials {
+            SorobanCredentials::Address(credentials) => credentials,
+            SorobanCredentials::SourceAccount => {
+                return Err(StellarError::UnsupportedCredentialType)
+            }
+        };
+        let payer = match &credentials.address {
+            ScAddress::Account(AccountId(PublicKey::PublicKeyTypeEd25519(Uint256(key)))) => {
+                StellarPublicKey(*key).to_string()
+            }
+            ScAddress::Contract(_) => {
+                return Err(unexpected("the payer must be a G account, not a contract"))
+            }
+        };
+        let address_of = |value: &ScVal| match value {
+            ScVal::Address(ScAddress::Account(AccountId(PublicKey::PublicKeyTypeEd25519(
+                Uint256(key),
+            )))) => Some(StellarPublicKey(*key).to_string()),
+            ScVal::Address(ScAddress::Contract(Hash(bytes))) => Some(Contract(*bytes).to_string()),
+            _ => None,
+        };
+        let to = invoked.args.get(1).and_then(address_of).unwrap_or_default();
+        let amount = match invoked.args.get(2) {
+            Some(ScVal::I128(Int128Parts { hi, lo })) => {
+                ((i128::from(*hi) << 64) | i128::from(*lo)).to_string()
+            }
+            _ => String::new(),
+        };
+        let token_contract = match &invoked.contract_address {
+            ScAddress::Contract(Hash(bytes)) => Contract(*bytes).to_string(),
+            ScAddress::Account(_) => String::new(),
+        };
+        let asset = requirements.asset.to_string();
+        if token_contract != asset {
+            return Err(StellarError::TokenContractMismatch {
+                expected: asset,
+                actual: token_contract,
+            });
+        }
+
+        Ok(StellarAuthorization {
+            payer,
+            auth_entry: auth_entry.clone(),
+            to,
+            amount,
+            token_contract,
+            // The nonce store keys on a u64; an i64 reinterpreted is the same
+            // one-to-one key.
+            nonce: credentials.nonce as u64,
+            expiry_ledger: credentials.signature_expiration_ledger,
+            max_expiry_offset: Some(spec_max_ledger_offset(requirements.max_timeout_seconds)),
+        })
+    }
+
     /// Verify a payment request
     async fn verify_payment(
         &self,
@@ -1305,12 +1456,6 @@ impl StellarProvider {
     ) -> Result<VerifyPaymentResult, FacilitatorLocalError> {
         let payload = &request.payment_payload;
         let requirements = &request.payment_requirements;
-
-        // Extract Stellar payload
-        let stellar_payload = match &payload.payload {
-            ExactPaymentPayload::Stellar(p) => p,
-            _ => return Err(FacilitatorLocalError::UnsupportedNetwork(None)),
-        };
 
         // Verify network matches
         if payload.network != self.network() {
@@ -1338,8 +1483,30 @@ impl StellarProvider {
             ));
         }
 
+        // The same authorization, whichever payload carried it.
+        let authorization = match &payload.payload {
+            ExactPaymentPayload::Stellar(stellar_payload) => StellarAuthorization {
+                payer: stellar_payload.from.clone(),
+                // Decode the authorization entry XDR
+                auth_entry: self
+                    .decode_authorization_entry(&stellar_payload.authorization_entry_xdr)
+                    .map_err(FacilitatorLocalError::from)?,
+                to: stellar_payload.to.clone(),
+                amount: stellar_payload.amount.clone(),
+                token_contract: stellar_payload.token_contract.clone(),
+                nonce: stellar_payload.nonce,
+                expiry_ledger: stellar_payload.signature_expiration_ledger,
+                max_expiry_offset: None,
+            },
+            ExactPaymentPayload::StellarTransaction(spec_payload) => self
+                .read_spec_transaction(&spec_payload.transaction, requirements)
+                .map_err(FacilitatorLocalError::from)?,
+            _ => return Err(FacilitatorLocalError::UnsupportedNetwork(None)),
+        };
+        let auth_entry = authorization.auth_entry;
+
         // Validate payer address
-        let payer = StellarAddress::try_from(stellar_payload.from.clone())?;
+        let payer = StellarAddress::try_from(authorization.payer)?;
 
         // SECURITY (audit 01): the facilitator must never be a payer/source of funds.
         if payer.address == self.public_key {
@@ -1349,11 +1516,6 @@ impl StellarProvider {
             }
             .into());
         }
-
-        // Decode the authorization entry XDR
-        let auth_entry = self
-            .decode_authorization_entry(&stellar_payload.authorization_entry_xdr)
-            .map_err(FacilitatorLocalError::from)?;
 
         // B4: Validate that the auth entry authorizes exactly the expected USDC transfer
         // before doing anything else with it (especially before signing).
@@ -1381,30 +1543,41 @@ impl StellarProvider {
             .map_err(FacilitatorLocalError::from)?;
 
         // Check expiration
-        if stellar_payload.signature_expiration_ledger <= current_ledger {
+        if authorization.expiry_ledger <= current_ledger {
             return Err(StellarError::AuthExpired {
-                expiry_ledger: stellar_payload.signature_expiration_ledger,
+                expiry_ledger: authorization.expiry_ledger,
                 current_ledger,
             }
             .into());
         }
+        // The spec's upper bound: no later than `maxTimeoutSeconds` from now.
+        if let Some(offset) = authorization.max_expiry_offset {
+            let latest = current_ledger.saturating_add(offset);
+            if authorization.expiry_ledger > latest {
+                return Err(StellarError::AuthExpiresTooLate {
+                    expiry_ledger: authorization.expiry_ledger,
+                    latest_ledger: latest,
+                }
+                .into());
+            }
+        }
 
         // Check nonce hasn't been used
-        self.check_nonce_unused(&stellar_payload.from, stellar_payload.nonce)
+        self.check_nonce_unused(&payer.address, authorization.nonce)
             .await
             .map_err(FacilitatorLocalError::from)?;
 
         // Verify the signature
-        self.verify_authorization_signature(&auth_entry, &stellar_payload.from)
+        self.verify_authorization_signature(&auth_entry, &payer.address)
             .map_err(FacilitatorLocalError::from)?;
 
         tracing::debug!(
             payer = %payer.address,
-            to = %stellar_payload.to,
-            amount = %stellar_payload.amount,
-            token_contract = %stellar_payload.token_contract,
-            nonce = stellar_payload.nonce,
-            expiry_ledger = stellar_payload.signature_expiration_ledger,
+            to = %authorization.to,
+            amount = %authorization.amount,
+            token_contract = %authorization.token_contract,
+            nonce = authorization.nonce,
+            expiry_ledger = authorization.expiry_ledger,
             current_ledger = current_ledger,
             "Verified Stellar payment authorization"
         );
@@ -1412,11 +1585,11 @@ impl StellarProvider {
         Ok(VerifyPaymentResult {
             payer,
             auth_entry,
-            to: stellar_payload.to.clone(),
-            amount: stellar_payload.amount.clone(),
-            token_contract: stellar_payload.token_contract.clone(),
-            nonce: stellar_payload.nonce,
-            expiry_ledger: stellar_payload.signature_expiration_ledger,
+            to: authorization.to,
+            amount: authorization.amount,
+            token_contract: authorization.token_contract,
+            nonce: authorization.nonce,
+            expiry_ledger: authorization.expiry_ledger,
         })
     }
 
@@ -1992,6 +2165,31 @@ fn settle_outcome(
     })
 }
 
+/// Seconds per ledger the x402 Foundation Stellar spec falls back to when no
+/// network estimate is at hand (`scheme_exact_stellar.md`).
+const SPEC_LEDGER_SECONDS: u64 = 5;
+
+/// How many ledgers past the current one an entry of the spec's payload may
+/// expire: `ceil(maxTimeoutSeconds / 5)`.
+fn spec_max_ledger_offset(max_timeout_seconds: u64) -> u32 {
+    u32::try_from(max_timeout_seconds.div_ceil(SPEC_LEDGER_SECONDS)).unwrap_or(u32::MAX)
+}
+
+/// What a Stellar payment authorizes, read the same way from the entry-only
+/// payload and from the x402 Foundation's whole-transaction payload.
+struct StellarAuthorization {
+    payer: String,
+    auth_entry: SorobanAuthorizationEntry,
+    to: String,
+    amount: String,
+    token_contract: String,
+    nonce: u64,
+    expiry_ledger: u32,
+    /// How many ledgers past the current one the entry may expire, when the
+    /// payload's spec bounds it; `None` for the entry-only payload.
+    max_expiry_offset: Option<u32>,
+}
+
 /// Result of verifying a Stellar payment
 pub struct VerifyPaymentResult {
     pub payer: StellarAddress,
@@ -2068,6 +2266,11 @@ impl Facilitator for StellarProvider {
                 fee_payer: Some(self.signer_address()),
                 tokens: Some(crate::network::exact_payment_tokens(self.network())),
                 escrow: None,
+                facilitator_address: None,
+                // The facilitator is the transaction's source and pays its fee
+                // (`scheme_exact_stellar.md`: the reference client refuses a
+                // requirement without `areFeesSponsored: true`).
+                are_fees_sponsored: Some(true),
             }),
         }];
         Ok(SupportedPaymentKindsResponse { kinds })
@@ -2224,6 +2427,7 @@ mod tests {
             ),
             chain: StellarChain::try_from(network).unwrap(),
             rpc_url: None,
+            horizon_url: None,
         }
     }
 
@@ -2563,6 +2767,7 @@ mod submission_outcome_tests {
             http_client: Arc::new(reqwest::Client::new()),
             chain: StellarChain::try_from(Network::StellarTestnet).unwrap(),
             rpc_url: Some(rpc_url),
+            horizon_url: None,
         }
     }
 
@@ -2656,5 +2861,634 @@ mod submission_outcome_tests {
         assert!(!refused.success);
         let settled = settle_outcome(Ok(hash), payer, Network::StellarTestnet).unwrap();
         assert_eq!(settled.transaction, Some(TransactionHash::Stellar(hash)));
+    }
+}
+
+/// The x402 Foundation's Stellar payload (`scheme_exact_stellar.md`): the
+/// spec's own examples (`tests/fixtures/x402-spec/`), carrying a transaction
+/// built and signed here to the spec's rules, since the spec's is truncated.
+#[cfg(test)]
+mod spec_payload_tests {
+    use super::*;
+    use crate::types_v2::VerifyRequestEnvelope;
+    use axum::{
+        routing::{get, post},
+        Json, Router,
+    };
+    use serde_json::{json, Value};
+    use std::sync::atomic::{AtomicI64, Ordering};
+    use std::sync::Mutex;
+    use stellar_xdr::curr::{
+        ExtensionPoint, LedgerFootprint, ScBytes, ScMap, ScMapEntry, ScSymbol, ScVec,
+        SorobanResources, TransactionV0, TransactionV0Envelope, TransactionV0Ext,
+    };
+
+    const PAYMENT_PAYLOAD: &str =
+        include_str!("../../tests/fixtures/x402-spec/stellar_exact_payment_payload.json");
+    const PAYMENT_REQUIREMENTS: &str =
+        include_str!("../../tests/fixtures/x402-spec/stellar_exact_payment_requirements.json");
+    const SETTLEMENT_RESPONSE: &str =
+        include_str!("../../tests/fixtures/x402-spec/stellar_exact_settlement_response.json");
+
+    /// The ledger the node is at.
+    const LEDGER: u32 = 1_000;
+    /// `ceil(maxTimeoutSeconds / 5)` for the example's 60 seconds.
+    const OFFSET: u32 = 12;
+    /// The example's amount.
+    const AMOUNT: i128 = 10_000_000;
+
+    /// Each test its own nonce: the nonce store is process-wide.
+    static NONCE: AtomicI64 = AtomicI64::new(7_000_001);
+
+    /// The example's requirements, paying [`merchant`]: the example's own
+    /// `payTo` fails the strkey checksum, so no transfer can name it (see
+    /// [`the_spec_examples_pay_to_is_not_a_stellar_account`]).
+    fn requirements() -> Value {
+        let mut requirements: Value = serde_json::from_str(PAYMENT_REQUIREMENTS).unwrap();
+        requirements["payTo"] = json!(merchant());
+        requirements
+    }
+
+    fn merchant() -> String {
+        StellarPublicKey(
+            SigningKey::from_bytes(&[8u8; 32])
+                .verifying_key()
+                .to_bytes(),
+        )
+        .to_string()
+    }
+
+    fn payer_key() -> SigningKey {
+        SigningKey::from_bytes(&[7u8; 32])
+    }
+
+    fn payer() -> String {
+        StellarPublicKey(payer_key().verifying_key().to_bytes()).to_string()
+    }
+
+    fn account(address: &str) -> AccountId {
+        AccountId(PublicKey::PublicKeyTypeEd25519(Uint256(
+            StellarPublicKey::from_string(address).unwrap().0,
+        )))
+    }
+
+    fn muxed(address: &str) -> MuxedAccount {
+        MuxedAccount::Ed25519(Uint256(StellarPublicKey::from_string(address).unwrap().0))
+    }
+
+    fn symbol(name: &str) -> ScVal {
+        ScVal::Symbol(ScSymbol(name.try_into().unwrap()))
+    }
+
+    /// `transfer(payer, payTo, amount)` on the example's asset.
+    fn transfer(amount: i128) -> InvokeContractArgs {
+        let req = requirements();
+        InvokeContractArgs {
+            contract_address: ScAddress::Contract(Hash(
+                Contract::from_string(req["asset"].as_str().unwrap())
+                    .unwrap()
+                    .0,
+            )),
+            function_name: ScSymbol("transfer".try_into().unwrap()),
+            args: vec![
+                ScVal::Address(ScAddress::Account(account(&payer()))),
+                ScVal::Address(ScAddress::Account(account(req["payTo"].as_str().unwrap()))),
+                ScVal::I128(Int128Parts {
+                    hi: (amount >> 64) as i64,
+                    lo: amount as u64,
+                }),
+            ]
+            .try_into()
+            .unwrap(),
+        }
+    }
+
+    /// The payer's entry for `invoked`, signed as the Stellar SDK signs it: a
+    /// vector of `{public_key, signature}` maps.
+    fn signed_entry(
+        provider: &StellarProvider,
+        invoked: InvokeContractArgs,
+        nonce: i64,
+        expiry: u32,
+    ) -> SorobanAuthorizationEntry {
+        let invocation = SorobanAuthorizedInvocation {
+            function: SorobanAuthorizedFunction::ContractFn(invoked),
+            sub_invocations: VecM::default(),
+        };
+        let mut credentials = SorobanAddressCredentials {
+            address: ScAddress::Account(account(&payer())),
+            nonce,
+            signature_expiration_ledger: expiry,
+            signature: ScVal::Void,
+        };
+        let preimage = provider
+            .compute_auth_entry_preimage(&credentials, &invocation)
+            .unwrap();
+        let signature = payer_key().sign(&preimage).to_bytes();
+        let public_key = payer_key().verifying_key().to_bytes();
+        let entry = ScMap(
+            vec![
+                ScMapEntry {
+                    key: symbol("public_key"),
+                    val: ScVal::Bytes(ScBytes(public_key.to_vec().try_into().unwrap())),
+                },
+                ScMapEntry {
+                    key: symbol("signature"),
+                    val: ScVal::Bytes(ScBytes(signature.to_vec().try_into().unwrap())),
+                },
+            ]
+            .try_into()
+            .unwrap(),
+        );
+        credentials.signature = ScVal::Vec(Some(ScVec(
+            vec![ScVal::Map(Some(entry))].try_into().unwrap(),
+        )));
+        SorobanAuthorizationEntry {
+            credentials: SorobanCredentials::Address(credentials),
+            root_invocation: invocation,
+        }
+    }
+
+    /// What a client sends, and how a test bends it.
+    struct Client {
+        source: MuxedAccount,
+        operation_source: Option<MuxedAccount>,
+        operations: usize,
+        entries: usize,
+        operation_amount: i128,
+        expiry: u32,
+        source_account_credentials: bool,
+        nonce: i64,
+    }
+
+    impl Client {
+        fn new() -> Self {
+            Self {
+                source: muxed(&payer()),
+                operation_source: None,
+                operations: 1,
+                entries: 1,
+                operation_amount: AMOUNT,
+                expiry: LEDGER + 10,
+                source_account_credentials: false,
+                nonce: NONCE.fetch_add(1, Ordering::SeqCst),
+            }
+        }
+
+        fn entry(&self, provider: &StellarProvider) -> SorobanAuthorizationEntry {
+            let mut entry = signed_entry(provider, transfer(AMOUNT), self.nonce, self.expiry);
+            if self.source_account_credentials {
+                entry.credentials = SorobanCredentials::SourceAccount;
+            }
+            entry
+        }
+
+        fn operation(&self, provider: &StellarProvider) -> Operation {
+            Operation {
+                source_account: self.operation_source.clone(),
+                body: OperationBody::InvokeHostFunction(InvokeHostFunctionOp {
+                    host_function: HostFunction::InvokeContract(transfer(self.operation_amount)),
+                    auth: vec![self.entry(provider); self.entries].try_into().unwrap(),
+                }),
+            }
+        }
+
+        /// The envelope, base64 XDR, with the Soroban data a simulation gives
+        /// a client (the reference client sends it; settle never uses it).
+        fn transaction(&self, provider: &StellarProvider) -> String {
+            let tx = Transaction {
+                source_account: self.source.clone(),
+                fee: 100,
+                seq_num: SequenceNumber(1),
+                cond: Preconditions::None,
+                memo: Memo::None,
+                operations: vec![self.operation(provider); self.operations]
+                    .try_into()
+                    .unwrap(),
+                ext: TransactionExt::V1(soroban_data()),
+            };
+            let envelope = TransactionEnvelope::Tx(TransactionV1Envelope {
+                tx,
+                signatures: VecM::default(),
+            });
+            BASE64.encode(envelope.to_xdr(Limits::none()).unwrap())
+        }
+    }
+
+    fn soroban_data() -> SorobanTransactionData {
+        SorobanTransactionData {
+            ext: ExtensionPoint::V0,
+            resources: SorobanResources {
+                footprint: LedgerFootprint {
+                    read_only: VecM::default(),
+                    read_write: VecM::default(),
+                },
+                instructions: 0,
+                read_bytes: 0,
+                write_bytes: 0,
+            },
+            resource_fee: 0,
+        }
+    }
+
+    /// The spec's request: the example's payload, carrying `transaction`, and
+    /// the example's requirements.
+    fn body(transaction: &str) -> Value {
+        let mut payload: Value = serde_json::from_str(PAYMENT_PAYLOAD).unwrap();
+        payload["payload"]["transaction"] = json!(transaction);
+        payload["accepted"]["payTo"] = json!(merchant());
+        json!({
+            "x402Version": 2,
+            "paymentPayload": payload,
+            "paymentRequirements": requirements(),
+        })
+    }
+
+    fn request(transaction: &str) -> VerifyRequest {
+        let envelope: VerifyRequestEnvelope = serde_json::from_value(body(transaction)).unwrap();
+        assert!(
+            matches!(envelope, VerifyRequestEnvelope::SpecV2(_)),
+            "the spec's body is read as the spec's: {envelope:?}"
+        );
+        envelope.to_v1().unwrap()
+    }
+
+    /// What the node was sent: each method, and every envelope submitted.
+    #[derive(Default)]
+    struct Seen {
+        methods: Vec<String>,
+        submitted: Vec<String>,
+    }
+
+    fn sent_hash() -> String {
+        "ab".repeat(32)
+    }
+
+    /// A Soroban RPC and Horizon on one port, for the facilitator's account.
+    async fn node() -> (String, Arc<Mutex<Seen>>) {
+        let seen = Arc::new(Mutex::new(Seen::default()));
+        let rpc = {
+            let seen = seen.clone();
+            move |Json(request): Json<Value>| {
+                let seen = seen.clone();
+                async move {
+                    let method = request["method"].as_str().unwrap_or_default().to_string();
+                    let mut seen = seen.lock().unwrap();
+                    seen.methods.push(method.clone());
+                    let result = match method.as_str() {
+                        "getLatestLedger" => json!({"sequence": LEDGER, "id": "ledger"}),
+                        "simulateTransaction" => json!({
+                            "latestLedger": LEDGER,
+                            "minResourceFee": "1000",
+                            "transactionData":
+                                BASE64.encode(soroban_data().to_xdr(Limits::none()).unwrap()),
+                        }),
+                        "sendTransaction" => {
+                            seen.submitted.push(
+                                request["params"]["transaction"]
+                                    .as_str()
+                                    .unwrap()
+                                    .to_string(),
+                            );
+                            json!({"status": "PENDING", "hash": sent_hash(), "latestLedger": LEDGER})
+                        }
+                        "getTransaction" => {
+                            json!({"status": "SUCCESS", "latestLedger": LEDGER, "ledger": LEDGER})
+                        }
+                        other => panic!("unexpected RPC method {other}"),
+                    };
+                    Json(json!({"jsonrpc": "2.0", "id": 1, "result": result}))
+                }
+            }
+        };
+        let app = Router::new().route("/", post(rpc)).route(
+            "/accounts/{id}",
+            get(|| async { Json(json!({"sequence": "41"})) }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        (format!("http://{addr}"), seen)
+    }
+
+    /// The facilitator (the all-zero key) on the example's network.
+    fn provider(url: &str) -> StellarProvider {
+        let signing_key = SigningKey::from_bytes(&[0u8; 32]);
+        StellarProvider {
+            public_key: StellarPublicKey(signing_key.verifying_key().to_bytes()).to_string(),
+            signing_key: Arc::new(signing_key),
+            http_client: Arc::new(reqwest::Client::new()),
+            chain: StellarChain::try_from(Network::StellarTestnet).unwrap(),
+            rpc_url: Some(format!("{url}/")),
+            horizon_url: Some(url.to_string()),
+        }
+    }
+
+    async fn verify(
+        client: impl FnOnce(&mut Client, &StellarProvider),
+    ) -> Result<VerifyResponse, FacilitatorLocalError> {
+        let (url, _) = node().await;
+        let provider = provider(&url);
+        let mut shape = Client::new();
+        client(&mut shape, &provider);
+        provider
+            .verify(&request(&shape.transaction(&provider)))
+            .await
+    }
+
+    fn refused_because(result: Result<VerifyResponse, FacilitatorLocalError>, why: &str) {
+        match result {
+            Err(FacilitatorLocalError::Other(message)) => {
+                assert!(message.contains(why), "refused, but for: {message}")
+            }
+            other => panic!("expected a refusal for {why:?}, got {other:?}"),
+        }
+    }
+
+    /// The spec's example names a `payTo` whose strkey checksum is wrong:
+    /// it decodes to no account. Its asset is this network's USDC contract.
+    #[test]
+    fn the_spec_examples_pay_to_is_not_a_stellar_account() {
+        let example: Value = serde_json::from_str(PAYMENT_REQUIREMENTS).unwrap();
+        let pay_to = example["payTo"].as_str().unwrap();
+        assert!(StellarPublicKey::from_string(pay_to).is_err(), "{pay_to}");
+        let payload: Value = serde_json::from_str(PAYMENT_PAYLOAD).unwrap();
+        assert_eq!(payload["accepted"]["payTo"], example["payTo"]);
+        assert!(Contract::from_string(example["asset"].as_str().unwrap()).is_ok());
+    }
+
+    #[test]
+    fn the_spec_request_reads_as_the_spec_payload_and_terms() {
+        let provider = provider("http://127.0.0.1:1");
+        let transaction = Client::new().transaction(&provider);
+        let request = request(&transaction);
+        assert_eq!(request.payment_payload.network, Network::StellarTestnet);
+        assert_eq!(request.payment_payload.scheme, Scheme::Exact);
+        assert!(matches!(
+            &request.payment_payload.payload,
+            ExactPaymentPayload::StellarTransaction(p) if p.transaction == transaction
+        ));
+        let terms = &request.payment_requirements;
+        let req = requirements();
+        assert_eq!(terms.network, Network::StellarTestnet);
+        assert_eq!(
+            terms.max_amount_required.to_string(),
+            req["amount"].as_str().unwrap()
+        );
+        assert_eq!(terms.pay_to.to_string(), req["payTo"].as_str().unwrap());
+        assert_eq!(terms.asset.to_string(), req["asset"].as_str().unwrap());
+        assert_eq!(terms.max_timeout_seconds, 60);
+    }
+
+    #[tokio::test]
+    async fn the_spec_example_verifies_for_its_payer() {
+        let response = verify(|_, _| {}).await.expect("a verdict");
+        assert!(
+            matches!(&response, VerifyResponse::Valid { payer: p } if *p == MixedAddress::Stellar(payer())),
+            "{response:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_spec_example_settles_in_a_transaction_of_the_facilitators_own() {
+        let (url, seen) = node().await;
+        let provider = provider(&url);
+        let client = Client::new();
+        let response = provider
+            .settle(&request(&client.transaction(&provider)))
+            .await
+            .expect("settled");
+        assert!(response.success, "{response:?}");
+
+        // What went on chain: the facilitator's source and signature around
+        // the client's one operation and entry, nothing else of the client's.
+        let submitted = seen.lock().unwrap().submitted.clone();
+        assert_eq!(submitted.len(), 1);
+        let envelope =
+            TransactionEnvelope::from_xdr(BASE64.decode(&submitted[0]).unwrap(), Limits::none())
+                .unwrap();
+        let TransactionEnvelope::Tx(TransactionV1Envelope { tx, signatures }) = envelope else {
+            panic!("a v1 envelope");
+        };
+        assert_eq!(tx.source_account, muxed(&provider.public_key));
+        let mut expected = client.operation(&provider);
+        expected.source_account = None;
+        assert_eq!(tx.operations.as_slice(), [expected]);
+        let hash = provider.chain.compute_transaction_hash(&tx).unwrap();
+        let [signature] = signatures.as_slice() else {
+            panic!("one signature");
+        };
+        provider
+            .signing_key
+            .verifying_key()
+            .verify(
+                &hash,
+                &Signature::from_slice(signature.signature.as_slice()).unwrap(),
+            )
+            .expect("signed by the facilitator");
+
+        // The spec's SettlementResponse, key for key.
+        let ours = serde_json::to_value(&response).unwrap();
+        let spec: Value = serde_json::from_str(SETTLEMENT_RESPONSE).unwrap();
+        for key in spec.as_object().unwrap().keys() {
+            assert!(ours.get(key).is_some(), "{key} missing from {ours}");
+        }
+        assert_eq!(ours["success"], json!(true));
+        assert_eq!(ours["payer"], json!(payer()));
+        assert_eq!(ours["transaction"], json!(sent_hash()));
+        assert_eq!(
+            Network::from_caip2(spec["network"].as_str().unwrap()),
+            Some(response.network)
+        );
+    }
+
+    #[tokio::test]
+    async fn the_facilitator_as_transaction_source_is_refused() {
+        refused_because(
+            verify(|c, p| c.source = muxed(&p.public_key)).await,
+            "transaction source account is the facilitator",
+        );
+    }
+
+    #[tokio::test]
+    async fn the_facilitator_as_muxed_transaction_source_is_refused() {
+        refused_because(
+            verify(|c, p| {
+                c.source = MuxedAccount::MuxedEd25519(stellar_xdr::curr::MuxedAccountMed25519 {
+                    id: 9,
+                    ed25519: Uint256(StellarPublicKey::from_string(&p.public_key).unwrap().0),
+                })
+            })
+            .await,
+            "transaction source account is the facilitator",
+        );
+    }
+
+    #[tokio::test]
+    async fn the_facilitator_as_operation_source_is_refused() {
+        refused_because(
+            verify(|c, p| c.operation_source = Some(muxed(&p.public_key))).await,
+            "operation source account is the facilitator",
+        );
+    }
+
+    #[tokio::test]
+    async fn an_operation_source_other_than_the_facilitator_is_read() {
+        let response = verify(|c, _| c.operation_source = Some(muxed(&payer())))
+            .await
+            .expect("a verdict");
+        assert!(
+            matches!(response, VerifyResponse::Valid { .. }),
+            "{response:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_second_operation_is_refused() {
+        refused_because(
+            verify(|c, _| c.operations = 2).await,
+            "expected exactly one operation",
+        );
+    }
+
+    #[tokio::test]
+    async fn a_second_entry_is_refused() {
+        refused_because(
+            verify(|c, _| c.entries = 2).await,
+            "expected exactly one authorization entry",
+        );
+    }
+
+    #[tokio::test]
+    async fn an_operation_that_is_not_what_its_entry_authorizes_is_refused() {
+        refused_because(
+            verify(|c, _| c.operation_amount = AMOUNT + 1).await,
+            "invokes something other than what its entry authorizes",
+        );
+    }
+
+    #[tokio::test]
+    async fn a_contract_other_than_the_requirements_asset_is_refused() {
+        // The example's own USDC on the wire, another asset in the terms.
+        let (url, _) = node().await;
+        let provider = provider(&url);
+        let mut request = request(&Client::new().transaction(&provider));
+        request.payment_requirements.asset = MixedAddress::Stellar(
+            "CCW67TSZV3SSS2HXMBQ5JFGCKJNXKZM7UQUWUZPUTHXSTZLEO7SJMI75".into(),
+        );
+        refused_because(provider.verify(&request).await, "Token contract mismatch");
+    }
+
+    #[tokio::test]
+    async fn source_account_credentials_are_refused() {
+        refused_because(
+            verify(|c, _| c.source_account_credentials = true).await,
+            "Unsupported credential type",
+        );
+    }
+
+    #[tokio::test]
+    async fn an_entry_expiring_at_the_latest_ledger_the_timeout_allows_verifies() {
+        let response = verify(|c, _| c.expiry = LEDGER + OFFSET)
+            .await
+            .expect("a verdict");
+        assert!(
+            matches!(response, VerifyResponse::Valid { .. }),
+            "{response:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_entry_expiring_after_the_timeout_is_refused() {
+        refused_because(
+            verify(|c, _| c.expiry = LEDGER + OFFSET + 1).await,
+            "after the latest the payment allows",
+        );
+    }
+
+    #[tokio::test]
+    async fn an_expired_entry_is_refused() {
+        refused_because(verify(|c, _| c.expiry = LEDGER).await, "expired");
+    }
+
+    #[tokio::test]
+    async fn the_nonce_and_expiry_are_the_entrys_own() {
+        let (url, _) = node().await;
+        let provider = provider(&url);
+        let client = Client::new();
+        let request = request(&client.transaction(&provider));
+        let ExactPaymentPayload::StellarTransaction(payload) = &request.payment_payload.payload
+        else {
+            panic!("the spec payload");
+        };
+        let read = provider
+            .read_spec_transaction(&payload.transaction, &request.payment_requirements)
+            .unwrap();
+        assert_eq!(read.payer, payer());
+        assert_eq!(read.nonce, client.nonce as u64);
+        assert_eq!(read.expiry_ledger, client.expiry);
+        assert_eq!(read.max_expiry_offset, Some(OFFSET));
+        assert_eq!(read.auth_entry, client.entry(&provider));
+    }
+
+    #[test]
+    fn a_v0_envelope_is_refused() {
+        let provider = provider("http://127.0.0.1:1");
+        let client = Client::new();
+        let envelope = TransactionEnvelope::TxV0(TransactionV0Envelope {
+            tx: TransactionV0 {
+                source_account_ed25519: Uint256(StellarPublicKey::from_string(&payer()).unwrap().0),
+                fee: 100,
+                seq_num: SequenceNumber(1),
+                time_bounds: None,
+                memo: Memo::None,
+                operations: vec![client.operation(&provider)].try_into().unwrap(),
+                ext: TransactionV0Ext::V0,
+            },
+            signatures: VecM::default(),
+        });
+        let xdr = BASE64.encode(envelope.to_xdr(Limits::none()).unwrap());
+        let terms = request(&client.transaction(&provider)).payment_requirements;
+        let err = provider
+            .read_spec_transaction(&xdr, &terms)
+            .err()
+            .expect("refused");
+        assert!(err.to_string().contains("v1 transaction envelope"), "{err}");
+    }
+
+    #[test]
+    fn the_ledger_offset_is_the_timeout_in_five_second_ledgers_rounded_up() {
+        assert_eq!(spec_max_ledger_offset(60), 12);
+        assert_eq!(spec_max_ledger_offset(61), 13);
+        assert_eq!(spec_max_ledger_offset(4), 1);
+        assert_eq!(spec_max_ledger_offset(0), 0);
+        assert_eq!(spec_max_ledger_offset(u64::MAX), u32::MAX);
+    }
+
+    #[tokio::test]
+    async fn the_entry_only_payload_is_not_bound_by_the_timeout() {
+        // The payload this facilitator defined keeps its rules: an entry
+        // expiring long after `maxTimeoutSeconds` still verifies.
+        let (url, _) = node().await;
+        let provider = provider(&url);
+        let client = Client::new();
+        let expiry = LEDGER + OFFSET + 100;
+        let entry = signed_entry(&provider, transfer(AMOUNT), client.nonce, expiry);
+        let mut request = request(&client.transaction(&provider));
+        request.payment_payload.payload =
+            ExactPaymentPayload::Stellar(crate::types::ExactStellarPayload {
+                from: payer(),
+                to: requirements()["payTo"].as_str().unwrap().to_string(),
+                amount: AMOUNT.to_string(),
+                token_contract: requirements()["asset"].as_str().unwrap().to_string(),
+                authorization_entry_xdr: BASE64.encode(entry.to_xdr(Limits::none()).unwrap()),
+                nonce: client.nonce as u64,
+                signature_expiration_ledger: expiry,
+            });
+        let response = provider.verify(&request).await.expect("a verdict");
+        assert!(
+            matches!(response, VerifyResponse::Valid { .. }),
+            "{response:?}"
+        );
     }
 }

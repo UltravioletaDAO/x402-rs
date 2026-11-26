@@ -566,6 +566,8 @@ mod tests {
                         fee_payer: None,
                         tokens: Some(served_token_infos(network)),
                         escrow: None,
+                        facilitator_address: None,
+                        are_fees_sponsored: None,
                     }),
                 })
                 .collect();

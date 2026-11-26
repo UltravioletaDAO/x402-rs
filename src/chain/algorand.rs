@@ -1385,6 +1385,8 @@ impl Facilitator for AlgorandProvider {
                 fee_payer: Some(self.signer_address()),
                 tokens: Some(crate::network::exact_payment_tokens(self.network())),
                 escrow: None,
+                facilitator_address: None,
+                are_fees_sponsored: None,
             }),
         }];
         Ok(SupportedPaymentKindsResponse { kinds })

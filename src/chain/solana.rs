@@ -1297,7 +1297,11 @@ impl SolanaProvider {
             ExactPaymentPayload::Near(..) => {
                 return Err(FacilitatorLocalError::UnsupportedNetwork(None));
             }
-            ExactPaymentPayload::Stellar(..) => {
+            ExactPaymentPayload::Stellar(..) | ExactPaymentPayload::StellarTransaction(..) => {
+                return Err(FacilitatorLocalError::UnsupportedNetwork(None));
+            }
+            #[cfg(feature = "sui")]
+            ExactPaymentPayload::SuiTransaction(..) => {
                 return Err(FacilitatorLocalError::UnsupportedNetwork(None));
             }
             #[cfg(feature = "algorand")]
@@ -2586,6 +2590,8 @@ impl Facilitator for SolanaProvider {
                 fee_payer: Some(self.signer_address()),
                 tokens: Some(crate::network::exact_payment_tokens(self.network())),
                 escrow: None,
+                facilitator_address: None,
+                are_fees_sponsored: None,
             }),
         }];
         Ok(SupportedPaymentKindsResponse { kinds })

@@ -1455,6 +1455,8 @@ impl Facilitator for XrplProvider {
                 fee_payer: self.facilitator_address(),
                 tokens: Some(tokens),
                 escrow: None,
+                facilitator_address: None,
+                are_fees_sponsored: None,
             }),
         }];
         Ok(SupportedPaymentKindsResponse { kinds })

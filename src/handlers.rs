@@ -4665,6 +4665,7 @@ where
     let format_name = match &envelope {
         #[cfg(feature = "hedera")]
         VerifyRequestEnvelope::Hedera(_) => "hedera-v2",
+        VerifyRequestEnvelope::SpecV2(_) => "spec-v2",
         VerifyRequestEnvelope::V1(_) => "v1",
         VerifyRequestEnvelope::V2(req) => {
             debug!(
@@ -5808,6 +5809,7 @@ where
     let format_name = match &envelope {
         #[cfg(feature = "hedera")]
         SettleRequestEnvelope::Hedera(_) => "hedera-v2",
+        SettleRequestEnvelope::SpecV2(_) => "spec-v2",
         SettleRequestEnvelope::V1(_) => "v1",
         SettleRequestEnvelope::V2(req) => {
             debug!(
@@ -5931,6 +5933,13 @@ where
             debug!("  - to: {}", stellar_payload.to);
             debug!("  - amount: {}", stellar_payload.amount);
         }
+        crate::types::ExactPaymentPayload::StellarTransaction(stellar_payload) => {
+            debug!("  - payload type: Stellar (x402 Foundation spec, whole transaction)");
+            debug!(
+                "  - transaction: {} (truncated)",
+                &stellar_payload.transaction[..stellar_payload.transaction.len().min(100)]
+            );
+        }
         #[cfg(feature = "algorand")]
         crate::types::ExactPaymentPayload::Algorand(algorand_payload) => {
             debug!("  - payload type: Algorand (atomic group)");
@@ -5947,6 +5956,14 @@ where
             debug!("  - to: {}", sui_payload.to);
             debug!("  - amount: {}", sui_payload.amount);
             debug!("  - coin_object_id: {}", sui_payload.coin_object_id);
+        }
+        #[cfg(feature = "sui")]
+        crate::types::ExactPaymentPayload::SuiTransaction(sui_payload) => {
+            debug!("  - payload type: Sui (x402 Foundation spec)");
+            debug!(
+                "  - transaction: {} (truncated)",
+                &sui_payload.transaction[..sui_payload.transaction.len().min(100)]
+            );
         }
         crate::types::ExactPaymentPayload::SolanaSettlementAccount(sa_payload) => {
             debug!("  - payload type: Solana Settlement Account (Crossmint)");
@@ -23596,6 +23613,8 @@ mod accepts_negotiation_tests {
                 max_gas_tgas: 100,
                 sender_per_hour: 30,
             }),
+            facilitator_address: None,
+            are_fees_sponsored: None,
         });
         let (matched, rejected) =
             negotiate_accepts(&[requirement("escrow", "near-testnet")], &[near.clone()]);
@@ -23638,6 +23657,8 @@ mod accepts_negotiation_tests {
                 lifecycle_signers_version: Some(1),
             }),
             near_escrow: None,
+            facilitator_address: None,
+            are_fees_sponsored: None,
         });
         let (matched, rejected) =
             negotiate_accepts(&[requirement("escrow", "eip155:8453")], &[escrow.clone()]);
@@ -23654,6 +23675,52 @@ mod accepts_negotiation_tests {
         let (matched, _) = negotiate_accepts(&[offer], &[escrow]);
         assert_eq!(matched[0]["extra"]["lifecycleSigners"], forged);
         assert!(matched[0]["extra"].get("lifecycleSignersVersion").is_none());
+    }
+
+    /// What a resource server needs from `/supported` reaches the
+    /// requirements `/accepts` hands back: the `upto` settling address, which
+    /// the client signs into its witness, and Stellar's fee sponsorship, which
+    /// the reference client refuses to pay without. A merchant's own value is
+    /// never overwritten.
+    #[test]
+    fn the_spec_extra_fields_reach_the_negotiated_requirements() {
+        let settling = alloy::primitives::Address::repeat_byte(0x42);
+        let extra = |facilitator_address, are_fees_sponsored| {
+            Some(crate::types::SupportedPaymentKindExtra {
+                fee_payer: None,
+                tokens: None,
+                escrow: None,
+                near_escrow: None,
+                facilitator_address,
+                are_fees_sponsored,
+            })
+        };
+        let mut upto = kind(Scheme::Upto, "eip155:8453");
+        upto.extra = extra(Some(crate::types::EvmAddress(settling)), None);
+        let mut stellar = kind(Scheme::Exact, "stellar:testnet");
+        stellar.extra = extra(None, Some(true));
+
+        let (enriched, rejected) = negotiate_accepts(
+            &[
+                requirement("upto", "eip155:8453"),
+                requirement("exact", "stellar:testnet"),
+            ],
+            &[upto.clone(), stellar],
+        );
+        assert!(rejected.is_empty(), "{rejected:?}");
+        assert_eq!(
+            enriched[0]["extra"]["facilitatorAddress"],
+            json!(format!("{settling:#x}"))
+        );
+        assert_eq!(enriched[1]["extra"]["areFeesSponsored"], json!(true));
+
+        let mut own = requirement("upto", "eip155:8453");
+        own["extra"] = json!({"facilitatorAddress": "merchant's"});
+        let (enriched, _) = negotiate_accepts(&[own], &[upto]);
+        assert_eq!(
+            enriched[0]["extra"]["facilitatorAddress"],
+            json!("merchant's")
+        );
     }
 }
 

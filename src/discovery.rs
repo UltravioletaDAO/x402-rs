@@ -732,6 +732,24 @@ fn provenance_rank(source: DiscoverySource) -> u8 {
     }
 }
 
+/// Whether a listing from `source` keeps the terms a re-registration writes
+/// ([`crate::discovery_health::reregister`]): one its seller registered, or one
+/// a settlement put in place. No import replaces those -- a feed's copy ranks
+/// below them ([`import_verdict`]) and the merge keeps their source -- and a
+/// later settlement only counts ([`DiscoveryRegistry::track_settlement`]).
+///
+/// A crawled or aggregated copy is its source's, and the next import of that
+/// source puts the source's terms back, which is why
+/// [`DiscoveryRegistry::adopt_live_price`] leaves such copies alone too. A
+/// re-registration of one is refused rather than answered `updated` for a
+/// change that would not last.
+pub fn reregistrable(source: DiscoverySource) -> bool {
+    matches!(
+        source,
+        DiscoverySource::SelfRegistered | DiscoverySource::Settlement
+    )
+}
+
 /// Whether `donor` may fill `target`'s missing description, schema or tags.
 ///
 /// Only a source at least as authoritative as the record it completes. Two
@@ -1195,9 +1213,12 @@ async fn apply_revision(
     revised: &DiscoveryResource,
 ) -> Result<bool, StoreError> {
     crate::discovery_store::read_modify_write_if(store, "revise", |catalog| {
+        // Only a listing a re-registration may change, as the cache's write
+        // was decided: a store record that is a feed's copy by now keeps its
+        // source's terms.
         let Some(record) = catalog
             .iter_mut()
-            .find(|r| r.url.as_str() == revised.url.as_str())
+            .find(|r| r.url.as_str() == revised.url.as_str() && reregistrable(r.source))
         else {
             return false;
         };
@@ -3541,14 +3562,15 @@ impl DiscoveryRegistry {
     }
 
     /// Apply a re-registration the caller has verified against the listing's
-    /// live 402 ([`crate::discovery_health::reregister`]): the submitted
-    /// `accepts` replace the held ones, under the catalog's write guard, and
-    /// reach the store as a patch ([`apply_revision`]). Nothing else of the
-    /// submission is read.
+    /// live 402 ([`crate::discovery_health::reregister`]): its `accepts` -- the
+    /// options as that 402 makes them -- replace the held ones, under the
+    /// catalog's write guard, and reach the store as a patch
+    /// ([`apply_revision`]). Nothing else of the submission is read.
     ///
-    /// `None` when the listing is no longer held (removed meanwhile): a
-    /// re-registration never inserts one. `Some(false)` when the terms are
-    /// already the listed ones, and nothing is written.
+    /// `None` when the listing is no longer held as one a re-registration may
+    /// change (removed meanwhile, or not [`reregistrable`]): a re-registration
+    /// never inserts one. `Some(false)` when the terms are already the listed
+    /// ones, and nothing is written.
     pub async fn apply_reregistration(
         &self,
         key: &str,
@@ -3557,7 +3579,7 @@ impl DiscoveryRegistry {
         let mut submitted = submitted;
         submitted.strip_response_only();
         let mut cache = self.write_catalog().await;
-        let held = cache.get(key)?.clone();
+        let held = cache.get(key).filter(|r| reregistrable(r.source))?.clone();
         let mut revised = held.clone();
         submitted.revise_onto(&mut revised);
         let changed = revised.content_fingerprint() != held.content_fingerprint()
@@ -3568,11 +3590,34 @@ impl DiscoveryRegistry {
         revised.last_updated = now_secs();
         submitted.last_updated = revised.last_updated;
         submitted.url = revised.url.clone();
+        let baseline = declared_recipients_changed(&held, &revised);
         cache.insert(key.to_string(), revised);
         drop(cache);
-        info!(url = %key, "re-registered terms applied; the live 402 makes them");
         self.writes.push(StoreOp::Revise(Box::new(submitted)));
         self.drain_writes();
+        // The drift baseline moved -- an offer moved to another network, a
+        // network left out -- so it is said, as an import that moves it is,
+        // and the listing is probed against the new one.
+        if let Some((previous, current)) = baseline {
+            warn!(
+                url = %key,
+                previous = ?previous,
+                current = ?current,
+                "paytoswap: a re-registration changed the declared recipients this \
+                 listing's 402 is checked against; re-probing against them"
+            );
+            if crate::discovery_config::revalidation_enabled()
+                && self
+                    .revalidation
+                    .request(key, RefreshReason::RevisionChanged, now_secs())
+                    .await
+                && !crate::discovery_owner::owns_jobs()
+            {
+                self.revalidation.offer_to_owner(vec![key.to_string()]);
+            }
+        } else {
+            info!(url = %key, "re-registered terms applied; the live 402 makes them");
+        }
         Some(true)
     }
 
@@ -4560,6 +4605,35 @@ mod tests {
             listed.accepts[0].amount,
             "and the observation is still what the origin answered"
         );
+    }
+
+    /// The store's half of a re-registration patches only a listing a
+    /// re-registration may change: a record that is a feed's copy in the
+    /// store by then keeps its source's terms.
+    #[tokio::test]
+    async fn the_revision_patch_leaves_a_feed_copy_in_the_store_alone() {
+        use crate::discovery_store::MemoryStore;
+        let url = "https://api.revise.example/x";
+        for (source, applies) in [
+            (DiscoverySource::Aggregated, false),
+            (DiscoverySource::Crawled, false),
+            (DiscoverySource::SelfRegistered, true),
+            (DiscoverySource::Settlement, true),
+        ] {
+            let store = MemoryStore::new();
+            let mut held = create_test_resource(url, None);
+            held.source = source;
+            store.save(&held).await.unwrap();
+            let mut revised = held.clone();
+            revised.accepts.clear();
+            assert_eq!(
+                apply_revision(&store, &revised).await.unwrap(),
+                applies,
+                "{source}"
+            );
+            let stored = store.load_snapshot().await.unwrap().resources;
+            assert_eq!(stored[0].accepts.is_empty(), applies, "{source}");
+        }
     }
 
     #[tokio::test]

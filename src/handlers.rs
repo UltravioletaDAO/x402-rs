@@ -3169,9 +3169,10 @@ pub async fn post_discovery_register(
 
 /// `POST /discovery/register` for a URL the catalog already holds: the
 /// seller's re-registration (`discovery_health::reregister`). `200` when the
-/// URL's live 402 makes every submitted offer at the submitted amount -- the
-/// listing then carries the submitted price and metadata -- and an error
-/// naming what did not match otherwise.
+/// URL's live 402 makes every submitted offer at the submitted amount and
+/// every listed offer it still makes is submitted -- the listing then carries
+/// those offers as the 402 makes them, and keeps its own description, metadata
+/// and extensions -- and an error naming what did not match otherwise.
 async fn reregistration_response(
     registry: &DiscoveryRegistry,
     key: String,
@@ -3188,7 +3189,7 @@ async fn reregistration_response(
                     "success": true,
                     "updated": updated,
                     "message": if updated {
-                        "Payment terms updated: the live 402 makes every offer submitted. A re-registration changes the payment terms only; the listing keeps its description, metadata and extensions."
+                        "Payment terms updated: the live 402 makes every offer submitted, and the listing now carries them as the 402 makes them. A re-registration changes the payment terms only; the listing keeps its description, metadata and extensions."
                     } else {
                         "Already listed with these terms"
                     },
@@ -3215,6 +3216,27 @@ async fn reregistration_response(
         )
             .into_response(),
         ReregisterRefusal::NotListed => discovery_error_response(DiscoveryError::NotFound(key)),
+        ReregisterRefusal::FeedCopy { source } => (
+            StatusCode::CONFLICT,
+            Json(json!({
+                "error": "Resource already listed from a feed; its terms follow that source",
+                "errorCode": code,
+                "url": key,
+                "source": source.to_string(),
+                "hint": "This listing is a copy imported from another facilitator's catalog (aggregated) or from the origin's /.well-known/x402 (crawled), and every import puts that source's terms back. Change the terms there; a re-registration applies to a listing registered here or put in place by a settlement."
+            })),
+        )
+            .into_response(),
+        ReregisterRefusal::Held => (
+            StatusCode::CONFLICT,
+            Json(json!({
+                "error": "Resource already registered; it is held by the health prober",
+                "errorCode": code,
+                "url": key,
+                "hint": "A listing the health prober holds is not re-registered. Only the prober lifts a hold, after two clean probes in a row of the URL's 402; re-register once the listing is back in GET /discovery/resources."
+            })),
+        )
+            .into_response(),
         ReregisterRefusal::RecipientChange { pay_to } => (
             StatusCode::CONFLICT,
             Json(json!({
@@ -3237,13 +3259,34 @@ async fn reregistration_response(
             })),
         )
             .into_response(),
+        ReregisterRefusal::ConflictingLive402 => (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Json(json!({
+                "error": "Resource already registered; its live 402 makes different offers in its header and its body",
+                "errorCode": code,
+                "url": key,
+                "hint": "A re-registration is verified against one set of terms. Serve the same offers in the PAYMENT-REQUIRED header and in the body (or in one of them), then re-register."
+            })),
+        )
+            .into_response(),
         ReregisterRefusal::UndeclaredLiveRecipient => (
             StatusCode::CONFLICT,
             Json(json!({
-                "error": "Resource already registered; its live 402 pays a recipient this registration does not declare",
+                "error": "Resource already registered; its live 402 pays a recipient that this registration or the listing does not declare",
                 "errorCode": code,
                 "url": key,
-                "hint": "Submit the options the live 402 makes, recipients included."
+                "hint": "Submit the options the live 402 makes, recipients included. A re-registration is not applied while the 402 pays a recipient that the listing or the submission does not declare -- the same check the health prober holds a listing by -- even on a network the submission leaves out."
+            })),
+        )
+            .into_response(),
+        ReregisterRefusal::OmitsLiveOffer(omitted) => (
+            StatusCode::CONFLICT,
+            Json(json!({
+                "error": "Resource already registered; this registration leaves out offers its live 402 still makes",
+                "errorCode": code,
+                "url": key,
+                "omitted": omitted,
+                "hint": "Only an offer the URL's live 402 no longer makes, on a network where it pays no recipient any more (or one the re-registration still declares), may be left out. Submit each offer in omitted that carries a liveAmount, at that amount; for one without, submit an offer the 402 makes on that network, or stop naming any recipient there in the 402 first."
             })),
         )
             .into_response(),
@@ -3254,7 +3297,7 @@ async fn reregistration_response(
                 "errorCode": code,
                 "url": key,
                 "mismatches": mismatches,
-                "hint": "Submit the amounts the URL's live 402 quotes (each mismatch carries liveAmount when the 402 makes that offer). The catalog also follows a repriced 402 by itself within its price sweep (GET /discovery/config, healthProber.priceSweepSeconds)."
+                "hint": "Submit the amounts the URL's live 402 quotes (each mismatch carries liveAmount when the 402 makes that offer). A self-registered listing also follows a repriced 402 by itself within its price sweep (GET /discovery/config, healthProber.priceSweepSeconds)."
             })),
         )
             .into_response(),
@@ -17269,6 +17312,73 @@ mod discovery_handler_tests {
             .expect("response body");
         let body = serde_json::from_slice(&bytes).expect("json body");
         (status, body)
+    }
+
+    /// The two re-registration refusals that read nothing, through the route:
+    /// a feed's copy and a listing the prober holds answer 409 with their
+    /// code, the copy with its `source`, the hold without its reason.
+    #[tokio::test]
+    async fn a_reregistration_of_a_feed_copy_or_a_held_listing_answers_409_with_its_code() {
+        let request = |amount: &str| -> RegisterResourceRequest {
+            serde_json::from_value(json!({
+                "url": "https://seller.example/r",
+                "type": "http",
+                "description": "a listing",
+                "accepts": [{
+                    "scheme": "exact",
+                    "network": "eip155:8453",
+                    "asset": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+                    "amount": amount,
+                    "payTo": "0xe4dc963c56979E0260fc146b87eE24F18220e545",
+                    "maxTimeoutSeconds": 60
+                }]
+            }))
+            .expect("a registration request")
+        };
+        async fn answer(
+            registry: Arc<DiscoveryRegistry>,
+            request: RegisterResourceRequest,
+        ) -> (StatusCode, serde_json::Value) {
+            let response = post_discovery_register(State(registry), Json(request))
+                .await
+                .into_response();
+            let status = response.status();
+            let bytes = axum::body::to_bytes(response.into_body(), 64 * 1024)
+                .await
+                .expect("response body");
+            (status, serde_json::from_slice(&bytes).expect("json body"))
+        }
+
+        let registry = Arc::new(DiscoveryRegistry::new());
+        let mut copy = request("2000").into_resource();
+        copy.source = crate::types_v2::DiscoverySource::Aggregated;
+        registry.register(copy).await.unwrap();
+        let (status, body) = answer(Arc::clone(&registry), request("3000")).await;
+        assert_eq!(status, StatusCode::CONFLICT, "{body}");
+        assert_eq!(body["errorCode"], "reregistration_feed_copy");
+        assert_eq!(body["source"], "aggregated");
+
+        let registry = Arc::new(DiscoveryRegistry::new());
+        registry
+            .register(request("2000").into_resource())
+            .await
+            .unwrap();
+        registry
+            .health()
+            .quarantine_for_test(
+                "https://seller.example/r",
+                crate::types_v2::QuarantineReason::PayToDrift,
+                1,
+            )
+            .await;
+        let (status, body) = answer(registry, request("3000")).await;
+        assert_eq!(status, StatusCode::CONFLICT, "{body}");
+        assert_eq!(body["errorCode"], "reregistration_listing_held");
+        let text = body.to_string().to_ascii_lowercase();
+        assert!(
+            !text.contains("drift") && !text.contains("recipient"),
+            "the answer says why the listing is held: {body}"
+        );
     }
 
     /// The exact request that used to come back as an unfiltered page.

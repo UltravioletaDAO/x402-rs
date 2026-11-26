@@ -1159,6 +1159,17 @@ impl HealthTracker {
             .collect()
     }
 
+    /// Whether `url` is held in quarantine now, for any reason: a hold only
+    /// the prober lifts, after two clean probes in a row (a payTo-drift hold
+    /// against the recipients the listing declares).
+    pub async fn is_quarantined(&self, url: &str) -> bool {
+        self.records
+            .read()
+            .await
+            .get(url)
+            .is_some_and(|r| r.status == HealthStatus::Quarantined)
+    }
+
     /// Test hook: leave `url` quarantined since `at` for `reason`, as the
     /// prober would have.
     #[cfg(test)]
@@ -3887,6 +3898,23 @@ pub struct OptionMismatch {
     pub live_amount: Option<String>,
 }
 
+/// One offer the listing declares and a re-registration left out, though the
+/// live 402 still makes it, or still pays a recipient on its network.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OmittedOffer {
+    pub scheme: String,
+    pub network: String,
+    pub asset: String,
+    pub pay_to: String,
+    /// The amount the listing holds for it.
+    pub amount: String,
+    /// What the live 402 quotes for this very offer. Absent when it makes no
+    /// such offer and still pays a recipient on its network.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub live_amount: Option<String>,
+}
+
 /// Why a re-registration was not applied ([`reregister`]).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ReregisterRefusal {
@@ -3895,16 +3923,38 @@ pub enum ReregisterRefusal {
     TooSoon { retry_after_secs: u64 },
     /// The URL is no longer in the catalog.
     NotListed,
+    /// The listing is a copy from a feed -- another facilitator's catalog
+    /// (`aggregated`) or the origin's `/.well-known/x402` (`crawled`). Its
+    /// terms are that source's, and its next import puts them back
+    /// ([`crate::discovery::reregistrable`]).
+    FeedCopy { source: DiscoverySource },
+    /// The listing is held in quarantine by the health prober. Why is not
+    /// said: a hold's reason is the operator's to see (the admin view of the
+    /// pending queue). Only the prober lifts a hold, after two clean probes in
+    /// a row; a payTo-drift hold is judged against the recipients the listing
+    /// declares, which a re-registration would otherwise move.
+    Held,
     /// A submitted option pays a recipient the listing does not declare.
     RecipientChange { pay_to: String },
     /// The URL did not answer its request with a readable 402 of its own that
     /// offers a payment.
     NoLiveChallenge { http_status: Option<u16> },
-    /// The live 402 pays a recipient the submission does not declare on a
-    /// network it does: the drift check, run against the submission.
+    /// The live 402's header and body make different offers: there is no one
+    /// set of terms to verify against, as for
+    /// [`crate::discovery::DiscoveryRegistry::adopt_live_price`].
+    ConflictingLive402,
+    /// The live 402 pays a recipient, on a network the listing or the
+    /// submission declares, that it does not declare: the drift check, run
+    /// against both.
     UndeclaredLiveRecipient,
     /// Submitted options the live 402 does not make as submitted.
     Mismatch(Vec<OptionMismatch>),
+    /// Offers the listing declares left out of the submission while the live
+    /// 402 still makes them, or still pays a recipient on a network the
+    /// submission no longer declares: only an offer the 402 no longer makes,
+    /// on a network it no longer pays (or one the submission still declares),
+    /// may be left out.
+    OmitsLiveOffer(Vec<OmittedOffer>),
 }
 
 impl ReregisterRefusal {
@@ -3913,12 +3963,16 @@ impl ReregisterRefusal {
         match self {
             ReregisterRefusal::TooSoon { .. } => "reregistration_too_soon",
             ReregisterRefusal::NotListed => "reregistration_not_listed",
+            ReregisterRefusal::FeedCopy { .. } => "reregistration_feed_copy",
+            ReregisterRefusal::Held => "reregistration_listing_held",
             ReregisterRefusal::RecipientChange { .. } => "reregistration_recipient_change",
             ReregisterRefusal::NoLiveChallenge { .. } => "reregistration_no_live_402",
+            ReregisterRefusal::ConflictingLive402 => "reregistration_live_402_conflict",
             ReregisterRefusal::UndeclaredLiveRecipient => {
                 "reregistration_live_recipient_undeclared"
             }
             ReregisterRefusal::Mismatch(_) => "reregistration_does_not_match_live_402",
+            ReregisterRefusal::OmitsLiveOffer(_) => "reregistration_omits_live_offer",
         }
     }
 }
@@ -3938,18 +3992,33 @@ pub enum Reregistered {
 ///
 /// Only terms the live 402 verifies change: an amount, an option the 402 no
 /// longer makes (left out of the submission), or the network of an offer to
-/// the same recipient. Who is paid never changes -- every submitted recipient
-/// must be one the listing already declares, on any network
+/// the same recipient. What is written is each matching option as the 402
+/// makes it -- its `extra` and `maxTimeoutSeconds` included -- never the
+/// submission's copy of it. An offer the listing declares and the 402 still
+/// makes cannot be left out, nor can a network the 402 still pays a recipient
+/// on ([`ReregisterRefusal::OmitsLiveOffer`]). A 402 whose header and body
+/// make different offers verifies nothing
+/// ([`ReregisterRefusal::ConflictingLive402`]).
+///
+/// Who is paid never changes. Every submitted recipient must be one the
+/// listing already declares, on any network
 /// ([`DeclaredOffer::declares_recipient`]), and the live 402 must pass the
-/// drift check against the submission -- so a re-registration is never the
-/// way around a payTo-drift quarantine. The rest of the submission
+/// drift check against the submission AND against the listing as held: a
+/// network left out of the submission is still one the listing declares, and
+/// a 402 paying somebody else there is a drift, not an extra network. A
+/// listing the prober holds is not re-registered at all, checked before the
+/// read and again before the write ([`ReregisterRefusal::Held`]): only two
+/// clean probes lift a hold. Nor is a copy from a feed
+/// ([`ReregisterRefusal::FeedCopy`]), whose next import would put its
+/// source's terms back. The rest of the submission
 /// (description, metadata, extensions, type) is not read: the listing keeps
 /// its own ([`crate::types_v2::DiscoveryResource::revise_onto`]).
 ///
 /// One read of the URL per [`crate::discovery_config::reregister_cooldown_secs`],
 /// through the prober's own SSRF-checked transport and request
 /// ([`probe_listing`]); the slot is spent before the read, refused or not.
-/// A new registration still reads nothing.
+/// The two refusals above read nothing and spend no slot. A new registration
+/// still reads nothing.
 pub async fn reregister(
     registry: &DiscoveryRegistry,
     key: &str,
@@ -3981,6 +4050,21 @@ async fn reregister_through<T: ProbeTransport + ?Sized>(
     let Some(held) = registry.get(key).await else {
         return Err(ReregisterRefusal::NotListed);
     };
+    // A feed's copy keeps its source's terms: the next import of that source
+    // would put back whatever is written here.
+    if !crate::discovery::reregistrable(held.source) {
+        return Err(ReregisterRefusal::FeedCopy {
+            source: held.source,
+        });
+    }
+    // A hold has its own recovery rule -- two clean probes in a row, against
+    // the declared recipients for a payTo-drift hold -- and nothing submitted
+    // here moves those recipients or that rule. Any hold, so the answer does
+    // not say which kind it is.
+    let health = registry.health();
+    if health.is_quarantined(held.url.as_str()).await {
+        return Err(ReregisterRefusal::Held);
+    }
     registry
         .take_reregistration_slot(key, now)
         .map_err(|retry_after_secs| ReregisterRefusal::TooSoon { retry_after_secs })?;
@@ -4022,9 +4106,28 @@ async fn reregister_through<T: ProbeTransport + ?Sized>(
     let Some(live) = live else {
         return Err(ReregisterRefusal::NoLiveChallenge { http_status: http });
     };
+    // A header and a body that make different offers are two answers, and a
+    // client reads one of them: nothing here could say which terms are the
+    // 402's. The same offers -- in any order, under two protocol versions --
+    // are one answer.
+    let same_offers = |a: &[CatalogPaymentOption], b: &[CatalogPaymentOption]| {
+        a.len() == b.len() && a.iter().all(|o| b.contains(o)) && b.iter().all(|o| a.contains(o))
+    };
+    if live
+        .conflict
+        .as_ref()
+        .is_some_and(|other| !same_offers(&other.accepts, &live.accepts))
+    {
+        return Err(ReregisterRefusal::ConflictingLive402);
+    }
 
+    // The drift check, against what is submitted and against the listing as
+    // held. Leaving a network out of the submission does not make a 402 that
+    // pays somebody else there an extra network: the listing still declares it.
     let submitted_offers = declared_offers(&submitted.accepts);
-    if compare_recipients(&submitted_offers, &live) == Recipients::Drifted {
+    if compare_recipients(&submitted_offers, &live) == Recipients::Drifted
+        || compare_recipients(&declared, &live) == Recipients::Drifted
+    {
         return Err(ReregisterRefusal::UndeclaredLiveRecipient);
     }
     let live_offers: Vec<(DeclaredOffer, &CatalogPaymentOption)> = live
@@ -4033,13 +4136,21 @@ async fn reregister_through<T: ProbeTransport + ?Sized>(
         .map(|o| (DeclaredOffer::of(o), o))
         .collect();
     let mut mismatches = Vec::new();
+    // Each submitted offer is written as the 402 makes it: the 402 verifies
+    // scheme, network, asset, recipient and amount, and its `extra` and
+    // `maxTimeoutSeconds` are what a client signs against, so the
+    // submission's copy of those is never what the listing carries. (A live
+    // option is a normalized one, `CatalogPaymentOption::new`: it carries no
+    // response-only field.)
+    let mut verified = Vec::with_capacity(submitted.accepts.len());
     for (option, offer) in submitted.accepts.iter().zip(&submitted_offers) {
         let same: Vec<&CatalogPaymentOption> = live_offers
             .iter()
             .filter(|(l, _)| offer.is_offered_by(l))
             .map(|(_, o)| *o)
             .collect();
-        if same.iter().any(|o| o.amount == option.amount) {
+        if let Some(made) = same.iter().find(|o| o.amount == option.amount) {
+            verified.push((*made).clone());
             continue;
         }
         mismatches.push(OptionMismatch {
@@ -4054,12 +4165,62 @@ async fn reregister_through<T: ProbeTransport + ?Sized>(
     if !mismatches.is_empty() {
         return Err(ReregisterRefusal::Mismatch(mismatches));
     }
+    // Only an offer the 402 no longer makes may be left out: one it still
+    // makes is still for sale, and the listing keeps saying so. Nor may a
+    // network leave the listing while the 402 still pays a recipient there,
+    // in any transport and whether or not the catalog can read that option:
+    // the listing's networks are what the drift check holds the 402 to.
+    let submitted_networks: Vec<&Option<String>> =
+        submitted_offers.iter().map(|s| &s.network).collect();
+    let still_paid_on = |network: &Option<String>| {
+        live.by_transport
+            .iter()
+            .flat_map(|t| &t.named)
+            .any(|r| &r.network == network)
+    };
+    let omitted: Vec<OmittedOffer> = held
+        .accepts
+        .iter()
+        .zip(&declared)
+        .filter(|(_, d)| !submitted_offers.iter().any(|s| s.is_offered_by(d)))
+        .filter_map(|(option, d)| {
+            let made = live_offers
+                .iter()
+                .find(|(l, _)| d.is_offered_by(l))
+                .map(|(_, o)| o.amount.to_string());
+            let network_dropped_while_paid =
+                !submitted_networks.contains(&&d.network) && still_paid_on(&d.network);
+            (made.is_some() || network_dropped_while_paid).then(|| OmittedOffer {
+                scheme: option.scheme.to_string(),
+                network: option.network.to_string(),
+                asset: option.asset.to_string(),
+                pay_to: option.pay_to.to_string(),
+                amount: option.amount.to_string(),
+                live_amount: made,
+            })
+        })
+        .collect();
+    if !omitted.is_empty() {
+        return Err(ReregisterRefusal::OmitsLiveOffer(omitted));
+    }
+    submitted.accepts = verified;
 
+    // The prober may have held the listing while its 402 was being read here.
+    if health.is_quarantined(held.url.as_str()).await {
+        return Err(ReregisterRefusal::Held);
+    }
     let resource_type = held.resource_type.clone();
-    let changed = registry
-        .apply_reregistration(key, submitted)
-        .await
-        .ok_or(ReregisterRefusal::NotListed)?;
+    let Some(changed) = registry.apply_reregistration(key, submitted).await else {
+        // Removed meanwhile, or held now as a feed's copy.
+        return Err(match registry.get(key).await {
+            Some(now_held) if !crate::discovery::reregistrable(now_held.source) => {
+                ReregisterRefusal::FeedCopy {
+                    source: now_held.source,
+                }
+            }
+            _ => ReregisterRefusal::NotListed,
+        });
+    };
     // The reading that just matched dates the price at once where the prober
     // runs (the overlay's one writer); any other replica asks the owner to
     // read it, and the listing reads `stale` / `pending` until it has.
@@ -9851,6 +10012,9 @@ mod declared_method_tests {
         let held = registry.get(&key).await.unwrap();
         assert_eq!(held.accepts.len(), 1);
         assert_eq!(amounts(&held), ["16000"]);
+        // Celo left the drift baseline: the listing is probed against the
+        // new one.
+        assert!(registry.revalidation().is_pending(&key).await);
     }
 
     /// The same recipient on another network -- a testnet listing whose 402
@@ -9952,6 +10116,8 @@ mod declared_method_tests {
         let outcome = reregister_through(&origin, &registry, &key, submitted, 1_000, true).await;
         assert_eq!(outcome, Ok(Reregistered::Updated));
         assert_eq!(origin.sent(), 1, "one read of the URL");
+        // An amount is not the drift baseline: nothing is queued for it here.
+        assert!(!registry.revalidation().is_pending(&key).await);
 
         let held = registry.get(&key).await.unwrap();
         assert_eq!(amounts(&held), ["3000"]);
@@ -10072,6 +10238,707 @@ mod declared_method_tests {
             reregister_through(&origin, &registry, &key, submitted, 1_000, true).await,
             Ok(Reregistered::Unchanged)
         );
+    }
+
+    /// Every code a re-registration answers with is in each document that
+    /// lists them -- `/docs` (`src/openapi.rs`), `skill.md` (and through it
+    /// `llms-full.txt`) and `docs/BAZAAR_DISCOVERY.md` -- so a new refusal
+    /// cannot ship undocumented. `NotListed` answers the plain `404` of a URL
+    /// that is not held, with no code.
+    #[test]
+    fn every_reregistration_refusal_code_is_documented() {
+        let refusals = [
+            ReregisterRefusal::TooSoon {
+                retry_after_secs: 1,
+            },
+            ReregisterRefusal::NotListed,
+            ReregisterRefusal::FeedCopy {
+                source: DiscoverySource::Aggregated,
+            },
+            ReregisterRefusal::Held,
+            ReregisterRefusal::RecipientChange {
+                pay_to: String::new(),
+            },
+            ReregisterRefusal::NoLiveChallenge { http_status: None },
+            ReregisterRefusal::ConflictingLive402,
+            ReregisterRefusal::UndeclaredLiveRecipient,
+            ReregisterRefusal::Mismatch(Vec::new()),
+            ReregisterRefusal::OmitsLiveOffer(Vec::new()),
+        ];
+        // A variant added later does not compile here until this match names
+        // it, next to the list above.
+        for refusal in &refusals {
+            match refusal {
+                ReregisterRefusal::TooSoon { .. }
+                | ReregisterRefusal::NotListed
+                | ReregisterRefusal::FeedCopy { .. }
+                | ReregisterRefusal::Held
+                | ReregisterRefusal::RecipientChange { .. }
+                | ReregisterRefusal::NoLiveChallenge { .. }
+                | ReregisterRefusal::ConflictingLive402
+                | ReregisterRefusal::UndeclaredLiveRecipient
+                | ReregisterRefusal::Mismatch(_)
+                | ReregisterRefusal::OmitsLiveOffer(_) => {}
+            }
+        }
+        let documents = [
+            ("src/openapi.rs", include_str!("openapi.rs")),
+            ("static/skill.md", include_str!("../static/skill.md")),
+            (
+                "docs/BAZAAR_DISCOVERY.md",
+                include_str!("../docs/BAZAAR_DISCOVERY.md"),
+            ),
+        ];
+        for refusal in refusals
+            .iter()
+            .filter(|r| **r != ReregisterRefusal::NotListed)
+        {
+            let code = format!("`{}`", refusal.code());
+            for (path, text) in documents {
+                assert!(text.contains(&code), "{path} does not list {code}");
+            }
+        }
+    }
+
+    const CELO: &str = "eip155:42220";
+
+    /// [`quoted`] on another network (CAIP-2).
+    fn quoted_on(network: &str, amount: &str, pay_to: &str) -> Value {
+        let mut option = quoted(amount, pay_to);
+        option["network"] = json!(network);
+        option
+    }
+
+    /// One probe of the only listing `registry` holds, through `transport`.
+    async fn probe_held_listing<T: ProbeTransport>(registry: &DiscoveryRegistry, transport: &T) {
+        let target = registry.probe_targets().await.remove(0);
+        probe_and_record(transport, registry, &registry.health(), target).await;
+    }
+
+    async fn exposed(registry: &DiscoveryRegistry) -> usize {
+        registry.list(10, 0, None).await.items.len()
+    }
+
+    /// A listing that declares one recipient on Base and on Celo, whose 402
+    /// now pays somebody else on Celo, before the prober has seen it. A
+    /// re-registration that leaves Celo out is still judged against the
+    /// listing, which declares Celo: the 402 drifted, nothing is written, and
+    /// the prober's next look holds the listing on the baseline it still has.
+    #[tokio::test]
+    async fn a_reregistration_that_leaves_out_a_drifted_network_is_refused() {
+        let (registry, key, mut submitted) = holding(vec![
+            priced_on("base", "2000", PRICE_PAYEE),
+            priced_on("celo", "2000", PRICE_PAYEE),
+        ])
+        .await;
+        let clean = quote(&[
+            quoted("2000", PRICE_PAYEE),
+            quoted_on(CELO, "2000", PRICE_PAYEE),
+        ]);
+        probe_held_listing(&registry, &Says::header(&clean)).await;
+        assert_eq!(
+            exposed(&registry).await,
+            1,
+            "the fixture listing is not exposed"
+        );
+
+        let drifted = quote(&[
+            quoted("2000", PRICE_PAYEE),
+            quoted_on(CELO, "2000", PRICE_OTHER),
+        ]);
+        submitted.accepts = vec![priced_on("base", "2000", PRICE_PAYEE)];
+        let origin = Quotes::new(402, drifted.clone());
+        assert_eq!(
+            reregister_through(&origin, &registry, &key, submitted, 1_000, true).await,
+            Err(ReregisterRefusal::UndeclaredLiveRecipient)
+        );
+        assert_eq!(origin.sent(), 1);
+        let held = registry.get(&key).await.unwrap();
+        assert_eq!(held.accepts.len(), 2, "the re-registration dropped Celo");
+
+        probe_held_listing(&registry, &Says::header(&drifted)).await;
+        assert_eq!(
+            reason_of(&registry.health(), &key).await,
+            Some(QuarantineReason::PayToDrift)
+        );
+        assert_eq!(exposed(&registry).await, 0);
+    }
+
+    /// The same listing once the prober holds it for that drift. Re-registering
+    /// only Base is refused without reading the URL -- whatever the replica
+    /// does after a write (`owner`), with the 402 still paying somebody else on
+    /// Celo and with it clean again -- and the hold stays:
+    /// three more readings of the drifted 402 later, the listing is still
+    /// held, still declares both networks, and is not exposed.
+    #[tokio::test]
+    async fn a_listing_held_for_drift_is_not_reregistered_and_stays_held() {
+        let (registry, key, mut submitted) = holding(vec![
+            priced_on("base", "2000", PRICE_PAYEE),
+            priced_on("celo", "2000", PRICE_PAYEE),
+        ])
+        .await;
+        let clean = quote(&[
+            quoted("2000", PRICE_PAYEE),
+            quoted_on(CELO, "2000", PRICE_PAYEE),
+        ]);
+        let drifted = quote(&[
+            quoted("2000", PRICE_PAYEE),
+            quoted_on(CELO, "2000", PRICE_OTHER),
+        ]);
+        probe_held_listing(&registry, &Says::header(&clean)).await;
+        probe_held_listing(&registry, &Says::header(&drifted)).await;
+        assert_eq!(
+            reason_of(&registry.health(), &key).await,
+            Some(QuarantineReason::PayToDrift)
+        );
+        assert_eq!(exposed(&registry).await, 0);
+
+        submitted.accepts = vec![priced_on("base", "2000", PRICE_PAYEE)];
+        for owner in [true, false] {
+            for challenge in [&drifted, &clean] {
+                let origin = Quotes::new(402, challenge.clone());
+                assert_eq!(
+                    reregister_through(&origin, &registry, &key, submitted.clone(), 1_000, owner)
+                        .await,
+                    Err(ReregisterRefusal::Held)
+                );
+                assert_eq!(origin.sent(), 0, "a held listing's URL was read");
+            }
+        }
+
+        for _ in 0..3 {
+            probe_held_listing(&registry, &Says::header(&drifted)).await;
+        }
+        assert_eq!(
+            reason_of(&registry.health(), &key).await,
+            Some(QuarantineReason::PayToDrift)
+        );
+        assert_eq!(exposed(&registry).await, 0);
+        assert_eq!(registry.get(&key).await.unwrap().accepts.len(), 2);
+    }
+
+    /// A hold for failed probes is refused the same way, with the same code:
+    /// the answer does not tell one kind of hold from the other.
+    #[tokio::test]
+    async fn a_listing_held_for_failed_probes_is_not_reregistered_either() {
+        let (registry, key, submitted) = reregistration("3000", PRICE_PAYEE).await;
+        registry
+            .health()
+            .quarantine_for_test(&key, QuarantineReason::FailStreak, 900)
+            .await;
+        let origin = Quotes::new(402, quote(&[quoted("3000", PRICE_PAYEE)]));
+        assert_eq!(
+            reregister_through(&origin, &registry, &key, submitted, 1_000, true).await,
+            Err(ReregisterRefusal::Held)
+        );
+        assert_eq!(origin.sent(), 0);
+        assert_eq!(amounts(&registry.get(&key).await.unwrap()), ["2000"]);
+    }
+
+    /// An origin whose listing the prober holds while this request reads it.
+    struct HeldWhileRead {
+        origin: Quotes,
+        health: Arc<HealthTracker>,
+        url: String,
+    }
+
+    #[async_trait::async_trait]
+    impl ProbeTransport for HeldWhileRead {
+        async fn send(
+            &self,
+            url: &url::Url,
+            method: ProbeMethod,
+            body: Option<&str>,
+        ) -> Result<reqwest::Response, SecurityReject> {
+            self.health
+                .quarantine_for_test(&self.url, QuarantineReason::PayToDrift, 1_000)
+                .await;
+            self.origin.send(url, method, body).await
+        }
+
+        async fn send_mcp(
+            &self,
+            url: &url::Url,
+            body: &str,
+            session: Option<&str>,
+        ) -> Result<reqwest::Response, SecurityReject> {
+            self.origin.send_mcp(url, body, session).await
+        }
+    }
+
+    /// The hold is read again just before the write: one put in place while
+    /// the 402 was being read stops a re-registration that matched it.
+    #[tokio::test]
+    async fn a_hold_put_in_place_during_the_read_stops_the_write() {
+        let (registry, key, submitted) = reregistration("3000", PRICE_PAYEE).await;
+        let origin = HeldWhileRead {
+            origin: Quotes::new(402, quote(&[quoted("3000", PRICE_PAYEE)])),
+            health: registry.health(),
+            url: key.clone(),
+        };
+        assert_eq!(
+            reregister_through(&origin, &registry, &key, submitted, 1_000, true).await,
+            Err(ReregisterRefusal::Held)
+        );
+        assert_eq!(origin.origin.sent(), 1);
+        assert_eq!(amounts(&registry.get(&key).await.unwrap()), ["2000"]);
+    }
+
+    /// An origin whose listing a feed's copy replaces while this request
+    /// reads it.
+    struct ReplacedWhileRead {
+        origin: Quotes,
+        registry: DiscoveryRegistry,
+        copy: crate::types_v2::DiscoveryResource,
+    }
+
+    #[async_trait::async_trait]
+    impl ProbeTransport for ReplacedWhileRead {
+        async fn send(
+            &self,
+            url: &url::Url,
+            method: ProbeMethod,
+            body: Option<&str>,
+        ) -> Result<reqwest::Response, SecurityReject> {
+            let listed = self.copy.url.to_string();
+            self.registry.unregister(&listed).await.unwrap();
+            self.registry.register(self.copy.clone()).await.unwrap();
+            self.origin.send(url, method, body).await
+        }
+
+        async fn send_mcp(
+            &self,
+            url: &url::Url,
+            body: &str,
+            session: Option<&str>,
+        ) -> Result<reqwest::Response, SecurityReject> {
+            self.origin.send_mcp(url, body, session).await
+        }
+    }
+
+    /// The write is refused under the catalog guard for a listing that is a
+    /// feed's copy by then, and answered as one -- not as a URL that is not
+    /// listed.
+    #[tokio::test]
+    async fn a_listing_replaced_by_a_feed_copy_during_the_read_is_answered_as_one() {
+        let (registry, key, submitted) = reregistration("3000", PRICE_PAYEE).await;
+        let mut copy = listing_of("/r", None);
+        copy.accepts = vec![priced("2000", PRICE_PAYEE)];
+        assert_eq!(copy.url.to_string(), key);
+        let origin = ReplacedWhileRead {
+            origin: Quotes::new(402, quote(&[quoted("3000", PRICE_PAYEE)])),
+            registry: registry.clone(),
+            copy,
+        };
+        assert_eq!(
+            reregister_through(&origin, &registry, &key, submitted, 1_000, true).await,
+            Err(ReregisterRefusal::FeedCopy {
+                source: DiscoverySource::Aggregated
+            })
+        );
+        assert_eq!(amounts(&registry.get(&key).await.unwrap()), ["2000"]);
+    }
+
+    /// A 402 whose header and body make different offers verifies nothing: a
+    /// client reads one of the two. The same offers under two protocol
+    /// versions are one answer, and go through.
+    #[tokio::test]
+    async fn a_reregistration_against_a_402_whose_header_and_body_disagree_is_refused() {
+        let (registry, key, submitted) = reregistration("3000", PRICE_PAYEE).await;
+        let two = Says {
+            header: Some(header_of(&quote(&[quoted("3000", PRICE_PAYEE)]))),
+            body: quote(&[quoted("2000", PRICE_PAYEE)]).to_string(),
+            redirect: None,
+            only: None,
+        };
+        assert_eq!(
+            reregister_through(&two, &registry, &key, submitted.clone(), 1_000, true).await,
+            Err(ReregisterRefusal::ConflictingLive402)
+        );
+        assert_eq!(amounts(&registry.get(&key).await.unwrap()), ["2000"]);
+
+        let mut older = quote(&[quoted("3000", PRICE_PAYEE)]);
+        older["x402Version"] = json!(1);
+        let same = Says {
+            header: Some(header_of(&quote(&[quoted("3000", PRICE_PAYEE)]))),
+            body: older.to_string(),
+            redirect: None,
+            only: None,
+        };
+        let later = 1_000 + crate::discovery_config::reregister_cooldown_secs();
+        assert_eq!(
+            reregister_through(&same, &registry, &key, submitted, later, true).await,
+            Ok(Reregistered::Updated)
+        );
+
+        // The same two offers, listed in another order by the body.
+        let (registry, key, mut submitted) = holding(vec![
+            priced_on("base", "2000", PRICE_PAYEE),
+            priced_on("celo", "2000", PRICE_PAYEE),
+        ])
+        .await;
+        let reordered = Says {
+            header: Some(header_of(&quote(&[
+                quoted("3000", PRICE_PAYEE),
+                quoted_on(CELO, "3000", PRICE_PAYEE),
+            ]))),
+            body: quote(&[
+                quoted_on(CELO, "3000", PRICE_PAYEE),
+                quoted("3000", PRICE_PAYEE),
+            ])
+            .to_string(),
+            redirect: None,
+            only: None,
+        };
+        submitted.accepts = vec![
+            priced_on("base", "3000", PRICE_PAYEE),
+            priced_on("celo", "3000", PRICE_PAYEE),
+        ];
+        assert_eq!(
+            reregister_through(&reordered, &registry, &key, submitted, 1_000, true).await,
+            Ok(Reregistered::Updated)
+        );
+    }
+
+    /// A 402 that adds a network the listing does not declare, beside the
+    /// declared offer, is an extra way to pay for the listing too, not a
+    /// drift: a re-registration of the declared offer goes through.
+    #[tokio::test]
+    async fn a_reregistration_beside_an_extra_network_its_402_adds_is_applied() {
+        let (registry, key, mut submitted) =
+            holding(vec![priced_on("base", "2000", PRICE_PAYEE)]).await;
+        submitted.accepts = vec![priced_on("base", "3000", PRICE_PAYEE)];
+        let origin = Quotes::new(
+            402,
+            quote(&[
+                quoted("3000", PRICE_PAYEE),
+                quoted_on(CELO, "3000", PRICE_OTHER),
+            ]),
+        );
+        assert_eq!(
+            reregister_through(&origin, &registry, &key, submitted, 1_000, true).await,
+            Ok(Reregistered::Updated)
+        );
+        assert_eq!(amounts(&registry.get(&key).await.unwrap()), ["3000"]);
+    }
+
+    /// An offer the listing declares and the 402 still makes cannot be left
+    /// out of a re-registration: it is refused, naming the offer and what the
+    /// 402 quotes for it, and the listing keeps it. Submitted too, the
+    /// re-registration goes through.
+    #[tokio::test]
+    async fn a_reregistration_cannot_leave_out_an_offer_its_402_still_makes() {
+        let (registry, key, mut submitted) = holding(vec![
+            priced_on("base", "2000", PRICE_PAYEE),
+            priced_on("celo", "2000", PRICE_PAYEE),
+        ])
+        .await;
+        let origin = Quotes::new(
+            402,
+            quote(&[
+                quoted("3000", PRICE_PAYEE),
+                quoted_on(CELO, "2500", PRICE_PAYEE),
+            ]),
+        );
+        submitted.accepts = vec![priced_on("base", "3000", PRICE_PAYEE)];
+        let outcome =
+            reregister_through(&origin, &registry, &key, submitted.clone(), 1_000, true).await;
+        let Err(ReregisterRefusal::OmitsLiveOffer(omitted)) = outcome else {
+            panic!("expected the Celo offer to be named, got {outcome:?}");
+        };
+        assert_eq!(omitted.len(), 1);
+        assert_eq!(omitted[0].network, CELO);
+        assert_eq!(omitted[0].amount, "2000");
+        assert_eq!(omitted[0].live_amount.as_deref(), Some("2500"));
+        assert_eq!(
+            amounts(&registry.get(&key).await.unwrap()),
+            ["2000", "2000"],
+            "the Celo offer was lost"
+        );
+
+        submitted.accepts = vec![
+            priced_on("base", "3000", PRICE_PAYEE),
+            priced_on("celo", "2500", PRICE_PAYEE),
+        ];
+        let later = 1_000 + crate::discovery_config::reregister_cooldown_secs();
+        assert_eq!(
+            reregister_through(&origin, &registry, &key, submitted, later, true).await,
+            Ok(Reregistered::Updated)
+        );
+        assert_eq!(
+            amounts(&registry.get(&key).await.unwrap()),
+            ["3000", "2500"]
+        );
+    }
+
+    /// [`priced_on`] in another asset.
+    fn priced_in(network: &str, asset: &str, amount: &str, pay_to: &str) -> CatalogPaymentOption {
+        normalize_declared_option(DeclaredPaymentOption {
+            scheme: Some("exact".to_string()),
+            network: Some(network.to_string()),
+            asset: Some(asset.to_string()),
+            amount: Some(json!(amount)),
+            pay_to: Some(pay_to.to_string()),
+            max_timeout_seconds: Some(60),
+            ..Default::default()
+        })
+        .expect("fixture option must normalize")
+    }
+
+    const OTHER_TOKEN: &str = "0x48065fbBE25f71C9282ddf5e1cD6D6A887483D5e";
+
+    /// A declared network stays while the 402 still pays a recipient on it:
+    /// the Celo offer the listing declares is gone from the 402, which pays
+    /// the same recipient there in another asset, and leaving Celo out is
+    /// refused (no `liveAmount`: the declared offer itself is not made). A
+    /// second asset on a network the submission keeps is the 402's to drop.
+    #[tokio::test]
+    async fn a_reregistration_cannot_drop_a_network_its_402_still_pays_on() {
+        let (registry, key, mut submitted) = holding(vec![
+            priced_on("base", "2000", PRICE_PAYEE),
+            priced_on("celo", "2000", PRICE_PAYEE),
+        ])
+        .await;
+        let mut moved = quoted_on(CELO, "2000", PRICE_PAYEE);
+        moved["asset"] = json!(OTHER_TOKEN);
+        let origin = Quotes::new(402, quote(&[quoted("2000", PRICE_PAYEE), moved]));
+        submitted.accepts = vec![priced_on("base", "2000", PRICE_PAYEE)];
+        let outcome =
+            reregister_through(&origin, &registry, &key, submitted.clone(), 1_000, true).await;
+        let Err(ReregisterRefusal::OmitsLiveOffer(omitted)) = outcome else {
+            panic!("expected Celo to stay, got {outcome:?}");
+        };
+        assert_eq!(omitted.len(), 1);
+        assert_eq!(omitted[0].network, CELO);
+        assert_eq!(omitted[0].live_amount, None);
+        assert_eq!(registry.get(&key).await.unwrap().accepts.len(), 2);
+
+        // Two assets on Base, the 402 makes both: one of them cannot be left
+        // out. Once the 402 makes only one, the other can.
+        let (registry, key, mut submitted) = holding(vec![
+            priced_on("base", "2000", PRICE_PAYEE),
+            priced_in("base", OTHER_TOKEN, "2000", PRICE_PAYEE),
+        ])
+        .await;
+        let mut second = quoted("2000", PRICE_PAYEE);
+        second["asset"] = json!(OTHER_TOKEN);
+        let both = Quotes::new(402, quote(&[quoted("2000", PRICE_PAYEE), second]));
+        submitted.accepts = vec![priced_on("base", "2000", PRICE_PAYEE)];
+        let outcome =
+            reregister_through(&both, &registry, &key, submitted.clone(), 1_000, true).await;
+        let Err(ReregisterRefusal::OmitsLiveOffer(omitted)) = outcome else {
+            panic!("expected the second asset to stay, got {outcome:?}");
+        };
+        assert!(omitted[0].asset.eq_ignore_ascii_case(OTHER_TOKEN));
+        let one = Quotes::new(402, quote(&[quoted("2000", PRICE_PAYEE)]));
+        let later = 1_000 + crate::discovery_config::reregister_cooldown_secs();
+        assert_eq!(
+            reregister_through(&one, &registry, &key, submitted, later, true).await,
+            Ok(Reregistered::Updated)
+        );
+        assert_eq!(registry.get(&key).await.unwrap().accepts.len(), 1);
+    }
+
+    /// "Still pays on that network" is read from every recipient the 402
+    /// names, in every list of either transport, whether or not the catalog
+    /// can read that option: Celo cannot leave the listing while the 402 names
+    /// its declared recipient there in an option nobody can take -- in the
+    /// header, or only in the body's `paymentRequirements` list (both
+    /// transports then make the same readable offers: no conflict).
+    #[tokio::test]
+    async fn a_network_the_402_names_anywhere_stays_on_the_listing() {
+        let mut unreadable = quoted_on(CELO, "2000", PRICE_PAYEE);
+        unreadable["asset"] = json!("not-an-address");
+        let header_only = Says::header(&quote(&[quoted("2000", PRICE_PAYEE), unreadable.clone()]));
+        let in_requirements = Says {
+            header: Some(header_of(&quote(&[quoted("2000", PRICE_PAYEE)]))),
+            body: json!({
+                "x402Version": 2,
+                "accepts": [quoted("2000", PRICE_PAYEE)],
+                "paymentRequirements": [unreadable.clone()],
+            })
+            .to_string(),
+            redirect: None,
+            only: None,
+        };
+        for (case, origin) in [
+            ("unreadable", header_only),
+            ("requirements", in_requirements),
+        ] {
+            let (registry, key, mut submitted) = holding(vec![
+                priced_on("base", "2000", PRICE_PAYEE),
+                priced_on("celo", "2000", PRICE_PAYEE),
+            ])
+            .await;
+            submitted.accepts = vec![priced_on("base", "2000", PRICE_PAYEE)];
+            let outcome =
+                reregister_through(&origin, &registry, &key, submitted, 1_000, true).await;
+            let Err(ReregisterRefusal::OmitsLiveOffer(omitted)) = outcome else {
+                panic!("{case}: expected Celo to stay, got {outcome:?}");
+            };
+            assert_eq!(omitted[0].network, CELO, "{case}");
+            assert_eq!(omitted[0].live_amount, None, "{case}");
+            assert_eq!(registry.get(&key).await.unwrap().accepts.len(), 2, "{case}");
+        }
+    }
+
+    /// Only a quarantine stops a re-registration: a listing the prober found
+    /// degraded or behind authentication, like one waiting for its first
+    /// probe, is re-registered against its live 402.
+    #[tokio::test]
+    async fn a_listing_that_is_degraded_or_auth_gated_is_reregistered() {
+        for status in [HealthStatus::Degraded, HealthStatus::AuthGated] {
+            let (registry, key, submitted) = reregistration("3000", PRICE_PAYEE).await;
+            registry.health().set_status_for_test(&key, status).await;
+            let origin = Quotes::new(402, quote(&[quoted("3000", PRICE_PAYEE)]));
+            assert_eq!(
+                reregister_through(&origin, &registry, &key, submitted, 1_000, true).await,
+                Ok(Reregistered::Updated),
+                "{status:?}"
+            );
+            assert_eq!(amounts(&registry.get(&key).await.unwrap()), ["3000"]);
+        }
+    }
+
+    /// What the listing carries is each offer as the 402 makes it: an `extra`
+    /// and a `maxTimeoutSeconds` the submission says, and the 402 does not,
+    /// are not stored, and the 402's own are -- those of the option at the
+    /// submitted amount, when the 402 makes the same offer at two.
+    #[tokio::test]
+    async fn a_reregistration_writes_each_offer_as_its_402_makes_it() {
+        let (registry, key, mut submitted) = reregistration("3000", PRICE_PAYEE).await;
+        submitted.accepts[0].extra = Some(json!({ "name": "Forged", "version": "9" }));
+        submitted.accepts[0].max_timeout_seconds = 5;
+        let origin = Quotes::new(402, quote(&[quoted("3000", PRICE_PAYEE)]));
+        assert_eq!(
+            reregister_through(&origin, &registry, &key, submitted.clone(), 1_000, true).await,
+            Ok(Reregistered::Updated)
+        );
+        let held = registry.get(&key).await.unwrap();
+        assert_eq!(amounts(&held), ["3000"]);
+        assert_eq!(
+            held.accepts[0].extra, None,
+            "the submitted extra was stored"
+        );
+        assert_eq!(
+            held.accepts[0].max_timeout_seconds, 60,
+            "the submitted timeout was stored"
+        );
+
+        let mut made = quoted("4000", PRICE_PAYEE);
+        made["extra"] = json!({ "name": "USD Coin", "version": "2" });
+        made["maxTimeoutSeconds"] = json!(90);
+        let origin = Quotes::new(402, quote(&[made]));
+        submitted.accepts = vec![priced("4000", PRICE_PAYEE)];
+        let later = 1_000 + crate::discovery_config::reregister_cooldown_secs();
+        assert_eq!(
+            reregister_through(&origin, &registry, &key, submitted.clone(), later, true).await,
+            Ok(Reregistered::Updated)
+        );
+        let held = registry.get(&key).await.unwrap();
+        assert_eq!(
+            held.accepts[0].extra,
+            Some(json!({ "name": "USD Coin", "version": "2" }))
+        );
+        assert_eq!(held.accepts[0].max_timeout_seconds, 90);
+
+        let mut cheap = quoted("5000", PRICE_PAYEE);
+        cheap["maxTimeoutSeconds"] = json!(30);
+        let mut dear = quoted("6000", PRICE_PAYEE);
+        dear["maxTimeoutSeconds"] = json!(300);
+        let origin = Quotes::new(402, quote(&[cheap, dear]));
+        submitted.accepts = vec![priced("6000", PRICE_PAYEE)];
+        let latest = later + crate::discovery_config::reregister_cooldown_secs();
+        assert_eq!(
+            reregister_through(&origin, &registry, &key, submitted, latest, true).await,
+            Ok(Reregistered::Updated)
+        );
+        let held = registry.get(&key).await.unwrap();
+        assert_eq!(amounts(&held), ["6000"]);
+        assert_eq!(held.accepts[0].max_timeout_seconds, 300);
+    }
+
+    /// A copy from a feed -- another facilitator's catalog, or the origin's
+    /// `/.well-known/x402` -- is refused with its own code, without reading
+    /// the URL; the next import of that feed leaves the listing where the
+    /// answer said it stays.
+    #[tokio::test]
+    async fn a_feed_copy_is_not_reregistered_and_its_next_import_agrees() {
+        for source in [DiscoverySource::Aggregated, DiscoverySource::Crawled] {
+            let registry = DiscoveryRegistry::new();
+            let mut copy = listing_of("/r", None);
+            copy.source = source;
+            copy.accepts = vec![priced("2000", PRICE_PAYEE)];
+            let key = copy.url.to_string();
+            registry.register(copy.clone()).await.unwrap();
+
+            let mut submitted = copy.clone();
+            submitted.source = DiscoverySource::SelfRegistered;
+            submitted.accepts = vec![priced("3000", PRICE_PAYEE)];
+            let origin = Quotes::new(402, quote(&[quoted("3000", PRICE_PAYEE)]));
+            assert_eq!(
+                reregister_through(&origin, &registry, &key, submitted.clone(), 1_000, true).await,
+                Err(ReregisterRefusal::FeedCopy { source })
+            );
+            assert_eq!(origin.sent(), 0, "{source}: a feed copy's URL was read");
+            // The write itself is refused under the catalog guard as well.
+            assert_eq!(
+                registry.apply_reregistration(&key, submitted).await,
+                None,
+                "{source}"
+            );
+            assert_eq!(amounts(&registry.get(&key).await.unwrap()), ["2000"]);
+
+            // The next import of that feed sets the terms, as the answer said.
+            let mut next = copy;
+            next.accepts = vec![priced("2500", PRICE_PAYEE)];
+            registry
+                .bulk_import(vec![next], crate::discovery::ImportPolicy::Filtered)
+                .await
+                .unwrap();
+            assert_eq!(
+                amounts(&registry.get(&key).await.unwrap()),
+                ["2500"],
+                "{source}: the feed's own revision did not land"
+            );
+        }
+    }
+
+    /// What a re-registration writes on a listing its seller registered, or
+    /// one a settlement put in place, stays through the next import of a
+    /// feed's copy of the same URL.
+    #[tokio::test]
+    async fn a_reregistered_listing_keeps_its_terms_through_the_next_import() {
+        for source in [DiscoverySource::SelfRegistered, DiscoverySource::Settlement] {
+            let registry = DiscoveryRegistry::new();
+            let mut listing = listed_at("2000");
+            listing.source = source;
+            let key = listing.url.to_string();
+            registry.register(listing.clone()).await.unwrap();
+            let mut submitted = listing;
+            submitted.accepts = vec![priced("3000", PRICE_PAYEE)];
+            let origin = Quotes::new(402, quote(&[quoted("3000", PRICE_PAYEE)]));
+            assert_eq!(
+                reregister_through(&origin, &registry, &key, submitted, 1_000, true).await,
+                Ok(Reregistered::Updated),
+                "{source}"
+            );
+
+            let mut copy = listing_of("/r", None);
+            copy.accepts = vec![priced("2000", PRICE_PAYEE)];
+            assert_eq!(copy.url.to_string(), key);
+            registry
+                .bulk_import(vec![copy], crate::discovery::ImportPolicy::Filtered)
+                .await
+                .unwrap();
+            let held = registry.get(&key).await.unwrap();
+            assert_eq!(
+                amounts(&held),
+                ["3000"],
+                "{source}: the import put the feed's amount back"
+            );
+            assert_eq!(held.source, source);
+        }
     }
 }
 

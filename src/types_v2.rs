@@ -2116,10 +2116,11 @@ impl DiscoveryResource {
 
     /// Write a re-registration's payment terms onto `held`, the listing held
     /// for the same URL: `accepts`, which the caller verified against the
-    /// URL's live 402, and nothing else. Description, metadata, extensions,
-    /// type and source stay `held`'s. A price the prober had adopted is the
-    /// seller's from here on (`price_adopted_at` cleared), and `last_updated`
-    /// is the later of the two.
+    /// URL's live 402 and took from it as it makes them, and nothing else.
+    /// Description, metadata, extensions, type and source stay `held`'s. A
+    /// price the prober had adopted is the seller's from here on
+    /// (`price_adopted_at` cleared), and `last_updated` is the later of the
+    /// two.
     ///
     /// The one place a re-registration's fields are chosen, for the cache and
     /// for the store alike ([`crate::discovery::DiscoveryRegistry::apply_reregistration`]).

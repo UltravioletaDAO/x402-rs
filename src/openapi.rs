@@ -3193,32 +3193,49 @@ read that failed (`ownership.retrySeconds`), and at most `ownership.maxFileBytes
 served from another host after a redirect counts as none. With `DISCOVERY_REQUIRE_ORIGIN_PROOF`
 on, a self-registered listing that is not `origin-attested` is not listed.
 
-**The listed price follows your 402.** The health prober reads each listing's 402 at least once
-per `healthProber.priceSweepSeconds` of `GET /discovery/config`, and when it quotes
+**The listed price follows your 402.** The health prober reads the 402 of each listing that is
+alive again about every `healthProber.priceSweepSeconds` of `GET /discovery/config` (a listing
+that is failing or held is read on its own, slower schedule), and when it quotes
 another amount for an offer the listing declares -- same `scheme`, `network`, `asset` and
-`payTo` -- the listing takes that amount (`priceAdoptedAt` dates it). A recipient, a network or an
-asset is never taken from the 402. Repricing needs no request here.
+`payTo` -- a self-registered listing takes that amount (`priceAdoptedAt` dates it). A recipient,
+a network or an asset is never taken from the 402. Repricing needs no request here.
 
 **Re-registering a URL already listed** updates its payment terms -- and only them -- when the
 facilitator verifies them against the URL's live 402. This request then reads the URL once, with
 the request the listing declares, through the prober's own connector, and applies the submitted
-`accepts` only if that 402 is the URL's own answer, offers a payment, and makes every submitted
-offer at the submitted amount. That covers a new amount, an option the 402 no longer makes (leave
-it out) and an offer moved to another network for the same `payTo`. Every `payTo` submitted must
-be one the listing already declares: a re-registration never changes who is paid. The
+`accepts` only if that 402 is the URL's own answer, offers a payment, makes the same offers in
+its header and its body, makes every submitted offer at the submitted amount, and makes no offer
+the listing declares that the submission leaves out. That covers a new amount, an option the 402
+no longer makes (leave it out) and an offer moved to another network for the same `payTo`; a
+network the listing declares can be left out only once the 402 pays no recipient there. Each
+offer is stored as the 402 makes it, its `extra` and `maxTimeoutSeconds` included. Every `payTo`
+submitted must be one the listing already declares, and the 402 must pay no recipient that the
+listing, or the submission, does not declare on a network it declares: a re-registration never
+changes who is paid. A listing the health prober holds, and a listing copied from a feed
+(`source` `aggregated` or `crawled`, whose terms follow that source), are not re-registered. The
 description, `metadata` and `extensions` of a re-registration are not read; the listing keeps its
-own. One re-registration per URL per `registration.reregisterCooldownSeconds`, refused or not.
-Answers:
+own. One re-registration per URL per `registration.reregisterCooldownSeconds`, refused or not
+(a listing already held, or already a feed copy, when the request arrives is refused before that,
+and spends none). Answers:
 
-- `200` `{"success": true, "updated": true}` -- the listing now carries the submitted `accepts`
-  (`updated: false` when it already did);
+- `200` `{"success": true, "updated": true}` -- the listing now carries the submitted offers as the
+  402 makes them (`updated: false` when it already did);
 - `409` `reregistration_does_not_match_live_402` -- `mismatches` lists each submitted offer the 402
   does not make as submitted, with the `liveAmount` it quotes when it makes that offer;
+- `409` `reregistration_omits_live_offer` -- `omitted` lists each offer the listing declares that
+  the submission leaves out while the 402 still makes it (with its `liveAmount`) or still pays a
+  recipient on its network;
 - `409` `reregistration_recipient_change` (a `payTo` the listing does not declare) or
-  `reregistration_live_recipient_undeclared` (the 402 pays a recipient the submission leaves out
-  on a network it declares);
+  `reregistration_live_recipient_undeclared` (the 402 pays a recipient that the listing, or the
+  submission, does not declare, on a network it declares);
+- `409` `reregistration_listing_held` -- the health prober holds the listing; only two clean probes
+  in a row lift a hold;
+- `409` `reregistration_feed_copy` -- the listing is a copy from a feed (`source`); change the terms
+  at that source;
 - `422` `reregistration_no_live_402` -- the URL did not answer with a readable 402 offering a
   payment (`httpStatus` is what it answered);
+- `422` `reregistration_live_402_conflict` -- the 402's `PAYMENT-REQUIRED` header and its body make
+  different offers;
 - `429` `reregistration_too_soon` with `Retry-After`.
 
 A first registration reads nothing. There is no public route to remove a listing; the operator
@@ -3237,13 +3254,13 @@ does that.
             example = json!({
                 "success": true,
                 "updated": true,
-                "message": "Payment terms updated: the live 402 makes every offer submitted. A re-registration changes the payment terms only; the listing keeps its description, metadata and extensions.",
+                "message": "Payment terms updated: the live 402 makes every offer submitted, and the listing now carries them as the 402 makes them. A re-registration changes the payment terms only; the listing keeps its description, metadata and extensions.",
                 "url": "https://api.example.com/paid"
             })
         ),
         (status = 400, description = "Validation failure (bad scheme, URL userinfo, private/metadata IP host, empty accepts)", body = Object),
-        (status = 409, description = "Already registered, and this re-registration does not match the URL's live 402 or would change who is paid (errorCode)", body = Object),
-        (status = 422, description = "Already registered, and the URL did not answer with a readable 402 (reregistration_no_live_402)", body = Object),
+        (status = 409, description = "Already registered, and this re-registration does not match the URL's live 402, leaves out an offer it still makes, would change who is paid, or is of a listing the prober holds or copied from a feed (errorCode)", body = Object),
+        (status = 422, description = "Already registered, and the URL did not answer with a readable 402 (reregistration_no_live_402), or its header and body make different offers (reregistration_live_402_conflict)", body = Object),
         (status = 429, description = "Rate limited (roughly 5 requests per minute per IP), or the URL was re-registered inside its cooldown (reregistration_too_soon)", body = Object)
     )
 )]

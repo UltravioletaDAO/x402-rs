@@ -88,23 +88,33 @@ Register a new resource in the discovery registry.
 **Response:** `201 Created` or `400 Bad Request`. The URL is stored and compared in its canonical
 spelling (lowercase host, no trailing dot, no default port).
 
-**Re-registration.** Posting a URL the catalog already holds (from any source, listed or waiting
-for its first verification) re-registers its payment terms: the facilitator reads that URL's live
-402 once -- through the prober's connector, with the request the listing declares -- and applies
-the submitted `accepts` only when that 402 is the URL's own answer, offers a payment, and makes
-every submitted offer (`scheme`, `network`, `asset`, `payTo`) at the submitted amount: a new
-amount, an option the 402 no longer makes (left out), an offer moved to another network for the
-same `payTo`. Every `payTo` submitted must be one the listing already declares: a re-registration
-never changes who is paid. Its description, `metadata` and `extensions` are not read; the listing
-keeps its own. `200` with `updated` true (or false when nothing changed); otherwise `409`
-`reregistration_does_not_match_live_402` (with `mismatches` and each `liveAmount`),
-`reregistration_recipient_change` or `reregistration_live_recipient_undeclared`, `422`
-`reregistration_no_live_402`, or `429` `reregistration_too_soon` (one per URL per
+**Re-registration.** Posting a URL the catalog already holds (listed or waiting for its first
+verification) re-registers its payment terms: the facilitator reads that URL's live 402 once --
+through the prober's connector, with the request the listing declares -- and applies the
+submitted `accepts` only when that 402 is the URL's own answer, offers a payment, makes the same
+offers in its header and its body, makes every submitted offer (`scheme`, `network`, `asset`,
+`payTo`) at the submitted amount, and makes no offer the listing declares that the submission
+leaves out: a new amount, an option the 402 no longer makes (left out), an offer moved to another
+network for the same `payTo`. A network the listing declares can be left out only once the 402
+pays no recipient there. Each offer is stored as the 402 makes it, `extra` and
+`maxTimeoutSeconds` included. Every `payTo` submitted must be one the listing already declares,
+and the 402 must pay no recipient that the listing, or the submission, does not declare on a
+network it declares: a re-registration never changes who is paid. Two listings are not
+re-registered (and, held as such when the request arrives, nothing is read for them): one the
+health prober holds (only two clean probes in a row lift a hold), and a copy from a feed
+(`source` `aggregated` or `crawled`), whose terms follow its source on every import. The description, `metadata` and `extensions` of a
+re-registration are not read; the listing keeps its own. `200` with `updated` true (or false when
+nothing changed); otherwise `409` `reregistration_does_not_match_live_402` (with `mismatches` and
+each `liveAmount`), `reregistration_omits_live_offer` (with `omitted`),
+`reregistration_recipient_change`, `reregistration_live_recipient_undeclared`,
+`reregistration_listing_held` or `reregistration_feed_copy`, `422` `reregistration_no_live_402`
+or `reregistration_live_402_conflict`, or `429` `reregistration_too_soon` (one per URL per
 `registration.reregisterCooldownSeconds`). There is no public route to remove a listing; the
 operator does that.
 
-**The listed price follows the 402.** The prober reads every listing's 402 at least once per
-`healthProber.priceSweepSeconds`; when it quotes another amount for an offer the listing declares
+**The listed price follows the 402.** The prober reads the 402 of each listing that is alive
+again about every `healthProber.priceSweepSeconds` (a listing that is failing or held is read on
+its own, slower schedule); when it quotes another amount for an offer the listing declares
 (same scheme, network, asset and recipient), a self-registered listing takes that amount, dated by
 `priceAdoptedAt`. Recipients, networks and assets are never taken from a 402. `DISCOVERY_ADOPT_LIVE_PRICE=false`
 turns it off; all of these are published by `GET /discovery/config`.

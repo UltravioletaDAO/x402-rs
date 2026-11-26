@@ -591,6 +591,8 @@ Submits a verified payment authorization to the blockchain for settlement.
 2. Calls `transferWithAuthorization` on the token contract
 3. Returns transaction hash on success
 
+**Response `network`:** an x402 v2 `exact` request is answered with the chain's CAIP-2 id (`eip155:8453`, `stellar:testnet`), as the v2 `SettlementResponse` names it; an x402 v1 request with its v1 name (`base`). An idempotent replay answers the bytes of the settle it replays.
+
 **Upto Settlement (scheme: "upto"):**
 
 When `scheme: "upto"`, the client provides a Permit2-signed authorization for a maximum amount.

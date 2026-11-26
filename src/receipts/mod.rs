@@ -1135,11 +1135,17 @@ fn legacy_response(
     }
     // Preserve responses created before portable receipts existed. Rechecking
     // their consumed nonce would turn a paid retry into a false rejection.
-    let Ok(result) = serde_json::from_str::<crate::types::SettleResponse>(&record.response_json)
-    else {
+    // The cached bytes themselves, once they read as a settle response: what
+    // the first settle answered, its network named as that request named it.
+    if serde_json::from_str::<crate::types::SettleResponse>(&record.response_json).is_err() {
         return failure("idempotency_cache_corrupt", StatusCode::SERVICE_UNAVAILABLE);
-    };
-    let mut response = (StatusCode::OK, Json(result)).into_response();
+    }
+    let mut response = (
+        StatusCode::OK,
+        [(axum::http::header::CONTENT_TYPE, "application/json")],
+        record.response_json,
+    )
+        .into_response();
     response
         .headers_mut()
         .insert("idempotent-replayed", HeaderValue::from_static("true"));
@@ -1248,11 +1254,13 @@ async fn remember_settled(headers: &HeaderMap, raw: &Bytes, record: &Record) {
             return;
         }
     }
+    // Filed as answered (its network named as the request named it), once it
+    // reads as a successful settle response.
     let settled =
         serde_json::from_value::<crate::types::SettleResponse>(record.response.clone()).ok();
     let Some(response_json) = settled
         .filter(|settled| settled.success)
-        .and_then(|settled| serde_json::to_string(&settled).ok())
+        .and_then(|_| serde_json::to_string(&record.response).ok())
     else {
         tracing::warn!(
             receipt_id = %record.receipt.receipt_id,

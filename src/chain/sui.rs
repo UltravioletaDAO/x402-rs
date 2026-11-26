@@ -439,8 +439,8 @@ impl SuiProvider {
             }
             other => {
                 return Err(FacilitatorLocalError::Other(format!(
-                    "PTB validation failed: command[0] must be SplitCoins, got {:?}",
-                    other
+                    "PTB validation failed: command[{}] must be SplitCoins, got {:?}",
+                    split_at, other
                 )));
             }
         };
@@ -450,15 +450,24 @@ impl SuiProvider {
             Command::TransferObjects(objects, recipient) => (objects, recipient),
             other => {
                 return Err(FacilitatorLocalError::Other(format!(
-                    "PTB validation failed: command[1] must be TransferObjects, got {:?}",
+                    "PTB validation failed: command[{}] must be TransferObjects, got {:?}",
+                    split_at + 1,
                     other
                 )));
             }
         };
 
-        // TransferObjects must move exactly the result of the split.
+        // TransferObjects must move exactly the result of the split: the whole
+        // result, or under the spec's rules its one coin as `NestedResult`, the
+        // form `@mysten/sui` writes for `const [coin] = tx.splitCoins(...)`
+        // (a split of one amount has exactly one coin).
         let split_result = Argument::Result(split_at as u16);
-        if transfer_objects.len() != 1 || transfer_objects[0] != split_result {
+        let moves_the_split = |object: &Argument| {
+            *object == split_result
+                || (rules.split_may_be_nested
+                    && *object == Argument::NestedResult(split_at as u16, 0))
+        };
+        if transfer_objects.len() != 1 || !moves_the_split(&transfer_objects[0]) {
             return Err(FacilitatorLocalError::Other(format!(
                 "PTB validation failed: TransferObjects must transfer exactly {:?}",
                 split_result
@@ -519,6 +528,13 @@ impl SuiProvider {
                 return Err(FacilitatorLocalError::Other(
                     "PTB validation failed: MergeCoins merges no coin".to_string(),
                 ));
+            }
+            if sources.len() > MAX_MERGED_COINS {
+                return Err(FacilitatorLocalError::Other(format!(
+                    "PTB validation failed: MergeCoins merges {} coins, more than the {} read for a payment",
+                    sources.len(),
+                    MAX_MERGED_COINS
+                )));
             }
             let mut seen = vec![ptb_coin_id];
             for source in sources {
@@ -825,50 +841,25 @@ impl SuiProvider {
     /// `0x2::coin::Coin<usdc_coin_type>` owned by `address`, which proves the spent
     /// coin is (a) USDC of the canonical type and (b) owned by `address`. This closes
     /// the coin-type-confusion hole (audit 04) where a payer splits a worthless `Coin<JUNK>`.
+    /// Every coin in `merged_coin_ids` (merged into the spent one first) is
+    /// held to the same: what reaches `payTo` is then the sender's USDC and
+    /// nothing else.
     ///
     /// The JSON-RPC version proved the same by membership in `suix_getCoins`
     /// filtered to USDC, which read one page (50 coins): a coin past it was
     /// refused. Reading the coin itself has no such window. The balance is what
     /// `address` holds in USDC coin objects (`GetBalance` minus the address
     /// balance, which the PTB's `SplitCoins` cannot spend), as the sum of
-    /// `suix_getCoins` was.
-    /// Every coin merged into the spent one must be, like it, one of
-    /// `address`'s canonical-USDC coins: what reaches `payTo` is then USDC and
-    /// nothing else, and it is the sender's.
-    async fn check_merged_coins(
-        &self,
-        address: &SuiAddress,
-        coins: &[ObjectID],
-    ) -> Result<(), FacilitatorLocalError> {
-        for coin_id in coins {
-            let coin = self
-                .rpc
-                .object_owner_and_type(*coin_id)
-                .await
-                .map_err(|e| {
-                    FacilitatorLocalError::ContractCall(format!(
-                        "Failed to read a merged Sui coin: {}",
-                        e
-                    ))
-                })?;
-            let senders_usdc = coin
-                .as_ref()
-                .is_some_and(|coin| rpc::is_coin_owned_by(coin, &self.usdc_coin_type, address));
-            if !senders_usdc {
-                return Err(FacilitatorLocalError::Other(format!(
-                    "PTB validation failed: merged coin object {} is not a USDC ({}) coin owned by {}",
-                    coin_id, self.usdc_coin_type, address
-                )));
-            }
-        }
-        Ok(())
-    }
-
+    /// `suix_getCoins` was. The coins the transfer splits from must also hold
+    /// `required_amount` between them, read from each coin: a split larger
+    /// than its coin aborts on chain. A node that reports no balance for a
+    /// coin leaves that check to the address total.
     async fn check_balance(
         &self,
         address: &SuiAddress,
         required_amount: u64,
         spent_coin_id: &ObjectID,
+        merged_coin_ids: &[ObjectID],
     ) -> Result<(), FacilitatorLocalError> {
         let spent_coin = self
             .rpc
@@ -890,6 +881,34 @@ impl SuiProvider {
                 spent_coin_id, self.usdc_coin_type, address
             )));
         }
+        // What the split can draw on, coin by coin; `None` once a coin's
+        // balance is not reported.
+        let mut held = spent_coin.as_ref().and_then(|coin| coin.balance);
+
+        for coin_id in merged_coin_ids {
+            let coin = self
+                .rpc
+                .object_owner_and_type(*coin_id)
+                .await
+                .map_err(|e| {
+                    FacilitatorLocalError::ContractCall(format!(
+                        "Failed to read a merged Sui coin: {}",
+                        e
+                    ))
+                })?;
+            let senders_usdc = coin
+                .as_ref()
+                .is_some_and(|coin| rpc::is_coin_owned_by(coin, &self.usdc_coin_type, address));
+            if !senders_usdc {
+                return Err(FacilitatorLocalError::Other(format!(
+                    "PTB validation failed: merged coin object {} is not a USDC ({}) coin owned by {}",
+                    coin_id, self.usdc_coin_type, address
+                )));
+            }
+            held = held
+                .zip(coin.as_ref().and_then(|coin| coin.balance))
+                .map(|(sum, balance)| sum.saturating_add(balance));
+        }
 
         let total_balance: u64 = self
             .rpc
@@ -905,9 +924,23 @@ impl SuiProvider {
             )));
         }
 
+        match held {
+            Some(held) if held < required_amount => {
+                return Err(FacilitatorLocalError::InsufficientFunds(MixedAddress::Sui(
+                    address.to_string(),
+                )));
+            }
+            Some(_) => {}
+            None => warn!(
+                network = %self.network,
+                "Sui node reported no coin balance; the address total decided"
+            ),
+        }
+
         debug!(
             address = %address,
             balance = total_balance,
+            held = ?held,
             required = required_amount,
             "Sui USDC balance check passed"
         );
@@ -1173,6 +1206,8 @@ struct PtbRules {
     /// The transfer opens with one `MergeCoins` of more of the sender's coins
     /// into the coin it splits, as a wallet holding several coins builds it.
     coins_may_merge: bool,
+    /// `TransferObjects` may name the split's one coin as `NestedResult`.
+    split_may_be_nested: bool,
 }
 
 impl PtbRules {
@@ -1180,6 +1215,7 @@ impl PtbRules {
     const DECLARED: Self = Self {
         sender_may_pay_gas: false,
         coins_may_merge: false,
+        split_may_be_nested: false,
     };
     /// The x402 Foundation payload (`scheme_exact_sui.md`): sponsorship is
     /// optional, and the transaction is whatever the payer's wallet built to
@@ -1187,8 +1223,13 @@ impl PtbRules {
     const SPEC: Self = Self {
         sender_may_pay_gas: true,
         coins_may_merge: true,
+        split_may_be_nested: true,
     };
 }
+
+/// The most coins one payment's `MergeCoins` may merge: each is read from the
+/// chain on verify and again on settle.
+const MAX_MERGED_COINS: usize = 64;
 
 /// The `SplitCoins` of a transfer: at command 0, or at 1 after a `MergeCoins`.
 fn split_command(ptb: &sui_types::transaction::ProgrammableTransaction) -> Option<&Command> {
@@ -1504,10 +1545,13 @@ impl Facilitator for SuiProvider {
         // Settle repeats this read: it is also what refuses a settle of a
         // transaction that executed long ago (its gas coin, at least, moved on).
         self.check_inputs_current(&tx_data).await?;
-        self.check_merged_coins(&payer_addr, &merged_coins(&tx_data))
-            .await?;
-        self.check_balance(&payer_addr, required_amount, &spent_coin_id)
-            .await?;
+        self.check_balance(
+            &payer_addr,
+            required_amount,
+            &spent_coin_id,
+            &merged_coins(&tx_data),
+        )
+        .await?;
 
         info!(
             network = %self.network,
@@ -1565,10 +1609,13 @@ impl Facilitator for SuiProvider {
 
         // A transaction that already executed has inputs that moved on.
         self.check_inputs_current(&tx_data).await?;
-        self.check_merged_coins(&sender, &merged_coins(&tx_data))
-            .await?;
-        self.check_balance(&sender, required_amount, &spent_coin_id)
-            .await?;
+        self.check_balance(
+            &sender,
+            required_amount,
+            &spent_coin_id,
+            &merged_coins(&tx_data),
+        )
+        .await?;
 
         match claims
             .check_and_mark_used(&claim, SETTLE_CLAIM_TTL_SECONDS)
@@ -2259,6 +2306,10 @@ mod replay_verify_tests {
             }
             if asks(&request.read_mask, "object_type") {
                 object.object_type = Some(format!("0x2::coin::Coin<{}>", coin.coin_type));
+            }
+            if asks(&request.read_mask, "balance") {
+                // The payer's coin holdings, all in this one coin.
+                object.balance = Some(coin.balance.saturating_sub(coin.address_balance));
             }
             let mut response = GetObjectResponse::default();
             response.object = Some(object);
@@ -4024,6 +4075,8 @@ mod spec_payload_tests {
         obj_ref: ObjectRef,
         owner: SuiAddress,
         coin_type: String,
+        /// What the node reports the coin holds; `None`: not reported.
+        balance: Option<u64>,
     }
 
     fn senders_usdc(seed: u8) -> Held {
@@ -4035,12 +4088,24 @@ mod spec_payload_tests {
             ),
             owner: sender(),
             coin_type: USDC_COIN_TYPE_TESTNET.to_string(),
+            balance: Some(AMOUNT),
+        }
+    }
+
+    /// The coin every transfer here splits, holding `balance`.
+    fn spent_holding(balance: Option<u64>) -> Held {
+        Held {
+            obj_ref: super::replay_verify_tests::coin_ref(),
+            owner: sender(),
+            coin_type: USDC_COIN_TYPE_TESTNET.to_string(),
+            balance,
         }
     }
 
     /// The settle node of the other tests, also holding `extra` coins: each
-    /// current at its ref, with its owner and type. An execution answers as
-    /// the transaction of `digest`.
+    /// current at its ref, with its owner, type and balance; the spent coin
+    /// holds `AMOUNT` unless `extra` names it. An execution answers as the
+    /// transaction of `digest`.
     fn node_holding(extra: Vec<Held>, digest: String) -> stub::Node {
         use sui_rpc::proto::sui::rpc::v2::{
             get_object_result, owner::OwnerKind, BatchGetObjectsResponse, GetObjectResponse,
@@ -4048,11 +4113,7 @@ mod spec_payload_tests {
         };
         let mut node = settle_node(|digest| Reply::Answer(Ok(executed(digest, true))), digest);
         let mut held = extra.clone();
-        held.push(Held {
-            obj_ref: super::replay_verify_tests::coin_ref(),
-            owner: sender(),
-            coin_type: USDC_COIN_TYPE_TESTNET.to_string(),
-        });
+        held.push(spent_holding(Some(AMOUNT)));
         let gas = super::replay_verify_tests::gas_ref();
         let refs: Vec<ObjectRef> = held.iter().map(|h| h.obj_ref).chain([gas]).collect();
         node.batch_get_objects = Box::new(move |request| {
@@ -4086,6 +4147,7 @@ mod spec_payload_tests {
             object.object_id = Some(id.to_string());
             object.owner = Some(owner);
             object.object_type = Some(format!("0x2::coin::Coin<{}>", coin.coin_type));
+            object.balance = coin.balance;
             let mut response = GetObjectResponse::default();
             response.object = Some(object);
             Reply::Answer(Ok(response))
@@ -4241,7 +4303,7 @@ mod spec_payload_tests {
     }
 
     #[tokio::test]
-    async fn a_merge_that_moves_less_than_the_amount_is_refused() {
+    async fn a_merge_whose_split_is_not_the_amount_is_refused() {
         let coin = senders_usdc(0x31);
         let tx = merging(sender(), &[coin.obj_ref]);
         let mut payload = spec_payload(&tx, &sender_keypair());
@@ -4306,5 +4368,173 @@ mod spec_payload_tests {
         let (request, _) = super::replay_verify_tests::request(&provider);
         let response = provider.verify(&request).await.expect("a verdict");
         assert!(valid_for_sender(&response), "{response:?}");
+    }
+
+    // -----------------------------------------------------------------------
+    // What the spent coins hold
+    // -----------------------------------------------------------------------
+
+    fn insufficient(result: &Result<VerifyResponse, FacilitatorLocalError>) -> bool {
+        matches!(result, Err(FacilitatorLocalError::InsufficientFunds(_)))
+    }
+
+    /// The sender holds enough in all, but the coin it splits holds less:
+    /// the split would abort on chain.
+    #[tokio::test]
+    async fn a_spent_coin_holding_less_than_the_amount_is_refused() {
+        let tx = transaction(sender(), sender());
+        let result = verify_holding(vec![spent_holding(Some(AMOUNT - 1))], &tx).await;
+        assert!(insufficient(&result), "{result:?}");
+        let result = verify_holding(vec![spent_holding(Some(AMOUNT))], &tx).await;
+        assert!(
+            matches!(result, Ok(ref r) if valid_for_sender(r)),
+            "{result:?}"
+        );
+    }
+
+    /// The declared payload is held to its coin's balance as well.
+    #[tokio::test]
+    async fn the_declared_payload_is_held_to_its_coins_balance_too() {
+        let provider = provider_at(vec![], std::time::Duration::from_secs(1));
+        let (request, _) = super::replay_verify_tests::request(&provider);
+        let digest = transaction(provider.signer_address, sender())
+            .digest()
+            .to_string();
+        let (url, _) =
+            stub::serve(node_holding(vec![spent_holding(Some(AMOUNT - 1))], digest)).await;
+        let result = provider_at(vec![url], std::time::Duration::from_secs(5))
+            .verify(&request)
+            .await;
+        assert!(insufficient(&result), "{result:?}");
+    }
+
+    /// Merged coins count with the spent one, and only together.
+    #[tokio::test]
+    async fn merged_coins_must_hold_the_amount_between_them() {
+        let half = AMOUNT / 2;
+        let mut coin = senders_usdc(0x31);
+        coin.balance = Some(half - 1);
+        let tx = merging(sender(), &[coin.obj_ref]);
+        let result = verify_holding(vec![coin.clone(), spent_holding(Some(half))], &tx).await;
+        assert!(insufficient(&result), "{result:?}");
+
+        coin.balance = Some(half);
+        let result = verify_holding(vec![coin, spent_holding(Some(half))], &tx).await;
+        assert!(
+            matches!(result, Ok(ref r) if valid_for_sender(r)),
+            "{result:?}"
+        );
+    }
+
+    /// A node that reports no coin balance leaves it to the address total.
+    #[tokio::test]
+    async fn a_coin_balance_the_node_does_not_report_leaves_it_to_the_total() {
+        let mut coin = senders_usdc(0x31);
+        coin.balance = None;
+        let tx = merging(sender(), &[coin.obj_ref]);
+        let result = verify_holding(vec![coin, spent_holding(Some(1))], &tx).await;
+        assert!(
+            matches!(result, Ok(ref r) if valid_for_sender(r)),
+            "{result:?}"
+        );
+    }
+
+    fn many_coins(count: u8) -> Vec<Held> {
+        (0..count)
+            .map(|i| {
+                let mut coin = senders_usdc(0x40 + i);
+                coin.balance = Some(1);
+                coin
+            })
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn a_merge_of_as_many_coins_as_read_verifies() {
+        let coins = many_coins(MAX_MERGED_COINS as u8);
+        let refs: Vec<ObjectRef> = coins.iter().map(|c| c.obj_ref).collect();
+        let tx = merging(sender(), &refs);
+        let result = verify_holding(coins, &tx).await;
+        assert!(
+            matches!(result, Ok(ref r) if valid_for_sender(r)),
+            "{result:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_merge_of_more_coins_than_read_is_refused() {
+        let coins = many_coins(MAX_MERGED_COINS as u8 + 1);
+        let refs: Vec<ObjectRef> = coins.iter().map(|c| c.obj_ref).collect();
+        let tx = merging(sender(), &refs);
+        refused_because(verify_holding(coins, &tx).await, "more than the 64");
+    }
+
+    // -----------------------------------------------------------------------
+    // The split's coin named as `NestedResult`
+    // -----------------------------------------------------------------------
+
+    fn transferring(object: Argument) -> TransactionData {
+        let mut tx = transaction(sender(), sender());
+        commands_of(&mut tx)[1] = Command::TransferObjects(vec![object], Argument::Input(2));
+        tx
+    }
+
+    /// `const [coin] = tx.splitCoins(...)` in `@mysten/sui` transfers
+    /// `NestedResult(split, 0)`: the spec's payload takes it.
+    #[tokio::test]
+    async fn the_splits_coin_as_nested_result_verifies() {
+        let tx = transferring(Argument::NestedResult(0, 0));
+        let result = verify_holding(vec![], &tx).await;
+        assert!(
+            matches!(result, Ok(ref r) if valid_for_sender(r)),
+            "{result:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn another_nested_result_is_refused() {
+        let tx = transferring(Argument::NestedResult(0, 1));
+        refused_because(verify_holding(vec![], &tx).await, "must transfer exactly");
+    }
+
+    #[test]
+    fn the_declared_payload_keeps_the_whole_result() {
+        let provider = SuiProvider::for_test(Network::SuiTestnet);
+        let tx = transferring(Argument::NestedResult(0, 0));
+        let refused = provider
+            .validate_ptb_with(
+                &tx,
+                &merchant(),
+                AMOUNT,
+                &super::replay_verify_tests::coin_ref().0,
+                PtbRules::DECLARED,
+            )
+            .expect_err("Result(0) only");
+        assert!(
+            format!("{refused:?}").contains("must transfer exactly"),
+            "{refused:?}"
+        );
+    }
+
+    /// After a MergeCoins the labels name the commands where they are.
+    #[test]
+    fn a_misplaced_transfer_after_a_merge_names_its_command() {
+        let provider = SuiProvider::for_test(Network::SuiTestnet);
+        let coin = senders_usdc(0x31);
+        let mut tx = merging(sender(), &[coin.obj_ref]);
+        commands_of(&mut tx)[2] = Command::SplitCoins(Argument::Input(0), vec![Argument::Input(2)]);
+        let refused = provider
+            .validate_ptb_with(
+                &tx,
+                &merchant(),
+                AMOUNT,
+                &super::replay_verify_tests::coin_ref().0,
+                PtbRules::SPEC,
+            )
+            .expect_err("no transfer");
+        assert!(
+            format!("{refused:?}").contains("command[2] must be TransferObjects"),
+            "{refused:?}"
+        );
     }
 }

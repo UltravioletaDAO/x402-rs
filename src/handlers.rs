@@ -3998,13 +3998,6 @@ where
         .into_response()
 }
 
-/// Match the merchant's requirements against what this facilitator serves, and
-/// return BOTH halves: the enriched matches and the reasoned rejections.
-///
-/// Lifted out of [`post_accepts`] so the decision can be tested against a
-/// literal set of kinds. Inside the handler it was reachable only through a
-/// live `Facilitator`, so the behaviour that mattered -- which requirement is
-/// dropped, and what it is told -- had no test at all.
 /// The first 100 characters of a payload field, for a debug line. Cut on a
 /// character, not a byte: the field is the caller's string, and a slice that
 /// ends inside a multi-byte character panics.
@@ -4012,6 +4005,13 @@ fn log_prefix(value: &str) -> String {
     value.chars().take(100).collect()
 }
 
+/// Match the merchant's requirements against what this facilitator serves, and
+/// return BOTH halves: the enriched matches and the reasoned rejections.
+///
+/// Lifted out of [`post_accepts`] so the decision can be tested against a
+/// literal set of kinds. Inside the handler it was reachable only through a
+/// live `Facilitator`, so the behaviour that mattered -- which requirement is
+/// dropped, and what it is told -- had no test at all.
 fn negotiate_accepts(
     accepts: &[serde_json::Value],
     kinds: &[SupportedPaymentKind],

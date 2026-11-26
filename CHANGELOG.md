@@ -3,8 +3,7 @@
 ## [2.60.0] - 2026-11-26
 
 `upto`, Stellar and Sui as the x402 Foundation specs define them
-(`x402-foundation/x402` at `4f3c7851`). Every request read before reads the
-same.
+(`x402-foundation/x402` at `4f3c7851`).
 
 ### Added
 
@@ -18,22 +17,39 @@ same.
   `{"transaction": "<base64 TransactionEnvelope XDR>"}`. Its one
   `invokeHostFunction` and its payer's one signed entry go through the checks
   the authorization-entry payload goes through, inside a transaction of the
-  facilitator's own; the contract must be the requirements' `asset`; nonce and
-  expiration are the entry's, and the expiration is bounded by
-  `maxTimeoutSeconds` (`ceil(maxTimeoutSeconds / 5)` ledgers, plus the
-  reference facilitator's 2 ledgers of tolerance). `/verify` simulates the
-  transaction settle would submit and refuses one the simulation refuses. The
-  Stellar kinds carry `extra.areFeesSponsored: true`.
+  facilitator's own; the expiration is bounded by `maxTimeoutSeconds`
+  (`ceil(maxTimeoutSeconds / 5)` ledgers, plus the reference facilitator's 2
+  ledgers of tolerance). `/verify` simulates the transaction settle would
+  submit and refuses one the simulation refuses. The Stellar kinds carry
+  `extra.areFeesSponsored: true`.
 - Sui: `/verify` and `/settle` take the spec's payload (`scheme_exact_sui.md`),
   x402 v2 on `sui:mainnet` / `sui:testnet`: `{"signature", "transaction"}`.
   Sender and coin are read from the transaction, recipient and amount from the
-  requirements, whose `asset` must be the network's USDC. Its gas is either
-  sponsored by the facilitator, as before, or paid by the sender, which settle
-  then sends with the sender's signature alone.
+  requirements. The transfer may first merge more of the sender's coins into
+  the one it splits (one `MergeCoins`, as a wallet holding several coins
+  builds it): every merged coin must be the sender's USDC, and exactly the
+  required amount must reach `payTo`. Its gas is either sponsored by the
+  facilitator, as before, or paid by the sender, which settle then sends with
+  the sender's signature alone.
 - Both payloads are read from the spec's request (`paymentPayload` +
   `paymentRequirements`) and from this facilitator's v2 request (top-level
   `resource` + `accepted`). The v1 kinds (`stellar`, `stellar-testnet`, `sui`,
   `sui-testnet`) stay in `/supported` next to the CAIP-2 ones.
+
+### Changed
+
+- Stellar and Sui compare the paid asset with `requirements.asset` for both
+  payloads: on Stellar the contract the authorization entry transfers on, on
+  Sui the network's USDC, the coin every spent and merged coin must be.
+- Stellar reads the nonce and the expiration ledger the authorization entry's
+  signature covers, for both payloads: the replay store and the expiry checks
+  key on them, so one signed entry passes the store once.
+- An x402 v2 `exact` settle answers `network` with the chain's CAIP-2 id
+  (`stellar:testnet`, `eip155:8453`), as the v2 `SettlementResponse` names it;
+  an x402 v1 settle answers byte for byte as before. An idempotent replay
+  answers the bytes the first settle answered. `SettleResponse` reads either
+  name.
+- The debug lines that print the start of a payload field cut on a character.
 
 ### Not covered
 
@@ -42,12 +58,10 @@ What the specs describe and these payloads do not take yet:
 - Stellar: authorization entries signed under CAP-71's
   `sorobanCredentialsAddressV2` (the pinned `stellar-xdr` 21.2.0 does not decode
   them), and payers that are contracts (`C...`) rather than accounts.
-- Sui: a transaction that merges several coins before it splits the payment
-  (`MergeCoins`); the transfer read is one coin's `SplitCoins` and its
-  `TransferObjects`, as for the declared payload. Coin types whose package is
-  written short (`0x2::sui::SUI`) are not read.
-- Settle responses name the network by its v1 name (`stellar-testnet`), as for
-  every network, where the specs write CAIP-2.
+- Sui: coin types whose package is written short (`0x2::sui::SUI`) are not
+  read; no `extra.gasStation` is offered.
+- The settles of the other schemes (`upto`, `escrow`/`commerce`, NEAR
+  `escrow`) answer `network` as they did.
 
 ## [2.59.2] - 2026-11-20
 

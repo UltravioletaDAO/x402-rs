@@ -1332,10 +1332,8 @@ impl StellarProvider {
     /// ever sent. The spec's shape is still required whole: a source account
     /// or an operation source that is the facilitator, a second operation, a
     /// second entry, or an operation that invokes something other than what
-    /// the entry authorizes is refused, and so is a contract other than the
-    /// requirements' `asset` (the spec's rule; the entry is still held to this
-    /// network's USDC after). Nonce and expiration are the entry's own, the
-    /// values its signature covers.
+    /// the entry authorizes is refused. Nonce and expiration are the entry's
+    /// own, the values its signature covers.
     fn read_spec_transaction(
         &self,
         transaction_xdr: &str,
@@ -1427,13 +1425,7 @@ impl StellarProvider {
             ScAddress::Contract(Hash(bytes)) => Contract(*bytes).to_string(),
             ScAddress::Account(_) => String::new(),
         };
-        let asset = requirements.asset.to_string();
-        if token_contract != asset {
-            return Err(StellarError::TokenContractMismatch {
-                expected: asset,
-                actual: token_contract,
-            });
-        }
+        let (nonce, expiry_ledger) = signed_terms(auth_entry)?;
 
         Ok(StellarAuthorization {
             payer,
@@ -1441,10 +1433,8 @@ impl StellarProvider {
             to,
             amount,
             token_contract,
-            // The nonce store keys on a u64; an i64 reinterpreted is the same
-            // one-to-one key.
-            nonce: credentials.nonce as u64,
-            expiry_ledger: credentials.signature_expiration_ledger,
+            nonce,
+            expiry_ledger,
             max_expiry_offset: Some(spec_max_ledger_offset(requirements.max_timeout_seconds)),
         })
     }
@@ -1485,25 +1475,45 @@ impl StellarProvider {
 
         // The same authorization, whichever payload carried it.
         let authorization = match &payload.payload {
-            ExactPaymentPayload::Stellar(stellar_payload) => StellarAuthorization {
-                payer: stellar_payload.from.clone(),
+            ExactPaymentPayload::Stellar(stellar_payload) => {
                 // Decode the authorization entry XDR
-                auth_entry: self
+                let auth_entry = self
                     .decode_authorization_entry(&stellar_payload.authorization_entry_xdr)
-                    .map_err(FacilitatorLocalError::from)?,
-                to: stellar_payload.to.clone(),
-                amount: stellar_payload.amount.clone(),
-                token_contract: stellar_payload.token_contract.clone(),
-                nonce: stellar_payload.nonce,
-                expiry_ledger: stellar_payload.signature_expiration_ledger,
-                max_expiry_offset: None,
-            },
+                    .map_err(FacilitatorLocalError::from)?;
+                // Nonce and expiration are the ones the payer signed, as for
+                // the spec's payload: never the copies declared beside them.
+                let (nonce, expiry_ledger) =
+                    signed_terms(&auth_entry).map_err(FacilitatorLocalError::from)?;
+                StellarAuthorization {
+                    payer: stellar_payload.from.clone(),
+                    token_contract: paid_contract(&auth_entry).unwrap_or_default(),
+                    auth_entry,
+                    to: stellar_payload.to.clone(),
+                    amount: stellar_payload.amount.clone(),
+                    nonce,
+                    expiry_ledger,
+                    max_expiry_offset: None,
+                }
+            }
             ExactPaymentPayload::StellarTransaction(spec_payload) => self
                 .read_spec_transaction(&spec_payload.transaction, requirements)
                 .map_err(FacilitatorLocalError::from)?,
             _ => return Err(FacilitatorLocalError::UnsupportedNetwork(None)),
         };
         let auth_entry = authorization.auth_entry;
+
+        // The asset the requirements name is the contract the entry transfers
+        // on, for either payload (`scheme_exact_stellar.md`: the contract
+        // address MUST match `requirements.asset`).
+        let asset = requirements.asset.to_string();
+        let paid = paid_contract(&auth_entry).unwrap_or_default();
+        if paid != asset {
+            return Err(StellarError::TokenContractMismatch {
+                expected: asset,
+                actual: paid,
+            }
+            .into());
+        }
 
         // Validate payer address
         let payer = StellarAddress::try_from(authorization.payer)?;
@@ -2189,6 +2199,30 @@ const SPEC_LEDGER_SECONDS: u64 = 5;
 /// expire: `ceil(maxTimeoutSeconds / 5)`.
 fn spec_max_ledger_offset(max_timeout_seconds: u64) -> u32 {
     u32::try_from(max_timeout_seconds.div_ceil(SPEC_LEDGER_SECONDS)).unwrap_or(u32::MAX)
+}
+
+/// The nonce and expiration ledger an entry's signature covers, for the
+/// replay store and the expiry checks. The nonce store keys on a u64; an i64
+/// reinterpreted is the same one-to-one key.
+fn signed_terms(entry: &SorobanAuthorizationEntry) -> Result<(u64, u32), StellarError> {
+    match &entry.credentials {
+        SorobanCredentials::Address(credentials) => Ok((
+            credentials.nonce as u64,
+            credentials.signature_expiration_ledger,
+        )),
+        SorobanCredentials::SourceAccount => Err(StellarError::UnsupportedCredentialType),
+    }
+}
+
+/// The contract an entry's root invocation calls, as a `C...` strkey.
+fn paid_contract(entry: &SorobanAuthorizationEntry) -> Option<String> {
+    match &entry.root_invocation.function {
+        SorobanAuthorizedFunction::ContractFn(InvokeContractArgs {
+            contract_address: ScAddress::Contract(Hash(bytes)),
+            ..
+        }) => Some(Contract(*bytes).to_string()),
+        _ => None,
+    }
 }
 
 /// Ledgers past that bound still accepted: the client counted from its own
@@ -3263,6 +3297,114 @@ mod spec_payload_tests {
         let payload: Value = serde_json::from_str(PAYMENT_PAYLOAD).unwrap();
         assert_eq!(payload["accepted"]["payTo"], example["payTo"]);
         assert!(Contract::from_string(example["asset"].as_str().unwrap()).is_ok());
+    }
+
+    /// The payload this facilitator defined, carrying `entry`, with `nonce`
+    /// and `expiry` declared beside it (the signed ones are what count).
+    fn entry_only(
+        provider: &StellarProvider,
+        client: &Client,
+        entry: &SorobanAuthorizationEntry,
+        nonce: u64,
+        expiry: u32,
+    ) -> VerifyRequest {
+        let mut request = request(&client.transaction(provider));
+        request.payment_payload.payload =
+            ExactPaymentPayload::Stellar(crate::types::ExactStellarPayload {
+                from: payer(),
+                to: merchant(),
+                amount: AMOUNT.to_string(),
+                token_contract: requirements()["asset"].as_str().unwrap().to_string(),
+                authorization_entry_xdr: BASE64.encode(entry.to_xdr(Limits::none()).unwrap()),
+                nonce,
+                signature_expiration_ledger: expiry,
+            });
+        request
+    }
+
+    /// Either payload pays in the asset the requirements name.
+    #[tokio::test]
+    async fn the_entry_only_payload_is_refused_for_another_asset_too() {
+        let (url, _) = node().await;
+        let provider = provider(&url);
+        let client = Client::new();
+        let entry = client.entry(&provider);
+        let mut request = entry_only(
+            &provider,
+            &client,
+            &entry,
+            client.nonce as u64,
+            client.expiry,
+        );
+        request.payment_requirements.asset = MixedAddress::Stellar(
+            "CCW67TSZV3SSS2HXMBQ5JFGCKJNXKZM7UQUWUZPUTHXSTZLEO7SJMI75".into(),
+        );
+        refused_because(provider.verify(&request).await, "Token contract mismatch");
+    }
+
+    /// One signed entry passes the replay store once, whatever nonce is
+    /// declared beside it and whichever payload carries it.
+    #[tokio::test]
+    async fn one_signed_entry_passes_the_replay_store_once() {
+        let (url, _) = node().await;
+        let provider = provider(&url);
+        let client = Client::new();
+        let entry = client.entry(&provider);
+        let declared = 9_000_000_000u64 + client.nonce as u64;
+        let settled = provider
+            .settle(&entry_only(
+                &provider,
+                &client,
+                &entry,
+                declared,
+                client.expiry,
+            ))
+            .await
+            .expect("settled");
+        assert!(settled.success, "{settled:?}");
+
+        // The same entry, another declared nonce and expiry.
+        refused_because(
+            provider
+                .verify(&entry_only(
+                    &provider,
+                    &client,
+                    &entry,
+                    declared + 1,
+                    client.expiry + 1,
+                ))
+                .await,
+            "already used",
+        );
+        // The same entry inside the spec's whole transaction.
+        refused_because(
+            provider
+                .verify(&request(&client.transaction(&provider)))
+                .await,
+            "already used",
+        );
+    }
+
+    /// The declared nonce and expiry are not what the checks read.
+    #[tokio::test]
+    async fn the_entry_only_payload_reads_the_signed_expiry() {
+        let (url, _) = node().await;
+        let provider = provider(&url);
+        let mut client = Client::new();
+        client.expiry = LEDGER; // signed: already expired
+        let entry = client.entry(&provider);
+        refused_because(
+            provider
+                .verify(&entry_only(
+                    &provider,
+                    &client,
+                    &entry,
+                    client.nonce as u64,
+                    LEDGER + 50,
+                ))
+                .await,
+            "expired",
+        );
     }
 
     #[test]

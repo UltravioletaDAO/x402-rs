@@ -34,6 +34,7 @@ settle, and the tests say so where they read them:
   bytes, without the scheme flag and public key of a Sui signature. Its asset,
   `0x2::sui::SUI`, has its package written short, which this facilitator does
   not read as a Sui coin type (it settles USDC). The tests expect the example
-  refused at its asset, then read it as the spec's request under USDC terms
-  and expect the refusal its transaction gets; the Sui payments they verify
-  and settle are transactions built here.
+  refused at its asset; under USDC terms, refused at its signature; and its
+  transaction's shape (the `MergeCoins` of six coins) read, refused for its
+  amount. The Sui payments they verify and settle are transactions built
+  here, from one, two and three coins.

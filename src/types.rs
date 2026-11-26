@@ -1724,6 +1724,9 @@ struct SettleResponseWire {
     transaction_hash_camel: Option<TransactionHash>,
     #[serde(default, rename = "transaction_hash")]
     transaction_hash_snake: Option<TransactionHash>,
+    /// Either name of the chain: the v1 name a v1 request is answered with,
+    /// or the CAIP-2 id an x402 v2 request is.
+    #[serde(deserialize_with = "crate::network::deserialize_v1_or_caip2")]
     network: Network,
     #[serde(default)]
     proof_of_payment: Option<crate::erc8004::ProofOfPayment>,

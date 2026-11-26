@@ -49,13 +49,21 @@ the values in force, by `GET /config` under `eip6492Sponsorship`.
 
 ## Who would pay if it failed
 
-Nobody. `/verify` simulates the deployment and the transfer together in one
-`eth_call`, and `/settle` estimates the transaction before it is signed, so a
-deployment or a transfer that would fail -- a payer without the token balance, a
-factory call that does not produce the wallet, a signature the wallet rejects --
-is refused before any transaction exists. The facilitator would pay the gas of a
-valid payment only, and the payer would need the token balance in the wallet's
-address before the payment: the deployment does not fund it.
+Today nobody: no deployment is sponsored, and the 65-byte rule refuses every
+envelope before a transaction exists, so no gas is spent.
+
+If sponsorship were enabled, the facilitator would pay the gas of the deployment
+and of the transfer, whatever the amount paid, held per transaction to the
+`exact-deploy` ceiling (`GET /config`, `evmGasCeilings`). `/verify` simulates the
+deployment and the transfer together in one `eth_call`, and `/settle` estimates
+the transaction before it is signed, so the failures that can be foreseen -- a
+payer without the token balance, a factory call that does not produce the
+wallet, a signature the wallet rejects -- are refused before any transaction
+exists. That filters what can be predicted; it does not guarantee that a
+transaction once sent does not revert (the chain's state can change between the
+estimate and the block that includes it), and the facilitator would pay the gas
+of a reverted transaction too. The payer would need the token balance in the
+wallet's address before the payment: the deployment does not fund it.
 
 ## Operating it
 

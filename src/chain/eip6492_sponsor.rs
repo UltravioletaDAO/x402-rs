@@ -46,14 +46,20 @@
 //!
 //! # Who pays when it fails
 //!
-//! Nobody, by construction: `/verify` simulates the deployment and the
-//! transfer in one `eth_call` (the universal validator's
-//! `isValidSigWithSideEffects`, then `transferWithAuthorization`), and
-//! `/settle` estimates the transaction before it signs it, so a deployment or
-//! a transfer that would revert -- a payer without the token balance, a
-//! factory call that does not produce the wallet -- is refused before a
-//! transaction exists. The payer must hold the token before the payment; the
-//! facilitator pays the gas of a valid one.
+//! Today nobody: nothing is deployed, and the 65-byte rule refuses every
+//! envelope before a transaction exists. If sponsorship were enabled, the
+//! facilitator would pay the gas of the deployment and of the transfer,
+//! whatever the amount paid, held per transaction to the `exact-deploy`
+//! ceiling. `/verify` simulates the deployment and the transfer in one
+//! `eth_call` (the universal validator's `isValidSigWithSideEffects`, then
+//! `transferWithAuthorization`), and `/settle` estimates the transaction
+//! before it signs it, so the failures that can be foreseen -- a payer
+//! without the token balance, a factory call that does not produce the
+//! wallet -- are refused before a transaction exists. That filters what can
+//! be predicted and guarantees nothing about a transaction once sent: one
+//! whose chain state changed between the estimate and its block can still
+//! revert, and its gas is paid too. The payer must hold the token before the
+//! payment.
 
 use std::collections::HashMap;
 use std::sync::LazyLock;

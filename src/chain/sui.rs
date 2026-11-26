@@ -4147,7 +4147,14 @@ mod spec_payload_tests {
             object.object_id = Some(id.to_string());
             object.owner = Some(owner);
             object.object_type = Some(format!("0x2::coin::Coin<{}>", coin.coin_type));
-            object.balance = coin.balance;
+            // As a node does: only when the read mask asks for it.
+            let asks_balance = request
+                .read_mask
+                .as_ref()
+                .is_some_and(|mask| mask.paths.iter().any(|path| path == "balance"));
+            if asks_balance {
+                object.balance = coin.balance;
+            }
             let mut response = GetObjectResponse::default();
             response.object = Some(object);
             Reply::Answer(Ok(response))

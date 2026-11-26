@@ -1,5 +1,42 @@
 # Changelog
 
+## [2.60.0] - 2026-11-26
+
+`upto`, Stellar and Sui as the x402 Foundation specs define them
+(`x402-foundation/x402` at `4f3c7851`). Every request read before reads the
+same.
+
+### Added
+
+- `upto`: every kind in `/supported` names `extra.facilitatorAddress`, the one
+  address that settles on its network (`scheme_upto_evm.md`, "Facilitator
+  Address Discovery"): the EVM provider's pinned signer, the address `upto`
+  settle requires in `permit2Authorization.witness.facilitator`. A network
+  whose provider names no settling address is not offered `upto`.
+- Stellar: `/verify` and `/settle` take the spec's payload
+  (`scheme_exact_stellar.md`), x402 v2 on `stellar:pubnet` / `stellar:testnet`:
+  `{"transaction": "<base64 TransactionEnvelope XDR>"}`. Its one
+  `invokeHostFunction` and its payer's one signed entry go through the checks
+  the authorization-entry payload goes through, inside a transaction of the
+  facilitator's own; nonce and expiration are the entry's, and the expiration
+  is bounded by `maxTimeoutSeconds` (`ceil(maxTimeoutSeconds / 5)` ledgers).
+  The Stellar kinds carry `extra.areFeesSponsored: true`.
+- Sui: `/verify` and `/settle` take the spec's payload (`scheme_exact_sui.md`),
+  x402 v2 on `sui:mainnet` / `sui:testnet`: `{"signature", "transaction"}`.
+  Sender and coin are read from the transaction, recipient and amount from the
+  requirements, whose `asset` must be the network's USDC. Its gas is either
+  sponsored by the facilitator, as before, or paid by the sender, which settle
+  then sends with the sender's signature alone.
+- Both payloads are read from the spec's request (`paymentPayload` +
+  `paymentRequirements`) and from this facilitator's v2 request (top-level
+  `resource` + `accepted`). The v1 kinds (`stellar`, `stellar-testnet`, `sui`,
+  `sui-testnet`) stay in `/supported` next to the CAIP-2 ones.
+
+### Changed
+
+- A Sui coin type whose package is written short (`0x2::sui::SUI`) reads as a
+  Sui address.
+
 ## [2.59.2] - 2026-11-20
 
 Two dependency moves that take advisories out of the build. Behavior does not

@@ -4182,6 +4182,24 @@ mod spec_payload_tests {
         );
     }
 
+    /// Settle reads the merged coins too: one of another type sends nothing.
+    #[tokio::test]
+    async fn a_settle_with_a_merged_coin_of_another_type_sends_nothing() {
+        let mut other = senders_usdc(0x31);
+        other.coin_type = format!("0x{}::junk::JUNK", "ab".repeat(32));
+        let tx = merging(facilitator_address(), &[other.obj_ref]);
+        let (url, node) = stub::serve(node_holding(vec![other], tx.digest().to_string())).await;
+        let refused = provider_at(vec![url], std::time::Duration::from_secs(5))
+            .settle(&read(body(&spec_payload(&tx, &sender_keypair()))))
+            .await
+            .expect_err("refused");
+        assert!(
+            format!("{refused:?}").contains("merged coin object"),
+            "{refused:?}"
+        );
+        assert!(node.executions().is_empty(), "nothing was sent");
+    }
+
     #[tokio::test]
     async fn the_spent_coin_merged_into_itself_is_refused() {
         let tx = merging(sender(), &[super::replay_verify_tests::coin_ref()]);

@@ -18,9 +18,12 @@ same.
   `{"transaction": "<base64 TransactionEnvelope XDR>"}`. Its one
   `invokeHostFunction` and its payer's one signed entry go through the checks
   the authorization-entry payload goes through, inside a transaction of the
-  facilitator's own; nonce and expiration are the entry's, and the expiration
-  is bounded by `maxTimeoutSeconds` (`ceil(maxTimeoutSeconds / 5)` ledgers).
-  The Stellar kinds carry `extra.areFeesSponsored: true`.
+  facilitator's own; the contract must be the requirements' `asset`; nonce and
+  expiration are the entry's, and the expiration is bounded by
+  `maxTimeoutSeconds` (`ceil(maxTimeoutSeconds / 5)` ledgers, plus the
+  reference facilitator's 2 ledgers of tolerance). `/verify` simulates the
+  transaction settle would submit and refuses one the simulation refuses. The
+  Stellar kinds carry `extra.areFeesSponsored: true`.
 - Sui: `/verify` and `/settle` take the spec's payload (`scheme_exact_sui.md`),
   x402 v2 on `sui:mainnet` / `sui:testnet`: `{"signature", "transaction"}`.
   Sender and coin are read from the transaction, recipient and amount from the
@@ -32,10 +35,19 @@ same.
   `resource` + `accepted`). The v1 kinds (`stellar`, `stellar-testnet`, `sui`,
   `sui-testnet`) stay in `/supported` next to the CAIP-2 ones.
 
-### Changed
+### Not covered
 
-- A Sui coin type whose package is written short (`0x2::sui::SUI`) reads as a
-  Sui address.
+What the specs describe and these payloads do not take yet:
+
+- Stellar: authorization entries signed under CAP-71's
+  `sorobanCredentialsAddressV2` (the pinned `stellar-xdr` 21.2.0 does not decode
+  them), and payers that are contracts (`C...`) rather than accounts.
+- Sui: a transaction that merges several coins before it splits the payment
+  (`MergeCoins`); the transfer read is one coin's `SplitCoins` and its
+  `TransferObjects`, as for the declared payload. Coin types whose package is
+  written short (`0x2::sui::SUI`) are not read.
+- Settle responses name the network by its v1 name (`stellar-testnet`), as for
+  every network, where the specs write CAIP-2.
 
 ## [2.59.2] - 2026-11-20
 

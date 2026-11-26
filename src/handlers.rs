@@ -5937,7 +5937,11 @@ where
             debug!("  - payload type: Stellar (x402 Foundation spec, whole transaction)");
             debug!(
                 "  - transaction: {} (truncated)",
-                &stellar_payload.transaction[..stellar_payload.transaction.len().min(100)]
+                stellar_payload
+                    .transaction
+                    .chars()
+                    .take(100)
+                    .collect::<String>()
             );
         }
         #[cfg(feature = "algorand")]
@@ -5962,7 +5966,11 @@ where
             debug!("  - payload type: Sui (x402 Foundation spec)");
             debug!(
                 "  - transaction: {} (truncated)",
-                &sui_payload.transaction[..sui_payload.transaction.len().min(100)]
+                sui_payload
+                    .transaction
+                    .chars()
+                    .take(100)
+                    .collect::<String>()
             );
         }
         crate::types::ExactPaymentPayload::SolanaSettlementAccount(sa_payload) => {

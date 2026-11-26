@@ -1552,7 +1552,9 @@ impl StellarProvider {
         }
         // The spec's upper bound: no later than `maxTimeoutSeconds` from now.
         if let Some(offset) = authorization.max_expiry_offset {
-            let latest = current_ledger.saturating_add(offset);
+            let latest = current_ledger
+                .saturating_add(offset)
+                .saturating_add(SPEC_EXPIRATION_TOLERANCE_LEDGERS);
             if authorization.expiry_ledger > latest {
                 return Err(StellarError::AuthExpiresTooLate {
                     expiry_ledger: authorization.expiry_ledger,
@@ -1770,6 +1772,55 @@ impl StellarProvider {
         Ok(BASE64.encode(&envelope_xdr))
     }
 
+    /// Simulate the transaction settle submits for `verification`: the
+    /// payer's invocation and entry inside a transaction of the facilitator's
+    /// own, at `sequence`. An error the simulation reports is a refusal.
+    async fn simulate(
+        &self,
+        verification: &VerifyPaymentResult,
+        next_sequence: i64,
+        base_fee: u32,
+    ) -> Result<SimulateTransactionResult, FacilitatorLocalError> {
+        // Step 1: Build unsigned envelope for simulation
+        tracing::info!("submit_transaction: Building simulation envelope");
+        let sim_envelope = self
+            .build_simulation_envelope(verification, next_sequence, base_fee)
+            .map_err(|e| {
+                tracing::error!(error = %e, "submit_transaction: Failed to build simulation envelope");
+                FacilitatorLocalError::from(e)
+            })?;
+
+        tracing::info!(
+            envelope_len = sim_envelope.len(),
+            "submit_transaction: Built simulation envelope"
+        );
+
+        // Step 2: Simulate the transaction
+        tracing::info!("submit_transaction: Simulating transaction");
+        let sim_result: SimulateTransactionResult = self
+            .rpc_request(
+                "simulateTransaction",
+                SimulateTransactionParams {
+                    transaction: sim_envelope,
+                },
+            )
+            .await
+            .map_err(|e| {
+                tracing::error!(error = %e, "submit_transaction: Simulation RPC failed");
+                FacilitatorLocalError::from(e)
+            })?;
+
+        if let Some(ref error) = sim_result.error {
+            tracing::error!(error = %error, "submit_transaction: Simulation returned error");
+            return Err(StellarError::SimulationFailed {
+                error: error.clone(),
+            }
+            .into());
+        }
+
+        Ok(sim_result)
+    }
+
     /// Submit a Stellar transaction with the authorization entry
     async fn submit_transaction(
         &self,
@@ -1814,42 +1865,7 @@ impl StellarProvider {
         // Base fee for simulation (will be updated with resource fee after)
         let base_fee = 100u32; // 100 stroops base
 
-        // Step 1: Build unsigned envelope for simulation
-        tracing::info!("submit_transaction: Building simulation envelope");
-        let sim_envelope = self
-            .build_simulation_envelope(verification, next_sequence, base_fee)
-            .map_err(|e| {
-                tracing::error!(error = %e, "submit_transaction: Failed to build simulation envelope");
-                FacilitatorLocalError::from(e)
-            })?;
-
-        tracing::info!(
-            envelope_len = sim_envelope.len(),
-            "submit_transaction: Built simulation envelope"
-        );
-
-        // Step 2: Simulate the transaction
-        tracing::info!("submit_transaction: Simulating transaction");
-        let sim_result: SimulateTransactionResult = self
-            .rpc_request(
-                "simulateTransaction",
-                SimulateTransactionParams {
-                    transaction: sim_envelope,
-                },
-            )
-            .await
-            .map_err(|e| {
-                tracing::error!(error = %e, "submit_transaction: Simulation RPC failed");
-                FacilitatorLocalError::from(e)
-            })?;
-
-        if let Some(ref error) = sim_result.error {
-            tracing::error!(error = %error, "submit_transaction: Simulation returned error");
-            return Err(StellarError::SimulationFailed {
-                error: error.clone(),
-            }
-            .into());
-        }
+        let sim_result = self.simulate(verification, next_sequence, base_fee).await?;
 
         tracing::info!(
             min_resource_fee = ?sim_result.min_resource_fee,
@@ -2175,6 +2191,11 @@ fn spec_max_ledger_offset(max_timeout_seconds: u64) -> u32 {
     u32::try_from(max_timeout_seconds.div_ceil(SPEC_LEDGER_SECONDS)).unwrap_or(u32::MAX)
 }
 
+/// Ledgers past that bound still accepted: the client counted from its own
+/// node's ledger, which may be ahead of ours. The reference facilitator's
+/// `SIGNATURE_EXPIRATION_LEDGER_TOLERANCE`.
+const SPEC_EXPIRATION_TOLERANCE_LEDGERS: u32 = 2;
+
 /// What a Stellar payment authorizes, read the same way from the entry-only
 /// payload and from the x402 Foundation's whole-transaction payload.
 struct StellarAuthorization {
@@ -2238,6 +2259,25 @@ impl Facilitator for StellarProvider {
 
     async fn verify(&self, request: &VerifyRequest) -> Result<VerifyResponse, Self::Error> {
         let verification = self.verify_payment(request).await?;
+        // The spec's payload is verified the way the spec verifies it: the
+        // transaction settle would submit is simulated against the current
+        // ledger, and a simulation that fails is a refusal
+        // (`scheme_exact_stellar.md`, "Simulation"). Settle simulates again
+        // before it submits, for either payload.
+        if matches!(
+            request.payment_payload.payload,
+            ExactPaymentPayload::StellarTransaction(_)
+        ) {
+            let sequence = self
+                .get_account_sequence(&self.public_key)
+                .await
+                .map_err(FacilitatorLocalError::from)?
+                .checked_add(1)
+                .ok_or_else(|| {
+                    FacilitatorLocalError::Other("Sequence number overflow".to_string())
+                })?;
+            self.simulate(&verification, sequence, 100).await?;
+        }
         Ok(VerifyResponse::valid(verification.payer.into()))
     }
 
@@ -3126,6 +3166,11 @@ mod spec_payload_tests {
 
     /// A Soroban RPC and Horizon on one port, for the facilitator's account.
     async fn node() -> (String, Arc<Mutex<Seen>>) {
+        node_simulating(None).await
+    }
+
+    /// [`node`] whose `simulateTransaction` reports `error`, when given.
+    async fn node_simulating(error: Option<&'static str>) -> (String, Arc<Mutex<Seen>>) {
         let seen = Arc::new(Mutex::new(Seen::default()));
         let rpc = {
             let seen = seen.clone();
@@ -3137,12 +3182,15 @@ mod spec_payload_tests {
                     seen.methods.push(method.clone());
                     let result = match method.as_str() {
                         "getLatestLedger" => json!({"sequence": LEDGER, "id": "ledger"}),
-                        "simulateTransaction" => json!({
-                            "latestLedger": LEDGER,
-                            "minResourceFee": "1000",
-                            "transactionData":
-                                BASE64.encode(soroban_data().to_xdr(Limits::none()).unwrap()),
-                        }),
+                        "simulateTransaction" => match error {
+                            Some(error) => json!({"latestLedger": LEDGER, "error": error}),
+                            None => json!({
+                                "latestLedger": LEDGER,
+                                "minResourceFee": "1000",
+                                "transactionData":
+                                    BASE64.encode(soroban_data().to_xdr(Limits::none()).unwrap()),
+                            }),
+                        },
                         "sendTransaction" => {
                             seen.submitted.push(
                                 request["params"]["transaction"]
@@ -3389,9 +3437,10 @@ mod spec_payload_tests {
 
     #[tokio::test]
     async fn an_entry_expiring_at_the_latest_ledger_the_timeout_allows_verifies() {
-        let response = verify(|c, _| c.expiry = LEDGER + OFFSET)
-            .await
-            .expect("a verdict");
+        let response =
+            verify(|c, _| c.expiry = LEDGER + OFFSET + SPEC_EXPIRATION_TOLERANCE_LEDGERS)
+                .await
+                .expect("a verdict");
         assert!(
             matches!(response, VerifyResponse::Valid { .. }),
             "{response:?}"
@@ -3401,9 +3450,63 @@ mod spec_payload_tests {
     #[tokio::test]
     async fn an_entry_expiring_after_the_timeout_is_refused() {
         refused_because(
-            verify(|c, _| c.expiry = LEDGER + OFFSET + 1).await,
+            verify(|c, _| c.expiry = LEDGER + OFFSET + SPEC_EXPIRATION_TOLERANCE_LEDGERS + 1).await,
             "after the latest the payment allows",
         );
+    }
+
+    #[test]
+    fn the_tolerance_is_the_reference_facilitators() {
+        assert_eq!(SPEC_EXPIRATION_TOLERANCE_LEDGERS, 2);
+    }
+
+    /// The spec's verification simulates the transaction: one the chain would
+    /// refuse is refused at verify, not first at settle.
+    #[tokio::test]
+    async fn a_spec_payment_whose_simulation_fails_is_refused_at_verify() {
+        let (url, seen) = node_simulating(Some("HostError: balance is not sufficient")).await;
+        let provider = provider(&url);
+        refused_because(
+            provider
+                .verify(&request(&Client::new().transaction(&provider)))
+                .await,
+            "Simulation failed",
+        );
+        assert!(seen
+            .lock()
+            .unwrap()
+            .methods
+            .contains(&"simulateTransaction".to_string()));
+    }
+
+    /// The entry-only payload keeps its verify: no simulation.
+    #[tokio::test]
+    async fn the_entry_only_payload_is_not_simulated_at_verify() {
+        let (url, seen) = node_simulating(Some("HostError")).await;
+        let provider = provider(&url);
+        let client = Client::new();
+        let entry = signed_entry(&provider, transfer(AMOUNT), client.nonce, client.expiry);
+        let mut request = request(&client.transaction(&provider));
+        request.payment_payload.payload =
+            ExactPaymentPayload::Stellar(crate::types::ExactStellarPayload {
+                from: payer(),
+                to: merchant(),
+                amount: AMOUNT.to_string(),
+                token_contract: requirements()["asset"].as_str().unwrap().to_string(),
+                authorization_entry_xdr: BASE64.encode(entry.to_xdr(Limits::none()).unwrap()),
+                nonce: client.nonce as u64,
+                signature_expiration_ledger: client.expiry,
+            });
+        let response = provider.verify(&request).await.expect("a verdict");
+        assert!(
+            matches!(response, VerifyResponse::Valid { .. }),
+            "{response:?}"
+        );
+        assert!(!seen
+            .lock()
+            .unwrap()
+            .methods
+            .contains(&"simulateTransaction".to_string()));
     }
 
     #[tokio::test]

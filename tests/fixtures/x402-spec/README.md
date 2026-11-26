@@ -31,7 +31,9 @@ settle, and the tests say so where they read them:
   the example's terms. Its sender is the address named `payTo`, pays its own
   gas, and sends 2.5 SUI (`2500000000` MIST, after a `MergeCoins` of six coins)
   to another address; `amount` says `10000000`. Its `signature` is 64 raw
-  bytes, without the scheme flag and public key of a Sui signature. The asset,
-  `0x2::sui::SUI`, is not one this facilitator settles. The tests read the
-  example as the spec's request and expect the refusal it gets; the Sui
-  payments they verify and settle are transactions built here.
+  bytes, without the scheme flag and public key of a Sui signature. Its asset,
+  `0x2::sui::SUI`, has its package written short, which this facilitator does
+  not read as a Sui coin type (it settles USDC). The tests expect the example
+  refused at its asset, then read it as the spec's request under USDC terms
+  and expect the refusal its transaction gets; the Sui payments they verify
+  and settle are transactions built here.

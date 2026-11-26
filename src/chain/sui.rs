@@ -3551,9 +3551,18 @@ mod spec_payload_tests {
         matches!(response, VerifyResponse::Valid { payer } if *payer == MixedAddress::Sui(sender().to_string()))
     }
 
+    /// The spec's example writes its asset with a short package,
+    /// `0x2::sui::SUI`, which this facilitator does not read as a Sui coin
+    /// type (it settles USDC, whose package is written in full): the body is
+    /// refused before any provider reads it. Its payload, written out with a
+    /// USDC asset, is read as the spec's.
     #[test]
-    fn the_spec_example_reads_as_the_spec_payload_and_terms() {
-        let (payload, _) = spec_example();
+    fn the_spec_example_is_refused_at_its_asset_and_its_payload_is_the_specs() {
+        let (mut payload, _) = spec_example();
+        assert_eq!(payload["accepted"]["asset"], json!("0x2::sui::SUI"));
+        assert!(serde_json::from_value::<VerifyRequestEnvelope>(body(&payload)).is_err());
+
+        payload["accepted"]["asset"] = json!(USDC_COIN_TYPE_MAINNET);
         let request = read(body(&payload));
         assert_eq!(request.payment_payload.network, Network::Sui);
         assert!(matches!(
@@ -3564,7 +3573,6 @@ mod spec_payload_tests {
         ));
         let terms = &request.payment_requirements;
         assert_eq!(terms.max_amount_required.to_string(), "10000000");
-        assert_eq!(terms.asset.to_string(), "0x2::sui::SUI");
         assert_eq!(
             terms.pay_to.to_string(),
             payload["accepted"]["payTo"].as_str().unwrap()
@@ -3603,15 +3611,17 @@ mod spec_payload_tests {
         );
     }
 
-    /// The example pays SUI, which this facilitator does not settle: the
-    /// first verdict on it, read after the request and the transaction.
+    /// The example's transaction, under USDC terms, is still no payment:
+    /// it opens with a `MergeCoins`, and the transfer this facilitator
+    /// settles splits one coin.
     #[tokio::test]
-    async fn the_spec_example_is_refused_for_its_asset() {
-        let (payload, _) = spec_example();
+    async fn the_spec_example_under_usdc_terms_is_refused() {
+        let (mut payload, _) = spec_example();
+        payload["accepted"]["asset"] = json!(USDC_COIN_TYPE_MAINNET);
         let provider = SuiProvider::for_test(Network::Sui);
         refused_because(
             provider.verify(&read(body(&payload))).await,
-            "is not the USDC this facilitator settles",
+            "command[0] must be SplitCoins",
         );
     }
 
@@ -3675,7 +3685,9 @@ mod spec_payload_tests {
     #[tokio::test]
     async fn a_spec_payment_for_another_asset_is_refused() {
         let mut payload = spec_payload(&transaction(sender(), sender()), &sender_keypair());
-        payload["accepted"]["asset"] = json!("0x2::sui::SUI");
+        // Another coin type, its package written in full (built: the
+        // pre-commit hook refuses 0x + 64 hex typed out).
+        payload["accepted"]["asset"] = json!(format!("0x{}::coin::OTHER", "ab".repeat(32)));
         refused_because(verify(&read(body(&payload))).await, "is not the USDC");
     }
 

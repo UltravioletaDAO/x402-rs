@@ -3220,43 +3220,72 @@ mod spec_v2_request_tests {
         ));
     }
 
-    /// Bodies the spec variant must leave alone: each still reads as it did.
+    /// This facilitator's v2 request around `payload`: what the variants
+    /// after the spec one read.
+    fn v2_body(payload: &Value) -> Value {
+        let mut payload = payload.clone();
+        let resource = json!({"url": "https://example.com/r", "description": "", "mimeType": ""});
+        if payload.get("resource").is_none() {
+            payload["resource"] = resource;
+        }
+        json!({
+            "x402Version": 2,
+            "paymentPayload": payload,
+            "resource": payload["resource"],
+            "accepted": payload["accepted"],
+        })
+    }
+
+    /// The payload a body reads as when the `V2` variant claims it.
+    fn read_as_v2(body: Value) -> ExactPaymentPayload {
+        match envelope(body) {
+            VerifyRequestEnvelope::V2(request) => request.payment_payload.payload,
+            other => panic!("not read by the V2 variant as before: {other:?}"),
+        }
+    }
+
+    /// Bodies the spec variant must leave alone: each is still read by the
+    /// variant that read it before, as the payload it was read as.
     #[test]
     fn bodies_that_are_not_the_spec_payload_are_left_to_the_other_variants() {
-        // A key beside `transaction`.
+        // A key beside `transaction`: the Solana payload, as before.
         let mut extra_key = stellar_payload();
         extra_key["payload"]["memo"] = json!("x");
-        assert!(
-            serde_json::from_value::<VerifyRequestEnvelope>(spec_body(extra_key.clone()))
-                .map_or(true, |e| !matches!(e, VerifyRequestEnvelope::SpecV2(_)))
-        );
+        assert!(matches!(
+            read_as_v2(v2_body(&extra_key)),
+            ExactPaymentPayload::Solana(_)
+        ));
 
-        // x402 v1 inside.
+        // x402 v1 inside the payload.
         let mut v1 = stellar_payload();
         v1["x402Version"] = json!(1);
-        assert!(
-            serde_json::from_value::<VerifyRequestEnvelope>(spec_body(v1))
-                .map_or(true, |e| !matches!(e, VerifyRequestEnvelope::SpecV2(_)))
-        );
+        assert!(matches!(
+            read_as_v2(v2_body(&v1)),
+            ExactPaymentPayload::Solana(_)
+        ));
 
-        // `{"transaction"}` on Solana is Solana's payload, in the v2 shape.
+        // `{"transaction"}` on Solana is Solana's payload.
         let mut solana = stellar_payload();
         solana["accepted"]["network"] = json!("solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp");
         solana["accepted"]["asset"] = json!("EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v");
         solana["accepted"]["payTo"] = json!("EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v");
-        let body = json!({
-            "x402Version": 2,
-            "paymentPayload": solana,
-            "resource": solana["resource"],
-            "accepted": solana["accepted"],
-        });
-        match envelope(body) {
-            VerifyRequestEnvelope::V2(request) => assert!(matches!(
-                request.payment_payload.payload,
-                ExactPaymentPayload::Solana(_)
-            )),
-            other => panic!("Solana's body changed variant: {other:?}"),
-        }
+        assert!(matches!(
+            read_as_v2(v2_body(&solana)),
+            ExactPaymentPayload::Solana(_)
+        ));
+    }
+
+    /// The outer `x402Version`, when present, must say 2 as well.
+    #[test]
+    fn a_spec_body_whose_outer_version_is_not_2_is_not_claimed() {
+        let mut body = spec_body(stellar_payload());
+        body["x402Version"] = json!(1);
+        assert!(
+            serde_json::from_value::<VerifyRequestEnvelope>(body.clone())
+                .map_or(true, |e| !matches!(e, VerifyRequestEnvelope::SpecV2(_)))
+        );
+        body["x402Version"] = json!(2);
+        assert!(matches!(envelope(body), VerifyRequestEnvelope::SpecV2(_)));
     }
 
     /// The payload this facilitator defined for Stellar, in its v2 shape,
@@ -3298,8 +3327,8 @@ mod spec_v2_request_tests {
                     "scheme": "exact",
                     "network": "sui:testnet",
                     "amount": "1000000",
-                    "asset": "0x2::sui::SUI",
                     // Built, not typed: the pre-commit hook refuses 0x + 64 hex.
+                    "asset": format!("0x{}::usdc::USDC", "cd".repeat(32)),
                     "payTo": format!("0x{}", "ab".repeat(32)),
                     "maxTimeoutSeconds": 60,
                 },
@@ -3319,19 +3348,30 @@ mod spec_v2_request_tests {
             ExactPaymentPayload::SuiTransaction(p) if p.signature == "c2ln" && p.transaction == "dHg="
         ));
 
-        // Only the transaction: not the spec's Sui payload.
-        assert!(
-            serde_json::from_value::<VerifyRequestEnvelope>(body(payload(
-                json!({"transaction": "dHg="})
-            )))
-            .map_or(true, |e| !matches!(e, VerifyRequestEnvelope::SpecV2(_)))
-        );
-        // A signature that is not a string.
-        assert!(
-            serde_json::from_value::<VerifyRequestEnvelope>(body(payload(
-                json!({"signature": 1, "transaction": "dHg="})
-            )))
-            .map_or(true, |e| !matches!(e, VerifyRequestEnvelope::SpecV2(_)))
-        );
+        // Only the transaction, or a signature that is not a string: not the
+        // spec's Sui payload, read by the V2 variant as before.
+        for inner in [
+            json!({"transaction": "dHg="}),
+            json!({"signature": 1, "transaction": "dHg="}),
+        ] {
+            assert!(matches!(
+                read_as_v2(v2_body(&payload(inner))),
+                ExactPaymentPayload::Solana(_)
+            ));
+        }
+
+        // The payload this facilitator defined for Sui is its own variant.
+        let declared = payload(json!({
+            "transactionBytes": "dHg=",
+            "senderSignature": "c2ln",
+            "from": format!("0x{}", "ab".repeat(32)),
+            "to": format!("0x{}", "ab".repeat(32)),
+            "amount": "1000000",
+            "coinObjectId": format!("0x{}", "11".repeat(32)),
+        }));
+        assert!(matches!(
+            read_as_v2(v2_body(&declared)),
+            ExactPaymentPayload::Sui(_)
+        ));
     }
 }

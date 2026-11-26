@@ -1266,11 +1266,9 @@ impl<'de> Deserialize<'de> for MixedAddress {
         });
 
         // Sui address regex: 0x-prefixed 64 hex chars, or object type ID (package::module::Type)
-        // whose package may be written short, as Sui writes its own coin
-        // (`0x2::sui::SUI`, the asset of the x402 Foundation's Sui example).
         #[cfg(feature = "sui")]
         static SUI_ADDRESS_REGEX: Lazy<Regex> = Lazy::new(|| {
-            Regex::new(r"^(0x[a-fA-F0-9]{64}|0x[a-fA-F0-9]{1,64}::[a-zA-Z_][a-zA-Z0-9_]*::[a-zA-Z_][a-zA-Z0-9_]*)$")
+            Regex::new(r"^(0x[a-fA-F0-9]{64}|0x[a-fA-F0-9]{64}::[a-zA-Z_][a-zA-Z0-9_]*::[a-zA-Z_][a-zA-Z0-9_]*)$")
                 .expect("Invalid regex for Sui address")
         });
 
@@ -2801,24 +2799,6 @@ mod tests {
         let back: SupportedPaymentKindExtra = serde_json::from_value(json).unwrap();
         assert_eq!(back.facilitator_address, Some(EvmAddress(address)));
         assert_eq!(back.are_fees_sponsored, Some(true));
-    }
-
-    /// A Sui coin type whose package is written short, as Sui writes its own
-    /// coin, reads as a Sui address; the 64-hex forms read as before.
-    #[cfg(feature = "sui")]
-    #[test]
-    fn a_sui_coin_type_with_a_short_package_reads_as_sui() {
-        let read = |s: &str| serde_json::from_value::<MixedAddress>(serde_json::json!(s));
-        assert_eq!(
-            read("0x2::sui::SUI").unwrap(),
-            MixedAddress::Sui("0x2::sui::SUI".to_string())
-        );
-        for refused in ["0x::sui::SUI", "0x2::sui", "2::sui::SUI", "0x2g::sui::SUI"] {
-            assert!(
-                !matches!(read(refused), Ok(MixedAddress::Sui(_))),
-                "{refused} is not a Sui coin type"
-            );
-        }
     }
 }
 

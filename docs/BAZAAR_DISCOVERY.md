@@ -89,9 +89,9 @@ Register a new resource in the discovery registry.
 spelling (lowercase host, no trailing dot, no default port).
 
 **Re-registration.** Posting a URL the catalog already holds (listed or waiting for its first
-verification) re-registers its payment terms: the facilitator reads that URL's live 402 once --
-through the prober's connector, with the request the listing declares -- and applies the
-submitted `accepts` only when that 402 is the URL's own answer, offers a payment, makes the same
+verification) re-registers its payment terms: the facilitator probes that URL once -- through the
+prober's connector, with the request the listing declares: one request, or two when the first is
+refused as the wrong method or body -- and applies the submitted `accepts` only when that 402 is the URL's own answer, offers a payment, makes the same
 offers in its header and its body, makes every submitted offer (`scheme`, `network`, `asset`,
 `payTo`) at the submitted amount, and makes no offer the listing declares that the submission
 leaves out: a new amount, an option the 402 no longer makes (left out), an offer moved to another
@@ -109,7 +109,8 @@ each `liveAmount`), `reregistration_omits_live_offer` (with `omitted`),
 `reregistration_recipient_change`, `reregistration_live_recipient_undeclared`,
 `reregistration_listing_held` or `reregistration_feed_copy`, `422` `reregistration_no_live_402`
 or `reregistration_live_402_conflict`, or `429` `reregistration_too_soon` (one per URL per
-`registration.reregisterCooldownSeconds`). There is no public route to remove a listing; the
+`registration.reregisterCooldownSeconds`). A listing removed while its 402 was being read answers
+the plain `404` of a URL that is not held. There is no public route to remove a listing; the
 operator does that.
 
 **The listed price follows the 402.** The prober reads the 402 of each listing that is alive
@@ -302,7 +303,8 @@ Resources must pass validation before registration:
 1. **URL**: Must be valid HTTPS (or HTTP for localhost)
 2. **Type**: Must be one of: `http`, `mcp`, `a2a`, `facilitator`
 3. **Accepts**: Must have at least one payment method (except `facilitator` type)
-4. **Duplicates**: Cannot register the same URL twice (`409`); there is no public update route
+4. **Duplicates**: A URL the catalog already holds is not registered twice: posting it again is a
+   re-registration of its payment terms (above), applied only when its live 402 verifies them
 
 ## Example Use Cases
 

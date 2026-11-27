@@ -294,10 +294,11 @@ pub fn adopt_live_price() -> bool {
 }
 
 /// Seconds between two re-registrations of the same URL. A re-registration
-/// reads the listing's live 402 once (`discovery_health::reregister`), so this
-/// bounds what a caller can make the facilitator send to an origin: one
-/// request per URL per window, on top of the route's own per-IP limit. Never
-/// under a minute.
+/// probes the listing once (`discovery_health::reregister`), so this bounds
+/// what a caller can make the facilitator send to an origin: one probe per URL
+/// per window -- one request, or two when the first is refused as the wrong
+/// method or body -- on top of the route's own per-IP limit. Never under a
+/// minute.
 pub fn reregister_cooldown_secs() -> u64 {
     positive("DISCOVERY_REREGISTER_COOLDOWN_SECS", 10 * 60).max(60)
 }

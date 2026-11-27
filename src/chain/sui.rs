@@ -46,9 +46,9 @@ use crate::from_env::{
 use crate::network::Network;
 use crate::nonce_store::{NonceStore, NonceStoreError};
 use crate::types::{
-    ExactPaymentPayload, ExactSuiPayload, MixedAddress, Scheme, SettleRequest, SettleResponse,
-    SupportedPaymentKind, SupportedPaymentKindExtra, SupportedPaymentKindsResponse, VerifyRequest,
-    VerifyResponse, X402Version,
+    ExactPaymentPayload, ExactSuiPayload, ExactSuiTransactionPayload, MixedAddress, Scheme,
+    SettleRequest, SettleResponse, SupportedPaymentKind, SupportedPaymentKindExtra,
+    SupportedPaymentKindsResponse, VerifyRequest, VerifyResponse, X402Version,
 };
 
 /// USDC coin type on Sui mainnet
@@ -145,6 +145,26 @@ impl SuiProvider {
         }
     }
 
+    /// A provider for tests outside this module: the all-zero Ed25519 seed,
+    /// an RPC nothing listens on, a claim store of its own.
+    #[cfg(test)]
+    pub(crate) fn for_test(network: Network) -> Self {
+        let keypair = SuiKeyPair::from_bytes(&[0u8; 33]).expect("valid Ed25519 test keypair");
+        let signer = SuiAddress::from(&keypair.public());
+        Self::new(
+            network,
+            SuiRpc::new(
+                network,
+                vec!["http://127.0.0.1:9".to_string()],
+                std::time::Duration::from_secs(1),
+                std::time::Duration::from_secs(1),
+            ),
+            signer,
+            keypair,
+        )
+        .with_claims(Arc::new(crate::nonce_store::MemoryNonceStore::new()))
+    }
+
     /// The same provider, claiming in `store` instead of the shared store.
     #[cfg(test)]
     fn with_claims(mut self, store: Arc<dyn NonceStore>) -> Self {
@@ -163,17 +183,86 @@ impl SuiProvider {
         }
     }
 
-    /// Extract the Sui payload from a verify/settle request.
-    fn extract_payload<'a>(
-        &self,
-        request: &'a VerifyRequest,
-    ) -> Result<&'a ExactSuiPayload, FacilitatorLocalError> {
+    /// The payment a verify/settle request carries, read the same way from
+    /// either payload.
+    fn payment(&self, request: &VerifyRequest) -> Result<SuiPayment, FacilitatorLocalError> {
+        // The asset the requirements name is the coin the payment spends, for
+        // either payload: `check_balance` holds the spent coin (and every coin
+        // merged into it) to this network's USDC, so the requirements must
+        // name that USDC.
+        let asset = request.payment_requirements.asset.to_string();
+        let is_usdc = matches!(
+            (
+                sui_types::parse_sui_struct_tag(&asset),
+                sui_types::parse_sui_struct_tag(&self.usdc_coin_type),
+            ),
+            (Ok(asked), Ok(usdc)) if asked == usdc
+        );
+        if !is_usdc {
+            return Err(FacilitatorLocalError::DecodingError(format!(
+                "asset {} is not the USDC this facilitator settles on {} ({})",
+                asset, self.network, self.usdc_coin_type
+            )));
+        }
+
         match &request.payment_payload.payload {
-            ExactPaymentPayload::Sui(payload) => Ok(payload),
+            ExactPaymentPayload::Sui(payload) => Ok(SuiPayment {
+                declared: payload.clone(),
+                rules: PtbRules::DECLARED,
+            }),
+            ExactPaymentPayload::SuiTransaction(payload) => {
+                self.read_spec_payload(payload, request)
+            }
             _ => Err(FacilitatorLocalError::DecodingError(
                 "Expected Sui payload".to_string(),
             )),
         }
+    }
+
+    /// Read the x402 Foundation payload (`scheme_exact_sui.md`): the
+    /// transaction and its sender's signature, nothing else.
+    ///
+    /// What [`ExactSuiPayload`] declares beside them is taken from where the
+    /// spec puts it: the sender and the spent coin from the transaction, the
+    /// recipient and the amount from the seller's requirements. Every check
+    /// the declared payload goes through then runs on those values, so the
+    /// transaction must still split exactly `amount` off that coin and send it
+    /// to `payTo`. The facilitator is never the sender. What the spec allows
+    /// beyond the declared payload is in [`PtbRules::SPEC`].
+    fn read_spec_payload(
+        &self,
+        payload: &ExactSuiTransactionPayload,
+        request: &VerifyRequest,
+    ) -> Result<SuiPayment, FacilitatorLocalError> {
+        let requirements = &request.payment_requirements;
+        let tx_data = self.decode_transaction_bytes(&payload.transaction)?;
+        let sender = tx_data.sender();
+        if sender == self.signer_address {
+            return Err(FacilitatorLocalError::InvalidSignature(
+                MixedAddress::Sui(sender.to_string()),
+                "the facilitator cannot be the sender of a Sui payment".to_string(),
+            ));
+        }
+
+        let coin = spent_coin(&tx_data).ok_or_else(|| {
+            FacilitatorLocalError::Other(
+                "PTB validation failed: the transfer must split an owned coin input, \
+                 at command[0] or after one MergeCoins into it"
+                    .to_string(),
+            )
+        })?;
+
+        Ok(SuiPayment {
+            declared: ExactSuiPayload {
+                transaction_bytes: payload.transaction.clone(),
+                sender_signature: payload.signature.clone(),
+                from: sender.to_string(),
+                to: requirements.pay_to.to_string(),
+                amount: requirements.max_amount_required.to_string(),
+                coin_object_id: coin.to_string(),
+            },
+            rules: PtbRules::SPEC,
+        })
     }
 
     /// Parse a Sui address from string.
@@ -278,12 +367,33 @@ impl SuiProvider {
     /// executes fine — that is exactly the coin-type-confusion this binding closes.) `validate_ptb`
     /// still verifies that the coin object ID in the PTB matches the declared `coin_object_id`,
     /// preventing the client from declaring one coin but signing a PTB that drains a different coin.
+    #[cfg(test)]
     fn validate_ptb(
         &self,
         tx_data: &TransactionData,
         expected_recipient: &SuiAddress,
         expected_amount: u64,
         expected_coin_id: &ObjectID,
+    ) -> Result<(), FacilitatorLocalError> {
+        self.validate_ptb_with(
+            tx_data,
+            expected_recipient,
+            expected_amount,
+            expected_coin_id,
+            PtbRules::DECLARED,
+        )
+    }
+
+    /// [`Self::validate_ptb`] under `rules`: with [`PtbRules::SPEC`] the gas
+    /// may be paid by the sender itself, and the transfer may open with one
+    /// `MergeCoins` of more owned coins into the coin it splits.
+    fn validate_ptb_with(
+        &self,
+        tx_data: &TransactionData,
+        expected_recipient: &SuiAddress,
+        expected_amount: u64,
+        expected_coin_id: &ObjectID,
+        rules: PtbRules,
     ) -> Result<(), FacilitatorLocalError> {
         // Extract the ProgrammableTransaction — reject all other transaction kinds.
         let ptb = match tx_data.kind() {
@@ -296,16 +406,28 @@ impl SuiProvider {
             }
         };
 
-        // Require exactly two commands.
-        if ptb.commands.len() != 2 {
-            return Err(FacilitatorLocalError::Other(format!(
-                "PTB validation failed: expected exactly 2 commands, got {}",
-                ptb.commands.len()
-            )));
+        // Require exactly two commands, or three opening with a MergeCoins
+        // when the rules allow merging.
+        let merges = rules.coins_may_merge
+            && ptb.commands.len() == 3
+            && matches!(ptb.commands[0], Command::MergeCoins(..));
+        let split_at = usize::from(merges);
+        if ptb.commands.len() != split_at + 2 {
+            return Err(FacilitatorLocalError::Other(if rules.coins_may_merge {
+                format!(
+                    "PTB validation failed: expected 2 commands, or 3 opening with MergeCoins, got {}",
+                    ptb.commands.len()
+                )
+            } else {
+                format!(
+                    "PTB validation failed: expected exactly 2 commands, got {}",
+                    ptb.commands.len()
+                )
+            }));
         }
 
-        // --- Command 0: SplitCoins(coin_arg, [amount_arg]) ---
-        let (split_coin_arg, split_amount_arg) = match &ptb.commands[0] {
+        // --- Command 0 (1 after a MergeCoins): SplitCoins(coin_arg, [amount_arg]) ---
+        let (split_coin_arg, split_amount_arg) = match &ptb.commands[split_at] {
             Command::SplitCoins(coin_arg, amount_args) => {
                 if amount_args.len() != 1 {
                     return Err(FacilitatorLocalError::Other(format!(
@@ -317,29 +439,39 @@ impl SuiProvider {
             }
             other => {
                 return Err(FacilitatorLocalError::Other(format!(
-                    "PTB validation failed: command[0] must be SplitCoins, got {:?}",
-                    other
+                    "PTB validation failed: command[{}] must be SplitCoins, got {:?}",
+                    split_at, other
                 )));
             }
         };
 
-        // --- Command 1: TransferObjects([Result(0)], recipient_arg) ---
-        let (transfer_objects, recipient_arg) = match &ptb.commands[1] {
+        // --- The next: TransferObjects([Result(split)], recipient_arg) ---
+        let (transfer_objects, recipient_arg) = match &ptb.commands[split_at + 1] {
             Command::TransferObjects(objects, recipient) => (objects, recipient),
             other => {
                 return Err(FacilitatorLocalError::Other(format!(
-                    "PTB validation failed: command[1] must be TransferObjects, got {:?}",
+                    "PTB validation failed: command[{}] must be TransferObjects, got {:?}",
+                    split_at + 1,
                     other
                 )));
             }
         };
 
-        // TransferObjects must move exactly the result of command 0.
-        if transfer_objects.len() != 1 || transfer_objects[0] != Argument::Result(0) {
-            return Err(FacilitatorLocalError::Other(
-                "PTB validation failed: TransferObjects must transfer exactly Result(0)"
-                    .to_string(),
-            ));
+        // TransferObjects must move exactly the result of the split: the whole
+        // result, or under the spec's rules its one coin as `NestedResult`, the
+        // form `@mysten/sui` writes for `const [coin] = tx.splitCoins(...)`
+        // (a split of one amount has exactly one coin).
+        let split_result = Argument::Result(split_at as u16);
+        let moves_the_split = |object: &Argument| {
+            *object == split_result
+                || (rules.split_may_be_nested
+                    && *object == Argument::NestedResult(split_at as u16, 0))
+        };
+        if transfer_objects.len() != 1 || !moves_the_split(&transfer_objects[0]) {
+            return Err(FacilitatorLocalError::Other(format!(
+                "PTB validation failed: TransferObjects must transfer exactly {:?}",
+                split_result
+            )));
         }
 
         // --- Resolve coin_arg -> coin object ID ---
@@ -379,6 +511,60 @@ impl SuiProvider {
                 "PTB validation failed: coin object ID in PTB ({}) does not match declared coin_object_id ({})",
                 ptb_coin_id, expected_coin_id
             )));
+        }
+
+        // --- The MergeCoins, when there is one: owned coins into the split one ---
+        if merges {
+            let Command::MergeCoins(destination, sources) = &ptb.commands[0] else {
+                unreachable!("`merges` matched a MergeCoins at command[0]")
+            };
+            if destination != split_coin_arg {
+                return Err(FacilitatorLocalError::Other(
+                    "PTB validation failed: MergeCoins must merge into the coin SplitCoins splits"
+                        .to_string(),
+                ));
+            }
+            if sources.is_empty() {
+                return Err(FacilitatorLocalError::Other(
+                    "PTB validation failed: MergeCoins merges no coin".to_string(),
+                ));
+            }
+            if sources.len() > MAX_MERGED_COINS {
+                return Err(FacilitatorLocalError::Other(format!(
+                    "PTB validation failed: MergeCoins merges {} coins, more than the {} read for a payment",
+                    sources.len(),
+                    MAX_MERGED_COINS
+                )));
+            }
+            let mut seen = vec![ptb_coin_id];
+            for source in sources {
+                let id = match source {
+                    Argument::Input(index) => match ptb.inputs.get(usize::from(*index)) {
+                        Some(CallArg::Object(
+                            sui_types::transaction::ObjectArg::ImmOrOwnedObject((id, _, _)),
+                        )) => *id,
+                        other => {
+                            return Err(FacilitatorLocalError::Other(format!(
+                                "PTB validation failed: a merged coin must be an owned object input, got {:?}",
+                                other
+                            )));
+                        }
+                    },
+                    other => {
+                        return Err(FacilitatorLocalError::Other(format!(
+                            "PTB validation failed: a merged coin must be an Input, got {:?}",
+                            other
+                        )));
+                    }
+                };
+                if seen.contains(&id) {
+                    return Err(FacilitatorLocalError::Other(format!(
+                        "PTB validation failed: coin {} is merged twice",
+                        id
+                    )));
+                }
+                seen.push(id);
+            }
         }
 
         // --- Resolve split_amount_arg -> u64 ---
@@ -476,7 +662,21 @@ impl SuiProvider {
         // For a sponsored transaction the gas owner must be the facilitator, not the sender.
         // If the client encodes gas_data.owner = themselves, they could trick us into signing
         // a transaction where the gas refund goes to them instead of the facilitator.
+        //
+        // The x402 Foundation payload may instead leave the gas to its sender
+        // (`scheme_exact_sui.md`: sponsorship is optional). Then the facilitator
+        // signs nothing and pays nothing: settle sends the sender's signature
+        // alone, and the ceilings below, which bound what a sponsor pays, do
+        // not apply.
         let gas_owner = tx_data.gas_data().owner;
+        if rules.sender_may_pay_gas && gas_owner == tx_data.sender() {
+            debug!(
+                recipient = %expected_recipient,
+                amount = expected_amount,
+                "PTB structural validation passed; the sender pays its own gas"
+            );
+            return Ok(());
+        }
         if gas_owner != self.signer_address {
             return Err(FacilitatorLocalError::Other(format!(
                 "PTB validation failed: gas_data.owner {} must be the facilitator {}",
@@ -517,6 +717,7 @@ impl SuiProvider {
         &self,
         payload: &ExactSuiPayload,
         request: &VerifyRequest,
+        rules: PtbRules,
     ) -> Result<(TransactionData, Signature, SuiAddress), FacilitatorLocalError> {
         let payer_addr = Self::parse_address(&payload.from)?;
         let payer = MixedAddress::Sui(payload.from.clone());
@@ -611,11 +812,12 @@ impl SuiProvider {
         // Validate the PTB structure: bind the on-chain commands to the declared parameters.
         // This is the critical check that prevents a mismatch between the JSON-declared
         // (to, amount) and the actual on-chain transfer encoded in the BCS bytes.
-        self.validate_ptb(
+        self.validate_ptb_with(
             &tx_data,
             &expected_recipient_addr,
             payload_amount,
             &coin_object_id,
+            rules,
         )?;
 
         // Verify signature
@@ -639,18 +841,25 @@ impl SuiProvider {
     /// `0x2::coin::Coin<usdc_coin_type>` owned by `address`, which proves the spent
     /// coin is (a) USDC of the canonical type and (b) owned by `address`. This closes
     /// the coin-type-confusion hole (audit 04) where a payer splits a worthless `Coin<JUNK>`.
+    /// Every coin in `merged_coin_ids` (merged into the spent one first) is
+    /// held to the same: what reaches `payTo` is then the sender's USDC and
+    /// nothing else.
     ///
     /// The JSON-RPC version proved the same by membership in `suix_getCoins`
     /// filtered to USDC, which read one page (50 coins): a coin past it was
     /// refused. Reading the coin itself has no such window. The balance is what
     /// `address` holds in USDC coin objects (`GetBalance` minus the address
     /// balance, which the PTB's `SplitCoins` cannot spend), as the sum of
-    /// `suix_getCoins` was.
+    /// `suix_getCoins` was. The coins the transfer splits from must also hold
+    /// `required_amount` between them, read from each coin: a split larger
+    /// than its coin aborts on chain. A node that reports no balance for a
+    /// coin leaves that check to the address total.
     async fn check_balance(
         &self,
         address: &SuiAddress,
         required_amount: u64,
         spent_coin_id: &ObjectID,
+        merged_coin_ids: &[ObjectID],
     ) -> Result<(), FacilitatorLocalError> {
         let spent_coin = self
             .rpc
@@ -672,6 +881,34 @@ impl SuiProvider {
                 spent_coin_id, self.usdc_coin_type, address
             )));
         }
+        // What the split can draw on, coin by coin; `None` once a coin's
+        // balance is not reported.
+        let mut held = spent_coin.as_ref().and_then(|coin| coin.balance);
+
+        for coin_id in merged_coin_ids {
+            let coin = self
+                .rpc
+                .object_owner_and_type(*coin_id)
+                .await
+                .map_err(|e| {
+                    FacilitatorLocalError::ContractCall(format!(
+                        "Failed to read a merged Sui coin: {}",
+                        e
+                    ))
+                })?;
+            let senders_usdc = coin
+                .as_ref()
+                .is_some_and(|coin| rpc::is_coin_owned_by(coin, &self.usdc_coin_type, address));
+            if !senders_usdc {
+                return Err(FacilitatorLocalError::Other(format!(
+                    "PTB validation failed: merged coin object {} is not a USDC ({}) coin owned by {}",
+                    coin_id, self.usdc_coin_type, address
+                )));
+            }
+            held = held
+                .zip(coin.as_ref().and_then(|coin| coin.balance))
+                .map(|(sum, balance)| sum.saturating_add(balance));
+        }
 
         let total_balance: u64 = self
             .rpc
@@ -687,9 +924,23 @@ impl SuiProvider {
             )));
         }
 
+        match held {
+            Some(held) if held < required_amount => {
+                return Err(FacilitatorLocalError::InsufficientFunds(MixedAddress::Sui(
+                    address.to_string(),
+                )));
+            }
+            Some(_) => {}
+            None => warn!(
+                network = %self.network,
+                "Sui node reported no coin balance; the address total decided"
+            ),
+        }
+
         debug!(
             address = %address,
             balance = total_balance,
+            held = ?held,
             required = required_amount,
             "Sui USDC balance check passed"
         );
@@ -841,14 +1092,23 @@ impl SuiProvider {
         // 1. sender_signature - already provided by the user
         // 2. sponsor_signature - facilitator signs as gas owner
 
-        // Sign the transaction data with facilitator's key (gas sponsor)
-        let intent_msg = IntentMessage::new(Intent::sui_transaction(), tx_data.clone());
-        let sponsor_signature = Signature::new_secure(&intent_msg, &self.keypair);
+        // Sign the transaction data with facilitator's key (gas sponsor).
+        // A transaction whose sender pays its own gas (the x402 Foundation
+        // payload, `validate_ptb_paid`) is sent with the sender's signature
+        // alone: the facilitator is not one of its signers.
+        let sponsored = tx_data.gas_data().owner == self.signer_address;
+        let mut signatures = vec![sender_signature.as_ref().to_vec()];
+        if sponsored {
+            let intent_msg = IntentMessage::new(Intent::sui_transaction(), tx_data.clone());
+            let sponsor_signature = Signature::new_secure(&intent_msg, &self.keypair);
+            signatures.push(sponsor_signature.as_ref().to_vec());
+        }
 
         debug!(
             sender = %sender,
             sponsor = %self.signer_address,
-            "Creating sponsored transaction with dual signatures"
+            sponsored,
+            "Creating Sui transaction with its signatures"
         );
 
         // The signed transaction travels as its BCS bytes -- the exact bytes both
@@ -868,24 +1128,14 @@ impl SuiProvider {
         // and it is what every endpoint is asked about before a (re)send.
         let digest = tx_data.digest().to_string();
 
-        let sent = match self
-            .rpc
-            .execute(
-                transaction_bcs,
-                vec![
-                    sender_signature.as_ref().to_vec(),
-                    sponsor_signature.as_ref().to_vec(),
-                ],
-                &digest,
-            )
-            .await
-        {
+        let sent = match self.rpc.execute(transaction_bcs, signatures, &digest).await {
             Execution::Executed { failure: None } => {
                 info!(
                     digest = %digest,
                     sender = %sender,
                     sponsor = %self.signer_address,
-                    "Sui sponsored transaction executed successfully with dual signatures"
+                    sponsored,
+                    "Sui transaction executed successfully"
                 );
                 Ok(Settled {
                     digest,
@@ -936,6 +1186,100 @@ impl SuiProvider {
         };
         Submission::Sent(sent)
     }
+}
+
+/// A Sui payment as verify and settle read it, whichever payload carried it.
+struct SuiPayment {
+    /// The payload this facilitator defined, or the same values read out of
+    /// the x402 Foundation payload (`SuiProvider::read_spec_payload`).
+    declared: ExactSuiPayload,
+    /// What the transaction may do beyond the declared payload's two commands.
+    rules: PtbRules,
+}
+
+/// What a payment's transaction may do beyond splitting one coin to `payTo`
+/// under the facilitator's sponsorship.
+#[derive(Clone, Copy, Debug)]
+struct PtbRules {
+    /// The sender pays its own gas; the facilitator signs nothing.
+    sender_may_pay_gas: bool,
+    /// The transfer opens with one `MergeCoins` of more of the sender's coins
+    /// into the coin it splits, as a wallet holding several coins builds it.
+    coins_may_merge: bool,
+    /// `TransferObjects` may name the split's one coin as `NestedResult`.
+    split_may_be_nested: bool,
+}
+
+impl PtbRules {
+    /// The payload this facilitator defined: sponsored, one coin.
+    const DECLARED: Self = Self {
+        sender_may_pay_gas: false,
+        coins_may_merge: false,
+        split_may_be_nested: false,
+    };
+    /// The x402 Foundation payload (`scheme_exact_sui.md`): sponsorship is
+    /// optional, and the transaction is whatever the payer's wallet built to
+    /// move `amount` to `payTo`.
+    const SPEC: Self = Self {
+        sender_may_pay_gas: true,
+        coins_may_merge: true,
+        split_may_be_nested: true,
+    };
+}
+
+/// The most coins one payment's `MergeCoins` may merge: each is read from the
+/// chain on verify and again on settle.
+const MAX_MERGED_COINS: usize = 64;
+
+/// The `SplitCoins` of a transfer: at command 0, or at 1 after a `MergeCoins`.
+fn split_command(ptb: &sui_types::transaction::ProgrammableTransaction) -> Option<&Command> {
+    match ptb.commands.as_slice() {
+        [Command::MergeCoins(..), split @ Command::SplitCoins(..), ..] => Some(split),
+        [split @ Command::SplitCoins(..), ..] => Some(split),
+        _ => None,
+    }
+}
+
+/// The coin object the transfer's `SplitCoins` spends, when it splits an
+/// owned object input; `validate_ptb_with` judges the rest.
+fn spent_coin(tx_data: &TransactionData) -> Option<ObjectID> {
+    let TransactionKind::ProgrammableTransaction(ptb) = tx_data.kind() else {
+        return None;
+    };
+    let Some(Command::SplitCoins(Argument::Input(index), _)) = split_command(ptb) else {
+        return None;
+    };
+    match ptb.inputs.get(usize::from(*index))? {
+        CallArg::Object(sui_types::transaction::ObjectArg::ImmOrOwnedObject((id, _, _))) => {
+            Some(*id)
+        }
+        _ => None,
+    }
+}
+
+/// The coins a transfer's opening `MergeCoins` merges into the spent one; none
+/// without one. Read after `validate_ptb_with` accepted the transaction.
+fn merged_coins(tx_data: &TransactionData) -> Vec<ObjectID> {
+    let TransactionKind::ProgrammableTransaction(ptb) = tx_data.kind() else {
+        return Vec::new();
+    };
+    let Some(Command::MergeCoins(_, sources)) = ptb.commands.first() else {
+        return Vec::new();
+    };
+    sources
+        .iter()
+        .filter_map(|source| match source {
+            Argument::Input(index) => {
+                match ptb.inputs.get(usize::from(*index)) {
+                    Some(CallArg::Object(sui_types::transaction::ObjectArg::ImmOrOwnedObject(
+                        (id, _, _),
+                    ))) => Some(*id),
+                    _ => None,
+                }
+            }
+            _ => None,
+        })
+        .collect()
 }
 
 /// A sponsored transaction the chain executed: its digest, and the on-chain
@@ -1175,11 +1519,14 @@ impl Facilitator for SuiProvider {
     type Error = FacilitatorLocalError;
 
     async fn verify(&self, request: &VerifyRequest) -> Result<VerifyResponse, Self::Error> {
-        let payload = self.extract_payload(request)?;
+        let payment = self.payment(request)?;
+        let payload = &payment.declared;
         let payer = MixedAddress::Sui(payload.from.clone());
 
         // Full verification including signature and transaction structure
-        let (tx_data, _signature, payer_addr) = self.verify_transaction(payload, request).await?;
+        let (tx_data, _signature, payer_addr) = self
+            .verify_transaction(payload, request, payment.rules)
+            .await?;
 
         // Check balance — parse explicitly; a non-numeric amount is a hard error, not 0.
         let required_amount: u64 = payload.amount.parse().map_err(|e| {
@@ -1198,8 +1545,13 @@ impl Facilitator for SuiProvider {
         // Settle repeats this read: it is also what refuses a settle of a
         // transaction that executed long ago (its gas coin, at least, moved on).
         self.check_inputs_current(&tx_data).await?;
-        self.check_balance(&payer_addr, required_amount, &spent_coin_id)
-            .await?;
+        self.check_balance(
+            &payer_addr,
+            required_amount,
+            &spent_coin_id,
+            &merged_coins(&tx_data),
+        )
+        .await?;
 
         info!(
             network = %self.network,
@@ -1211,11 +1563,14 @@ impl Facilitator for SuiProvider {
     }
 
     async fn settle(&self, request: &SettleRequest) -> Result<SettleResponse, Self::Error> {
-        let payload = self.extract_payload(request)?;
+        let payment = self.payment(request)?;
+        let payload = &payment.declared;
         let payer = MixedAddress::Sui(payload.from.clone());
 
         // Verify the transaction
-        let (tx_data, signature, sender) = self.verify_transaction(payload, request).await?;
+        let (tx_data, signature, sender) = self
+            .verify_transaction(payload, request, payment.rules)
+            .await?;
 
         // Check balance before settlement — parse explicitly; a non-numeric amount is a hard error, not 0.
         let required_amount: u64 = payload.amount.parse().map_err(|e| {
@@ -1254,8 +1609,13 @@ impl Facilitator for SuiProvider {
 
         // A transaction that already executed has inputs that moved on.
         self.check_inputs_current(&tx_data).await?;
-        self.check_balance(&sender, required_amount, &spent_coin_id)
-            .await?;
+        self.check_balance(
+            &sender,
+            required_amount,
+            &spent_coin_id,
+            &merged_coins(&tx_data),
+        )
+        .await?;
 
         match claims
             .check_and_mark_used(&claim, SETTLE_CLAIM_TTL_SECONDS)
@@ -1307,6 +1667,8 @@ impl Facilitator for SuiProvider {
                 fee_payer: Some(self.signer_address()),
                 tokens: Some(crate::network::exact_payment_tokens(self.network)),
                 escrow: None,
+                facilitator_address: None,
+                are_fees_sponsored: None,
             }),
         }];
 
@@ -1734,7 +2096,7 @@ mod replay_verify_tests {
         )
     }
 
-    fn gas_ref() -> ObjectRef {
+    pub(super) fn gas_ref() -> ObjectRef {
         (
             ObjectID::new([0xee; 32]),
             SequenceNumber::from_u64(9),
@@ -1742,7 +2104,7 @@ mod replay_verify_tests {
         )
     }
 
-    fn merchant() -> SuiAddress {
+    pub(super) fn merchant() -> SuiAddress {
         SuiAddress::from(ObjectID::new([0xbb; 32]))
     }
 
@@ -1944,6 +2306,10 @@ mod replay_verify_tests {
             }
             if asks(&request.read_mask, "object_type") {
                 object.object_type = Some(format!("0x2::coin::Coin<{}>", coin.coin_type));
+            }
+            if asks(&request.read_mask, "balance") {
+                // The payer's coin holdings, all in this one coin.
+                object.balance = Some(coin.balance.saturating_sub(coin.address_balance));
             }
             let mut response = GetObjectResponse::default();
             response.object = Some(object);
@@ -2495,7 +2861,7 @@ mod execution_outcome_tests {
     };
     use sui_types::crypto::SignatureScheme;
 
-    fn executed(digest: &str, success: bool) -> ExecuteTransactionResponse {
+    pub(super) fn executed(digest: &str, success: bool) -> ExecuteTransactionResponse {
         let mut status = ExecutionStatus::default();
         status.success = Some(success);
         if !success {
@@ -2515,7 +2881,7 @@ mod execution_outcome_tests {
 
     /// A node for the settle path: the payer's USDC is there, the transaction
     /// is unknown to it, and `execute` decides the rest.
-    fn settle_node(
+    pub(super) fn settle_node(
         execute: impl Fn(&str) -> Reply<ExecuteTransactionResponse> + Send + Sync + 'static,
         digest: String,
     ) -> Node {
@@ -3239,5 +3605,943 @@ mod execution_outcome_tests {
             .expect_err("a forged signature");
         assert!(invalid_signature(&err), "{err:?}");
         assert!(node.calls().is_empty(), "{:?}", node.calls());
+    }
+}
+
+/// The x402 Foundation's Sui payload (`scheme_exact_sui.md`): the spec's own
+/// example (`tests/fixtures/x402-spec/`), and the same request shape carrying
+/// transactions built here, sponsored and paid by their sender.
+#[cfg(test)]
+mod spec_payload_tests {
+    use super::execution_outcome_tests::{executed, settle_node};
+    use super::replay_verify_tests::{
+        merchant, provider_at, provider_with, sender, sender_keypair, transaction, Holdings,
+        Inputs, AMOUNT,
+    };
+    use super::stub::{self, Reply};
+    use super::*;
+    use crate::types_v2::VerifyRequestEnvelope;
+    use base64::{engine::general_purpose::STANDARD, Engine};
+    use serde_json::{json, Value};
+
+    const PAYMENT_PAYLOAD: &str =
+        include_str!("../../tests/fixtures/x402-spec/sui_exact_payment_payload.json");
+
+    /// The spec's request for `payload`: the resource server passes the
+    /// payload's own `accepted` on as `paymentRequirements`.
+    fn body(payload: &Value) -> Value {
+        json!({
+            "x402Version": 2,
+            "paymentPayload": payload,
+            "paymentRequirements": payload["accepted"],
+        })
+    }
+
+    fn read(body: Value) -> VerifyRequest {
+        let envelope: VerifyRequestEnvelope = serde_json::from_value(body).unwrap();
+        assert!(
+            matches!(envelope, VerifyRequestEnvelope::SpecV2(_)),
+            "the spec's body is read as the spec's: {envelope:?}"
+        );
+        envelope.to_v1().unwrap()
+    }
+
+    /// Where a transfer's `TransferObjects` sends what it moves.
+    fn recipient_of(tx: &TransactionData) -> SuiAddress {
+        let TransactionKind::ProgrammableTransaction(ptb) = tx.kind() else {
+            panic!("a programmable transaction");
+        };
+        let recipient = ptb
+            .commands
+            .iter()
+            .find_map(|command| match command {
+                Command::TransferObjects(_, Argument::Input(index)) => Some(*index),
+                _ => None,
+            })
+            .expect("a TransferObjects to an input");
+        match &ptb.inputs[usize::from(recipient)] {
+            CallArg::Pure(bytes) => SuiAddress::from_bytes(bytes).unwrap(),
+            other => panic!("recipient input {other:?}"),
+        }
+    }
+
+    /// The spec's example as written, its `payTo` written out in full again
+    /// (the fixture abbreviates it: see the fixtures' README). The address
+    /// the example names as `payTo` is the transaction's own sender.
+    fn spec_example() -> (Value, TransactionData) {
+        let mut payload: Value = serde_json::from_str(PAYMENT_PAYLOAD).unwrap();
+        let tx: TransactionData = bcs::from_bytes(
+            &STANDARD
+                .decode(payload["payload"]["transaction"].as_str().unwrap())
+                .unwrap(),
+        )
+        .expect("the spec's transaction is BCS TransactionData");
+        let sender = tx.sender().to_string();
+        let abbreviated = payload["accepted"]["payTo"].as_str().unwrap().to_string();
+        let (head, tail) = abbreviated.split_once("...").unwrap();
+        assert!(
+            sender.starts_with(head) && sender.ends_with(tail),
+            "the transaction is sent by {sender}, the example names {abbreviated}"
+        );
+        payload["accepted"]["payTo"] = json!(sender);
+        (payload, tx)
+    }
+
+    /// The split amount of a `SplitCoins(_, [Input(i)])` transfer.
+    fn split_amount_of(tx: &TransactionData) -> u64 {
+        let TransactionKind::ProgrammableTransaction(ptb) = tx.kind() else {
+            panic!("a programmable transaction");
+        };
+        let index = ptb
+            .commands
+            .iter()
+            .find_map(|command| match command {
+                Command::SplitCoins(_, amounts) => match amounts.as_slice() {
+                    [Argument::Input(index)] => Some(*index),
+                    _ => None,
+                },
+                _ => None,
+            })
+            .expect("a SplitCoins of one input amount");
+        match &ptb.inputs[usize::from(index)] {
+            CallArg::Pure(bytes) => u64::from_le_bytes(bytes.as_slice().try_into().unwrap()),
+            other => panic!("amount input {other:?}"),
+        }
+    }
+
+    /// The example's shape for a transaction built here, on testnet USDC.
+    fn spec_payload(tx: &TransactionData, signer: &SuiKeyPair) -> Value {
+        let signature = Signature::new_secure(
+            &IntentMessage::new(Intent::sui_transaction(), tx.clone()),
+            signer,
+        );
+        let mut payload: Value = serde_json::from_str(PAYMENT_PAYLOAD).unwrap();
+        payload["accepted"] = json!({
+            "scheme": "exact",
+            "network": "sui:testnet",
+            "amount": AMOUNT.to_string(),
+            "asset": USDC_COIN_TYPE_TESTNET,
+            "payTo": merchant().to_string(),
+            "maxTimeoutSeconds": 60,
+            "extra": {},
+        });
+        payload["payload"] = json!({
+            "signature": STANDARD.encode(signature.as_ref()),
+            "transaction": STANDARD.encode(bcs::to_bytes(tx).unwrap()),
+        });
+        payload
+    }
+
+    /// A USDC transfer by [`sender`] whose gas `gas_owner` pays.
+    fn spec_request(gas_owner: SuiAddress) -> VerifyRequest {
+        read(body(&spec_payload(
+            &transaction(gas_owner, sender()),
+            &sender_keypair(),
+        )))
+    }
+
+    fn facilitator_address() -> SuiAddress {
+        provider_at(vec![], std::time::Duration::from_secs(1)).signer_address
+    }
+
+    async fn verify(request: &VerifyRequest) -> Result<VerifyResponse, FacilitatorLocalError> {
+        provider_with(Inputs::Current, Holdings::usdc())
+            .await
+            .verify(request)
+            .await
+    }
+
+    fn refused_because(result: Result<VerifyResponse, FacilitatorLocalError>, why: &str) {
+        let err = result.expect_err(why);
+        assert!(
+            format!("{err:?}").contains(why),
+            "refused, but for: {err:?}"
+        );
+    }
+
+    fn valid_for_sender(response: &VerifyResponse) -> bool {
+        matches!(response, VerifyResponse::Valid { payer } if *payer == MixedAddress::Sui(sender().to_string()))
+    }
+
+    /// The spec's example writes its asset with a short package,
+    /// `0x2::sui::SUI`, which this facilitator does not read as a Sui coin
+    /// type (it settles USDC, whose package is written in full): the body is
+    /// refused before any provider reads it. Its payload, written out with a
+    /// USDC asset, is read as the spec's.
+    #[test]
+    fn the_spec_example_is_refused_at_its_asset_and_its_payload_is_the_specs() {
+        let (mut payload, _) = spec_example();
+        assert_eq!(payload["accepted"]["asset"], json!("0x2::sui::SUI"));
+        assert!(serde_json::from_value::<VerifyRequestEnvelope>(body(&payload)).is_err());
+
+        payload["accepted"]["asset"] = json!(USDC_COIN_TYPE_MAINNET);
+        let request = read(body(&payload));
+        assert_eq!(request.payment_payload.network, Network::Sui);
+        assert!(matches!(
+            &request.payment_payload.payload,
+            ExactPaymentPayload::SuiTransaction(p)
+                if p.signature == payload["payload"]["signature"].as_str().unwrap()
+                && p.transaction == payload["payload"]["transaction"].as_str().unwrap()
+        ));
+        let terms = &request.payment_requirements;
+        assert_eq!(terms.max_amount_required.to_string(), "10000000");
+        assert_eq!(
+            terms.pay_to.to_string(),
+            payload["accepted"]["payTo"].as_str().unwrap()
+        );
+    }
+
+    /// What the spec's example holds, decoded: its sender pays its own gas
+    /// and sends 2.5 SUI to an address other than `payTo`, which is the sender
+    /// itself; its `signature` is 64 raw bytes, with neither the scheme flag
+    /// nor the public key a Sui signature carries. It is not a payment of its
+    /// own terms, and no facilitator can verify it.
+    #[test]
+    fn the_spec_example_is_not_a_payment_of_its_own_terms() {
+        let (payload, tx) = spec_example();
+        assert_eq!(tx.gas_data().owner, tx.sender(), "the sender pays its gas");
+        assert_ne!(
+            recipient_of(&tx),
+            tx.sender(),
+            "it pays someone other than payTo"
+        );
+        assert_eq!(split_amount_of(&tx), 2_500_000_000);
+        assert_ne!(
+            split_amount_of(&tx).to_string(),
+            payload["accepted"]["amount"]
+        );
+
+        let signature = payload["payload"]["signature"].as_str().unwrap();
+        assert_eq!(STANDARD.decode(signature).unwrap().len(), 64);
+        let provider = SuiProvider::for_test(Network::Sui);
+        let refused = provider
+            .decode_signature(signature)
+            .expect_err("not a Sui signature");
+        assert!(
+            format!("{refused:?}").contains("Failed to parse Sui signature"),
+            "{refused:?}"
+        );
+    }
+
+    /// The example under USDC terms is refused at its signature, which is no
+    /// Sui signature; its transaction's shape, a `MergeCoins` of six coins,
+    /// is read, and what refuses it is its split, not the `amount` asked for.
+    #[tokio::test]
+    async fn the_spec_example_under_usdc_terms_is_refused() {
+        let (mut payload, tx) = spec_example();
+        payload["accepted"]["asset"] = json!(USDC_COIN_TYPE_MAINNET);
+        let provider = SuiProvider::for_test(Network::Sui);
+        refused_because(
+            provider.verify(&read(body(&payload))).await,
+            "Failed to parse Sui signature",
+        );
+
+        let coin = spent_coin(&tx).expect("it splits its first input");
+        assert_eq!(merged_coins(&tx).len(), 5);
+        let refused = provider
+            .validate_ptb_with(&tx, &tx.sender(), 10_000_000, &coin, PtbRules::SPEC)
+            .expect_err("not its own amount");
+        assert!(
+            format!("{refused:?}").contains("does not match required amount"),
+            "{refused:?}"
+        );
+        // Under its own recipient and amount the shape is a transfer the
+        // spec's rules read; the declared payload's rules do not.
+        provider
+            .validate_ptb_with(
+                &tx,
+                &recipient_of(&tx),
+                2_500_000_000,
+                &coin,
+                PtbRules::SPEC,
+            )
+            .expect("its own transfer, read as one");
+        assert!(provider
+            .validate_ptb_with(
+                &tx,
+                &recipient_of(&tx),
+                2_500_000_000,
+                &coin,
+                PtbRules::DECLARED
+            )
+            .is_err());
+    }
+
+    #[tokio::test]
+    async fn a_spec_payment_the_facilitator_sponsors_verifies() {
+        let response = verify(&spec_request(facilitator_address()))
+            .await
+            .expect("a verdict");
+        assert!(valid_for_sender(&response), "{response:?}");
+    }
+
+    #[tokio::test]
+    async fn a_spec_payment_whose_sender_pays_its_gas_verifies() {
+        let response = verify(&spec_request(sender())).await.expect("a verdict");
+        assert!(valid_for_sender(&response), "{response:?}");
+    }
+
+    #[tokio::test]
+    async fn a_spec_payment_whose_gas_a_third_party_pays_is_refused() {
+        let third = SuiAddress::from(ObjectID::new([0x77; 32]));
+        refused_because(
+            verify(&spec_request(third)).await,
+            "must be the facilitator",
+        );
+    }
+
+    #[tokio::test]
+    async fn a_sender_paid_spec_payment_above_the_sponsor_ceilings_verifies() {
+        // The ceilings bound what a sponsor pays; this one pays nothing.
+        let mut tx = transaction(sender(), sender());
+        let TransactionData::V1(v1) = &mut tx;
+        v1.gas_data.price = MAX_SPONSORED_GAS_PRICE + 1;
+        v1.gas_data.budget = MAX_SPONSORED_GAS_BUDGET + 1;
+        let response = verify(&read(body(&spec_payload(&tx, &sender_keypair()))))
+            .await
+            .expect("a verdict");
+        assert!(valid_for_sender(&response), "{response:?}");
+    }
+
+    #[tokio::test]
+    async fn a_sponsored_spec_payment_above_the_ceilings_is_refused() {
+        let mut tx = transaction(facilitator_address(), sender());
+        let TransactionData::V1(v1) = &mut tx;
+        v1.gas_data.price = MAX_SPONSORED_GAS_PRICE + 1;
+        refused_because(
+            verify(&read(body(&spec_payload(&tx, &sender_keypair())))).await,
+            "above the",
+        );
+    }
+
+    #[tokio::test]
+    async fn the_facilitator_as_sender_is_refused() {
+        let facilitator = facilitator_address();
+        let tx = transaction(facilitator, facilitator);
+        refused_because(
+            verify(&read(body(&spec_payload(&tx, &sender_keypair())))).await,
+            "cannot be the sender",
+        );
+    }
+
+    #[tokio::test]
+    async fn a_spec_payment_for_another_asset_is_refused() {
+        let mut payload = spec_payload(&transaction(sender(), sender()), &sender_keypair());
+        // Another coin type, its package written in full (built: the
+        // pre-commit hook refuses 0x + 64 hex typed out).
+        payload["accepted"]["asset"] = json!(format!("0x{}::coin::OTHER", "ab".repeat(32)));
+        refused_because(verify(&read(body(&payload))).await, "is not the USDC");
+    }
+
+    #[tokio::test]
+    async fn a_spec_payment_for_another_amount_is_refused() {
+        let mut payload = spec_payload(&transaction(sender(), sender()), &sender_keypair());
+        payload["accepted"]["amount"] = json!((AMOUNT - 1).to_string());
+        refused_because(
+            verify(&read(body(&payload))).await,
+            "does not match required amount",
+        );
+    }
+
+    #[tokio::test]
+    async fn a_spec_payment_to_another_recipient_is_refused() {
+        let mut payload = spec_payload(&transaction(sender(), sender()), &sender_keypair());
+        payload["accepted"]["payTo"] =
+            json!(SuiAddress::from(ObjectID::new([0x55; 32])).to_string());
+        refused_because(
+            verify(&read(body(&payload))).await,
+            "does not match required pay_to",
+        );
+    }
+
+    #[tokio::test]
+    async fn a_spec_transaction_that_does_not_open_with_a_split_is_refused() {
+        let mut tx = transaction(sender(), sender());
+        let TransactionData::V1(v1) = &mut tx;
+        let TransactionKind::ProgrammableTransaction(ptb) = &mut v1.kind else {
+            unreachable!()
+        };
+        ptb.commands.reverse();
+        refused_because(
+            verify(&read(body(&spec_payload(&tx, &sender_keypair())))).await,
+            "must split an owned coin input",
+        );
+    }
+
+    #[tokio::test]
+    async fn a_spec_payment_signed_by_another_key_is_refused() {
+        let mut bytes = [5u8; 33];
+        bytes[0] = 0;
+        let other = SuiKeyPair::from_bytes(&bytes).unwrap();
+        refused_because(
+            verify(&read(body(&spec_payload(
+                &transaction(sender(), sender()),
+                &other,
+            ))))
+            .await,
+            "signature does not verify",
+        );
+    }
+
+    /// The payload this facilitator defined keeps its rule: the facilitator
+    /// sponsors, a sender paying its own gas is refused.
+    #[tokio::test]
+    async fn the_declared_payload_still_requires_the_facilitator_as_sponsor() {
+        let spec = spec_request(sender());
+        let ExactPaymentPayload::SuiTransaction(p) = &spec.payment_payload.payload else {
+            unreachable!()
+        };
+        let mut declared = spec.clone();
+        declared.payment_payload.payload = ExactPaymentPayload::Sui(ExactSuiPayload {
+            transaction_bytes: p.transaction.clone(),
+            sender_signature: p.signature.clone(),
+            from: sender().to_string(),
+            to: merchant().to_string(),
+            amount: AMOUNT.to_string(),
+            coin_object_id: super::replay_verify_tests::coin_ref().0.to_string(),
+        });
+        refused_because(verify(&declared).await, "must be the facilitator");
+    }
+
+    /// Settle sends what the payment's gas owner calls for: the sender's
+    /// signature and the facilitator's when it sponsors, the sender's alone
+    /// when the sender pays.
+    async fn settle(gas_owner: SuiAddress) -> (SettleResponse, Vec<Signature>, String) {
+        let tx = transaction(gas_owner, sender());
+        let digest = tx.digest().to_string();
+        let (url, node) = stub::serve(settle_node(
+            |digest| Reply::Answer(Ok(executed(digest, true))),
+            digest.clone(),
+        ))
+        .await;
+        let provider = provider_at(vec![url], std::time::Duration::from_secs(5));
+        let response = provider
+            .settle(&read(body(&spec_payload(&tx, &sender_keypair()))))
+            .await
+            .expect("settled");
+        let sent = node.executions();
+        assert_eq!(sent.len(), 1);
+        let signatures = sent[0]
+            .signatures
+            .iter()
+            .map(|s| {
+                Signature::from_bytes(s.bcs.as_ref().unwrap().value.as_deref().unwrap()).unwrap()
+            })
+            .collect();
+        (response, signatures, digest)
+    }
+
+    #[tokio::test]
+    async fn a_sponsored_spec_payment_settles_with_both_signatures() {
+        let sponsor = facilitator_address();
+        let (response, signatures, digest) = settle(sponsor).await;
+        assert!(response.success, "{response:?}");
+        assert_eq!(
+            response.transaction,
+            Some(crate::types::TransactionHash::Sui(digest))
+        );
+        let intent = IntentMessage::new(Intent::sui_transaction(), transaction(sponsor, sender()));
+        assert_eq!(signatures.len(), 2, "sender, then sponsor");
+        signatures[0]
+            .verify_secure(&intent, sender(), signatures[0].scheme())
+            .expect("the sender's");
+        signatures[1]
+            .verify_secure(&intent, sponsor, signatures[1].scheme())
+            .expect("the facilitator's");
+    }
+
+    #[tokio::test]
+    async fn a_sender_paid_spec_payment_settles_with_the_senders_signature_alone() {
+        let (response, signatures, digest) = settle(sender()).await;
+        assert!(response.success, "{response:?}");
+        assert_eq!(
+            response.transaction,
+            Some(crate::types::TransactionHash::Sui(digest))
+        );
+        assert_eq!(signatures.len(), 1, "the facilitator is not a signer");
+        let intent = IntentMessage::new(Intent::sui_transaction(), transaction(sender(), sender()));
+        signatures[0]
+            .verify_secure(&intent, sender(), signatures[0].scheme())
+            .expect("the sender's");
+    }
+
+    // -----------------------------------------------------------------------
+    // Several coins: one MergeCoins into the coin the transfer splits
+    // -----------------------------------------------------------------------
+
+    /// A coin of `owner` and `coin_type` the node holds at `obj_ref`.
+    #[derive(Clone)]
+    struct Held {
+        obj_ref: ObjectRef,
+        owner: SuiAddress,
+        coin_type: String,
+        /// What the node reports the coin holds; `None`: not reported.
+        balance: Option<u64>,
+    }
+
+    fn senders_usdc(seed: u8) -> Held {
+        Held {
+            obj_ref: (
+                ObjectID::new([seed; 32]),
+                sui_types::base_types::SequenceNumber::from_u64(7),
+                sui_types::base_types::ObjectDigest::new([seed; 32]),
+            ),
+            owner: sender(),
+            coin_type: USDC_COIN_TYPE_TESTNET.to_string(),
+            balance: Some(AMOUNT),
+        }
+    }
+
+    /// The coin every transfer here splits, holding `balance`.
+    fn spent_holding(balance: Option<u64>) -> Held {
+        Held {
+            obj_ref: super::replay_verify_tests::coin_ref(),
+            owner: sender(),
+            coin_type: USDC_COIN_TYPE_TESTNET.to_string(),
+            balance,
+        }
+    }
+
+    /// The settle node of the other tests, also holding `extra` coins: each
+    /// current at its ref, with its owner, type and balance; the spent coin
+    /// holds `AMOUNT` unless `extra` names it. An execution answers as the
+    /// transaction of `digest`.
+    fn node_holding(extra: Vec<Held>, digest: String) -> stub::Node {
+        use sui_rpc::proto::sui::rpc::v2::{
+            get_object_result, owner::OwnerKind, BatchGetObjectsResponse, GetObjectResponse,
+            GetObjectResult, Object, Owner,
+        };
+        let mut node = settle_node(|digest| Reply::Answer(Ok(executed(digest, true))), digest);
+        let mut held = extra.clone();
+        held.push(spent_holding(Some(AMOUNT)));
+        let gas = super::replay_verify_tests::gas_ref();
+        let refs: Vec<ObjectRef> = held.iter().map(|h| h.obj_ref).chain([gas]).collect();
+        node.batch_get_objects = Box::new(move |request| {
+            let mut response = BatchGetObjectsResponse::default();
+            response.objects = request
+                .requests
+                .iter()
+                .map(|r| {
+                    let id = ObjectID::from_str(r.object_id.as_deref().unwrap()).unwrap();
+                    let obj_ref = refs.iter().find(|(i, _, _)| *i == id).copied().unwrap();
+                    let mut object = Object::default();
+                    object.object_id = Some(id.to_string());
+                    object.version = Some(obj_ref.1.value());
+                    object.digest = Some(obj_ref.2.to_string());
+                    let mut result = GetObjectResult::default();
+                    result.result = Some(get_object_result::Result::Object(object));
+                    result
+                })
+                .collect();
+            Reply::Answer(Ok(response))
+        });
+        node.get_object = Box::new(move |request| {
+            let id = ObjectID::from_str(request.object_id.as_deref().unwrap()).unwrap();
+            let Some(coin) = held.iter().find(|h| h.obj_ref.0 == id) else {
+                return Reply::Answer(Err(tonic::Status::not_found("no such object")));
+            };
+            let mut owner = Owner::default();
+            owner.kind = Some(OwnerKind::Address as i32);
+            owner.address = Some(coin.owner.to_string());
+            let mut object = Object::default();
+            object.object_id = Some(id.to_string());
+            object.owner = Some(owner);
+            object.object_type = Some(format!("0x2::coin::Coin<{}>", coin.coin_type));
+            // As a node does: only when the read mask asks for it.
+            let asks_balance = request
+                .read_mask
+                .as_ref()
+                .is_some_and(|mask| mask.paths.iter().any(|path| path == "balance"));
+            if asks_balance {
+                object.balance = coin.balance;
+            }
+            let mut response = GetObjectResponse::default();
+            response.object = Some(object);
+            Reply::Answer(Ok(response))
+        });
+        node
+    }
+
+    /// A transfer of `AMOUNT` to the merchant that first merges `merged`
+    /// (inputs 1..) into the coin it splits (input 0).
+    fn merging(gas_owner: SuiAddress, merged: &[ObjectRef]) -> TransactionData {
+        use sui_types::transaction::{ObjectArg, ProgrammableTransaction, TransactionDataV1};
+        let mut tx = transaction(gas_owner, sender());
+        let TransactionData::V1(TransactionDataV1 { kind, .. }) = &mut tx;
+        let mut inputs = vec![CallArg::Object(ObjectArg::ImmOrOwnedObject(
+            super::replay_verify_tests::coin_ref(),
+        ))];
+        inputs.extend(
+            merged
+                .iter()
+                .map(|r| CallArg::Object(ObjectArg::ImmOrOwnedObject(*r))),
+        );
+        let n = inputs.len() as u16;
+        inputs.push(CallArg::Pure(AMOUNT.to_le_bytes().to_vec()));
+        inputs.push(CallArg::Pure(merchant().to_vec()));
+        *kind = TransactionKind::ProgrammableTransaction(ProgrammableTransaction {
+            inputs,
+            commands: vec![
+                Command::MergeCoins(Argument::Input(0), (1..n).map(Argument::Input).collect()),
+                Command::SplitCoins(Argument::Input(0), vec![Argument::Input(n)]),
+                Command::TransferObjects(vec![Argument::Result(1)], Argument::Input(n + 1)),
+            ],
+        });
+        tx
+    }
+
+    fn commands_of(tx: &mut TransactionData) -> &mut Vec<Command> {
+        let TransactionData::V1(v1) = tx;
+        let TransactionKind::ProgrammableTransaction(ptb) = &mut v1.kind else {
+            unreachable!()
+        };
+        &mut ptb.commands
+    }
+
+    async fn verify_holding(
+        extra: Vec<Held>,
+        tx: &TransactionData,
+    ) -> Result<VerifyResponse, FacilitatorLocalError> {
+        let (url, _) = stub::serve(node_holding(extra, tx.digest().to_string())).await;
+        provider_at(vec![url], std::time::Duration::from_secs(5))
+            .verify(&read(body(&spec_payload(tx, &sender_keypair()))))
+            .await
+    }
+
+    #[tokio::test]
+    async fn a_payment_from_two_coins_verifies() {
+        let extra = vec![senders_usdc(0x31)];
+        let tx = merging(sender(), &[extra[0].obj_ref]);
+        let response = verify_holding(extra, &tx).await.expect("a verdict");
+        assert!(valid_for_sender(&response), "{response:?}");
+    }
+
+    #[tokio::test]
+    async fn a_payment_from_three_coins_settles() {
+        let extra = vec![senders_usdc(0x31), senders_usdc(0x32)];
+        let refs: Vec<ObjectRef> = extra.iter().map(|h| h.obj_ref).collect();
+        let tx = merging(facilitator_address(), &refs);
+        let (url, node) = stub::serve(node_holding(extra, tx.digest().to_string())).await;
+        let provider = provider_at(vec![url], std::time::Duration::from_secs(5));
+        let request = read(body(&spec_payload(&tx, &sender_keypair())));
+        let response = provider.verify(&request).await.expect("a verdict");
+        assert!(valid_for_sender(&response), "{response:?}");
+        let settled = provider.settle(&request).await.expect("settled");
+        assert!(settled.success, "{settled:?}");
+        assert_eq!(node.executions().len(), 1);
+        assert_eq!(node.executions()[0].signatures.len(), 2, "sponsored");
+    }
+
+    #[tokio::test]
+    async fn a_merged_coin_of_another_type_is_refused() {
+        let mut other = senders_usdc(0x31);
+        other.coin_type = format!("0x{}::junk::JUNK", "ab".repeat(32));
+        let tx = merging(sender(), &[other.obj_ref]);
+        refused_because(verify_holding(vec![other], &tx).await, "merged coin object");
+    }
+
+    #[tokio::test]
+    async fn a_merged_coin_owned_by_someone_else_is_refused() {
+        let mut theirs = senders_usdc(0x31);
+        theirs.owner = SuiAddress::from(ObjectID::new([0x55; 32]));
+        let tx = merging(sender(), &[theirs.obj_ref]);
+        refused_because(
+            verify_holding(vec![theirs], &tx).await,
+            "merged coin object",
+        );
+    }
+
+    /// Settle reads the merged coins too: one of another type sends nothing.
+    #[tokio::test]
+    async fn a_settle_with_a_merged_coin_of_another_type_sends_nothing() {
+        let mut other = senders_usdc(0x31);
+        other.coin_type = format!("0x{}::junk::JUNK", "ab".repeat(32));
+        let tx = merging(facilitator_address(), &[other.obj_ref]);
+        let (url, node) = stub::serve(node_holding(vec![other], tx.digest().to_string())).await;
+        let refused = provider_at(vec![url], std::time::Duration::from_secs(5))
+            .settle(&read(body(&spec_payload(&tx, &sender_keypair()))))
+            .await
+            .expect_err("refused");
+        assert!(
+            format!("{refused:?}").contains("merged coin object"),
+            "{refused:?}"
+        );
+        assert!(node.executions().is_empty(), "nothing was sent");
+    }
+
+    #[tokio::test]
+    async fn the_spent_coin_merged_into_itself_is_refused() {
+        let tx = merging(sender(), &[super::replay_verify_tests::coin_ref()]);
+        refused_because(verify_holding(vec![], &tx).await, "merged twice");
+    }
+
+    #[tokio::test]
+    async fn one_coin_merged_twice_is_refused() {
+        let coin = senders_usdc(0x31);
+        let tx = merging(sender(), &[coin.obj_ref, coin.obj_ref]);
+        refused_because(verify_holding(vec![coin], &tx).await, "merged twice");
+    }
+
+    #[tokio::test]
+    async fn a_merge_into_another_coin_than_the_split_is_refused() {
+        let coin = senders_usdc(0x31);
+        let mut tx = merging(sender(), &[coin.obj_ref]);
+        commands_of(&mut tx)[0] = Command::MergeCoins(Argument::Input(1), vec![Argument::Input(0)]);
+        refused_because(
+            verify_holding(vec![coin], &tx).await,
+            "must merge into the coin SplitCoins splits",
+        );
+    }
+
+    #[tokio::test]
+    async fn merging_the_gas_coin_is_refused() {
+        let coin = senders_usdc(0x31);
+        let mut tx = merging(sender(), &[coin.obj_ref]);
+        commands_of(&mut tx)[0] = Command::MergeCoins(Argument::Input(0), vec![Argument::GasCoin]);
+        refused_because(verify_holding(vec![coin], &tx).await, "must be an Input");
+    }
+
+    #[tokio::test]
+    async fn a_merge_of_nothing_is_refused() {
+        let coin = senders_usdc(0x31);
+        let mut tx = merging(sender(), &[coin.obj_ref]);
+        commands_of(&mut tx)[0] = Command::MergeCoins(Argument::Input(0), vec![]);
+        refused_because(verify_holding(vec![coin], &tx).await, "merges no coin");
+    }
+
+    #[tokio::test]
+    async fn a_merge_whose_split_is_not_the_amount_is_refused() {
+        let coin = senders_usdc(0x31);
+        let tx = merging(sender(), &[coin.obj_ref]);
+        let mut payload = spec_payload(&tx, &sender_keypair());
+        payload["accepted"]["amount"] = json!((AMOUNT + 1).to_string());
+        let (url, _) = stub::serve(node_holding(vec![coin], tx.digest().to_string())).await;
+        refused_because(
+            provider_at(vec![url], std::time::Duration::from_secs(5))
+                .verify(&read(body(&payload)))
+                .await,
+            "does not match required amount",
+        );
+    }
+
+    /// Three commands opening with anything else than a MergeCoins.
+    #[tokio::test]
+    async fn three_commands_without_a_merge_are_refused() {
+        let coin = senders_usdc(0x31);
+        let mut tx = merging(sender(), &[coin.obj_ref]);
+        commands_of(&mut tx)[0] = Command::SplitCoins(Argument::Input(1), vec![Argument::Input(2)]);
+        refused_because(
+            verify_holding(vec![coin], &tx).await,
+            "or 3 opening with MergeCoins",
+        );
+    }
+
+    /// The payload this facilitator defined keeps its one coin.
+    #[tokio::test]
+    async fn the_declared_payload_does_not_merge() {
+        let coin = senders_usdc(0x31);
+        let tx = merging(facilitator_address(), &[coin.obj_ref]);
+        let spec = read(body(&spec_payload(&tx, &sender_keypair())));
+        let ExactPaymentPayload::SuiTransaction(p) = &spec.payment_payload.payload else {
+            unreachable!()
+        };
+        let mut declared = spec.clone();
+        declared.payment_payload.payload = ExactPaymentPayload::Sui(ExactSuiPayload {
+            transaction_bytes: p.transaction.clone(),
+            sender_signature: p.signature.clone(),
+            from: sender().to_string(),
+            to: merchant().to_string(),
+            amount: AMOUNT.to_string(),
+            coin_object_id: super::replay_verify_tests::coin_ref().0.to_string(),
+        });
+        let (url, _) = stub::serve(node_holding(vec![coin], tx.digest().to_string())).await;
+        refused_because(
+            provider_at(vec![url], std::time::Duration::from_secs(5))
+                .verify(&declared)
+                .await,
+            "exactly 2 commands",
+        );
+    }
+
+    /// Either payload pays in the asset the requirements name.
+    #[tokio::test]
+    async fn the_declared_payload_is_refused_for_another_asset_too() {
+        let provider = provider_with(Inputs::Current, Holdings::usdc()).await;
+        let (mut request, _) = super::replay_verify_tests::request(&provider);
+        request.payment_requirements.asset =
+            MixedAddress::Sui(format!("0x{}::coin::OTHER", "ab".repeat(32)));
+        refused_because(provider.verify(&request).await, "is not the USDC");
+        // The same request in USDC verifies.
+        let (request, _) = super::replay_verify_tests::request(&provider);
+        let response = provider.verify(&request).await.expect("a verdict");
+        assert!(valid_for_sender(&response), "{response:?}");
+    }
+
+    // -----------------------------------------------------------------------
+    // What the spent coins hold
+    // -----------------------------------------------------------------------
+
+    fn insufficient(result: &Result<VerifyResponse, FacilitatorLocalError>) -> bool {
+        matches!(result, Err(FacilitatorLocalError::InsufficientFunds(_)))
+    }
+
+    /// The sender holds enough in all, but the coin it splits holds less:
+    /// the split would abort on chain.
+    #[tokio::test]
+    async fn a_spent_coin_holding_less_than_the_amount_is_refused() {
+        let tx = transaction(sender(), sender());
+        let result = verify_holding(vec![spent_holding(Some(AMOUNT - 1))], &tx).await;
+        assert!(insufficient(&result), "{result:?}");
+        let result = verify_holding(vec![spent_holding(Some(AMOUNT))], &tx).await;
+        assert!(
+            matches!(result, Ok(ref r) if valid_for_sender(r)),
+            "{result:?}"
+        );
+    }
+
+    /// The declared payload is held to its coin's balance as well.
+    #[tokio::test]
+    async fn the_declared_payload_is_held_to_its_coins_balance_too() {
+        let provider = provider_at(vec![], std::time::Duration::from_secs(1));
+        let (request, _) = super::replay_verify_tests::request(&provider);
+        let digest = transaction(provider.signer_address, sender())
+            .digest()
+            .to_string();
+        let (url, _) =
+            stub::serve(node_holding(vec![spent_holding(Some(AMOUNT - 1))], digest)).await;
+        let result = provider_at(vec![url], std::time::Duration::from_secs(5))
+            .verify(&request)
+            .await;
+        assert!(insufficient(&result), "{result:?}");
+    }
+
+    /// Merged coins count with the spent one, and only together.
+    #[tokio::test]
+    async fn merged_coins_must_hold_the_amount_between_them() {
+        let half = AMOUNT / 2;
+        let mut coin = senders_usdc(0x31);
+        coin.balance = Some(half - 1);
+        let tx = merging(sender(), &[coin.obj_ref]);
+        let result = verify_holding(vec![coin.clone(), spent_holding(Some(half))], &tx).await;
+        assert!(insufficient(&result), "{result:?}");
+
+        coin.balance = Some(half);
+        let result = verify_holding(vec![coin, spent_holding(Some(half))], &tx).await;
+        assert!(
+            matches!(result, Ok(ref r) if valid_for_sender(r)),
+            "{result:?}"
+        );
+    }
+
+    /// A node that reports no coin balance leaves it to the address total.
+    #[tokio::test]
+    async fn a_coin_balance_the_node_does_not_report_leaves_it_to_the_total() {
+        let mut coin = senders_usdc(0x31);
+        coin.balance = None;
+        let tx = merging(sender(), &[coin.obj_ref]);
+        let result = verify_holding(vec![coin, spent_holding(Some(1))], &tx).await;
+        assert!(
+            matches!(result, Ok(ref r) if valid_for_sender(r)),
+            "{result:?}"
+        );
+    }
+
+    fn many_coins(count: u8) -> Vec<Held> {
+        (0..count)
+            .map(|i| {
+                let mut coin = senders_usdc(0x40 + i);
+                coin.balance = Some(1);
+                coin
+            })
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn a_merge_of_as_many_coins_as_read_verifies() {
+        let coins = many_coins(MAX_MERGED_COINS as u8);
+        let refs: Vec<ObjectRef> = coins.iter().map(|c| c.obj_ref).collect();
+        let tx = merging(sender(), &refs);
+        let result = verify_holding(coins, &tx).await;
+        assert!(
+            matches!(result, Ok(ref r) if valid_for_sender(r)),
+            "{result:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_merge_of_more_coins_than_read_is_refused() {
+        let coins = many_coins(MAX_MERGED_COINS as u8 + 1);
+        let refs: Vec<ObjectRef> = coins.iter().map(|c| c.obj_ref).collect();
+        let tx = merging(sender(), &refs);
+        refused_because(verify_holding(coins, &tx).await, "more than the 64");
+    }
+
+    // -----------------------------------------------------------------------
+    // The split's coin named as `NestedResult`
+    // -----------------------------------------------------------------------
+
+    fn transferring(object: Argument) -> TransactionData {
+        let mut tx = transaction(sender(), sender());
+        commands_of(&mut tx)[1] = Command::TransferObjects(vec![object], Argument::Input(2));
+        tx
+    }
+
+    /// `const [coin] = tx.splitCoins(...)` in `@mysten/sui` transfers
+    /// `NestedResult(split, 0)`: the spec's payload takes it.
+    #[tokio::test]
+    async fn the_splits_coin_as_nested_result_verifies() {
+        let tx = transferring(Argument::NestedResult(0, 0));
+        let result = verify_holding(vec![], &tx).await;
+        assert!(
+            matches!(result, Ok(ref r) if valid_for_sender(r)),
+            "{result:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn another_nested_result_is_refused() {
+        let tx = transferring(Argument::NestedResult(0, 1));
+        refused_because(verify_holding(vec![], &tx).await, "must transfer exactly");
+    }
+
+    #[test]
+    fn the_declared_payload_keeps_the_whole_result() {
+        let provider = SuiProvider::for_test(Network::SuiTestnet);
+        let tx = transferring(Argument::NestedResult(0, 0));
+        let refused = provider
+            .validate_ptb_with(
+                &tx,
+                &merchant(),
+                AMOUNT,
+                &super::replay_verify_tests::coin_ref().0,
+                PtbRules::DECLARED,
+            )
+            .expect_err("Result(0) only");
+        assert!(
+            format!("{refused:?}").contains("must transfer exactly"),
+            "{refused:?}"
+        );
+    }
+
+    /// After a MergeCoins the labels name the commands where they are.
+    #[test]
+    fn a_misplaced_transfer_after_a_merge_names_its_command() {
+        let provider = SuiProvider::for_test(Network::SuiTestnet);
+        let coin = senders_usdc(0x31);
+        let mut tx = merging(sender(), &[coin.obj_ref]);
+        commands_of(&mut tx)[2] = Command::SplitCoins(Argument::Input(0), vec![Argument::Input(2)]);
+        let refused = provider
+            .validate_ptb_with(
+                &tx,
+                &merchant(),
+                AMOUNT,
+                &super::replay_verify_tests::coin_ref().0,
+                PtbRules::SPEC,
+            )
+            .expect_err("no transfer");
+        assert!(
+            format!("{refused:?}").contains("command[2] must be TransferObjects"),
+            "{refused:?}"
+        );
     }
 }

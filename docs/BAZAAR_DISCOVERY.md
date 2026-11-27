@@ -85,13 +85,43 @@ Register a new resource in the discovery registry.
 }
 ```
 
-**Response:** `201 Created`, `400 Bad Request`, or `409 Conflict` when the URL is already in the
-catalog from any source (listed, or waiting for its first verification). The URL is stored and
-compared in its canonical spelling (lowercase host, no trailing dot, no default port). There is no
-public route to update or remove a listing; the operator does that.
+**Response:** `201 Created` or `400 Bad Request`. The URL is stored and compared in its canonical
+spelling (lowercase host, no trailing dot, no default port).
 
-**Ownership.** Registration takes the URL and its description from anyone and makes no outbound
-fetch; so does a settlement that asks to be discoverable. Once such a listing verifies alive, the
+**Re-registration.** Posting a URL the catalog already holds (listed or waiting for its first
+verification) re-registers its payment terms: the facilitator probes that URL once -- through the
+prober's connector, with the request the listing declares: one request, or two when the first is
+refused as the wrong method or body -- and applies the submitted `accepts` only when that 402 is the URL's own answer, offers a payment, makes the same
+offers in its header and its body, makes every submitted offer (`scheme`, `network`, `asset`,
+`payTo`) at the submitted amount, and makes no offer the listing declares that the submission
+leaves out: a new amount, an option the 402 no longer makes (left out), an offer moved to another
+network for the same `payTo`. A network the listing declares can be left out only once the 402
+pays no recipient there. Each offer is stored as the 402 makes it, `extra` and
+`maxTimeoutSeconds` included. Every `payTo` submitted must be one the listing already declares,
+and the 402 must pay no recipient that the listing, or the submission, does not declare on a
+network it declares: a re-registration never changes who is paid. Two listings are not
+re-registered (and, held as such when the request arrives, nothing is read for them): one the
+health prober holds (only two clean probes in a row lift a hold), and a copy from a feed
+(`source` `aggregated` or `crawled`), whose terms follow its source on every import. The description, `metadata` and `extensions` of a
+re-registration are not read; the listing keeps its own. `200` with `updated` true (or false when
+nothing changed); otherwise `409` `reregistration_does_not_match_live_402` (with `mismatches` and
+each `liveAmount`), `reregistration_omits_live_offer` (with `omitted`),
+`reregistration_recipient_change`, `reregistration_live_recipient_undeclared`,
+`reregistration_listing_held` or `reregistration_feed_copy`, `422` `reregistration_no_live_402`
+or `reregistration_live_402_conflict`, or `429` `reregistration_too_soon` (one per URL per
+`registration.reregisterCooldownSeconds`). A listing removed while its 402 was being read answers
+the plain `404` of a URL that is not held. There is no public route to remove a listing; the
+operator does that.
+
+**The listed price follows the 402.** The prober reads the 402 of each listing that is alive
+again about every `healthProber.priceSweepSeconds` (a listing that is failing or held is read on
+its own, slower schedule); when it quotes another amount for an offer the listing declares
+(same scheme, network, asset and recipient), a self-registered listing takes that amount, dated by
+`priceAdoptedAt`. Recipients, networks and assets are never taken from a 402. `DISCOVERY_ADOPT_LIVE_PRICE=false`
+turns it off; all of these are published by `GET /discovery/config`.
+
+**Ownership.** A first registration takes the URL and its description from anyone and makes no
+outbound fetch; so does a settlement that asks to be discoverable. Once such a listing verifies alive, the
 health prober reads `/.well-known/x402` on the URL's host and publishes the verdict as
 `health.ownership` on the listing in `GET /discovery/resources`:
 
@@ -273,7 +303,8 @@ Resources must pass validation before registration:
 1. **URL**: Must be valid HTTPS (or HTTP for localhost)
 2. **Type**: Must be one of: `http`, `mcp`, `a2a`, `facilitator`
 3. **Accepts**: Must have at least one payment method (except `facilitator` type)
-4. **Duplicates**: Cannot register the same URL twice (`409`); there is no public update route
+4. **Duplicates**: A URL the catalog already holds is not registered twice: posting it again is a
+   re-registration of its payment terms (above), applied only when its live 402 verifies them
 
 ## Example Use Cases
 

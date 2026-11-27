@@ -1,5 +1,157 @@
 # Changelog
 
+## [2.60.0] - 2026-11-26
+
+Three things in one release: `upto`, Stellar and Sui as the x402 Foundation
+specs define them (`x402-foundation/x402` at `4f3c7851`); Bazaar listings whose
+price follows their live 402 and whose seller can re-register their terms,
+with the EIP-6492 deployment sponsorship policy in `log` mode; and Execution
+Market's lifecycle signer declared for its escrow operators, with `xrpl-rust`
+built without its async clients.
+
+### Added
+
+- `upto`: every kind in `/supported` names `extra.facilitatorAddress`, the one
+  address that settles on its network (`scheme_upto_evm.md`, "Facilitator
+  Address Discovery"): the EVM provider's pinned signer, the address `upto`
+  settle requires in `permit2Authorization.witness.facilitator`. A network
+  whose provider names no settling address is not offered `upto`.
+- Stellar: `/verify` and `/settle` take the spec's payload
+  (`scheme_exact_stellar.md`), x402 v2 on `stellar:pubnet` / `stellar:testnet`:
+  `{"transaction": "<base64 TransactionEnvelope XDR>"}`. Its one
+  `invokeHostFunction` and its payer's one signed entry go through the checks
+  the authorization-entry payload goes through, inside a transaction of the
+  facilitator's own; the expiration is bounded by `maxTimeoutSeconds`
+  (`ceil(maxTimeoutSeconds / 5)` ledgers, plus the reference facilitator's 2
+  ledgers of tolerance). `/verify` simulates the transaction settle would
+  submit and refuses one the simulation refuses. The Stellar kinds carry
+  `extra.areFeesSponsored: true`.
+- Sui: `/verify` and `/settle` take the spec's payload (`scheme_exact_sui.md`),
+  x402 v2 on `sui:mainnet` / `sui:testnet`: `{"signature", "transaction"}`.
+  Sender and coin are read from the transaction, recipient and amount from the
+  requirements. The transfer may first merge more of the sender's coins into
+  the one it splits (one `MergeCoins` of at most 64 coins, as a wallet holding
+  several coins builds it): every merged coin must be the sender's USDC, and
+  exactly the required amount must reach `payTo`. The split's coin may be
+  transferred as `NestedResult(split, 0)`, the form `@mysten/sui` writes for
+  `const [coin] = tx.splitCoins(...)`. Its gas is either sponsored by the
+  facilitator, as before, or paid by the sender, which settle then sends with
+  the sender's signature alone.
+- Both payloads are read from the spec's request (`paymentPayload` +
+  `paymentRequirements`) and from this facilitator's v2 request (top-level
+  `resource` + `accepted`). The v1 kinds (`stellar`, `stellar-testnet`, `sui`,
+  `sui-testnet`) stay in `/supported` next to the CAIP-2 ones.
+- Bazaar: the listed price follows the live 402. The health prober reads the
+  402 of every listing that is alive about every `DISCOVERY_PRICE_SWEEP_SECS`
+  (six hours by default, never under fifteen minutes); when that 402 quotes
+  another amount for an offer the listing declares (same scheme, network, asset
+  and recipient), a self-registered listing takes the amount, dated by
+  `priceAdoptedAt`. Only an amount moves: recipients, networks and assets are
+  never taken from a 402, and a copy from a feed keeps its source's amount.
+  `DISCOVERY_ADOPT_LIVE_PRICE=false` turns it off. `GET /discovery/config`
+  publishes `healthProber.priceSweepSeconds` and `revalidation.adoptLivePrice`.
+- Bazaar: `POST /discovery/register` on a URL the catalog already holds
+  re-registers its payment terms. The facilitator probes that URL once, with
+  the request the listing declares (one request, or two when the first is
+  refused as the wrong method or body), and applies the submitted `accepts`
+  when the 402 it reads is the URL's own answer about that URL, makes the
+  same offers in its header and its body, makes every submitted offer
+  (`scheme`, `network`, `asset`, `payTo`) at the submitted amount, and makes
+  no offer the listing declares that the submission leaves out. Each offer is
+  stored as the 402 makes it, `extra` and `maxTimeoutSeconds` included; the
+  description, `metadata` and `extensions` of a re-registration are not read.
+  Who is paid never changes: every `payTo` submitted must be one the listing
+  already declares. A listing the health prober holds, or a copy from a feed
+  (`aggregated`, `crawled`), is not re-registered. One probe per URL per
+  `DISCOVERY_REREGISTER_COOLDOWN_SECS` (ten minutes by default, published as
+  `registration.reregisterCooldownSeconds`). The answers are under "Changed";
+  the rules, in `docs/BAZAAR_DISCOVERY.md`.
+- EIP-6492: the deployment sponsorship policy, in `log` mode. Counterfactual
+  wallets are still not accepted and nothing is deployed: every EVM `exact`
+  signature must be 65 bytes, as before. The policy a sponsored deployment
+  would answer to (a list of factories per network and the `exact-deploy` gas
+  ceiling) now runs ahead of that rule and records an envelope whose factory
+  is not listed; it changes no answer. `EIP6492_SPONSOR_MODE` (`log` by
+  default; `enforce` refuses an unlisted factory with
+  `eip6492_factory_not_allowed`), `EIP6492_FACTORY_ALLOWLIST` and
+  `EIP6492_FACTORY_ALLOWLIST_<NETWORK>`. `GET /config` publishes the values in
+  force under `eip6492Sponsorship`; the policy is `docs/EIP6492_SPONSORSHIP.md`.
+- Escrow: `OperatorAddresses` declares Execution Market's lifecycle signer
+  (`EXECUTION_MARKET_LIFECYCLE_SIGNER`) for Execution Market's operator on
+  Base, Ethereum, Polygon, Arbitrum, Celo, Avalanche, Optimism, Monad and Arc.
+  The `escrow` kinds of those networks announce it in `GET /supported`
+  (`extra.lifecycleSigners`, with `lifecycleSignersVersion` 1), and the
+  lifecycle gate reads a `release` or `refundInEscrow` order that key signs
+  for one of those operators as `declared_signer`. No other operator and no
+  testnet has one. `ESCROW_LIFECYCLE_AUTH` is not changed: the gate keeps the
+  mode it runs in, and under `log` the row changes the verdict it records, not
+  a decision.
+
+### Changed
+
+- Stellar and Sui compare the paid asset with `requirements.asset` for both
+  payloads: on Stellar the contract the authorization entry transfers on, on
+  Sui the network's USDC, the coin every spent and merged coin must be.
+- Sui reads each spent coin's balance, for both payloads: the coins a transfer
+  splits from must hold the required amount between them. A node that does not
+  report a coin's balance leaves it to the sender's USDC total, as before.
+- Stellar reads the nonce and the expiration ledger the authorization entry's
+  signature covers, for both payloads: the replay store and the expiry checks
+  key on them, so one signed entry passes the store once.
+- An x402 v2 `exact` settle answers `network` with the chain's CAIP-2 id
+  (`stellar:testnet`, `eip155:8453`), as the v2 `SettlementResponse` names it;
+  an x402 v1 settle answers byte for byte as before. An idempotent replay
+  answers the bytes the first settle answered, from the settle cache and from
+  the receipt rail's. `SettleResponse` reads either name.
+- The debug lines that print the start of a payload field cut on a character.
+- `POST /discovery/register` no longer answers every URL already in the
+  catalog with one `409`. A re-registration answers `200` with `updated`
+  (`true`, or `false` when the listing already carried those terms), or a
+  refusal with its own `errorCode`: `409`
+  `reregistration_does_not_match_live_402` (with `mismatches` and each
+  `liveAmount`), `reregistration_omits_live_offer` (with `omitted`),
+  `reregistration_recipient_change`,
+  `reregistration_live_recipient_undeclared`, `reregistration_listing_held` or
+  `reregistration_feed_copy`; `422` `reregistration_no_live_402` or
+  `reregistration_live_402_conflict`; `429` `reregistration_too_soon`, with
+  `Retry-After`; and the plain `404` of a URL that is not held, for a listing
+  removed while its 402 was being read. A client that read any `409` of this
+  route as "already listed" now reads `errorCode`. A first registration
+  answers as before and still reads nothing.
+- Bazaar: the overlay of observed terms keeps one reading for every listing
+  the catalog holds; its configured cap only bounds an overlay larger than the
+  catalog. With more listings than the cap, the readings of live listings no
+  longer evict one another (`priceFreshness: unknown`).
+
+### Security
+
+- `xrpl-rust` is built without its `helpers` and `json-rpc` features: the XRPL
+  chain module talks to rippled through its own `reqwest` client and uses
+  `xrpl-rust` for keys, addresses, the binary codec and transaction models
+  only. Thirteen packages leave `Cargo.lock` and none enters: `heapless`
+  0.6.1, `reqwless`, `embedded-tls`, `embedded-nal`, `embedded-nal-async`,
+  `nourl`, `nb`, `buffered-io`, `atomic-polyfill`, `as-slice`, `hash32` 0.1.1
+  and `generic-array` 0.12.4 and 0.13.3. `p256` 0.13.2 is built without its
+  `ecdh` feature, which only `embedded-tls` enabled; DX402's ECDH is `k256`.
+- Not moved: `heapless` 0.8.0 (RUSTSEC-2026-0574 to -0582, fixed in 0.9.4)
+  stays in the build through two dependencies of `xrpl-rust` itself:
+  `embassy-sync` 0.6.2, which it requires up to its latest stable release
+  (1.3.0), and `embedded-websocket-embedded-io` 0.1.0, which its `std` feature
+  turns on. Inside `xrpl-rust` both are used only by its client modules, which
+  are no longer compiled.
+
+### Not covered
+
+What the specs describe and these payloads do not take yet:
+
+- Stellar: authorization entries signed under CAP-71's
+  `sorobanCredentialsAddressV2` (the pinned `stellar-xdr` 21.2.0 does not decode
+  them), and payers that are contracts (`C...`) rather than accounts.
+- Sui: coin types whose package is written short (`0x2::sui::SUI`) are not
+  read; no `extra.gasStation` is offered.
+- The settles of the other schemes (`upto`, `escrow`/`commerce`, NEAR
+  `escrow`) answer `network` as they did.
+
 ## [2.59.2] - 2026-11-20
 
 Two dependency moves that take advisories out of the build. Behavior does not

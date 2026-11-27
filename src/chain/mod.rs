@@ -25,6 +25,7 @@ pub mod evm;
 pub mod hedera;
 #[cfg(feature = "hedera")]
 use hedera::HederaProvider;
+pub mod eip6492_sponsor;
 pub mod failure;
 pub mod gas_ceiling;
 pub mod near;
@@ -276,6 +277,13 @@ impl Facilitator for NetworkProvider {
             NetworkProvider::Algorand(provider) => provider.supported().await,
             #[cfg(feature = "sui")]
             NetworkProvider::Sui(provider) => provider.supported().await,
+        }
+    }
+
+    fn upto_settling_address(&self) -> Option<alloy::primitives::Address> {
+        match self {
+            NetworkProvider::Evm(provider) => Some(provider.pinned_signer()),
+            _ => None,
         }
     }
 }

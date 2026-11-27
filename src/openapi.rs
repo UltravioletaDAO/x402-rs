@@ -46,9 +46,9 @@ Ethereum Sepolia is announced in `/supported` for the x402r `escrow` and `commer
 ### Other Non-EVM Chains
 - **XRPL (XRP Ledger)**: Mainnet (`xrpl`) and Testnet (`xrpl-testnet`) — native XRP, pre-signed Payment transaction blobs; not the EVM `xrpl-evm` sidechain
 - **NEAR Protocol**: Mainnet (`near`) and Testnet (`near-testnet`)
-- **Stellar/Soroban**: Mainnet (`stellar`) and Testnet (`stellar-testnet`)
+- **Stellar/Soroban**: Mainnet (`stellar`) and Testnet (`stellar-testnet`); for x402 v2 `stellar:pubnet` and `stellar:testnet`. `/verify` and `/settle` take the x402 Foundation's payload (`scheme_exact_stellar.md`: `{"transaction": "<base64 TransactionEnvelope XDR>"}`, the facilitator paying the fees, `extra.areFeesSponsored: true` in `/supported`; `/verify` simulates it) beside this facilitator's authorization-entry payload
 - **Algorand**: Mainnet (`algorand`) and Testnet (`algorand-testnet`)
-- **Sui**: Mainnet (`sui`) and Testnet (`sui-testnet`)
+- **Sui**: Mainnet (`sui`) and Testnet (`sui-testnet`); for x402 v2 `sui:mainnet` and `sui:testnet`. `/verify` and `/settle` take the x402 Foundation's payload (`scheme_exact_sui.md`: `{"signature", "transaction"}`, base64), from one coin or several merged first, its gas sponsored by the facilitator (`extra.feePayer`) or paid by the sender, beside this facilitator's sponsored payload
 - **Hedera**: Native mainnet (`hedera:mainnet`) and testnet (`hedera:testnet`), x402 v2/exact only. HBAR is used only for sponsor network fees. Payments accept native USDC `0.0.456858` mainnet / `0.0.429274` testnet (6 decimals). Discover the network-specific `extra.feePayer` from `/supported`. Current sponsor IDs: mainnet `0.0.10868300`, testnet `0.0.10576385`. Native account/token IDs are not EVM chain IDs 295/296.
 
 Arc uses USDC `0x3600000000000000000000000000000000000000` with 6 payment decimals and EIP-712 domain `USDC` / `2`. Its gas view uses 18 decimals of the same balance. EURC is also supported: mainnet `0xbEf5f6d51CB62b58e6A8f77868681825C6fe21c1`, testnet `0x89B50855Aa3bE2F677cD6303Cec089B5F319D72a`, 6 decimals, EIP-712 `EURC` / `2`. EURC amounts are euros, without automatic USD conversion. Gas remains USDC. EURC live payment acceptance was proven on Arc mainnet on 2026-09-22; Arc testnet is still pending. Arc also serves the x402r `escrow` and `commerce` schemes, on the canonical commerce-payments v1.0.0 contracts (see the escrow section of `POST /settle`). Neither Arc nor native Hedera adds upto or Gateway support, and native Hedera adds no escrow. ERC-8004 identity and reputation are served on both Arc networks (not on Hedera). Native Hedera also rejects durable-evidence and unsupported extensions.
@@ -427,6 +427,15 @@ open. It was `null` for every cause before 2.13.0. On NEAR,
 contract and the facilitator is not paying for new registrations right now;
 registering it (`storage_deposit`) or retrying later clears it.
 
+**Smart-wallet signatures.** An EVM `exact` signature must be 65 bytes. A
+counterfactual wallet's EIP-6492 envelope never is, so it is `invalid_signature`
+and no wallet is deployed on any network: the wallet has to be deployed first, or
+the payer pays from an EOA. A deployed contract wallet's ERC-1271 signature passes
+only when it is 65 bytes; the wrapped or passkey signatures most smart wallets
+produce are longer and are refused the same way. Deployments are not sponsored;
+the policy one would answer to (factories per network, the gas ceiling of that
+transaction) is published by `GET /config` (`eip6492Sponsorship`), in `log` mode.
+
 **Five things in that shape are load-bearing:**
 - `paymentPayload` carries its own `x402Version`, `scheme` and `network` at its root.
 - The signed data sits under `payload.authorization`, not directly under `payload`.
@@ -591,6 +600,8 @@ Submits a verified payment authorization to the blockchain for settlement.
 2. Calls `transferWithAuthorization` on the token contract
 3. Returns transaction hash on success
 
+**Response `network`:** an x402 v2 `exact` request is answered with the chain's CAIP-2 id (`eip155:8453`, `stellar:testnet`), as the v2 `SettlementResponse` names it; an x402 v1 request with its v1 name (`base`). An idempotent replay answers the bytes of the settle it replays.
+
 **Upto Settlement (scheme: "upto"):**
 
 When `scheme: "upto"`, the client provides a Permit2-signed authorization for a maximum amount.
@@ -598,6 +609,9 @@ The server settles for the actual usage amount (<= authorized max). If actual am
 on-chain transaction is submitted.
 
 Uses `x402UptoPermit2Proxy.settle(permit, amount, owner, witness, signature)` via Uniswap Permit2.
+Each `upto` kind of `/supported` names `extra.facilitatorAddress`, the one address that settles on its network:
+the client signs it into `permit2Authorization.witness.facilitator` (x402 Foundation `scheme_upto_evm.md`), and
+a witness naming any other address is refused.
 
 **Escrow / Commerce Lifecycle (scheme: "escrow" or "commerce"):**
 
@@ -3184,9 +3198,53 @@ read that failed (`ownership.retrySeconds`), and at most `ownership.maxFileBytes
 served from another host after a redirect counts as none. With `DISCOVERY_REQUIRE_ORIGIN_PROOF`
 on, a self-registered listing that is not `origin-attested` is not listed.
 
-**409:** the URL is already in the catalog, from any source, listed or still waiting for its
-first verification. There is no public route to update or remove a listing; the operator does
-that.
+**The listed price follows your 402.** The health prober reads the 402 of each listing that is
+alive again about every `healthProber.priceSweepSeconds` of `GET /discovery/config` (a listing
+that is failing or held is read on its own, slower schedule), and when it quotes
+another amount for an offer the listing declares -- same `scheme`, `network`, `asset` and
+`payTo` -- a self-registered listing takes that amount (`priceAdoptedAt` dates it). A recipient,
+a network or an asset is never taken from the 402. Repricing needs no request here.
+
+**Re-registering a URL already listed** updates its payment terms -- and only them -- when the
+facilitator verifies them against the URL's live 402. This request then reads the URL once, with
+the request the listing declares, through the prober's own connector, and applies the submitted
+`accepts` only if that 402 is the URL's own answer, offers a payment, makes the same offers in
+its header and its body, makes every submitted offer at the submitted amount, and makes no offer
+the listing declares that the submission leaves out. That covers a new amount, an option the 402
+no longer makes (leave it out) and an offer moved to another network for the same `payTo`; a
+network the listing declares can be left out only once the 402 pays no recipient there. Each
+offer is stored as the 402 makes it, its `extra` and `maxTimeoutSeconds` included. Every `payTo`
+submitted must be one the listing already declares, and the 402 must pay no recipient that the
+listing, or the submission, does not declare on a network it declares: a re-registration never
+changes who is paid. A listing the health prober holds, and a listing copied from a feed
+(`source` `aggregated` or `crawled`, whose terms follow that source), are not re-registered. The
+description, `metadata` and `extensions` of a re-registration are not read; the listing keeps its
+own. One re-registration per URL per `registration.reregisterCooldownSeconds`, refused or not
+(a listing already held, or already a feed copy, when the request arrives is refused before that,
+and spends none). Answers:
+
+- `200` `{"success": true, "updated": true}` -- the listing now carries the submitted offers as the
+  402 makes them (`updated: false` when it already did);
+- `409` `reregistration_does_not_match_live_402` -- `mismatches` lists each submitted offer the 402
+  does not make as submitted, with the `liveAmount` it quotes when it makes that offer;
+- `409` `reregistration_omits_live_offer` -- `omitted` lists each offer the listing declares that
+  the submission leaves out while the 402 still makes it (with its `liveAmount`) or still pays a
+  recipient on its network;
+- `409` `reregistration_recipient_change` (a `payTo` the listing does not declare) or
+  `reregistration_live_recipient_undeclared` (the 402 pays a recipient that the listing, or the
+  submission, does not declare, on a network it declares);
+- `409` `reregistration_listing_held` -- the health prober holds the listing; only two clean probes
+  in a row lift a hold;
+- `409` `reregistration_feed_copy` -- the listing is a copy from a feed (`source`); change the terms
+  at that source;
+- `422` `reregistration_no_live_402` -- the URL did not answer with a readable 402 offering a
+  payment (`httpStatus` is what it answered);
+- `422` `reregistration_live_402_conflict` -- the 402's `PAYMENT-REQUIRED` header and its body make
+  different offers;
+- `429` `reregistration_too_soon` with `Retry-After`.
+
+A first registration reads nothing. There is no public route to remove a listing; the operator
+does that.
 "#,
     request_body(content = Object, description = "Resource registration request"),
     responses(
@@ -3197,9 +3255,18 @@ that.
                 "url": "https://api.example.com/paid"
             })
         ),
+        (status = 200, description = "Re-registration of a listed URL, verified against its live 402", body = Object,
+            example = json!({
+                "success": true,
+                "updated": true,
+                "message": "Payment terms updated: the live 402 makes every offer submitted, and the listing now carries them as the 402 makes them. A re-registration changes the payment terms only; the listing keeps its description, metadata and extensions.",
+                "url": "https://api.example.com/paid"
+            })
+        ),
         (status = 400, description = "Validation failure (bad scheme, URL userinfo, private/metadata IP host, empty accepts)", body = Object),
-        (status = 409, description = "Resource already registered", body = Object),
-        (status = 429, description = "Rate limited (roughly 5 requests per minute per IP)", body = Object)
+        (status = 409, description = "Already registered, and this re-registration does not match the URL's live 402, leaves out an offer it still makes, would change who is paid, or is of a listing the prober holds or copied from a feed (errorCode)", body = Object),
+        (status = 422, description = "Already registered, and the URL did not answer with a readable 402 (reregistration_no_live_402), or its header and body make different offers (reregistration_live_402_conflict)", body = Object),
+        (status = 429, description = "Rate limited (roughly 5 requests per minute per IP), or the URL was re-registered inside its cooldown (reregistration_too_soon)", body = Object)
     )
 )]
 async fn path_bazaar_register() {}

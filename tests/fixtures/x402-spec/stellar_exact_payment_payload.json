@@ -1,0 +1,22 @@
+{
+  "x402Version": 2,
+  "resource": {
+    "url": "https://example.com/weather",
+    "description": "Access to protected content",
+    "mimeType": "application/json"
+  },
+  "accepted": {
+    "scheme": "exact",
+    "network": "stellar:testnet",
+    "amount": "10000000",
+    "asset": "CBIELTK6YBZJU5UP2WWQEUCYKLPU6AUNZ2BQ4WWFEIE3USCIHMXQDAMA",
+    "payTo": "GBHEGW3KWOY2OFH767EDALFGCUTBOEVBDQMCKU4APMDLQNBW5QV3W3KO",
+    "maxTimeoutSeconds": 60,
+    "extra": {
+      "areFeesSponsored": true
+    }
+  },
+  "payload": {
+    "transaction": "AAAAAgAAAABriIN4poutFUmHfB6FbFJu8GgXoPPTGQWREqFpPfvO1AAAAAAAAAAAAAAAAAAAAA..."
+  }
+}

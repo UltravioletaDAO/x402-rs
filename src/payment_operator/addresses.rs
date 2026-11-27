@@ -423,6 +423,21 @@ pub fn is_supported(network: Network) -> bool {
 /// a new version under a new key, never a silent edit of this one.
 pub const LIFECYCLE_SIGNERS_VERSION: u32 = 1;
 
+/// Execution Market's lifecycle signer: one key of Execution Market's own,
+/// which the facilitator never holds, declared for Execution Market's operator
+/// on each network where Execution Market signs its `release` and
+/// `refundInEscrow` orders. Public by design: `/supported` announces it.
+pub const EXECUTION_MARKET_LIFECYCLE_SIGNER: Address =
+    address!("59E44Faac5c56E5e31602A45262f1EB5Df193b3e");
+
+/// The one row declaring [`EXECUTION_MARKET_LIFECYCLE_SIGNER`] for `operator`.
+fn execution_market(operator: Address) -> Vec<LifecycleSigner> {
+    vec![LifecycleSigner {
+        operator,
+        signer: EXECUTION_MARKET_LIFECYCLE_SIGNER,
+    }]
+}
+
 /// A lifecycle signer declared for one PaymentOperator on one network.
 ///
 /// An order for `operator` on that network signed by `signer` is admitted as
@@ -451,8 +466,9 @@ pub struct OperatorAddresses {
     pub refund_request: Address,
     /// Declared lifecycle signers on this network, at most one per operator,
     /// each operator one of `payment_operators` (the table test holds both).
-    /// Read only through [`Self::lifecycle_signer_map`]. Empty on every
-    /// network: a signer's address comes in by a pull request of its own.
+    /// Read only through [`Self::lifecycle_signer_map`]. A signer comes in,
+    /// rotates or leaves by a pull request to this table and to its test
+    /// (`the_declared_lifecycle_signers_are_these`).
     pub lifecycle_signers: Vec<LifecycleSigner>,
 }
 
@@ -526,7 +542,10 @@ impl OperatorAddresses {
                 token_collector: base_mainnet::TOKEN_COLLECTOR,
                 protocol_fee_config: base_mainnet::PROTOCOL_FEE_CONFIG,
                 refund_request: base_mainnet::REFUND_REQUEST,
-                lifecycle_signers: vec![],
+                // Execution Market's operator only, not the second one.
+                lifecycle_signers: execution_market(address!(
+                    "271f9fa7f8907aCf178CCFB470076D9129D8F0Eb"
+                )),
             }),
             Network::Ethereum => Some(Self {
                 escrow: ethereum_mainnet::ESCROW,
@@ -535,7 +554,9 @@ impl OperatorAddresses {
                 token_collector: ethereum_mainnet::TOKEN_COLLECTOR,
                 protocol_fee_config: ethereum_mainnet::PROTOCOL_FEE_CONFIG,
                 refund_request: ethereum_mainnet::REFUND_REQUEST,
-                lifecycle_signers: vec![],
+                lifecycle_signers: execution_market(address!(
+                    "69B67962ffb7c5C7078ff348a87DF604dfA8001b"
+                )),
             }),
             Network::Polygon => Some(Self {
                 escrow: polygon::ESCROW,
@@ -544,7 +565,9 @@ impl OperatorAddresses {
                 token_collector: polygon::TOKEN_COLLECTOR,
                 protocol_fee_config: polygon::PROTOCOL_FEE_CONFIG,
                 refund_request: polygon::REFUND_REQUEST,
-                lifecycle_signers: vec![],
+                lifecycle_signers: execution_market(address!(
+                    "B87F1ECC85f074e50df3DD16A1F40e4e1EC4102e"
+                )),
             }),
             Network::Arbitrum => Some(Self {
                 escrow: arbitrum::ESCROW,
@@ -553,7 +576,9 @@ impl OperatorAddresses {
                 token_collector: arbitrum::TOKEN_COLLECTOR,
                 protocol_fee_config: arbitrum::PROTOCOL_FEE_CONFIG,
                 refund_request: arbitrum::REFUND_REQUEST,
-                lifecycle_signers: vec![],
+                lifecycle_signers: execution_market(address!(
+                    "C2377a9Db1de2520BD6b2756eD012f4E82F7938e"
+                )),
             }),
             Network::Celo => Some(Self {
                 escrow: celo::ESCROW,
@@ -562,7 +587,9 @@ impl OperatorAddresses {
                 token_collector: celo::TOKEN_COLLECTOR,
                 protocol_fee_config: celo::PROTOCOL_FEE_CONFIG,
                 refund_request: celo::REFUND_REQUEST,
-                lifecycle_signers: vec![],
+                lifecycle_signers: execution_market(address!(
+                    "C2377a9Db1de2520BD6b2756eD012f4E82F7938e"
+                )),
             }),
             Network::Monad => Some(Self {
                 escrow: monad::ESCROW,
@@ -571,7 +598,9 @@ impl OperatorAddresses {
                 token_collector: monad::TOKEN_COLLECTOR,
                 protocol_fee_config: monad::PROTOCOL_FEE_CONFIG,
                 refund_request: monad::REFUND_REQUEST,
-                lifecycle_signers: vec![],
+                lifecycle_signers: execution_market(address!(
+                    "9620Dbe2BB549E1d080Dc8e7982623A9e1Df8cC3"
+                )),
             }),
             Network::Avalanche => Some(Self {
                 escrow: avalanche::ESCROW,
@@ -580,7 +609,9 @@ impl OperatorAddresses {
                 token_collector: avalanche::TOKEN_COLLECTOR,
                 protocol_fee_config: avalanche::PROTOCOL_FEE_CONFIG,
                 refund_request: avalanche::REFUND_REQUEST,
-                lifecycle_signers: vec![],
+                lifecycle_signers: execution_market(address!(
+                    "C2377a9Db1de2520BD6b2756eD012f4E82F7938e"
+                )),
             }),
             Network::Optimism => Some(Self {
                 escrow: optimism::ESCROW,
@@ -589,7 +620,9 @@ impl OperatorAddresses {
                 token_collector: optimism::TOKEN_COLLECTOR,
                 protocol_fee_config: optimism::PROTOCOL_FEE_CONFIG,
                 refund_request: optimism::REFUND_REQUEST,
-                lifecycle_signers: vec![],
+                lifecycle_signers: execution_market(address!(
+                    "C2377a9Db1de2520BD6b2756eD012f4E82F7938e"
+                )),
             }),
 
             // New networks (CREATE3)
@@ -612,7 +645,9 @@ impl OperatorAddresses {
             // keeps its own lifecycle signer list, so a signer declared for
             // one network is never declared on another (a testnet and a
             // mainnet least of all) by sharing an arm.
-            Network::Arc => Some(Self::canonical_v1_set(vec![])),
+            Network::Arc => Some(Self::canonical_v1_set(execution_market(address!(
+                "0258472A1410Ac3Ad720f1BC83f22B3c0af1Fd9D"
+            )))),
             Network::ArcTestnet => Some(Self::canonical_v1_set(vec![])),
             Network::Robinhood => Some(Self::canonical_v1_set(vec![])),
 
@@ -885,16 +920,83 @@ mod tests {
         }
     }
 
-    /// No lifecycle signer is declared yet, on any network: the address and its
-    /// key are provisioned apart and come in by a pull request of their own,
-    /// which changes this test with the table.
+    /// The lifecycle signers in force, network by network, written out here
+    /// rather than read back from the table: Execution Market's signer for its
+    /// operator on the nine networks where it signs its own orders, and nobody
+    /// anywhere else -- not the second operator of Base, SKALE, Robinhood
+    /// Chain, Arc testnet nor any testnet. A change to the table is a change to
+    /// this test.
     #[test]
-    fn no_lifecycle_signer_is_declared_yet() {
+    fn the_declared_lifecycle_signers_are_these() {
+        let em = EXECUTION_MARKET_LIFECYCLE_SIGNER;
+        let expected: [(Network, Address); 9] = [
+            (
+                Network::Base,
+                address!("271f9fa7f8907aCf178CCFB470076D9129D8F0Eb"),
+            ),
+            (
+                Network::Ethereum,
+                address!("69B67962ffb7c5C7078ff348a87DF604dfA8001b"),
+            ),
+            (
+                Network::Polygon,
+                address!("B87F1ECC85f074e50df3DD16A1F40e4e1EC4102e"),
+            ),
+            (
+                Network::Arbitrum,
+                address!("C2377a9Db1de2520BD6b2756eD012f4E82F7938e"),
+            ),
+            (
+                Network::Celo,
+                address!("C2377a9Db1de2520BD6b2756eD012f4E82F7938e"),
+            ),
+            (
+                Network::Avalanche,
+                address!("C2377a9Db1de2520BD6b2756eD012f4E82F7938e"),
+            ),
+            (
+                Network::Optimism,
+                address!("C2377a9Db1de2520BD6b2756eD012f4E82F7938e"),
+            ),
+            (
+                Network::Monad,
+                address!("9620Dbe2BB549E1d080Dc8e7982623A9e1Df8cC3"),
+            ),
+            (
+                Network::Arc,
+                address!("0258472A1410Ac3Ad720f1BC83f22B3c0af1Fd9D"),
+            ),
+        ];
         for &network in ESCROW_NETWORKS {
-            let addrs = OperatorAddresses::for_network(network).unwrap();
-            assert!(addrs.lifecycle_signers.is_empty(), "{network}");
-            assert!(addrs.lifecycle_signer_map().is_empty(), "{network}");
+            let map = OperatorAddresses::for_network(network)
+                .unwrap()
+                .lifecycle_signer_map();
+            match expected.iter().find(|(n, _)| *n == network) {
+                Some((_, operator)) => {
+                    assert_eq!(map, BTreeMap::from([(*operator, em)]), "{network}")
+                }
+                None => assert!(map.is_empty(), "{network}: {map:?}"),
+            }
         }
+        for (network, _) in expected {
+            assert!(ESCROW_NETWORKS.contains(&network), "{network}");
+        }
+    }
+
+    /// The signer is the address Execution Market published, checksum and
+    /// all: a transcription error in it would fail here rather than declare a
+    /// key nobody holds.
+    #[test]
+    fn execution_markets_signer_is_the_checksummed_address_it_published() {
+        let published = "0x59E44Faac5c56E5e31602A45262f1EB5Df193b3e";
+        assert_eq!(
+            Address::parse_checksummed(published, None).unwrap(),
+            EXECUTION_MARKET_LIFECYCLE_SIGNER
+        );
+        assert_eq!(
+            EXECUTION_MARKET_LIFECYCLE_SIGNER.to_checksum(None),
+            published
+        );
     }
 
     /// The table check, and the map, against the rows it exists to refuse.
@@ -939,7 +1041,10 @@ mod tests {
         // The same operator address on two networks: a row on one says
         // nothing about the other.
         let arbitrum = OperatorAddresses::for_network(Network::Arbitrum).unwrap();
-        let celo = OperatorAddresses::for_network(Network::Celo).unwrap();
+        let celo = OperatorAddresses {
+            lifecycle_signers: vec![],
+            ..OperatorAddresses::for_network(Network::Celo).unwrap()
+        };
         assert_eq!(arbitrum.payment_operators, celo.payment_operators);
         let shared = arbitrum.payment_operators[0];
         let declared = OperatorAddresses {

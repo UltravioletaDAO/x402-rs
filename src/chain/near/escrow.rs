@@ -2604,6 +2604,8 @@ impl NearProvider {
                     max_gas_tgas: cfg.max_gas.as_gas() / 1_000_000_000_000,
                     sender_per_hour: cfg.sender_per_hour,
                 }),
+                facilitator_address: None,
+                are_fees_sponsored: None,
             }),
         })
     }

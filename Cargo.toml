@@ -87,7 +87,11 @@ rmp-serde = { version = "1.3", optional = true }  # MessagePack for Algorand txn
 # XRPL (XRP Ledger pre-signed transaction blobs for gasless payments)
 # Note: crate is `xrpl-rust` but its lib name is `xrpl`, so the package must be renamed.
 # Trim the default `cli` feature (drags clap+bip39); `std` hard-pins tokio/reqwest (fine, repo is tokio).
-xrpl = { package = "xrpl-rust", version = "1.1.0", default-features = false, features = ["std", "tokio-rt", "core", "models", "wallet", "utils", "helpers", "json-rpc"], optional = true }
+# Not `helpers` nor `json-rpc`: the XRPL chain module talks to rippled through
+# its own reqwest client, and those two features only add xrpl-rust's async
+# clients to the build, with their embedded networking stack (reqwless,
+# embedded-tls and the heapless 0.6 it pulls in).
+xrpl = { package = "xrpl-rust", version = "1.1.0", default-features = false, features = ["std", "tokio-rt", "core", "models", "wallet", "utils"], optional = true }
 
 # Sui (sponsored transactions for gasless payments)
 # Transaction types, signatures and keys: the monorepo crates, pinned to a tag.

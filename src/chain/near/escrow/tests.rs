@@ -4307,6 +4307,8 @@ fn the_evm_escrow_extra_keeps_its_exact_json() {
             lifecycle_signers_version: None,
         }),
         near_escrow: None,
+        facilitator_address: None,
+        are_fees_sponsored: None,
     };
     let json = serde_json::to_value(&extra).unwrap();
     let text = |byte| serde_json::to_value(address(byte)).unwrap();

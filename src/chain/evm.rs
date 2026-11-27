@@ -182,6 +182,19 @@ fn assert_signature_scheme_supported(
     Ok(())
 }
 
+/// The factory an EIP-6492 envelope names, when `bytes` is an envelope that
+/// decodes; `None` for any other signature. A malformed envelope is the
+/// normal path's business, as it is for [`assert_signature_scheme_supported`].
+fn eip6492_factory(bytes: &[u8]) -> Option<Address> {
+    let is_eip6492 = bytes.len() >= 32 && bytes[bytes.len() - 32..] == EIP6492_MAGIC_SUFFIX;
+    if !is_eip6492 {
+        return None;
+    }
+    Sig6492::abi_decode_params(&bytes[..bytes.len() - 32])
+        .ok()
+        .map(|envelope| envelope.factory)
+}
+
 /// Why [`send_call_estimated`] did not hand back a pending transaction.
 #[derive(Debug)]
 pub enum EstimatedSendError {
@@ -2236,6 +2249,8 @@ where
                 fee_payer: None, // Set at FacilitatorLocal level
                 tokens: Some(tokens),
                 escrow: None,
+                facilitator_address: None,
+                are_fees_sponsored: None,
             })
         };
 
@@ -2770,7 +2785,11 @@ async fn assert_valid_payment<P: Provider>(
         ExactPaymentPayload::Near(_) => {
             return Err(FacilitatorLocalError::UnsupportedNetwork(None));
         }
-        ExactPaymentPayload::Stellar(_) => {
+        ExactPaymentPayload::Stellar(_) | ExactPaymentPayload::StellarTransaction(_) => {
+            return Err(FacilitatorLocalError::UnsupportedNetwork(None));
+        }
+        #[cfg(feature = "sui")]
+        ExactPaymentPayload::SuiTransaction(_) => {
             return Err(FacilitatorLocalError::UnsupportedNetwork(None));
         }
         #[cfg(feature = "algorand")]
@@ -2870,6 +2889,15 @@ async fn assert_valid_payment<P: Provider>(
     // true, and useless: the caller goes looking for a malformed signature
     // instead of reading that the scheme is not served there.
     assert_signature_scheme_supported(chain.network, payer, &payment_payload.signature)?;
+    // The EIP-6492 sponsorship policy (`chain::eip6492_sponsor`), ahead of the
+    // 65-byte rule for the reason the gate above is: after it, no envelope
+    // would ever reach the policy. `log` records a factory off the list and
+    // goes on; `enforce` refuses it here, before anything is sent -- and, for a
+    // token in the static EIP-712 table, before any RPC -- on `/verify` and
+    // `/settle` alike.
+    if let Some(factory) = eip6492_factory(&payment_payload.signature.0) {
+        crate::chain::eip6492_sponsor::admit(chain.network, payer, factory)?;
+    }
     {
         let sig_bytes = &payment_payload.signature.0;
         if sig_bytes.len() != 65 {
@@ -8537,6 +8565,15 @@ mod gas_ceiling_send_tests {
         assert_refused_above_its_ceiling("upto", 50_000_000, None).await;
     }
 
+    /// The deploy-and-transfer transaction an EIP-6492 settle would send is
+    /// held to its own ceiling, `exact-deploy`: the gas cap the sponsorship
+    /// policy publishes (`chain::eip6492_sponsor`).
+    #[tokio::test]
+    async fn an_eip6492_deployment_estimated_above_its_ceiling_sends_nothing() {
+        assert!(ceiling_on_base("exact-deploy") < 5_000_000);
+        assert_refused_above_its_ceiling("exact-deploy", 5_000_000, None).await;
+    }
+
     /// A PaymentOperator call.
     #[tokio::test]
     async fn an_operator_call_estimated_above_its_ceiling_sends_nothing() {
@@ -8585,5 +8622,173 @@ mod gas_ceiling_send_tests {
                 );
             }
         }
+    }
+}
+
+/// The EIP-6492 sponsorship policy (`chain::eip6492_sponsor`), through the
+/// real `verify` and `settle` on HyperEVM against a scripted node: what each
+/// answers, and what reaches the node.
+#[cfg(test)]
+mod eip6492_sponsor_tests {
+    use super::*;
+    use crate::chain::eip6492_sponsor::{self, SponsorPolicy, ENV_MODE, REFUSAL_CODE};
+    use crate::payment_operator::test_rpc::{self, MockNode};
+    use alloy::dyn_abi::DynSolValue;
+    use axum::response::IntoResponse as _;
+    use serde_json::json;
+
+    const COINBASE_V1: Address = address!("0x0BA5ED0c6AA8c49038F819E587E2633c4A9F428a");
+    const UNLISTED: Address = address!("0x00000000000000000000000000000000000f4c70");
+
+    fn mode(mode: &str) -> SponsorPolicy {
+        SponsorPolicy::from_lookup(|var| (var == ENV_MODE).then(|| mode.to_string()))
+    }
+
+    fn hyperevm_usdc() -> Address {
+        USDCDeployment::by_network(Network::HyperEvm)
+            .expect("HyperEVM has a USDC deployment")
+            .address()
+            .try_into()
+            .expect("HyperEVM USDC is an EVM address")
+    }
+
+    /// An EIP-6492 envelope naming `factory`, as it arrives on the wire.
+    fn envelope(factory: Address) -> Vec<u8> {
+        let mut bytes = DynSolValue::Tuple(vec![
+            DynSolValue::Address(factory),
+            DynSolValue::Bytes(vec![0xde, 0xad, 0xbe, 0xef]),
+            DynSolValue::Bytes(vec![0x11; 65]),
+        ])
+        .abi_encode_params();
+        bytes.extend_from_slice(&EIP6492_MAGIC_SUFFIX);
+        bytes
+    }
+
+    /// A 0.001 USDC payment on HyperEVM signed by a counterfactual wallet
+    /// whose envelope names `factory`.
+    fn request(factory: Address) -> serde_json::Value {
+        let (name, version) = find_known_eip712_metadata(Network::HyperEvm, &hyperevm_usdc())
+            .expect("HyperEVM USDC is in the static table");
+        let valid_before = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
+            + 300;
+        json!({
+            "x402Version": 1,
+            "paymentPayload": {"x402Version": 1, "scheme": "exact", "network": "hyperevm", "payload": {
+                "signature": format!("0x{}", hex::encode(envelope(factory))),
+                "authorization": {
+                    "from": "0x1111111111111111111111111111111111111111",
+                    "to": "0x2222222222222222222222222222222222222222",
+                    "value": "1000", "validAfter": "0", "validBefore": valid_before.to_string(),
+                    "nonce": format!("0x{}", "01".repeat(32))}}},
+            "paymentRequirements": {"scheme": "exact", "network": "hyperevm",
+                "maxAmountRequired": "1000", "resource": "https://merchant.example/data",
+                "description": "fixture", "mimeType": "application/json",
+                "payTo": "0x2222222222222222222222222222222222222222", "maxTimeoutSeconds": 60,
+                "asset": hyperevm_usdc(),
+                "extra": {"name": name, "version": version}}
+        })
+    }
+
+    /// `verify` then `settle` of one envelope naming `factory`: what each
+    /// answered, how many transactions reached the node, and every RPC method
+    /// the two of them called.
+    async fn pay(factory: Address) -> (String, String, usize, Vec<String>) {
+        crate::writer_lease::set_writer_for_test(true);
+        let node = MockNode::start(Network::HyperEvm).await;
+        let provider = test_rpc::provider(Network::HyperEvm, &node, true).await;
+        let before = node.requests().len();
+        let verified = provider
+            .verify(&serde_json::from_value(request(factory)).expect("verify request parses"))
+            .await;
+        let settled = provider
+            .settle(&serde_json::from_value(request(factory)).expect("settle request parses"))
+            .await;
+        let called = node.requests()[before..].to_vec();
+        (
+            format!("{verified:?}"),
+            format!("{settled:?}"),
+            node.sent().len(),
+            called,
+        )
+    }
+
+    /// `enforce`: an envelope whose factory is off the list is invalid with
+    /// its own reason, and settle sends nothing -- nothing is even read.
+    #[tokio::test]
+    async fn enforce_refuses_an_unlisted_factory_and_nothing_is_sent() {
+        let _policy = eip6492_sponsor::set_for_test(mode("enforce"));
+        let (verified, settled, sent, called) = pay(UNLISTED).await;
+        assert!(verified.contains(REFUSAL_CODE), "{verified}");
+        assert!(settled.contains(REFUSAL_CODE), "{settled}");
+        assert_eq!(sent, 0, "a refused envelope reached the wire");
+        assert!(called.is_empty(), "the refusal read the chain: {called:?}");
+    }
+
+    /// `log` (the default): the same envelope goes on exactly as before the
+    /// policy existed -- to the 65-byte rule, which refuses it -- and nothing
+    /// is sent.
+    #[tokio::test]
+    async fn log_mode_lets_an_unlisted_factory_go_on_as_before() {
+        let _policy = eip6492_sponsor::set_for_test(mode("log"));
+        let (verified, settled, sent, _) = pay(UNLISTED).await;
+        assert!(!verified.contains(REFUSAL_CODE), "{verified}");
+        assert!(verified.contains("invalid_signature_length"), "{verified}");
+        assert!(settled.contains("invalid_signature_length"), "{settled}");
+        assert_eq!(sent, 0);
+    }
+
+    /// A listed factory passes the policy in `enforce` and meets what every
+    /// envelope meets today: the 65-byte rule. Nothing is deployed and nothing
+    /// is sent. When this changes, the policy is what decides, and
+    /// `eip6492Sponsorship.sixtyFiveByteRule` in `GET /config` is stale.
+    #[tokio::test]
+    async fn a_listed_factory_passes_the_policy_and_meets_the_sixty_five_byte_rule() {
+        let _policy = eip6492_sponsor::set_for_test(mode("enforce"));
+        let (verified, settled, sent, _) = pay(COINBASE_V1).await;
+        assert!(!verified.contains(REFUSAL_CODE), "{verified}");
+        assert!(verified.contains("invalid_signature_length"), "{verified}");
+        assert!(settled.contains("invalid_signature_length"), "{settled}");
+        assert_eq!(
+            sent, 0,
+            "no deployment is sent while the 65-byte rule stands"
+        );
+    }
+
+    /// The refusal reaches `/verify` as its own `invalidReason`; every other
+    /// invalid signature keeps `invalid_signature`.
+    #[tokio::test]
+    async fn the_refusal_reaches_verify_as_its_own_invalid_reason() {
+        let reason = |message: String| async move {
+            let response =
+                FacilitatorLocalError::InvalidSignature(EvmAddress(Address::ZERO).into(), message)
+                    .into_response();
+            let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .unwrap();
+            serde_json::from_slice::<serde_json::Value>(&body).unwrap()["invalidReason"].clone()
+        };
+        assert_eq!(
+            reason(format!("{REFUSAL_CODE}: not sponsored")).await,
+            json!(REFUSAL_CODE)
+        );
+        assert_eq!(
+            reason("recovered != from".to_string()).await,
+            json!("invalid_signature")
+        );
+    }
+
+    /// Only an envelope that decodes names a factory; a plain signature, or
+    /// a body with the magic suffix and nothing readable before it, names none
+    /// and the policy is never asked.
+    #[test]
+    fn only_an_envelope_that_decodes_names_a_factory() {
+        assert_eq!(eip6492_factory(&envelope(COINBASE_V1)), Some(COINBASE_V1));
+        assert_eq!(eip6492_factory(&[0x33; 65]), None);
+        let mut garbage = vec![0xff; 7];
+        garbage.extend_from_slice(&EIP6492_MAGIC_SUFFIX);
+        assert_eq!(eip6492_factory(&garbage), None);
     }
 }

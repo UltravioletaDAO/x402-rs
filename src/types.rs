@@ -690,6 +690,37 @@ pub struct ExactSuiPayload {
     pub coin_object_id: String,
 }
 
+/// `payload` of the `exact` scheme on Stellar as the x402 Foundation specifies
+/// it (`specs/schemes/exact/scheme_exact_stellar.md`): the client's whole
+/// transaction, one `invokeHostFunction` calling `transfer(from, to, amount)`
+/// with the payer's signed authorization entry, as base64 XDR. Everything the
+/// [`ExactStellarPayload`] declares beside its entry is read out of it.
+///
+/// Never read from a body by the untagged [`ExactPaymentPayload`]: it has the
+/// shape of [`ExactSolanaPayload`]. Only
+/// [`crate::types_v2::SpecV2Request`] builds it, once the network says Stellar.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExactStellarTransactionPayload {
+    /// Base64 XDR of a `TransactionEnvelope`.
+    pub transaction: String,
+}
+
+/// `payload` of the `exact` scheme on Sui as the x402 Foundation specifies it
+/// (`specs/schemes/exact/scheme_exact_sui.md`): the transaction and the
+/// sender's signature over it, nothing else. Sender, recipient, amount and
+/// coin are read out of the transaction.
+///
+/// Built only by [`crate::types_v2::SpecV2Request`], like
+/// [`ExactStellarTransactionPayload`].
+#[cfg(feature = "sui")]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExactSuiTransactionPayload {
+    /// Base64 of the sender's `Signature` (`flag || sig || pk`).
+    pub signature: String,
+    /// Base64 BCS of the `TransactionData`.
+    pub transaction: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum ExactPaymentPayload {
@@ -698,6 +729,14 @@ pub enum ExactPaymentPayload {
     #[cfg(feature = "hedera")]
     #[serde(skip_deserializing)]
     Hedera(crate::chain::hedera::wire::ExactHederaPayload),
+    /// The Foundation spec's Stellar payload. Skipped by deserialization:
+    /// `{"transaction"}` would otherwise be read as [`Self::Solana`]'s twin.
+    #[serde(skip_deserializing)]
+    StellarTransaction(ExactStellarTransactionPayload),
+    /// The Foundation spec's Sui payload, skipped for the same reason.
+    #[cfg(feature = "sui")]
+    #[serde(skip_deserializing)]
+    SuiTransaction(ExactSuiTransactionPayload),
     Near(ExactNearPayload),
     Stellar(ExactStellarPayload),
     #[cfg(feature = "xrpl")]
@@ -1685,6 +1724,9 @@ struct SettleResponseWire {
     transaction_hash_camel: Option<TransactionHash>,
     #[serde(default, rename = "transaction_hash")]
     transaction_hash_snake: Option<TransactionHash>,
+    /// Either name of the chain: the v1 name a v1 request is answered with,
+    /// or the CAIP-2 id an x402 v2 request is.
+    #[serde(deserialize_with = "crate::network::deserialize_v1_or_caip2")]
     network: Network,
     #[serde(default)]
     proof_of_payment: Option<crate::erc8004::ProofOfPayment>,
@@ -2468,6 +2510,20 @@ pub struct SupportedPaymentKindExtra {
     /// escrow kinds above keep exactly the shape they had.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub near_escrow: Option<NearEscrowSupportedInfo>,
+    /// `extra.facilitatorAddress` of the `upto` kinds: the one address that
+    /// settles on that network, which the payer signs into
+    /// `permit2Authorization.witness.facilitator` (x402 Foundation spec
+    /// `scheme_upto_evm.md`, "Facilitator Address Discovery": the client MUST
+    /// include it). Absent from every other kind.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub facilitator_address: Option<EvmAddress>,
+    /// `extra.areFeesSponsored` of the Stellar `exact` kinds
+    /// (`scheme_exact_stellar.md`): the facilitator pays the fees. The
+    /// reference client refuses to pay a requirement without it, and a
+    /// resource server copies it from this kind into its requirements.
+    /// Absent from every other kind.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub are_fees_sponsored: Option<bool>,
 }
 
 /// `extra.nearEscrow` of the NEAR `escrow` kind in `/supported`: every
@@ -2693,6 +2749,8 @@ mod tests {
                 },
             ]),
             escrow: None,
+            facilitator_address: None,
+            are_fees_sponsored: None,
         };
 
         let json = serde_json::to_string(&extra).unwrap();
@@ -2711,11 +2769,39 @@ mod tests {
             fee_payer: None,
             tokens: None,
             escrow: None,
+            facilitator_address: None,
+            are_fees_sponsored: None,
         };
 
         let json = serde_json::to_string(&extra).unwrap();
         // All fields should be omitted (skip_serializing_if = None)
         assert_eq!(json, "{}");
+    }
+
+    /// `extra.facilitatorAddress` and `extra.areFeesSponsored` under the
+    /// names the x402 Foundation specs give them, and read back.
+    #[test]
+    fn the_spec_extra_fields_keep_their_wire_names() {
+        let address = alloy::primitives::Address::repeat_byte(0x42);
+        let extra = SupportedPaymentKindExtra {
+            near_escrow: None,
+            fee_payer: None,
+            tokens: None,
+            escrow: None,
+            facilitator_address: Some(EvmAddress(address)),
+            are_fees_sponsored: Some(true),
+        };
+        let json = serde_json::to_value(&extra).unwrap();
+        assert_eq!(
+            json,
+            serde_json::json!({
+                "facilitatorAddress": format!("{address:#x}"),
+                "areFeesSponsored": true,
+            })
+        );
+        let back: SupportedPaymentKindExtra = serde_json::from_value(json).unwrap();
+        assert_eq!(back.facilitator_address, Some(EvmAddress(address)));
+        assert_eq!(back.are_fees_sponsored, Some(true));
     }
 }
 

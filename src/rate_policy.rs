@@ -1524,6 +1524,7 @@ pub fn document_from(
         },
         "erc8004DailyWriteCap": daily,
         "evmGasCeilings": gas_ceilings_document(gas_ceilings),
+        "eip6492Sponsorship": crate::chain::eip6492_sponsor::global().document(),
     })
 }
 

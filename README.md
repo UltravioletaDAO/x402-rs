@@ -690,8 +690,9 @@ admits for `release` and `refundInEscrow` on any escrow of that operator, on tha
 request to the `lifecycle_signers` list of the network in `OperatorAddresses::for_network` -- one row per operator,
 the operator one of that network's `payment_operators`, a rotation removing the old row, never the same key on a
 testnet and a mainnet. `GET /supported` announces the result on every x402r `escrow` entry as
-`extra.lifecycleSigners` (`{}` when none) with `extra.lifecycleSignersVersion`. No lifecycle signer is declared
-today. The policy vector for the role is `tests/fixtures/escrow/lifecycle-declared-signer-vector.json`.
+`extra.lifecycleSigners` (`{}` when none) with `extra.lifecycleSignersVersion`. Execution Market's operator has one,
+`EXECUTION_MARKET_LIFECYCLE_SIGNER`, on each network where Execution Market signs its own lifecycle orders; no other
+operator has one. The policy vector for the role is `tests/fixtures/escrow/lifecycle-declared-signer-vector.json`.
 
 ---
 

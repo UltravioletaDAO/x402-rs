@@ -56,13 +56,22 @@ pub const TERMS_OVERLAY_VERSION: u32 = 1;
 /// decide how large everyone else's write is. Real challenges carry one to four.
 const MAX_OBSERVED_OPTIONS: usize = 6;
 
-/// Most observations retained, oldest evicted first.
+/// Most observations retained, oldest evicted first -- but never fewer than
+/// the catalog holds ([`TermsOverlay::record`]).
 ///
 /// Sizing: an observation serializes to roughly 300-600 bytes with the option
 /// cap above, so 2 000 bounds this object around 1 MB.
 ///
 /// It tracks the catalog's own cap ([`crate::discovery::DEFAULT_MAX_RESOURCES`])
-/// deliberately. The overlay is keyed by catalog URL and pruned against the live
+/// deliberately. **That cap is not the catalog's size**: a first-hand record is
+/// never evicted for it, and on 2026-11-22 the catalog exposed 3 043 listings.
+/// With the overlay held to 2 000, 1 078 of them -- every one verified alive by
+/// a 402 inside the window -- had no reading at all (`priceFreshness: unknown`)
+/// and the oldest reading in the overlay was under five hours old: each new
+/// reading evicted another live one, which came back as unknown, was queued,
+/// probed, and evicted the next. So the floor of the overlay is the catalog it
+/// is pruned against ([`TermsOverlay::retain_urls`]), and this number only
+/// bounds an overlay larger than that. The overlay is keyed by catalog URL and pruned against the live
 /// set, so it can never hold more readings than there are resources; a larger
 /// number here would be unreachable, and after 2026-09-10 a stray 20 000 in the
 /// configuration is worse than unreachable -- it reads as a catalog scale this
@@ -375,6 +384,8 @@ fn same_offer(a: &CatalogPaymentOption, b: &CatalogPaymentOption) -> bool {
 ///
 /// Only the verification phase is compared. A settlement observation reports
 /// what was charged, which for `upto` is legitimately below the listed ceiling.
+///
+/// The first way is what [`adopt_live_amounts`] resolves; the second never is.
 pub fn terms_disagree(declared: &[CatalogPaymentOption], observed: &ObservedTerms) -> bool {
     if observed.phase != ObservationPhase::Verification {
         return false;
@@ -392,6 +403,46 @@ pub fn terms_disagree(declared: &[CatalogPaymentOption], observed: &ObservedTerm
         }
     }
     !any_comparable
+}
+
+/// The listing's `accepts` with each amount moved to the one the origin's live
+/// 402 now quotes for the very same offer, or `None` when no amount moves.
+///
+/// The live 402 is the price: it is what a buyer is asked to sign. So a seller
+/// that reprices is reflected the next time the prober reads its challenge,
+/// with nobody re-registering anything (2026-11-22: 241 of the 243 listings in
+/// `conflict` differed from their 402 only in an amount).
+///
+/// Only an amount moves, and only where both sides make the same offer
+/// ([`same_offer`]: scheme, network, asset and recipient). Everything else in
+/// the declared option stays as declared -- its `extra` (the EIP-712 domain),
+/// its timeout -- and so does an option the origin no longer quotes: the
+/// declared recipients are the payTo-drift baseline, and they come from the
+/// catalog's sources, never from the 402 being checked against them. A declared
+/// option one of whose live counterparts quotes the declared amount does not
+/// move.
+///
+/// The caller passes only a verification-phase reading of the listing's own
+/// 402: an `upto` amount there is the ceiling a buyer authorizes, the same
+/// number the listing declares, and a settlement is what one payment charged.
+pub fn adopt_live_amounts(
+    declared: &[CatalogPaymentOption],
+    live: &[CatalogPaymentOption],
+) -> Option<Vec<CatalogPaymentOption>> {
+    let mut adopted = declared.to_vec();
+    let mut moved = false;
+    for option in adopted.iter_mut() {
+        let mut comparable = live.iter().filter(|o| same_offer(option, o)).peekable();
+        let Some(first) = comparable.peek().map(|o| o.amount) else {
+            continue;
+        };
+        if comparable.any(|o| o.amount == option.amount) {
+            continue;
+        }
+        option.amount = first;
+        moved = true;
+    }
+    moved.then_some(adopted)
 }
 
 /// Where a stored record's terms came from, on the same ladder.
@@ -489,6 +540,9 @@ struct TermsSnapshot {
 /// never touches a payment or a listing.
 pub struct TermsOverlay {
     records: RwLock<HashMap<String, ObservedTerms>>,
+    /// How many URLs the catalog held at the last prune
+    /// ([`Self::retain_urls`]): the floor of the cap ([`max_records`]).
+    held: std::sync::atomic::AtomicUsize,
     overlay: RwLock<Option<S3Overlay>>,
     dirty: AtomicBool,
     last_persist: AtomicU64,
@@ -511,6 +565,7 @@ impl TermsOverlay {
     pub fn new() -> Self {
         Self {
             records: RwLock::new(HashMap::new()),
+            held: std::sync::atomic::AtomicUsize::new(0),
             overlay: RwLock::new(None),
             dirty: AtomicBool::new(false),
             last_persist: AtomicU64::new(0),
@@ -559,9 +614,13 @@ impl TermsOverlay {
     }
 
     /// Record one observation, evicting the oldest if the overlay is full.
+    ///
+    /// Full is the larger of [`max_records`] and the catalog held at the last
+    /// prune: one reading per listing always fits, and only an overlay larger
+    /// than the catalog evicts.
     pub async fn record(&self, url: &str, terms: ObservedTerms) {
         let terms = terms.bounded();
-        let cap = max_records();
+        let cap = max_records().max(self.held.load(Ordering::Relaxed));
         let mut records = self.records.write().await;
         if !records.contains_key(url) && records.len() >= cap {
             // Oldest observation first: the point of the cap is to bound the
@@ -609,6 +668,7 @@ impl TermsOverlay {
         if keep.is_empty() {
             return 0;
         }
+        self.held.store(keep.len(), Ordering::Relaxed);
         let mut records = self.records.write().await;
         let before = records.len();
         records.retain(|url, _| keep.contains(url));
@@ -1101,5 +1161,123 @@ mod tests {
             stored.accepts.iter().all(|o| o.extra.is_none()),
             "the overlay dates and compares a price; it is not a second catalog"
         );
+    }
+
+    // ------------------------------------------------------------------------
+    // X402-PRECIOS: the live 402 is the price
+    // ------------------------------------------------------------------------
+
+    const OTHER: &str = "0x000000000000000000000000000000000000dEaD";
+
+    #[test]
+    fn a_repriced_offer_takes_the_amount_its_402_quotes_and_nothing_else() {
+        let mut declared = option("exact", "2000", PAYEE);
+        declared.extra = Some(serde_json::json!({ "name": "USD Coin", "version": "2" }));
+        declared.max_timeout_seconds = 120;
+        let live = vec![option("exact", "3000", PAYEE)];
+
+        let adopted = adopt_live_amounts(&[declared.clone()], &live).expect("the amount moved");
+        assert_eq!(adopted.len(), 1);
+        assert_eq!(adopted[0].amount.to_string(), "3000");
+        // Everything but the amount is the declaration's.
+        assert_eq!(adopted[0].extra, declared.extra);
+        assert_eq!(adopted[0].max_timeout_seconds, 120);
+        assert_eq!(adopted[0].pay_to.to_string(), declared.pay_to.to_string());
+
+        // ...and the listing it produces agrees with the reading that moved it.
+        let r = resource(adopted);
+        let o = observation(live, 1_000);
+        assert!(!terms_disagree(&r.accepts, &o));
+        assert_eq!(
+            assess_freshness(&r, Some(&o), 1_500, 3_600),
+            PriceFreshness::Fresh
+        );
+    }
+
+    #[test]
+    fn a_recipient_network_or_asset_is_never_taken_from_the_402() {
+        // The 402 pays somebody else the listed amount's double: not the same
+        // offer, so nothing moves -- that is the drift check's business.
+        assert!(adopt_live_amounts(
+            &[option("exact", "2000", PAYEE)],
+            &[option("exact", "4000", OTHER)]
+        )
+        .is_none());
+        // Another network for the same recipient is not the same offer either.
+        let mut declared = on_network("base-sepolia");
+        declared.amount = option("exact", "2000", PAYEE).amount;
+        assert!(adopt_live_amounts(&[declared], &[on_network("base")]).is_none());
+    }
+
+    #[test]
+    fn an_option_the_402_no_longer_quotes_stays_as_declared() {
+        let base = option("exact", "32000", PAYEE);
+        let mut celo = on_network("celo");
+        celo.amount = base.amount;
+        let adopted = adopt_live_amounts(&[base, celo.clone()], &[option("exact", "16000", PAYEE)])
+            .expect("the Base amount moved");
+        assert_eq!(adopted[0].amount.to_string(), "16000");
+        assert_eq!(
+            adopted[1].amount, celo.amount,
+            "no reading of Celo, no new Celo price"
+        );
+    }
+
+    #[test]
+    fn an_agreeing_reading_moves_nothing() {
+        let declared = vec![option("exact", "2000", PAYEE)];
+        assert!(adopt_live_amounts(&declared, &[option("exact", "2000", PAYEE)]).is_none());
+        // One live counterpart already quotes the declared amount.
+        assert!(adopt_live_amounts(
+            &declared,
+            &[
+                option("exact", "9000", PAYEE),
+                option("exact", "2000", PAYEE)
+            ]
+        )
+        .is_none());
+        assert!(adopt_live_amounts(&declared, &[]).is_none());
+    }
+
+    /// The 2026-11-22 measurement: a catalog larger than the configured cap
+    /// lost a reading for every one it gained. One reading per listing the
+    /// catalog holds always fits.
+    #[tokio::test]
+    async fn the_overlay_keeps_a_reading_for_every_listing_the_catalog_holds() {
+        let overlay = TermsOverlay::new();
+        let n = max_records() + 3;
+        let urls: Vec<String> = (0..n).map(|i| format!("https://h{i}.example/x")).collect();
+        overlay.retain_urls(&urls.iter().cloned().collect()).await;
+        for (i, url) in urls.iter().enumerate() {
+            overlay
+                .record(
+                    url,
+                    observation(vec![option("exact", "10000", PAYEE)], 1_000 + i as u64),
+                )
+                .await;
+        }
+        assert_eq!(overlay.snapshot().await.len(), n);
+        assert!(
+            overlay.get(&urls[0]).await.is_some(),
+            "the oldest reading of a listing still held was evicted"
+        );
+    }
+
+    /// Past the catalog it is pruned against, the cap still evicts, oldest
+    /// first: the floor is the catalog, not unbounded.
+    #[tokio::test]
+    async fn past_the_catalog_the_oldest_reading_still_goes_first() {
+        let overlay = TermsOverlay::new();
+        let n = max_records();
+        for i in 0..=n {
+            overlay
+                .record(
+                    &format!("https://h{i}.example/x"),
+                    observation(vec![option("exact", "10000", PAYEE)], 1_000 + i as u64),
+                )
+                .await;
+        }
+        assert_eq!(overlay.snapshot().await.len(), n);
+        assert!(overlay.get("https://h0.example/x").await.is_none());
     }
 }

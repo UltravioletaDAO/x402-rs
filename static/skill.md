@@ -941,16 +941,31 @@ out that host and its subdomains).
 
 `amount` is a string in atomic units (`maxAmountRequired` is accepted as its v1
 spelling); a non-integer amount is a `400`, never a zero. Success is `201` with
-`{"success": true, "url": ...}`. These refusals carry `error` but no `code`, so
-branch on the status and on `error`:
+`{"success": true, "url": ...}`. The first refusals carry `error` but no code, so
+branch on the status and on `error`; a re-registration's carry `errorCode` too:
 
 | You see | It means |
 |---|---|
 | `400` `Invalid URL` | not http(s), credentials in the URL, or a private, loopback or link-local IP literal |
 | `400` `Invalid resource type` | `type` must be `http`, `mcp` or `a2a` (`facilitator` also exists, and is the only type allowed an empty `accepts`) |
 | `400` `No payment methods specified` | `accepts` is empty |
-| `409` `Resource already registered` | that URL is already in the catalog (listed, or waiting for its first verification); there is no public update or delete route |
-| `429` | registration has its own, much slower bucket (see `/auth.md`) |
+| `200` `"updated": true` | the URL was already listed and its live 402 makes every offer you submitted at the amount you submitted, and no offer the listing declares that you left out: the listing now carries your offers as the 402 makes them (their `extra` and `maxTimeoutSeconds` too) -- a new amount, an option the 402 no longer makes dropped, an offer moved to another network for the same `payTo` -- and keeps its own description, `metadata` and `extensions`, which a re-registration does not read (`"updated": false` when the terms were already these) |
+| `409` `reregistration_does_not_match_live_402` | already listed, and its live 402 does not make what you submitted; `mismatches` names each offer, with the `liveAmount` the 402 quotes when it makes that offer |
+| `409` `reregistration_omits_live_offer` | you left out an offer the listing declares while the 402 still makes it, or still pays a recipient on its network; `omitted` names each (with the `liveAmount` when the 402 makes that very offer): only an offer the 402 no longer makes, on a network where it pays nobody any more or that you keep, may be dropped |
+| `409` `reregistration_recipient_change` | a `payTo` the listing does not already declare: a re-registration never changes who is paid (`reregistration_live_recipient_undeclared`: the 402 pays a recipient that you, or the listing, do not declare, on a network you, or it, declare) |
+| `409` `reregistration_listing_held` | the health prober holds the listing; only two clean probes in a row lift a hold |
+| `409` `reregistration_feed_copy` | the listing is a copy from a feed (`source` `aggregated` or `crawled`): its terms follow that source, so change them there |
+| `422` `reregistration_no_live_402` | already listed, and the URL did not answer with a readable 402 offering a payment (`reregistration_live_402_conflict`: its `PAYMENT-REQUIRED` header and its body make different offers) |
+| `429` | registration has its own, much slower bucket (see `/auth.md`); `reregistration_too_soon` is one re-registration per URL per `registration.reregisterCooldownSeconds` of `GET /discovery/config` |
+
+A re-registration changes the payment terms only. It reads the URL's 402 once,
+through the health prober's connector and with the request your listing declares; a
+first registration reads nothing.
+You rarely need one to reprice: the prober reads the 402 of each listing that is
+alive again about every `healthProber.priceSweepSeconds` (a failing or held listing
+on its own, slower schedule), and an amount that changed for an offer a
+self-registered listing declares (same `scheme`, `network`, `asset` and `payTo`)
+becomes the listed one, dated by `priceAdoptedAt`.
 
 A registered URL is health-probed like any other entry. `first_party` and `vip` are
 curated by hand, `verified` answered a payment challenge correctly, and `listed` is

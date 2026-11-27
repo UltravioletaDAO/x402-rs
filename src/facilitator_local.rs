@@ -148,6 +148,8 @@ pub(crate) fn escrow_supported_kinds_from(
                     .map(|_| LIFECYCLE_SIGNERS_VERSION),
                 lifecycle_signers,
             }),
+            facilitator_address: None,
+            are_fees_sponsored: None,
         }),
     };
 
@@ -459,23 +461,44 @@ where
             // list was silently coupled to the mirror running FIRST; now that
             // it runs last, reading the v1 entries is the only thing that
             // works -- and it is the thing that was always meant.
-            let mut evm_networks: Vec<String> = kinds
+            let mut evm_networks: Vec<Network> = kinds
                 .iter()
                 .filter(|k| k.scheme == Scheme::Exact)
                 .filter_map(|k| resolve_network(&k.network))
                 .filter(|network| crate::upto::types::is_proxy_deployed_on(*network))
-                .map(|network| network.to_caip2())
                 .collect();
-            evm_networks.sort();
+            evm_networks.sort_by_key(|network| network.to_caip2());
             evm_networks.dedup();
 
-            for network_caip2 in evm_networks {
+            for network in evm_networks {
+                // `extra.facilitatorAddress` (x402 Foundation `scheme_upto_evm.md`,
+                // "Facilitator Address Discovery"): the client MUST sign it into
+                // `witness.facilitator`, and settle accepts no other. A kind
+                // without it cannot be paid, so a network whose provider names
+                // no settling address is not offered `upto` at all.
+                let Some(settling) = self
+                    .provider_map
+                    .by_network(network)
+                    .and_then(|provider| provider.upto_settling_address())
+                else {
+                    tracing::warn!(%network, "upto not announced: no settling address for the network");
+                    continue;
+                };
                 kinds.push(SupportedPaymentKind {
                     x402_version: X402Version::V2,
                     scheme: Scheme::Upto,
-                    network: network_caip2,
+                    network: network.to_caip2(),
                     network_aliases: None,
-                    extra: None, // Upto doesn't need extra (Permit2 domain is always "Permit2")
+                    // The Permit2 domain is always "Permit2": the address is
+                    // the only thing a client needs from here.
+                    extra: Some(SupportedPaymentKindExtra {
+                        fee_payer: None,
+                        tokens: None,
+                        escrow: None,
+                        near_escrow: None,
+                        facilitator_address: Some(EvmAddress(settling)),
+                        are_fees_sponsored: None,
+                    }),
                 });
             }
         }
@@ -706,7 +729,7 @@ where
                     ))
                 }
             }
-            ExactPaymentPayload::Stellar(_stellar_payload) => {
+            ExactPaymentPayload::Stellar(_) | ExactPaymentPayload::StellarTransaction(_) => {
                 #[cfg(feature = "stellar")]
                 {
                     // For now, allow Stellar transactions through (compliance will be added later)
@@ -732,7 +755,7 @@ where
                 Ok(())
             }
             #[cfg(feature = "sui")]
-            ExactPaymentPayload::Sui(_sui_payload) => {
+            ExactPaymentPayload::Sui(_) | ExactPaymentPayload::SuiTransaction(_) => {
                 // For now, allow Sui transactions through (compliance will be added later)
                 tracing::debug!(
                     "Sui payment compliance check: allowing transaction (TODO: implement Sui compliance)"
@@ -791,6 +814,8 @@ mod supported_advertisement_tests {
                     lifecycle_signers: None,
                     lifecycle_signers_version: None,
                 }),
+                facilitator_address: None,
+                are_fees_sponsored: None,
             }),
         }
     }
@@ -985,6 +1010,8 @@ mod testnet_chain_id_supported_diff_tests {
                 lifecycle_signers: None,
                 lifecycle_signers_version: None,
             }),
+            facilitator_address: None,
+            are_fees_sponsored: None,
         }
     }
 
@@ -1344,6 +1371,8 @@ mod escrow_supported_tests {
                             lifecycle_signers: None,
                             lifecycle_signers_version: None,
                         }),
+                        facilitator_address: None,
+                        are_fees_sponsored: None,
                     };
 
                     kinds.push(SupportedPaymentKind {
@@ -1367,6 +1396,8 @@ mod escrow_supported_tests {
                         lifecycle_signers: None,
                         lifecycle_signers_version: None,
                     }),
+                    facilitator_address: None,
+                    are_fees_sponsored: None,
                 };
 
                 kinds.push(SupportedPaymentKind {
@@ -1519,7 +1550,7 @@ mod escrow_supported_tests {
     }
 
     /// A compliance checker `supported()` never consults.
-    struct NoScreening;
+    pub(super) struct NoScreening;
 
     #[async_trait::async_trait]
     impl ComplianceChecker for NoScreening {
@@ -1721,15 +1752,18 @@ mod escrow_supported_tests {
         }
     }
 
-    /// The production table declares nobody, and the body `GET /supported`
-    /// answers with (`supported_body` over `supported()`, escrow switched on)
-    /// says so: every x402r `escrow` kind carries `lifecycleSigners: {}` with
-    /// its version -- not an absent field, which is what a facilitator older
-    /// than the announcement publishes -- and no other kind carries either.
-    /// No chain provider is configured here, so `exact` and the NEAR `escrow`
+    /// The body `GET /supported` answers with (`supported_body` over
+    /// `supported()`, escrow switched on) announces the production table:
+    /// every x402r `escrow` kind of the nine networks where Execution Market
+    /// signs carries `lifecycleSigners: {<its operator>: <its signer>}`, every
+    /// other one `{}` -- not an absent field, which is what a facilitator
+    /// older than the announcement publishes -- each with its version, and no
+    /// other kind carries either. Written out here, lowercase as announced, so
+    /// a table and an announcement that drifted together still go red. No
+    /// chain provider is configured here, so `exact` and the NEAR `escrow`
     /// kind are not in this body; neither builds an `EscrowSupportedInfo`.
     #[tokio::test]
-    async fn supported_announces_no_lifecycle_signer_with_its_version() {
+    async fn supported_announces_the_declared_lifecycle_signers_with_their_version() {
         use crate::payment_operator::autoverify::{self, Verdict};
         let facilitator = FacilitatorLocal::new(
             crate::payment_operator::test_rpc::Providers(HashMap::new()),
@@ -1748,12 +1782,39 @@ mod escrow_supported_tests {
         let supported = facilitator.supported().await.unwrap();
         let body = crate::handlers::supported_body(supported);
         let kinds = body["kinds"].as_array().expect("kinds");
+        let em = "0x59e44faac5c56e5e31602a45262f1eb5df193b3e";
+        let declared: HashMap<&str, &str> = [
+            ("eip155:8453", "0x271f9fa7f8907acf178ccfb470076d9129d8f0eb"),
+            ("eip155:1", "0x69b67962ffb7c5c7078ff348a87df604dfa8001b"),
+            ("eip155:137", "0xb87f1ecc85f074e50df3dd16a1f40e4e1ec4102e"),
+            ("eip155:42161", "0xc2377a9db1de2520bd6b2756ed012f4e82f7938e"),
+            ("eip155:42220", "0xc2377a9db1de2520bd6b2756ed012f4e82f7938e"),
+            ("eip155:43114", "0xc2377a9db1de2520bd6b2756ed012f4e82f7938e"),
+            ("eip155:10", "0xc2377a9db1de2520bd6b2756ed012f4e82f7938e"),
+            ("eip155:143", "0x9620dbe2bb549e1d080dc8e7982623a9e1df8cc3"),
+            ("eip155:5042", "0x0258472a1410ac3ad720f1bc83f22b3c0af1fd9d"),
+        ]
+        .into_iter()
+        .collect();
         let mut escrow = 0;
+        let mut announced_by = std::collections::BTreeSet::new();
         for kind in kinds {
             let extra = &kind["extra"];
             if kind["scheme"] == "escrow" {
                 escrow += 1;
-                assert_eq!(extra["lifecycleSigners"], serde_json::json!({}), "{kind}");
+                let caip2 = resolve_network(kind["network"].as_str().unwrap())
+                    .unwrap()
+                    .to_caip2();
+                let expected = match declared.get(caip2.as_str()) {
+                    Some(operator) => {
+                        announced_by.insert(caip2.clone());
+                        let mut map = serde_json::Map::new();
+                        map.insert(operator.to_string(), Value::from(em));
+                        Value::Object(map)
+                    }
+                    None => serde_json::json!({}),
+                };
+                assert_eq!(extra["lifecycleSigners"], expected, "{kind}");
                 assert_eq!(extra["lifecycleSignersVersion"], 1, "{kind}");
             } else {
                 assert!(extra.get("lifecycleSigners").is_none(), "{kind}");
@@ -1767,6 +1828,9 @@ mod escrow_supported_tests {
             "under the v1 name too"
         );
         assert!(escrow > 0);
+        let all: std::collections::BTreeSet<String> =
+            declared.keys().map(|n| n.to_string()).collect();
+        assert_eq!(announced_by, all, "every declaring network was announced");
 
         autoverify::set_for_test(Network::Arc, arc_operator, None);
         match previous {
@@ -1902,5 +1966,321 @@ mod screen_recipient_tests {
         );
         let verdict = facilitator.screen_recipient(&evm(CLEAN)).await.unwrap();
         assert_eq!(verdict.as_deref(), Some("manual review"));
+    }
+}
+
+/// `/supported` as the x402 Foundation specs read it: `upto` announces the
+/// address that settles it (`scheme_upto_evm.md`), and Stellar and Sui are
+/// announced under their CAIP-2 ids for x402 v2 (`scheme_exact_stellar.md`,
+/// `scheme_exact_sui.md`) while keeping their v1 names.
+#[cfg(test)]
+mod spec_announcement_tests {
+    use super::escrow_supported_tests::NoScreening;
+    use super::*;
+    use crate::chain::evm::EvmProvider;
+    use crate::chain::NetworkProvider;
+    use crate::payment_operator::test_rpc::{Providers, ESCROW_FLAGS};
+    use crate::upto::types::UPTO_DEPLOYED_NETWORKS;
+    use alloy::network::EthereumWallet;
+    use alloy::signers::local::PrivateKeySigner;
+    use serde_json::{json, Value};
+    use std::collections::HashMap;
+
+    fn facilitator<M: ProviderMap>(map: M) -> FacilitatorLocal<M> {
+        FacilitatorLocal::new(
+            map,
+            Arc::new(Box::new(NoScreening) as Box<dyn ComplianceChecker>),
+        )
+    }
+
+    /// `ENABLE_UPTO` as production sets it, for the closure's duration.
+    async fn with_upto<T>(run: impl std::future::Future<Output = T>) -> T {
+        let _flags = ESCROW_FLAGS.lock().unwrap_or_else(|e| e.into_inner());
+        let previous = std::env::var("ENABLE_UPTO").ok();
+        std::env::set_var("ENABLE_UPTO", "true");
+        let out = run.await;
+        match previous {
+            Some(value) => std::env::set_var("ENABLE_UPTO", value),
+            None => std::env::remove_var("ENABLE_UPTO"),
+        }
+        out
+    }
+
+    /// Production's split: one key signs every EVM mainnet, another every
+    /// testnet (`EVM_PRIVATE_KEY_MAINNET` / `_TESTNET`). Nothing listens on
+    /// the RPC: announcing reads no chain.
+    async fn evm_providers(mainnet: &PrivateKeySigner, testnet: &PrivateKeySigner) -> Providers {
+        let mut map = HashMap::new();
+        for &network in UPTO_DEPLOYED_NETWORKS {
+            let signer = if network.is_testnet() {
+                testnet
+            } else {
+                mainnet
+            };
+            let provider = EvmProvider::try_new(
+                EthereumWallet::from(signer.clone()),
+                "http://127.0.0.1:1/",
+                true,
+                network,
+            )
+            .await
+            .expect("an offline provider");
+            map.insert(network, NetworkProvider::Evm(provider));
+        }
+        Providers(map)
+    }
+
+    fn upto_kinds(kinds: &[SupportedPaymentKind]) -> Vec<&SupportedPaymentKind> {
+        kinds.iter().filter(|k| k.scheme == Scheme::Upto).collect()
+    }
+
+    /// One `upto` request naming `facilitator` in its witness; nothing else
+    /// in it is read by `resolve_settling_signer`.
+    fn upto_request(
+        network: Network,
+        facilitator: alloy::primitives::Address,
+    ) -> crate::upto::types::UptoRequest {
+        let terms = json!({
+            "scheme": "upto",
+            "network": network.to_caip2(),
+            "amount": "5000000",
+            "asset": "0x036CbD53842c5426634e7929541eC2318f3dCF7e",
+            "payTo": "0x209693Bc6afc0C5328bA36FaF03C514EF312287C",
+            "maxTimeoutSeconds": 300,
+        });
+        serde_json::from_value(json!({
+            "x402Version": 2,
+            "paymentPayload": {
+                "x402Version": 2,
+                "accepted": terms,
+                "payload": {
+                    "signature": "0x00",
+                    "permit2Authorization": {
+                        "permitted": {"token": terms["asset"], "amount": "5000000"},
+                        "from": "0x857b06519E91e3A54538791bDbb0E22373e36b66",
+                        "spender": "0x4020A4f3b7b90ccA423B9fabCc0CE57C6C240002",
+                        "nonce": "0x01",
+                        "deadline": "1740672154",
+                        "witness": {
+                            "to": terms["payTo"],
+                            "facilitator": format!("{facilitator:#x}"),
+                            "validAfter": "1740672089",
+                        },
+                    },
+                },
+            },
+            "paymentRequirements": terms,
+        }))
+        .expect("the spec's upto request shape")
+    }
+
+    /// Every `upto` kind, under either name of its chain, names the signer of
+    /// that chain: the mainnet key on the eight mainnets, the testnet key on
+    /// the three testnets -- and nothing else in `extra`.
+    #[tokio::test]
+    async fn every_upto_kind_announces_the_signer_that_settles_on_its_network() {
+        let mainnet = PrivateKeySigner::random();
+        let testnet = PrivateKeySigner::random();
+        let facilitator = facilitator(evm_providers(&mainnet, &testnet).await);
+        let kinds = with_upto(facilitator.supported()).await.unwrap().kinds;
+        let upto = upto_kinds(&kinds);
+
+        assert_eq!(
+            upto.len(),
+            2 * UPTO_DEPLOYED_NETWORKS.len(),
+            "every deployed network, under its v1 name and its CAIP-2 id"
+        );
+        for &network in UPTO_DEPLOYED_NETWORKS {
+            for (version, name) in [
+                (X402Version::V1, network.to_string()),
+                (X402Version::V2, network.to_caip2()),
+            ] {
+                let kind = upto
+                    .iter()
+                    .find(|k| k.x402_version == version && k.network == name)
+                    .unwrap_or_else(|| panic!("upto on {name} ({version:?}) is announced"));
+                let expected = if network.is_testnet() {
+                    testnet.address()
+                } else {
+                    mainnet.address()
+                };
+                let NetworkProvider::Evm(provider) =
+                    facilitator.provider_map.by_network(network).unwrap()
+                else {
+                    unreachable!("an EVM map")
+                };
+                assert_eq!(provider.pinned_signer(), expected);
+                let extra = serde_json::to_value(kind).unwrap()["extra"].clone();
+                assert_eq!(
+                    extra,
+                    json!({ "facilitatorAddress": format!("{expected:#x}") }),
+                    "upto on {name}"
+                );
+            }
+        }
+    }
+
+    /// The address a client copies from `/supported` into its witness is the
+    /// one `upto` settle accepts on that network, and the other key's is not.
+    #[tokio::test]
+    async fn the_announced_address_is_the_one_upto_settle_accepts() {
+        let mainnet = PrivateKeySigner::random();
+        let testnet = PrivateKeySigner::random();
+        let facilitator = facilitator(evm_providers(&mainnet, &testnet).await);
+        let kinds = with_upto(facilitator.supported()).await.unwrap().kinds;
+
+        for kind in upto_kinds(&kinds) {
+            let network = resolve_network(&kind.network).unwrap();
+            let announced = kind.extra.as_ref().unwrap().facilitator_address.unwrap().0;
+            let NetworkProvider::Evm(provider) =
+                facilitator.provider_map.by_network(network).unwrap()
+            else {
+                unreachable!("an EVM map")
+            };
+            let accepted = crate::upto::permit2::resolve_settling_signer(
+                provider,
+                &upto_request(network, announced),
+            );
+            assert_eq!(accepted.ok(), Some(announced), "{}", kind.network);
+
+            let other = if network.is_testnet() {
+                mainnet.address()
+            } else {
+                testnet.address()
+            };
+            assert!(
+                crate::upto::permit2::resolve_settling_signer(
+                    provider,
+                    &upto_request(network, other)
+                )
+                .is_err(),
+                "{}: only the announced signer settles",
+                kind.network
+            );
+        }
+    }
+
+    /// A provider that carries `exact` on an `upto` network but names no
+    /// settling address.
+    struct ExactOnly(Network);
+
+    impl Facilitator for ExactOnly {
+        type Error = FacilitatorLocalError;
+        async fn verify(&self, _: &VerifyRequest) -> Result<VerifyResponse, Self::Error> {
+            unreachable!("supported() verifies nothing")
+        }
+        async fn settle(&self, _: &SettleRequest) -> Result<SettleResponse, Self::Error> {
+            unreachable!("supported() settles nothing")
+        }
+        async fn supported(&self) -> Result<SupportedPaymentKindsResponse, Self::Error> {
+            Ok(SupportedPaymentKindsResponse {
+                kinds: vec![SupportedPaymentKind {
+                    x402_version: X402Version::V1,
+                    scheme: Scheme::Exact,
+                    network: self.0.to_string(),
+                    network_aliases: None,
+                    extra: None,
+                }],
+            })
+        }
+    }
+
+    struct ExactOnlyMap(HashMap<Network, ExactOnly>);
+
+    impl ProviderMap for ExactOnlyMap {
+        type Value = ExactOnly;
+        fn by_network<N: std::borrow::Borrow<Network>>(&self, network: N) -> Option<&ExactOnly> {
+            self.0.get(network.borrow())
+        }
+        fn values(&self) -> impl Iterator<Item = &ExactOnly> + Send {
+            self.0.values()
+        }
+    }
+
+    /// A kind the client cannot sign for is not announced: no address, no
+    /// `upto`, while `exact` stays.
+    #[tokio::test]
+    async fn no_upto_kind_is_announced_without_a_settling_address() {
+        let map = ExactOnlyMap(HashMap::from([(Network::Base, ExactOnly(Network::Base))]));
+        let kinds = with_upto(facilitator(map).supported()).await.unwrap().kinds;
+        assert!(upto_kinds(&kinds).is_empty(), "{kinds:?}");
+        assert!(kinds
+            .iter()
+            .any(|k| k.scheme == Scheme::Exact && k.network == "base"));
+    }
+
+    /// Stellar and Sui under their CAIP-2 ids for x402 v2 and under their v1
+    /// names, the two entries of a chain alike; Stellar's saying the
+    /// facilitator pays the fees, Sui's not carrying that Stellar-only key.
+    #[cfg(feature = "sui")]
+    #[tokio::test]
+    async fn stellar_and_sui_are_announced_under_caip2_and_still_under_their_v1_names() {
+        let stellar_key = |seed: u8| stellar_strkey::ed25519::PrivateKey([seed; 32]).to_string();
+        let mut map = HashMap::new();
+        for (network, seed) in [(Network::Stellar, 1), (Network::StellarTestnet, 2)] {
+            map.insert(
+                network,
+                NetworkProvider::Stellar(
+                    crate::chain::stellar::StellarProvider::try_new(
+                        stellar_key(seed),
+                        None,
+                        network,
+                    )
+                    .unwrap(),
+                ),
+            );
+        }
+        for network in [Network::Sui, Network::SuiTestnet] {
+            map.insert(
+                network,
+                NetworkProvider::Sui(crate::chain::sui::SuiProvider::for_test(network)),
+            );
+        }
+        let kinds = facilitator(Providers(map)).supported().await.unwrap().kinds;
+        let json: Vec<Value> = kinds
+            .iter()
+            .map(|k| serde_json::to_value(k).unwrap())
+            .collect();
+
+        for (v1, caip2, sponsored) in [
+            ("stellar", "stellar:pubnet", true),
+            ("stellar-testnet", "stellar:testnet", true),
+            ("sui", "sui:mainnet", false),
+            ("sui-testnet", "sui:testnet", false),
+        ] {
+            let find = |version: u64, network: &str| {
+                let found: Vec<&Value> = json
+                    .iter()
+                    .filter(|k| {
+                        k["x402Version"] == json!(version)
+                            && k["scheme"] == json!("exact")
+                            && k["network"] == json!(network)
+                    })
+                    .collect();
+                assert_eq!(
+                    found.len(),
+                    1,
+                    "exactly one exact kind for {network} v{version}"
+                );
+                found[0].clone()
+            };
+            let as_v2 = find(2, caip2);
+            let as_v1 = find(1, v1);
+            assert_eq!(
+                as_v2["extra"], as_v1["extra"],
+                "{v1}: the twins carry one extra"
+            );
+            assert!(as_v2["extra"]["feePayer"].is_string(), "{caip2}");
+            assert!(as_v2["extra"]["tokens"].is_array(), "{caip2}");
+            if sponsored {
+                assert_eq!(as_v2["extra"]["areFeesSponsored"], json!(true), "{caip2}");
+            } else {
+                assert!(as_v2["extra"].get("areFeesSponsored").is_none(), "{caip2}");
+            }
+            assert!(
+                as_v2["extra"].get("facilitatorAddress").is_none(),
+                "{caip2}"
+            );
+        }
     }
 }

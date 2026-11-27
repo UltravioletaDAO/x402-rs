@@ -312,6 +312,7 @@ impl DiscoveryCrawler {
             upstream_source: None,
             extensions_provenance: None,
             extensions_adopted: None,
+            price_adopted_at: None,
             usage: None,
         }
     }

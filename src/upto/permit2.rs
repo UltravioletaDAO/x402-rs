@@ -414,7 +414,7 @@ async fn check_token_balance(
 /// A witness naming an address we do not hold can never be settled at all —
 /// rejecting it here turns a guaranteed on-chain revert into a clear error
 /// before verify tells the merchant the payment is good.
-fn resolve_settling_signer(
+pub(crate) fn resolve_settling_signer(
     provider: &EvmProvider,
     request: &UptoRequest,
 ) -> Result<Address, UptoError> {

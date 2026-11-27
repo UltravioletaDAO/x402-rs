@@ -10940,6 +10940,144 @@ mod declared_method_tests {
             assert_eq!(held.source, source);
         }
     }
+
+    /// What a refused re-registration leaves behind: the listing as it was
+    /// listed at 2000, no reading of its terms, no hold and nothing queued.
+    async fn assert_left_as_listed(registry: &DiscoveryRegistry, key: &str, case: &str) {
+        let held = registry.get(key).await.unwrap();
+        assert_eq!(amounts(&held), ["2000"], "{case}: a refusal wrote terms");
+        assert_eq!(held.description, "exposure fixture", "{case}");
+        assert!(held.price_adopted_at.is_none(), "{case}");
+        assert!(
+            registry.terms().get(key).await.is_none(),
+            "{case}: a refusal recorded a reading"
+        );
+        assert!(!registry.health().is_quarantined(key).await, "{case}");
+        assert!(!registry.revalidation().is_pending(key).await, "{case}");
+    }
+
+    /// The 402 a re-registration is verified against is the listing's own
+    /// answer to the request as it was sent. One another host gave after a
+    /// redirect, or one a redirect reached by changing the method, is not:
+    /// the re-registration is refused as having no live 402 and the listing
+    /// stays as it was. The same 402 from the listing itself -- directly, or
+    /// after a redirect that stayed on its host and kept the method -- is
+    /// what the terms move to.
+    #[tokio::test]
+    async fn a_reregistration_against_a_402_the_listing_did_not_answer_itself_is_refused() {
+        use crate::discovery_security::FollowedRedirect;
+        let challenge = quote(&[quoted("3000", PRICE_PAYEE)]);
+        let after = |host: &str, method_kept: bool| Says {
+            redirect: Some(FollowedRedirect {
+                host: Some(host.to_string()),
+                method_kept,
+            }),
+            ..Says::header(&challenge)
+        };
+        for (case, origin) in [
+            ("another host", after("elsewhere.example", true)),
+            ("another method", after("seller.example", false)),
+        ] {
+            let (registry, key, submitted) = reregistration("3000", PRICE_PAYEE).await;
+            let outcome =
+                reregister_through(&origin, &registry, &key, submitted, 1_000, true).await;
+            assert_eq!(
+                outcome,
+                Err(ReregisterRefusal::NoLiveChallenge {
+                    http_status: Some(402)
+                }),
+                "{case}"
+            );
+            assert_eq!(
+                outcome.unwrap_err().code(),
+                "reregistration_no_live_402",
+                "{case}"
+            );
+            assert_left_as_listed(&registry, &key, case).await;
+        }
+        for (case, origin) in [
+            ("no redirect", Says::header(&challenge)),
+            ("its own host, method kept", after("SELLER.example", true)),
+        ] {
+            let (registry, key, submitted) = reregistration("3000", PRICE_PAYEE).await;
+            assert_eq!(
+                reregister_through(&origin, &registry, &key, submitted, 1_000, true).await,
+                Ok(Reregistered::Updated),
+                "{case}"
+            );
+            assert_eq!(
+                amounts(&registry.get(&key).await.unwrap()),
+                ["3000"],
+                "{case}"
+            );
+        }
+    }
+
+    /// The 402 a re-registration is verified against is about the listing's
+    /// own URL. One that names another resource as its `resource.url` --
+    /// another path of the same host, another host, something that is not a
+    /// URL -- speaks for that one, in the header or in the body: the
+    /// re-registration is refused as having no live 402 and the listing stays
+    /// as it was. Scheme, case, the FQDN dot, a port and a trailing slash do
+    /// not make another resource.
+    #[tokio::test]
+    async fn a_reregistration_against_a_402_about_another_resource_is_refused() {
+        let naming = |resource: &str| {
+            let mut challenge = quote(&[quoted("3000", PRICE_PAYEE)]);
+            challenge["resource"] = json!({ "url": resource });
+            challenge
+        };
+        for other in [
+            "https://seller.example/other",
+            "https://other.example/r",
+            "not a url",
+        ] {
+            for (transport, origin) in [
+                ("header", Says::header(&naming(other))),
+                ("body", Says::body(&naming(other))),
+            ] {
+                let case = format!("{other} in the {transport}");
+                let (registry, key, submitted) = reregistration("3000", PRICE_PAYEE).await;
+                let outcome =
+                    reregister_through(&origin, &registry, &key, submitted, 1_000, true).await;
+                assert_eq!(
+                    outcome,
+                    Err(ReregisterRefusal::NoLiveChallenge {
+                        http_status: Some(402)
+                    }),
+                    "{case}"
+                );
+                assert_eq!(
+                    outcome.unwrap_err().code(),
+                    "reregistration_no_live_402",
+                    "{case}"
+                );
+                assert_left_as_listed(&registry, &key, &case).await;
+            }
+        }
+        for (case, origin) in [
+            (
+                "the listing, spelled another way",
+                Says::header(&naming("http://SELLER.example.:8080/r/")),
+            ),
+            (
+                "no resource named",
+                Says::header(&quote(&[quoted("3000", PRICE_PAYEE)])),
+            ),
+        ] {
+            let (registry, key, submitted) = reregistration("3000", PRICE_PAYEE).await;
+            assert_eq!(
+                reregister_through(&origin, &registry, &key, submitted, 1_000, true).await,
+                Ok(Reregistered::Updated),
+                "{case}"
+            );
+            assert_eq!(
+                amounts(&registry.get(&key).await.unwrap()),
+                ["3000"],
+                "{case}"
+            );
+        }
+    }
 }
 
 /// The declared offer that lets an extra network pass is compared as a client

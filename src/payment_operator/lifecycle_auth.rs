@@ -1214,6 +1214,22 @@ mod tests {
         operator: Address,
         network: Network,
     ) -> EscrowLifecyclePayload {
+        // Unique per operator, and every scenario that orders through here
+        // uses its own.
+        let nonce = alloy::primitives::keccak256(operator.as_slice());
+        order_under_nonce(LifecycleAction::Release, owner, operator, network, nonce)
+    }
+
+    /// [`owner_order`] for `action`, under `nonce`. The gate's replay guard is
+    /// the process's one: a test that sends more than one order for an
+    /// operator through [`gate_with_mode`] gives each its own nonce.
+    fn order_under_nonce(
+        action: LifecycleAction,
+        owner: &PrivateKeySigner,
+        operator: Address,
+        network: Network,
+        nonce: B256,
+    ) -> EscrowLifecyclePayload {
         use crate::payment_operator::types::EscrowPaymentInfo;
         let now = unix_now();
         let mut lifecycle = EscrowLifecyclePayload {
@@ -1236,10 +1252,8 @@ mod tests {
         };
         let chain_id = EvmChain::try_from(network).unwrap().chain_id;
         let deadline = now + 120;
-        // Unique per operator, and every scenario below uses its own.
-        let nonce = alloy::primitives::keccak256(operator.as_slice());
         let digest = signing_hash(
-            LifecycleAction::Release,
+            action,
             lifecycle.amount,
             deadline,
             nonce,
@@ -1542,16 +1556,24 @@ mod tests {
         }
     }
 
-    /// The production gate reads the production table, which declares nobody:
-    /// an order the vector's D signs for Base/A -- admitted when the vector's
-    /// table declares D -- is refused under `enforce` exactly as before the
-    /// role existed, through the owner rule.
+    /// The production gate reads the production table, where Base/A has a row
+    /// and the row names Execution Market's signer: an order the vector's D
+    /// signs for Base/A -- admitted when the vector's table declares D -- does
+    /// not enter as that operator's declared signer. It goes on to the owner
+    /// rule, with its one owner read, and is refused under `enforce`.
     #[tokio::test]
-    async fn the_production_gate_admits_no_declared_signer_while_the_table_is_empty() {
+    async fn a_key_that_is_not_the_operators_declared_signer_is_held_to_the_owner_rule() {
+        use crate::payment_operator::addresses::EXECUTION_MARKET_LIFECYCLE_SIGNER;
         use crate::payment_operator::test_rpc::{self, CallAnswer, MockNode};
         let v = lifecycle_vector::vector();
         let d = v.key("declaredSigner").signer();
         let base_a = address!("271f9fa7f8907aCf178CCFB470076D9129D8F0Eb");
+        assert_eq!(
+            declared_signer(OperatorAddresses::for_network, Network::Base, base_a),
+            Some(EXECUTION_MARKET_LIFECYCLE_SIGNER),
+            "the row this test leans on"
+        );
+        assert_ne!(d.address(), EXECUTION_MARKET_LIFECYCLE_SIGNER);
         owner_cache()
             .lock()
             .unwrap_or_else(|e| e.into_inner())
@@ -1575,7 +1597,7 @@ mod tests {
             OperatorAbi::Legacy,
         )
         .await
-        .expect_err("nobody is declared");
+        .expect_err("D is not the signer the row declares");
         assert!(
             matches!(
                 err,
@@ -1589,6 +1611,142 @@ mod tests {
         assert_eq!(
             node.reads(),
             vec![(base_a, OperatorContract::FEE_RECIPIENTCall::SELECTOR)]
+        );
+    }
+
+    /// In `log` a declared row changes no decision. For every operator the
+    /// escrow rail serves, with a declared lifecycle signer or without one,
+    /// and for both actions, the gate is sent an order for each verdict it
+    /// gives an order it does not authorize -- missing, expired, a deadline
+    /// too far, a bad signature, a key that is neither a party, the
+    /// operator's owner nor its declared signer, that same order again, and
+    /// one whose owner cannot be read -- and one the operator's owner signs.
+    /// `log` lets every one through. `enforce` refuses each under its own
+    /// verdict and admits the owner's: what `log` lets through here is what
+    /// the gate would refuse, row or no row.
+    #[tokio::test]
+    async fn in_log_a_declared_row_changes_no_decision() {
+        use crate::payment_operator::addresses::ESCROW_NETWORKS;
+        use crate::payment_operator::test_rpc::{self, CallAnswer, MockNode};
+        let stranger = PrivateKeySigner::random();
+        let owner = PrivateKeySigner::random();
+        let forget_owners = || {
+            owner_cache()
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .clear()
+        };
+        forget_owners();
+        let category = |decision: Result<(), OperatorError>| match decision {
+            Ok(()) => None,
+            Err(OperatorError::LifecycleAuthRejected { category, .. }) => Some(category),
+            Err(other) => panic!("not a decision of the gate: {other:?}"),
+        };
+        let edited = |mut order: EscrowLifecyclePayload, edit: &dyn Fn(&mut LifecycleAuth)| {
+            edit(order.lifecycle_auth.as_mut().expect("a signed order"));
+            order
+        };
+        let (mut declared, mut undeclared) = (0, 0);
+        for &network in ESCROW_NETWORKS {
+            let addrs = OperatorAddresses::for_network(network).unwrap();
+            let (abi, selector) = if is_canonical_v1_network(network) {
+                (
+                    OperatorAbi::V3,
+                    OperatorV3Contract::FEE_RECEIVERCall::SELECTOR,
+                )
+            } else {
+                (
+                    OperatorAbi::Legacy,
+                    OperatorContract::FEE_RECIPIENTCall::SELECTOR,
+                )
+            };
+            let node = MockNode::start(network).await;
+            let provider = test_rpc::provider(network, &node, true).await;
+            for operator in addrs.payment_operators.clone() {
+                let row = declared_signer(OperatorAddresses::for_network, network, operator);
+                assert_ne!(row, Some(stranger.address()));
+                assert_ne!(row, Some(owner.address()));
+                match row {
+                    Some(_) => declared += 1,
+                    None => undeclared += 1,
+                }
+                let names_the_owner =
+                    CallAnswer::Return(alloy::sol_types::SolValue::abi_encode(&owner.address()));
+                node.on_call(operator, selector, names_the_owner.clone());
+                for (mode, action) in [
+                    (Mode::Log, LifecycleAction::Release),
+                    (Mode::Log, LifecycleAction::RefundInEscrow),
+                    (Mode::Enforce, LifecycleAction::Release),
+                    (Mode::Enforce, LifecycleAction::RefundInEscrow),
+                ] {
+                    let case =
+                        format!("{network} {operator} {} {}", mode.as_str(), action.as_str());
+                    // Each order under its own nonce: the gate's replay guard
+                    // is the process's one, and only `replayed` resends one.
+                    let signed = |signer: &PrivateKeySigner, tag: &str| {
+                        let nonce = alloy::primitives::keccak256(
+                            format!("in_log_a_declared_row_changes_no_decision {case} {tag}")
+                                .as_bytes(),
+                        );
+                        order_under_nonce(action, signer, operator, network, nonce)
+                    };
+                    let now = unix_now();
+                    let mut missing = signed(&stranger, "missing");
+                    missing.lifecycle_auth = None;
+                    let expired = edited(signed(&stranger, "expired"), &|a| a.deadline = now - 1);
+                    let far = edited(signed(&stranger, "deadline_too_far"), &|a| {
+                        a.deadline = u64::MAX
+                    });
+                    let forged = edited(signed(&stranger, "bad_signature"), &|a| {
+                        a.signer = owner.address()
+                    });
+                    let foreign = signed(&stranger, "unauthorized_role");
+                    let unreadable = signed(&stranger, "owner_unverifiable");
+                    let owners = signed(&owner, "owner");
+                    // In the order sent: what `enforce` answers each with.
+                    let sent = [
+                        (&missing, Some("missing")),
+                        (&expired, Some("expired")),
+                        (&far, Some("deadline_too_far")),
+                        (&forged, Some("bad_signature")),
+                        (&foreign, Some("unauthorized_role")),
+                        (&foreign, Some("replayed")),
+                        (&unreadable, Some("owner_unverifiable")),
+                        (&owners, None),
+                    ];
+                    for (order, refused) in sent {
+                        let owner_down = refused == Some("owner_unverifiable");
+                        if owner_down {
+                            // A getter that reverts: an error the provider
+                            // does not retry, unlike a rate limit.
+                            forget_owners();
+                            node.on_call(
+                                operator,
+                                selector,
+                                CallAnswer::Error {
+                                    code: 3,
+                                    message: "execution reverted".to_string(),
+                                },
+                            );
+                        }
+                        let decision =
+                            gate_with_mode(mode, action, order, network, &provider, abi).await;
+                        if owner_down {
+                            node.on_call(operator, selector, names_the_owner.clone());
+                        }
+                        let expected = if mode == Mode::Enforce { refused } else { None };
+                        assert_eq!(
+                            category(decision),
+                            expected,
+                            "{case}: the order `enforce` answers {refused:?} (row: {row:?})"
+                        );
+                    }
+                }
+            }
+        }
+        assert!(
+            declared > 0 && undeclared > 0,
+            "nothing compared: {declared} operators with a row, {undeclared} without"
         );
     }
 

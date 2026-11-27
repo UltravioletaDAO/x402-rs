@@ -2249,6 +2249,8 @@ where
                 fee_payer: None, // Set at FacilitatorLocal level
                 tokens: Some(tokens),
                 escrow: None,
+                facilitator_address: None,
+                are_fees_sponsored: None,
             })
         };
 
@@ -2783,7 +2785,11 @@ async fn assert_valid_payment<P: Provider>(
         ExactPaymentPayload::Near(_) => {
             return Err(FacilitatorLocalError::UnsupportedNetwork(None));
         }
-        ExactPaymentPayload::Stellar(_) => {
+        ExactPaymentPayload::Stellar(_) | ExactPaymentPayload::StellarTransaction(_) => {
+            return Err(FacilitatorLocalError::UnsupportedNetwork(None));
+        }
+        #[cfg(feature = "sui")]
+        ExactPaymentPayload::SuiTransaction(_) => {
             return Err(FacilitatorLocalError::UnsupportedNetwork(None));
         }
         #[cfg(feature = "algorand")]

@@ -1,5 +1,73 @@
 # Changelog
 
+## [2.60.0] - 2026-11-26
+
+`upto`, Stellar and Sui as the x402 Foundation specs define them
+(`x402-foundation/x402` at `4f3c7851`).
+
+### Added
+
+- `upto`: every kind in `/supported` names `extra.facilitatorAddress`, the one
+  address that settles on its network (`scheme_upto_evm.md`, "Facilitator
+  Address Discovery"): the EVM provider's pinned signer, the address `upto`
+  settle requires in `permit2Authorization.witness.facilitator`. A network
+  whose provider names no settling address is not offered `upto`.
+- Stellar: `/verify` and `/settle` take the spec's payload
+  (`scheme_exact_stellar.md`), x402 v2 on `stellar:pubnet` / `stellar:testnet`:
+  `{"transaction": "<base64 TransactionEnvelope XDR>"}`. Its one
+  `invokeHostFunction` and its payer's one signed entry go through the checks
+  the authorization-entry payload goes through, inside a transaction of the
+  facilitator's own; the expiration is bounded by `maxTimeoutSeconds`
+  (`ceil(maxTimeoutSeconds / 5)` ledgers, plus the reference facilitator's 2
+  ledgers of tolerance). `/verify` simulates the transaction settle would
+  submit and refuses one the simulation refuses. The Stellar kinds carry
+  `extra.areFeesSponsored: true`.
+- Sui: `/verify` and `/settle` take the spec's payload (`scheme_exact_sui.md`),
+  x402 v2 on `sui:mainnet` / `sui:testnet`: `{"signature", "transaction"}`.
+  Sender and coin are read from the transaction, recipient and amount from the
+  requirements. The transfer may first merge more of the sender's coins into
+  the one it splits (one `MergeCoins` of at most 64 coins, as a wallet holding
+  several coins builds it): every merged coin must be the sender's USDC, and
+  exactly the required amount must reach `payTo`. The split's coin may be
+  transferred as `NestedResult(split, 0)`, the form `@mysten/sui` writes for
+  `const [coin] = tx.splitCoins(...)`. Its gas is either sponsored by the
+  facilitator, as before, or paid by the sender, which settle then sends with
+  the sender's signature alone.
+- Both payloads are read from the spec's request (`paymentPayload` +
+  `paymentRequirements`) and from this facilitator's v2 request (top-level
+  `resource` + `accepted`). The v1 kinds (`stellar`, `stellar-testnet`, `sui`,
+  `sui-testnet`) stay in `/supported` next to the CAIP-2 ones.
+
+### Changed
+
+- Stellar and Sui compare the paid asset with `requirements.asset` for both
+  payloads: on Stellar the contract the authorization entry transfers on, on
+  Sui the network's USDC, the coin every spent and merged coin must be.
+- Sui reads each spent coin's balance, for both payloads: the coins a transfer
+  splits from must hold the required amount between them. A node that does not
+  report a coin's balance leaves it to the sender's USDC total, as before.
+- Stellar reads the nonce and the expiration ledger the authorization entry's
+  signature covers, for both payloads: the replay store and the expiry checks
+  key on them, so one signed entry passes the store once.
+- An x402 v2 `exact` settle answers `network` with the chain's CAIP-2 id
+  (`stellar:testnet`, `eip155:8453`), as the v2 `SettlementResponse` names it;
+  an x402 v1 settle answers byte for byte as before. An idempotent replay
+  answers the bytes the first settle answered, from the settle cache and from
+  the receipt rail's. `SettleResponse` reads either name.
+- The debug lines that print the start of a payload field cut on a character.
+
+### Not covered
+
+What the specs describe and these payloads do not take yet:
+
+- Stellar: authorization entries signed under CAP-71's
+  `sorobanCredentialsAddressV2` (the pinned `stellar-xdr` 21.2.0 does not decode
+  them), and payers that are contracts (`C...`) rather than accounts.
+- Sui: coin types whose package is written short (`0x2::sui::SUI`) are not
+  read; no `extra.gasStation` is offered.
+- The settles of the other schemes (`upto`, `escrow`/`commerce`, NEAR
+  `escrow`) answer `network` as they did.
+
 ## [2.59.2] - 2026-11-20
 
 Two dependency moves that take advisories out of the build. Behavior does not

@@ -46,9 +46,9 @@ Ethereum Sepolia is announced in `/supported` for the x402r `escrow` and `commer
 ### Other Non-EVM Chains
 - **XRPL (XRP Ledger)**: Mainnet (`xrpl`) and Testnet (`xrpl-testnet`) — native XRP, pre-signed Payment transaction blobs; not the EVM `xrpl-evm` sidechain
 - **NEAR Protocol**: Mainnet (`near`) and Testnet (`near-testnet`)
-- **Stellar/Soroban**: Mainnet (`stellar`) and Testnet (`stellar-testnet`)
+- **Stellar/Soroban**: Mainnet (`stellar`) and Testnet (`stellar-testnet`); for x402 v2 `stellar:pubnet` and `stellar:testnet`. `/verify` and `/settle` take the x402 Foundation's payload (`scheme_exact_stellar.md`: `{"transaction": "<base64 TransactionEnvelope XDR>"}`, the facilitator paying the fees, `extra.areFeesSponsored: true` in `/supported`; `/verify` simulates it) beside this facilitator's authorization-entry payload
 - **Algorand**: Mainnet (`algorand`) and Testnet (`algorand-testnet`)
-- **Sui**: Mainnet (`sui`) and Testnet (`sui-testnet`)
+- **Sui**: Mainnet (`sui`) and Testnet (`sui-testnet`); for x402 v2 `sui:mainnet` and `sui:testnet`. `/verify` and `/settle` take the x402 Foundation's payload (`scheme_exact_sui.md`: `{"signature", "transaction"}`, base64), from one coin or several merged first, its gas sponsored by the facilitator (`extra.feePayer`) or paid by the sender, beside this facilitator's sponsored payload
 - **Hedera**: Native mainnet (`hedera:mainnet`) and testnet (`hedera:testnet`), x402 v2/exact only. HBAR is used only for sponsor network fees. Payments accept native USDC `0.0.456858` mainnet / `0.0.429274` testnet (6 decimals). Discover the network-specific `extra.feePayer` from `/supported`. Current sponsor IDs: mainnet `0.0.10868300`, testnet `0.0.10576385`. Native account/token IDs are not EVM chain IDs 295/296.
 
 Arc uses USDC `0x3600000000000000000000000000000000000000` with 6 payment decimals and EIP-712 domain `USDC` / `2`. Its gas view uses 18 decimals of the same balance. EURC is also supported: mainnet `0xbEf5f6d51CB62b58e6A8f77868681825C6fe21c1`, testnet `0x89B50855Aa3bE2F677cD6303Cec089B5F319D72a`, 6 decimals, EIP-712 `EURC` / `2`. EURC amounts are euros, without automatic USD conversion. Gas remains USDC. EURC live payment acceptance was proven on Arc mainnet on 2026-09-22; Arc testnet is still pending. Arc also serves the x402r `escrow` and `commerce` schemes, on the canonical commerce-payments v1.0.0 contracts (see the escrow section of `POST /settle`). Neither Arc nor native Hedera adds upto or Gateway support, and native Hedera adds no escrow. ERC-8004 identity and reputation are served on both Arc networks (not on Hedera). Native Hedera also rejects durable-evidence and unsupported extensions.
@@ -600,6 +600,8 @@ Submits a verified payment authorization to the blockchain for settlement.
 2. Calls `transferWithAuthorization` on the token contract
 3. Returns transaction hash on success
 
+**Response `network`:** an x402 v2 `exact` request is answered with the chain's CAIP-2 id (`eip155:8453`, `stellar:testnet`), as the v2 `SettlementResponse` names it; an x402 v1 request with its v1 name (`base`). An idempotent replay answers the bytes of the settle it replays.
+
 **Upto Settlement (scheme: "upto"):**
 
 When `scheme: "upto"`, the client provides a Permit2-signed authorization for a maximum amount.
@@ -607,6 +609,9 @@ The server settles for the actual usage amount (<= authorized max). If actual am
 on-chain transaction is submitted.
 
 Uses `x402UptoPermit2Proxy.settle(permit, amount, owner, witness, signature)` via Uniswap Permit2.
+Each `upto` kind of `/supported` names `extra.facilitatorAddress`, the one address that settles on its network:
+the client signs it into `permit2Authorization.witness.facilitator` (x402 Foundation `scheme_upto_evm.md`), and
+a witness naming any other address is refused.
 
 **Escrow / Commerce Lifecycle (scheme: "escrow" or "commerce"):**
 

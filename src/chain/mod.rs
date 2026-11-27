@@ -279,6 +279,13 @@ impl Facilitator for NetworkProvider {
             NetworkProvider::Sui(provider) => provider.supported().await,
         }
     }
+
+    fn upto_settling_address(&self) -> Option<alloy::primitives::Address> {
+        match self {
+            NetworkProvider::Evm(provider) => Some(provider.pinned_signer()),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Debug, thiserror::Error)]

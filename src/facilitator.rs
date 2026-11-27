@@ -96,6 +96,17 @@ pub trait Facilitator {
         let _ = address;
         async { Ok(None) }
     }
+
+    /// The one address that can settle an `upto` payment on this provider's
+    /// network, which `/supported` announces as `extra.facilitatorAddress`.
+    ///
+    /// The payer signs it into the Permit2 witness and the proxy reverts any
+    /// other sender, so it is the address settle broadcasts from and
+    /// `crate::upto::permit2` requires the witness to name: the EVM provider's
+    /// pinned signer. `None` for every provider that does not settle `upto`.
+    fn upto_settling_address(&self) -> Option<alloy::primitives::Address> {
+        None
+    }
 }
 
 impl<T: Facilitator> Facilitator for Arc<T> {
@@ -132,5 +143,9 @@ impl<T: Facilitator> Facilitator for Arc<T> {
         address: &MixedAddress,
     ) -> impl Future<Output = Result<Option<String>, Self::Error>> + Send {
         self.as_ref().screen_recipient(address)
+    }
+
+    fn upto_settling_address(&self) -> Option<alloy::primitives::Address> {
+        self.as_ref().upto_settling_address()
     }
 }

@@ -832,12 +832,190 @@ impl VerifyRequestV2 {
     }
 }
 
+// ============================================================================
+// x402 Foundation `exact` request on Stellar and Sui
+// ============================================================================
+
+/// A v2 verify or settle body carrying the `payload` the x402 Foundation
+/// specifies for Stellar (`specs/schemes/exact/scheme_exact_stellar.md`) or Sui
+/// (`specs/schemes/exact/scheme_exact_sui.md`).
+///
+/// The untagged [`ExactPaymentPayload`] cannot tell those payloads apart by
+/// their shape: Stellar's `{"transaction"}` and Sui's
+/// `{"signature","transaction"}` both read as the Solana payload. So the
+/// network decides, as it does for the native Hedera envelope: this variant
+/// claims a body only when `paymentPayload.accepted.network` is a Stellar or
+/// Sui CAIP-2 id AND its `payload` carries exactly the spec's keys. Any other
+/// body, every Stellar and Sui body in the shapes read before included, fails
+/// here and is read by the variants after it, unchanged.
+///
+/// The seller's terms come from `paymentRequirements` (the spec's request) or
+/// from a top-level `accepted` (this facilitator's v2 request); `resource`
+/// from the payload or the top level, and may be absent.
+#[derive(Debug, Clone)]
+pub struct SpecV2Request {
+    /// `paymentPayload.accepted`: the buyer's copy of the terms.
+    accepted: PaymentRequirementsV2,
+    /// `paymentRequirements`, or the top-level `accepted`.
+    requirements: PaymentRequirementsV2,
+    /// The top-level `accepted` when the body also carries
+    /// `paymentRequirements`: a third copy, held to the same terms.
+    outer_accepted: Option<PaymentRequirementsV2>,
+    resource: Option<ResourceInfo>,
+    network: Network,
+    payload: ExactPaymentPayload,
+    raw: serde_json::Value,
+}
+
+/// The exact set of keys `object` carries, each a string, or `None`.
+fn string_fields<'a>(
+    object: &'a serde_json::Map<String, serde_json::Value>,
+    keys: &[&str],
+) -> Option<Vec<&'a str>> {
+    if object.len() != keys.len() {
+        return None;
+    }
+    keys.iter()
+        .map(|key| object.get(*key).and_then(serde_json::Value::as_str))
+        .collect()
+}
+
+impl SpecV2Request {
+    fn parse(raw: serde_json::Value) -> Result<Self, String> {
+        let payment_payload = raw
+            .get("paymentPayload")
+            .and_then(serde_json::Value::as_object)
+            .ok_or("missing paymentPayload")?;
+        if payment_payload
+            .get("x402Version")
+            .and_then(serde_json::Value::as_u64)
+            != Some(2)
+            || raw
+                .get("x402Version")
+                .is_some_and(|v| v.as_u64() != Some(2))
+        {
+            return Err("the x402 Foundation Stellar and Sui payloads are x402 v2".into());
+        }
+        let accepted: PaymentRequirementsV2 = serde_json::from_value(
+            payment_payload
+                .get("accepted")
+                .ok_or("missing paymentPayload.accepted")?
+                .clone(),
+        )
+        .map_err(|e| e.to_string())?;
+        let network = Network::from_caip2(&accepted.network.to_string())
+            .ok_or("unknown paymentPayload.accepted.network")?;
+        let payload = payment_payload
+            .get("payload")
+            .and_then(serde_json::Value::as_object)
+            .ok_or("missing paymentPayload.payload")?;
+        let payload = match network {
+            Network::Stellar | Network::StellarTestnet => {
+                // One value per key, in the order asked.
+                let fields = string_fields(payload, &["transaction"])
+                    .ok_or("not the spec's Stellar payload")?;
+                ExactPaymentPayload::StellarTransaction(
+                    crate::types::ExactStellarTransactionPayload {
+                        transaction: fields[0].to_string(),
+                    },
+                )
+            }
+            #[cfg(feature = "sui")]
+            Network::Sui | Network::SuiTestnet => {
+                let fields = string_fields(payload, &["signature", "transaction"])
+                    .ok_or("not the spec's Sui payload")?;
+                ExactPaymentPayload::SuiTransaction(crate::types::ExactSuiTransactionPayload {
+                    signature: fields[0].to_string(),
+                    transaction: fields[1].to_string(),
+                })
+            }
+            _ => return Err("not a Stellar or Sui network".into()),
+        };
+        let parse_requirements = |value: &serde_json::Value| {
+            serde_json::from_value::<PaymentRequirementsV2>(value.clone())
+                .map_err(|e| e.to_string())
+        };
+        let top_accepted = raw.get("accepted").map(parse_requirements).transpose()?;
+        let (requirements, outer_accepted) = match raw.get("paymentRequirements") {
+            Some(value) => (parse_requirements(value)?, top_accepted),
+            None => (top_accepted.ok_or("missing paymentRequirements")?, None),
+        };
+        let resource = match payment_payload
+            .get("resource")
+            .or_else(|| raw.get("resource"))
+        {
+            Some(value) => Some(
+                serde_json::from_value::<ResourceInfo>(value.clone()).map_err(|e| e.to_string())?,
+            ),
+            None => None,
+        };
+        Ok(Self {
+            accepted,
+            requirements,
+            outer_accepted,
+            resource,
+            network,
+            payload,
+            raw,
+        })
+    }
+
+    pub fn network(&self) -> Network {
+        self.network
+    }
+
+    /// The request every provider reads: the seller's terms as the v1
+    /// requirements, the spec's payload as its own [`ExactPaymentPayload`]
+    /// variant. A buyer's copy of the terms that names other ones is refused,
+    /// as for every other v2 body.
+    pub fn to_v1(&self) -> Result<VerifyRequest, NetworkParseError> {
+        for copy in std::iter::once(&self.accepted).chain(self.outer_accepted.as_ref()) {
+            if let Some(term) = self.requirements.first_differing_term(copy) {
+                return Err(NetworkParseError::RequirementsMismatch(term));
+            }
+        }
+        // A v2 payload may leave `resource` out; the v1 requirements need one.
+        let resource = self.resource.clone().unwrap_or_else(|| ResourceInfo {
+            url: Url::parse("https://x402.invalid/payment").expect("static URL parses"),
+            description: String::new(),
+            mime_type: String::new(),
+        });
+        Ok(VerifyRequest {
+            x402_version: X402Version::V2,
+            payment_payload: PaymentPayload {
+                x402_version: X402Version::V2,
+                scheme: self.accepted.scheme,
+                network: self.network,
+                payload: self.payload.clone(),
+            },
+            payment_requirements: self.requirements.to_v1(&resource)?,
+        })
+    }
+}
+
+impl<'de> Deserialize<'de> for SpecV2Request {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        let raw = serde_json::Value::deserialize(d)?;
+        Self::parse(raw).map_err(serde::de::Error::custom)
+    }
+}
+
+impl Serialize for SpecV2Request {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        self.raw.serialize(s)
+    }
+}
+
 /// Unified verify request supporting v1, v2, x402r, and x402r-nested formats
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum VerifyRequestEnvelope {
     #[cfg(feature = "hedera")]
     Hedera(crate::chain::hedera::wire::HederaRequest),
+    /// The x402 Foundation `exact` payload on Stellar or Sui. Before every
+    /// variant that would read its `payload` as the Solana one; it claims
+    /// nothing else (see [`SpecV2Request`]).
+    SpecV2(SpecV2Request),
     /// x402r nested format (Ali's SDK) - paymentPayload.payload.authorization
     /// MUST be first to try parsing nested format before standard v2
     X402rNested(VerifyRequestX402rNested),
@@ -861,6 +1039,7 @@ impl VerifyRequestEnvelope {
         match self {
             #[cfg(feature = "hedera")]
             VerifyRequestEnvelope::Hedera(_) => X402Version::V2,
+            VerifyRequestEnvelope::SpecV2(_) => X402Version::V2,
             VerifyRequestEnvelope::V1(_) => X402Version::V1,
             VerifyRequestEnvelope::V2(_) => X402Version::V2,
             VerifyRequestEnvelope::X402r(_) => X402Version::V2,
@@ -874,6 +1053,7 @@ impl VerifyRequestEnvelope {
         match self {
             #[cfg(feature = "hedera")]
             VerifyRequestEnvelope::Hedera(req) => Ok(req.request.network()),
+            VerifyRequestEnvelope::SpecV2(req) => Ok(req.network()),
             VerifyRequestEnvelope::V1(req) => Ok(req.network()),
             VerifyRequestEnvelope::V2(req) => Network::from_caip2(&req.network().to_string())
                 .ok_or_else(|| NetworkParseError::InvalidCaip2(req.network().to_string())),
@@ -893,6 +1073,7 @@ impl VerifyRequestEnvelope {
         match self {
             #[cfg(feature = "hedera")]
             VerifyRequestEnvelope::Hedera(req) => Ok(req.request.clone()),
+            VerifyRequestEnvelope::SpecV2(req) => req.to_v1(),
             VerifyRequestEnvelope::V1(req) => Ok(req.clone()),
             VerifyRequestEnvelope::V2(req) => req.to_v1(),
             VerifyRequestEnvelope::X402r(req) => req.to_v1(),
@@ -2953,5 +3134,274 @@ mod nested_terms_tests {
             request.payment_requirements.max_amount_required,
             TokenAmount::from(1_000_000u64)
         );
+    }
+}
+
+/// [`SpecV2Request`]: which bodies it claims, and that it claims nothing a
+/// variant after it read before.
+#[cfg(test)]
+mod spec_v2_request_tests {
+    use super::*;
+    use serde_json::{json, Value};
+
+    const STELLAR_PAYLOAD: &str =
+        include_str!("../tests/fixtures/x402-spec/stellar_exact_payment_payload.json");
+    const STELLAR_REQUIREMENTS: &str =
+        include_str!("../tests/fixtures/x402-spec/stellar_exact_payment_requirements.json");
+
+    fn stellar_payload() -> Value {
+        serde_json::from_str(STELLAR_PAYLOAD).unwrap()
+    }
+
+    fn stellar_requirements() -> Value {
+        serde_json::from_str(STELLAR_REQUIREMENTS).unwrap()
+    }
+
+    /// The spec's request: payload and requirements, nothing else.
+    fn spec_body(payload: Value) -> Value {
+        json!({"x402Version": 2, "paymentPayload": payload, "paymentRequirements": stellar_requirements()})
+    }
+
+    fn envelope(body: Value) -> VerifyRequestEnvelope {
+        serde_json::from_value(body).expect("a body some variant reads")
+    }
+
+    #[test]
+    fn the_spec_stellar_body_is_claimed_with_the_sellers_terms() {
+        let request = match envelope(spec_body(stellar_payload())) {
+            VerifyRequestEnvelope::SpecV2(request) => request.to_v1().unwrap(),
+            other => panic!("not claimed: {other:?}"),
+        };
+        assert_eq!(request.x402_version, X402Version::V2);
+        assert_eq!(request.payment_payload.network, Network::StellarTestnet);
+        assert!(matches!(
+            &request.payment_payload.payload,
+            ExactPaymentPayload::StellarTransaction(p)
+                if Some(p.transaction.as_str()) == stellar_payload()["payload"]["transaction"].as_str()
+        ));
+        let terms = stellar_requirements();
+        assert_eq!(
+            request.payment_requirements.pay_to.to_string(),
+            terms["payTo"].as_str().unwrap()
+        );
+        assert_eq!(
+            request.payment_requirements.max_amount_required.to_string(),
+            terms["amount"].as_str().unwrap()
+        );
+        assert_eq!(
+            request.payment_requirements.resource.as_str(),
+            "https://example.com/weather"
+        );
+        assert_eq!(
+            request.payment_requirements.extra,
+            Some(json!({"areFeesSponsored": true}))
+        );
+    }
+
+    #[test]
+    fn this_facilitators_v2_shape_with_the_spec_payload_is_claimed_too() {
+        let payload = stellar_payload();
+        let body = json!({
+            "x402Version": 2,
+            "paymentPayload": payload,
+            "resource": payload["resource"],
+            "accepted": payload["accepted"],
+        });
+        assert!(matches!(envelope(body), VerifyRequestEnvelope::SpecV2(_)));
+    }
+
+    #[test]
+    fn a_body_without_resource_still_converts() {
+        let mut payload = stellar_payload();
+        payload.as_object_mut().unwrap().remove("resource");
+        let VerifyRequestEnvelope::SpecV2(request) = envelope(spec_body(payload)) else {
+            panic!("not claimed");
+        };
+        assert!(request.to_v1().is_ok());
+    }
+
+    #[test]
+    fn a_buyer_copy_that_names_other_terms_is_refused() {
+        let mut payload = stellar_payload();
+        payload["accepted"]["payTo"] =
+            json!("GCHPGXJT2WFFRFCA5TV4G4E3PMMXLNIDUH27PKDYA4QJ2XGYZWGFZNHB");
+        let VerifyRequestEnvelope::SpecV2(request) = envelope(spec_body(payload)) else {
+            panic!("not claimed");
+        };
+        assert!(matches!(
+            request.to_v1(),
+            Err(NetworkParseError::RequirementsMismatch(PaymentTerm::PayTo))
+        ));
+    }
+
+    #[test]
+    fn a_third_copy_of_the_terms_is_held_to_them_too() {
+        let payload = stellar_payload();
+        let mut outer = payload["accepted"].clone();
+        outer["amount"] = json!("1");
+        let mut body = spec_body(payload);
+        body["accepted"] = outer;
+        let VerifyRequestEnvelope::SpecV2(request) = envelope(body) else {
+            panic!("not claimed");
+        };
+        assert!(matches!(
+            request.to_v1(),
+            Err(NetworkParseError::RequirementsMismatch(PaymentTerm::Amount))
+        ));
+    }
+
+    /// This facilitator's v2 request around `payload`: what the variants
+    /// after the spec one read.
+    fn v2_body(payload: &Value) -> Value {
+        let mut payload = payload.clone();
+        let resource = json!({"url": "https://example.com/r", "description": "", "mimeType": ""});
+        if payload.get("resource").is_none() {
+            payload["resource"] = resource;
+        }
+        json!({
+            "x402Version": 2,
+            "paymentPayload": payload,
+            "resource": payload["resource"],
+            "accepted": payload["accepted"],
+        })
+    }
+
+    /// The payload a body reads as when the `V2` variant claims it.
+    fn read_as_v2(body: Value) -> ExactPaymentPayload {
+        match envelope(body) {
+            VerifyRequestEnvelope::V2(request) => request.payment_payload.payload,
+            other => panic!("not read by the V2 variant as before: {other:?}"),
+        }
+    }
+
+    /// Bodies the spec variant must leave alone: each is still read by the
+    /// variant that read it before, as the payload it was read as.
+    #[test]
+    fn bodies_that_are_not_the_spec_payload_are_left_to_the_other_variants() {
+        // A key beside `transaction`: the Solana payload, as before.
+        let mut extra_key = stellar_payload();
+        extra_key["payload"]["memo"] = json!("x");
+        assert!(matches!(
+            read_as_v2(v2_body(&extra_key)),
+            ExactPaymentPayload::Solana(_)
+        ));
+
+        // x402 v1 inside the payload.
+        let mut v1 = stellar_payload();
+        v1["x402Version"] = json!(1);
+        assert!(matches!(
+            read_as_v2(v2_body(&v1)),
+            ExactPaymentPayload::Solana(_)
+        ));
+
+        // `{"transaction"}` on Solana is Solana's payload.
+        let mut solana = stellar_payload();
+        solana["accepted"]["network"] = json!("solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp");
+        solana["accepted"]["asset"] = json!("EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v");
+        solana["accepted"]["payTo"] = json!("EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v");
+        assert!(matches!(
+            read_as_v2(v2_body(&solana)),
+            ExactPaymentPayload::Solana(_)
+        ));
+    }
+
+    /// The outer `x402Version`, when present, must say 2 as well.
+    #[test]
+    fn a_spec_body_whose_outer_version_is_not_2_is_not_claimed() {
+        let mut body = spec_body(stellar_payload());
+        body["x402Version"] = json!(1);
+        assert!(
+            serde_json::from_value::<VerifyRequestEnvelope>(body.clone())
+                .map_or(true, |e| !matches!(e, VerifyRequestEnvelope::SpecV2(_)))
+        );
+        body["x402Version"] = json!(2);
+        assert!(matches!(envelope(body), VerifyRequestEnvelope::SpecV2(_)));
+    }
+
+    /// The payload this facilitator defined for Stellar, in its v2 shape,
+    /// reads exactly as before.
+    #[test]
+    fn the_entry_only_stellar_payload_is_read_as_before() {
+        let mut payload = stellar_payload();
+        payload["payload"] = json!({
+            "from": "GBHEGW3KWOY2OFH767EDALFGCUTBOEVBDQMCKU4APMDLQNBW5QV3W3KO",
+            "to": "GBHEGW3KWOY2OFH767EDALFGCUTBOEVBDQMCKU4APMDLQNBW5QV3W3KO",
+            "amount": "10000000",
+            "tokenContract": "CBIELTK6YBZJU5UP2WWQEUCYKLPU6AUNZ2BQ4WWFEIE3USCIHMXQDAMA",
+            "authorizationEntryXdr": "AAAA",
+            "nonce": 1,
+            "signatureExpirationLedger": 2,
+        });
+        let body = json!({
+            "x402Version": 2,
+            "paymentPayload": payload,
+            "resource": payload["resource"],
+            "accepted": payload["accepted"],
+        });
+        match envelope(body) {
+            VerifyRequestEnvelope::V2(request) => assert!(matches!(
+                request.payment_payload.payload,
+                ExactPaymentPayload::Stellar(_)
+            )),
+            other => panic!("the entry-only payload changed variant: {other:?}"),
+        }
+    }
+
+    #[cfg(feature = "sui")]
+    #[test]
+    fn the_spec_sui_payload_is_claimed_and_the_declared_one_is_not() {
+        let payload = |inner: Value| {
+            json!({
+                "x402Version": 2,
+                "accepted": {
+                    "scheme": "exact",
+                    "network": "sui:testnet",
+                    "amount": "1000000",
+                    // Built, not typed: the pre-commit hook refuses 0x + 64 hex.
+                    "asset": format!("0x{}::usdc::USDC", "cd".repeat(32)),
+                    "payTo": format!("0x{}", "ab".repeat(32)),
+                    "maxTimeoutSeconds": 60,
+                },
+                "payload": inner,
+            })
+        };
+        let body = |p: Value| json!({"x402Version": 2, "paymentPayload": p, "paymentRequirements": p["accepted"]});
+
+        let spec = body(payload(json!({"signature": "c2ln", "transaction": "dHg="})));
+        let VerifyRequestEnvelope::SpecV2(request) = envelope(spec) else {
+            panic!("not claimed");
+        };
+        let request = request.to_v1().unwrap();
+        assert_eq!(request.payment_payload.network, Network::SuiTestnet);
+        assert!(matches!(
+            &request.payment_payload.payload,
+            ExactPaymentPayload::SuiTransaction(p) if p.signature == "c2ln" && p.transaction == "dHg="
+        ));
+
+        // Only the transaction, or a signature that is not a string: not the
+        // spec's Sui payload, read by the V2 variant as before.
+        for inner in [
+            json!({"transaction": "dHg="}),
+            json!({"signature": 1, "transaction": "dHg="}),
+        ] {
+            assert!(matches!(
+                read_as_v2(v2_body(&payload(inner))),
+                ExactPaymentPayload::Solana(_)
+            ));
+        }
+
+        // The payload this facilitator defined for Sui is its own variant.
+        let declared = payload(json!({
+            "transactionBytes": "dHg=",
+            "senderSignature": "c2ln",
+            "from": format!("0x{}", "ab".repeat(32)),
+            "to": format!("0x{}", "ab".repeat(32)),
+            "amount": "1000000",
+            "coinObjectId": format!("0x{}", "11".repeat(32)),
+        }));
+        assert!(matches!(
+            read_as_v2(v2_body(&declared)),
+            ExactPaymentPayload::Sui(_)
+        ));
     }
 }

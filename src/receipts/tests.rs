@@ -3074,6 +3074,39 @@ async fn refutador_xr_one_idempotency_key_never_charges_a_second_signature() {
     );
 }
 
+/// Filed and replayed as the settle answered it: an x402 v2 settle names its
+/// network by CAIP-2, and so do the row and every replay of it.
+#[tokio::test]
+async fn a_v2_settle_is_filed_and_replayed_as_it_was_answered() {
+    let (network, body) = admitted_networks().into_iter().next().unwrap();
+    let cache = Arc::new(LegacyCache::default());
+    let settled_network = Network::from_caip2(network).unwrap();
+    TEST_SERVICE
+        .scope(
+            service_fixture(),
+            TEST_LEGACY.scope(cache.clone(), async {
+                let h = keyed("order-caip2");
+                let paid = settle(&MockFacilitator { invalid: false }, &h, &body, async {
+                    let answered = settled_on(settled_network);
+                    let mut v2 = value(answered).await;
+                    v2["network"] = json!(network);
+                    (StatusCode::OK, Json(v2)).into_response()
+                })
+                .await;
+                assert_eq!(paid.status(), StatusCode::OK);
+                let row = cache.0.lock().unwrap().get("order-caip2").cloned();
+                let row = row.expect("filed");
+                let filed: Value = serde_json::from_str(&row.response_json).unwrap();
+                assert_eq!(filed["network"], json!(network));
+                let replay = legacy_response(row.clone(), &row.request_hash);
+                assert_eq!(replay.status(), StatusCode::OK);
+                let replayed = to_bytes(replay.into_body(), 65536).await.unwrap();
+                assert_eq!(String::from_utf8_lossy(&replayed), row.response_json);
+            }),
+        )
+        .await;
+}
+
 /// A payment settled under an Idempotency-Key is filed in the 24-hour cache as
 /// `post_settle` files what it settles: under the trimmed key, with the hash of
 /// the body as sent and the settle response, for a day. Every path that reads

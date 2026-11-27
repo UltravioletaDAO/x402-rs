@@ -490,13 +490,18 @@ impl SuiRpc {
         .await
     }
 
-    /// One object's `owner` and `object_type`, or `None` if the endpoint holds
-    /// no such object.
+    /// One object's `owner`, `object_type` and, for a coin, `balance`, or
+    /// `None` if the endpoint holds no such object.
     pub async fn object_owner_and_type(&self, id: ObjectID) -> Result<Option<Object>, String> {
         self.read("GetObject", |mut client| {
             let mut request = GetObjectRequest::default();
             request.object_id = Some(id.to_string());
-            request.read_mask = Some(FieldMask::from_paths(["object_id", "owner", "object_type"]));
+            request.read_mask = Some(FieldMask::from_paths([
+                "object_id",
+                "owner",
+                "object_type",
+                "balance",
+            ]));
             async move {
                 match client.ledger_client().get_object(request).await {
                     Ok(response) => Ok(response.into_inner().object),

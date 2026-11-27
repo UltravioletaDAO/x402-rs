@@ -4141,6 +4141,13 @@ where
         .into_response()
 }
 
+/// The first 100 characters of a payload field, for a debug line. Cut on a
+/// character, not a byte: the field is the caller's string, and a slice that
+/// ends inside a multi-byte character panics.
+fn log_prefix(value: &str) -> String {
+    value.chars().take(100).collect()
+}
+
 /// Match the merchant's requirements against what this facilitator serves, and
 /// return BOTH halves: the enriched matches and the reasoned rejections.
 ///
@@ -4808,6 +4815,7 @@ where
     let format_name = match &envelope {
         #[cfg(feature = "hedera")]
         VerifyRequestEnvelope::Hedera(_) => "hedera-v2",
+        VerifyRequestEnvelope::SpecV2(_) => "spec-v2",
         VerifyRequestEnvelope::V1(_) => "v1",
         VerifyRequestEnvelope::V2(req) => {
             debug!(
@@ -5482,7 +5490,16 @@ where
                 // first response cannot answer "did I pay twice?" from the body
                 // alone. The header answers it. Named after Stripe's
                 // `Idempotent-Replayed`, which clients already know.
-                let mut response = (StatusCode::OK, Json(parsed)).into_response();
+                // The cached bytes themselves: they parsed as a settle
+                // response, and they are what the first settle answered,
+                // its network named as that request named it.
+                let _ = parsed;
+                let mut response = (
+                    StatusCode::OK,
+                    [(axum::http::header::CONTENT_TYPE, "application/json")],
+                    record.response_json,
+                )
+                    .into_response();
                 response.headers_mut().insert(
                     axum::http::HeaderName::from_static("idempotent-replayed"),
                     HeaderValue::from_static("true"),
@@ -5951,6 +5968,7 @@ where
     let format_name = match &envelope {
         #[cfg(feature = "hedera")]
         SettleRequestEnvelope::Hedera(_) => "hedera-v2",
+        SettleRequestEnvelope::SpecV2(_) => "spec-v2",
         SettleRequestEnvelope::V1(_) => "v1",
         SettleRequestEnvelope::V2(req) => {
             debug!(
@@ -6057,15 +6075,14 @@ where
             debug!("  - payload type: Solana");
             debug!(
                 "  - transaction: {} (truncated)",
-                &solana_payload.transaction[..solana_payload.transaction.len().min(100)]
+                log_prefix(&solana_payload.transaction)
             );
         }
         crate::types::ExactPaymentPayload::Near(near_payload) => {
             debug!("  - payload type: NEAR");
             debug!(
                 "  - signed_delegate_action: {} (truncated)",
-                &near_payload.signed_delegate_action
-                    [..near_payload.signed_delegate_action.len().min(100)]
+                log_prefix(&near_payload.signed_delegate_action)
             );
         }
         crate::types::ExactPaymentPayload::Stellar(stellar_payload) => {
@@ -6073,6 +6090,13 @@ where
             debug!("  - from: {}", stellar_payload.from);
             debug!("  - to: {}", stellar_payload.to);
             debug!("  - amount: {}", stellar_payload.amount);
+        }
+        crate::types::ExactPaymentPayload::StellarTransaction(stellar_payload) => {
+            debug!("  - payload type: Stellar (x402 Foundation spec, whole transaction)");
+            debug!(
+                "  - transaction: {} (truncated)",
+                log_prefix(&stellar_payload.transaction)
+            );
         }
         #[cfg(feature = "algorand")]
         crate::types::ExactPaymentPayload::Algorand(algorand_payload) => {
@@ -6090,6 +6114,14 @@ where
             debug!("  - to: {}", sui_payload.to);
             debug!("  - amount: {}", sui_payload.amount);
             debug!("  - coin_object_id: {}", sui_payload.coin_object_id);
+        }
+        #[cfg(feature = "sui")]
+        crate::types::ExactPaymentPayload::SuiTransaction(sui_payload) => {
+            debug!("  - payload type: Sui (x402 Foundation spec)");
+            debug!(
+                "  - transaction: {} (truncated)",
+                log_prefix(&sui_payload.transaction)
+            );
         }
         crate::types::ExactPaymentPayload::SolanaSettlementAccount(sa_payload) => {
             debug!("  - payload type: Solana Settlement Account (Crossmint)");
@@ -6257,8 +6289,11 @@ where
             // the on-chain settlement. We only cache when settlement reports
             // success — caching failures would lock callers out of legitimate
             // retries against transient errors.
+            // The body, its network named as the request's protocol version
+            // names it (`settle_response_json`).
+            let response_json = settle_response_json(&valid_response, version);
             let cache_response_payload = if valid_response.success {
-                serde_json::to_string(&valid_response).ok()
+                response_json.clone()
             } else {
                 None
             };
@@ -6273,7 +6308,7 @@ where
             // serialize once more for the wire. Returning the raw JSON string
             // (instead of Json<SettleResponse>) keeps the wire bytes byte-equal
             // to what we cached, so a cached retry returns the same payload.
-            match cache_response_payload {
+            match response_json {
                 Some(json) => (
                     StatusCode::OK,
                     [(axum::http::header::CONTENT_TYPE, "application/json")],
@@ -6335,6 +6370,24 @@ fn cache_settle_success(idempotency_key: &str, request_hash: &str, response_json
             );
         }
     });
+}
+
+/// The `exact` settle response as the request's protocol version names its
+/// chain: the CAIP-2 id for x402 v2, as the v2 `SettlementResponse.network` is
+/// (`x402-specification-v2.md`), and for v1 the v1 name, byte for byte the body
+/// it always was. The rest of the body is the same either way.
+fn settle_response_json(
+    response: &SettleResponse,
+    version: crate::types::X402Version,
+) -> Option<String> {
+    match version {
+        crate::types::X402Version::V1 => serde_json::to_string(response).ok(),
+        crate::types::X402Version::V2 => {
+            let mut body = serde_json::to_value(response).ok()?;
+            body["network"] = serde_json::Value::String(response.network.to_caip2());
+            serde_json::to_string(&body).ok()
+        }
+    }
 }
 
 /// F4 for the schemes that settle outside the `exact` path and answer with a
@@ -17952,6 +18005,191 @@ mod settle_idempotency_tests {
         assert_eq!(json["field"], serde_json::Value::Null, "{json}");
     }
 
+    /// A facilitator whose every settle succeeds, on the request's network.
+    #[derive(Clone)]
+    struct AlwaysSettles {
+        providers: Arc<NoProviders>,
+    }
+
+    impl HasProviderMap for AlwaysSettles {
+        type Map = NoProviders;
+        fn provider_map(&self) -> &Self::Map {
+            &self.providers
+        }
+    }
+
+    const STELLAR_PAYER: &str = "GCHPGXJT2WFFRFCA5TV4G4E3PMMXLNIDUH27PKDYA4QJ2XGYZWGFZNHB";
+
+    fn settled_on(network: Network) -> SettleResponse {
+        SettleResponse {
+            success: true,
+            error_reason: None,
+            payer: MixedAddress::Stellar(STELLAR_PAYER.to_string()),
+            transaction: Some(crate::types::TransactionHash::Stellar([0xab; 32])),
+            network,
+            proof_of_payment: None,
+            extensions: None,
+        }
+    }
+
+    impl Facilitator for AlwaysSettles {
+        type Error = FacilitatorLocalError;
+        async fn verify(
+            &self,
+            _r: &crate::types::VerifyRequest,
+        ) -> Result<VerifyResponse, Self::Error> {
+            Ok(VerifyResponse::valid(MixedAddress::Stellar(
+                STELLAR_PAYER.to_string(),
+            )))
+        }
+        async fn settle(&self, r: &SettleRequest) -> Result<SettleResponse, Self::Error> {
+            Ok(settled_on(r.payment_payload.network))
+        }
+        async fn supported(
+            &self,
+        ) -> Result<crate::types::SupportedPaymentKindsResponse, Self::Error> {
+            Ok(crate::types::SupportedPaymentKindsResponse { kinds: vec![] })
+        }
+    }
+
+    async fn settle_raw(key: Option<&str>, body: &str) -> (StatusCode, HeaderMap, String) {
+        let router = verify_settle_routes::<AlwaysSettles>()
+            .layer(Extension(Arc::new(DiscoveryRegistry::new())))
+            .layer(Extension(Arc::new(crate::events::EventBus::from_env())))
+            .layer(Extension(
+                crate::transaction_store::create_transaction_store().await,
+            ))
+            .with_state(AlwaysSettles {
+                providers: Arc::new(NoProviders),
+            });
+        let mut req = Request::builder()
+            .method("POST")
+            .uri("/settle")
+            .header("content-type", "application/json")
+            .header("x-forwarded-for", "203.0.113.9");
+        if let Some(k) = key {
+            req = req.header("idempotency-key", k);
+        }
+        let response = router
+            .oneshot(req.body(Body::from(body.to_string())).unwrap())
+            .await
+            .unwrap();
+        let status = response.status();
+        let headers = response.headers().clone();
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        (status, headers, String::from_utf8(bytes.to_vec()).unwrap())
+    }
+
+    /// The x402 Foundation's Stellar request (x402 v2), its terms its own.
+    fn spec_v2_stellar_body() -> String {
+        let payload: serde_json::Value = serde_json::from_str(include_str!(
+            "../tests/fixtures/x402-spec/stellar_exact_payment_payload.json"
+        ))
+        .unwrap();
+        serde_json::json!({
+            "x402Version": 2,
+            "paymentPayload": payload,
+            "paymentRequirements": payload["accepted"],
+        })
+        .to_string()
+    }
+
+    /// The same chain in x402 v1, with the entry-only payload.
+    fn v1_stellar_body() -> String {
+        serde_json::json!({
+            "x402Version": 1,
+            "paymentPayload": {
+                "x402Version": 1,
+                "scheme": "exact",
+                "network": "stellar-testnet",
+                "payload": {
+                    "from": STELLAR_PAYER,
+                    "to": STELLAR_PAYER,
+                    "amount": "10000000",
+                    "tokenContract": "CBIELTK6YBZJU5UP2WWQEUCYKLPU6AUNZ2BQ4WWFEIE3USCIHMXQDAMA",
+                    "authorizationEntryXdr": "AAAA",
+                    "nonce": 1,
+                    "signatureExpirationLedger": 2
+                }
+            },
+            "paymentRequirements": {
+                "scheme": "exact",
+                "network": "stellar-testnet",
+                "maxAmountRequired": "10000000",
+                "resource": "https://example.com/weather",
+                "description": "",
+                "mimeType": "application/json",
+                "payTo": STELLAR_PAYER,
+                "maxTimeoutSeconds": 60,
+                "asset": "CBIELTK6YBZJU5UP2WWQEUCYKLPU6AUNZ2BQ4WWFEIE3USCIHMXQDAMA"
+            }
+        })
+        .to_string()
+    }
+
+    /// An x402 v2 request is answered with the chain's CAIP-2 id, as the v2
+    /// `SettlementResponse` names it; the rest of the body is unchanged.
+    #[tokio::test]
+    async fn a_v2_settle_names_its_network_by_caip2() {
+        let _g = arm();
+        let (status, _, raw) = settle_raw(None, &spec_v2_stellar_body()).await;
+        assert_eq!(status, StatusCode::OK, "{raw}");
+        let body: serde_json::Value = serde_json::from_str(&raw).unwrap();
+        assert_eq!(body["network"], "stellar:testnet", "{raw}");
+        let mut v1_shape = serde_json::to_value(settled_on(Network::StellarTestnet)).unwrap();
+        v1_shape["network"] = serde_json::json!("stellar:testnet");
+        assert_eq!(body, v1_shape, "only the network's name differs");
+        let read: SettleResponse = serde_json::from_str(&raw).expect("our own client reads it");
+        assert_eq!(read.network, Network::StellarTestnet);
+    }
+
+    /// An x402 v1 request is answered byte for byte as before.
+    #[tokio::test]
+    async fn a_v1_settle_keeps_its_v1_body() {
+        let _g = arm();
+        let (status, _, raw) = settle_raw(None, &v1_stellar_body()).await;
+        assert_eq!(status, StatusCode::OK, "{raw}");
+        assert_eq!(
+            raw,
+            serde_json::to_string(&settled_on(Network::StellarTestnet)).unwrap()
+        );
+        let body: serde_json::Value = serde_json::from_str(&raw).unwrap();
+        assert_eq!(body["network"], "stellar-testnet");
+    }
+
+    /// A replay answers the bytes the first settle answered, CAIP-2 included.
+    #[tokio::test]
+    async fn a_replayed_v2_settle_is_byte_identical_to_the_first() {
+        let _g = arm();
+        let store = store();
+        let key = "spec-v2-stellar-replay";
+        store.records.lock().unwrap().remove(key);
+        let body = spec_v2_stellar_body();
+        let (_, first_headers, first) = settle_raw(Some(key), &body).await;
+        assert!(first_headers.get("idempotent-replayed").is_none());
+        // The cache is written fire-and-forget.
+        for _ in 0..100 {
+            if store.records.lock().unwrap().contains_key(key) {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        assert!(store.records.lock().unwrap().contains_key(key), "cached");
+        let (status, headers, replayed) = settle_raw(Some(key), &body).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(
+            headers
+                .get("idempotent-replayed")
+                .map(|v| v.to_str().unwrap()),
+            Some("true")
+        );
+        assert_eq!(replayed, first);
+        let replayed: serde_json::Value = serde_json::from_str(&replayed).unwrap();
+        assert_eq!(replayed["network"], "stellar:testnet");
+    }
+
     /// A retry with the same key and body replays; nothing new settles.
     ///
     /// `NeverSettles` is what makes this discriminant: if the cache were
@@ -23642,6 +23880,22 @@ mod sistema_visual_tests {
 }
 
 #[cfg(test)]
+mod log_prefix_tests {
+    use super::log_prefix;
+
+    #[test]
+    fn a_debug_prefix_is_cut_on_a_character() {
+        // 99 ASCII bytes, then a 3-byte character across byte 100.
+        let value = format!("{}\u{20ac}tail", "a".repeat(99));
+        assert!(!value.is_char_boundary(100));
+        let prefix = log_prefix(&value);
+        assert_eq!(prefix.chars().count(), 100);
+        assert!(prefix.ends_with('\u{20ac}'));
+        assert_eq!(log_prefix("short"), "short");
+    }
+}
+
+#[cfg(test)]
 mod accepts_negotiation_tests {
     use super::*;
     use crate::types::X402Version;
@@ -23821,6 +24075,8 @@ mod accepts_negotiation_tests {
                 max_gas_tgas: 100,
                 sender_per_hour: 30,
             }),
+            facilitator_address: None,
+            are_fees_sponsored: None,
         });
         let (matched, rejected) =
             negotiate_accepts(&[requirement("escrow", "near-testnet")], &[near.clone()]);
@@ -23863,6 +24119,8 @@ mod accepts_negotiation_tests {
                 lifecycle_signers_version: Some(1),
             }),
             near_escrow: None,
+            facilitator_address: None,
+            are_fees_sponsored: None,
         });
         let (matched, rejected) =
             negotiate_accepts(&[requirement("escrow", "eip155:8453")], &[escrow.clone()]);
@@ -23879,6 +24137,52 @@ mod accepts_negotiation_tests {
         let (matched, _) = negotiate_accepts(&[offer], &[escrow]);
         assert_eq!(matched[0]["extra"]["lifecycleSigners"], forged);
         assert!(matched[0]["extra"].get("lifecycleSignersVersion").is_none());
+    }
+
+    /// What a resource server needs from `/supported` reaches the
+    /// requirements `/accepts` hands back: the `upto` settling address, which
+    /// the client signs into its witness, and Stellar's fee sponsorship, which
+    /// the reference client refuses to pay without. A merchant's own value is
+    /// never overwritten.
+    #[test]
+    fn the_spec_extra_fields_reach_the_negotiated_requirements() {
+        let settling = alloy::primitives::Address::repeat_byte(0x42);
+        let extra = |facilitator_address, are_fees_sponsored| {
+            Some(crate::types::SupportedPaymentKindExtra {
+                fee_payer: None,
+                tokens: None,
+                escrow: None,
+                near_escrow: None,
+                facilitator_address,
+                are_fees_sponsored,
+            })
+        };
+        let mut upto = kind(Scheme::Upto, "eip155:8453");
+        upto.extra = extra(Some(crate::types::EvmAddress(settling)), None);
+        let mut stellar = kind(Scheme::Exact, "stellar:testnet");
+        stellar.extra = extra(None, Some(true));
+
+        let (enriched, rejected) = negotiate_accepts(
+            &[
+                requirement("upto", "eip155:8453"),
+                requirement("exact", "stellar:testnet"),
+            ],
+            &[upto.clone(), stellar],
+        );
+        assert!(rejected.is_empty(), "{rejected:?}");
+        assert_eq!(
+            enriched[0]["extra"]["facilitatorAddress"],
+            json!(format!("{settling:#x}"))
+        );
+        assert_eq!(enriched[1]["extra"]["areFeesSponsored"], json!(true));
+
+        let mut own = requirement("upto", "eip155:8453");
+        own["extra"] = json!({"facilitatorAddress": "merchant's"});
+        let (enriched, _) = negotiate_accepts(&[own], &[upto]);
+        assert_eq!(
+            enriched[0]["extra"]["facilitatorAddress"],
+            json!("merchant's")
+        );
     }
 }
 

@@ -1752,15 +1752,18 @@ mod escrow_supported_tests {
         }
     }
 
-    /// The production table declares nobody, and the body `GET /supported`
-    /// answers with (`supported_body` over `supported()`, escrow switched on)
-    /// says so: every x402r `escrow` kind carries `lifecycleSigners: {}` with
-    /// its version -- not an absent field, which is what a facilitator older
-    /// than the announcement publishes -- and no other kind carries either.
-    /// No chain provider is configured here, so `exact` and the NEAR `escrow`
+    /// The body `GET /supported` answers with (`supported_body` over
+    /// `supported()`, escrow switched on) announces the production table:
+    /// every x402r `escrow` kind of the nine networks where Execution Market
+    /// signs carries `lifecycleSigners: {<its operator>: <its signer>}`, every
+    /// other one `{}` -- not an absent field, which is what a facilitator
+    /// older than the announcement publishes -- each with its version, and no
+    /// other kind carries either. Written out here, lowercase as announced, so
+    /// a table and an announcement that drifted together still go red. No
+    /// chain provider is configured here, so `exact` and the NEAR `escrow`
     /// kind are not in this body; neither builds an `EscrowSupportedInfo`.
     #[tokio::test]
-    async fn supported_announces_no_lifecycle_signer_with_its_version() {
+    async fn supported_announces_the_declared_lifecycle_signers_with_their_version() {
         use crate::payment_operator::autoverify::{self, Verdict};
         let facilitator = FacilitatorLocal::new(
             crate::payment_operator::test_rpc::Providers(HashMap::new()),
@@ -1779,12 +1782,39 @@ mod escrow_supported_tests {
         let supported = facilitator.supported().await.unwrap();
         let body = crate::handlers::supported_body(supported);
         let kinds = body["kinds"].as_array().expect("kinds");
+        let em = "0x59e44faac5c56e5e31602a45262f1eb5df193b3e";
+        let declared: HashMap<&str, &str> = [
+            ("eip155:8453", "0x271f9fa7f8907acf178ccfb470076d9129d8f0eb"),
+            ("eip155:1", "0x69b67962ffb7c5c7078ff348a87df604dfa8001b"),
+            ("eip155:137", "0xb87f1ecc85f074e50df3dd16a1f40e4e1ec4102e"),
+            ("eip155:42161", "0xc2377a9db1de2520bd6b2756ed012f4e82f7938e"),
+            ("eip155:42220", "0xc2377a9db1de2520bd6b2756ed012f4e82f7938e"),
+            ("eip155:43114", "0xc2377a9db1de2520bd6b2756ed012f4e82f7938e"),
+            ("eip155:10", "0xc2377a9db1de2520bd6b2756ed012f4e82f7938e"),
+            ("eip155:143", "0x9620dbe2bb549e1d080dc8e7982623a9e1df8cc3"),
+            ("eip155:5042", "0x0258472a1410ac3ad720f1bc83f22b3c0af1fd9d"),
+        ]
+        .into_iter()
+        .collect();
         let mut escrow = 0;
+        let mut announced_by = std::collections::BTreeSet::new();
         for kind in kinds {
             let extra = &kind["extra"];
             if kind["scheme"] == "escrow" {
                 escrow += 1;
-                assert_eq!(extra["lifecycleSigners"], serde_json::json!({}), "{kind}");
+                let caip2 = resolve_network(kind["network"].as_str().unwrap())
+                    .unwrap()
+                    .to_caip2();
+                let expected = match declared.get(caip2.as_str()) {
+                    Some(operator) => {
+                        announced_by.insert(caip2.clone());
+                        let mut map = serde_json::Map::new();
+                        map.insert(operator.to_string(), Value::from(em));
+                        Value::Object(map)
+                    }
+                    None => serde_json::json!({}),
+                };
+                assert_eq!(extra["lifecycleSigners"], expected, "{kind}");
                 assert_eq!(extra["lifecycleSignersVersion"], 1, "{kind}");
             } else {
                 assert!(extra.get("lifecycleSigners").is_none(), "{kind}");
@@ -1798,6 +1828,9 @@ mod escrow_supported_tests {
             "under the v1 name too"
         );
         assert!(escrow > 0);
+        let all: std::collections::BTreeSet<String> =
+            declared.keys().map(|n| n.to_string()).collect();
+        assert_eq!(announced_by, all, "every declaring network was announced");
 
         autoverify::set_for_test(Network::Arc, arc_operator, None);
         match previous {
